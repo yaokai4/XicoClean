@@ -12,8 +12,10 @@ let package = Package(
     ],
     targets: [
         // 纯业务核心：模型、协议、安全引擎、清理/扫描编排（零 UI/系统具体依赖）
+        // 依赖 Shared 以复用唯一事实来源的删除红线（XicoSafetyRules）
         .target(
             name: "Domain",
+            dependencies: ["Shared"],
             resources: [.process("Resources")]
         ),
         // 主应用与特权助手共享的 XPC 协议与常量
@@ -47,7 +49,7 @@ let package = Package(
         // 测试
         .testTarget(
             name: "DomainTests",
-            dependencies: ["Domain"]
+            dependencies: ["Domain", "Shared"]
         ),
         .testTarget(
             name: "IntegrationTests",
