@@ -155,27 +155,32 @@ struct SidebarTile: View {
     @State private var hover = false
 
     var body: some View {
-        HStack(spacing: XSpacing.s) {
-            Image(systemName: meta.systemImage)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(selected ? .white : XColor.textSecondary)
-                .frame(width: 22, height: 22)
-            Text(meta.title)
-                .font(selected ? XFont.headline : XFont.bodyEmphasis)
-                .foregroundStyle(selected ? .white : XColor.textPrimary)
-            Spacer()
+        Button(action: action) {
+            HStack(spacing: XSpacing.s) {
+                Image(systemName: meta.systemImage)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(selected ? .white : XColor.textSecondary)
+                    .frame(width: 22, height: 22)
+                Text(meta.title)
+                    .font(selected ? XFont.headline : XFont.bodyEmphasis)
+                    .foregroundStyle(selected ? .white : XColor.textPrimary)
+                Spacer()
+            }
+            .padding(.horizontal, XSpacing.s)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
+                    .fill(selected ? AnyShapeStyle(XColor.brandGradient)
+                                   : AnyShapeStyle(hover ? XColor.surfaceHover : Color.clear))
+                    .shadow(color: selected ? XColor.brand.opacity(0.3) : .clear, radius: 7, y: 3)
+            )
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, XSpacing.s)
-        .padding(.vertical, 7)
-        .background(
-            RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
-                .fill(selected ? AnyShapeStyle(XColor.brandGradient)
-                               : AnyShapeStyle(hover ? XColor.surfaceHover : Color.clear))
-                .shadow(color: selected ? XColor.brand.opacity(0.3) : .clear, radius: 7, y: 3)
-        )
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .onTapGesture(perform: action)
+        .accessibilityLabel(meta.title)
+        .accessibilityHint(meta.subtitle)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 }
 

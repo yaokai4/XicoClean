@@ -181,27 +181,32 @@ private struct AppRow: View {
     let action: () -> Void
     @State private var hover = false
     var body: some View {
-        HStack(spacing: XSpacing.s) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: app.url.path))
-                .resizable().frame(width: 28, height: 28)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(app.name).font(XFont.bodyEmphasis)
-                    .foregroundStyle(selected ? .white : XColor.textPrimary).lineLimit(1)
-                Text(app.size > 0 ? app.size.formattedBytes : "计算中…").font(XFont.caption)
-                    .foregroundStyle(selected ? .white.opacity(0.85) : XColor.textSecondary)
+        Button(action: action) {
+            HStack(spacing: XSpacing.s) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: app.url.path))
+                    .resizable().frame(width: 28, height: 28)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(app.name).font(XFont.bodyEmphasis)
+                        .foregroundStyle(selected ? .white : XColor.textPrimary).lineLimit(1)
+                    Text(app.size > 0 ? app.size.formattedBytes : "计算中…").font(XFont.caption)
+                        .foregroundStyle(selected ? .white.opacity(0.85) : XColor.textSecondary)
+                }
+                Spacer()
             }
-            Spacer()
+            .padding(.horizontal, XSpacing.s)
+            .padding(.vertical, 6)
+            .background(
+                Group {
+                    if selected { RoundedRectangle(cornerRadius: XRadius.tile).fill(XColor.brandGradient) }
+                    else if hover { RoundedRectangle(cornerRadius: XRadius.tile).fill(XColor.surfaceHover) }
+                }
+            )
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, XSpacing.s)
-        .padding(.vertical, 6)
-        .background(
-            Group {
-                if selected { RoundedRectangle(cornerRadius: XRadius.tile).fill(XColor.brandGradient) }
-                else if hover { RoundedRectangle(cornerRadius: XRadius.tile).fill(XColor.surfaceHover) }
-            }
-        )
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .onTapGesture(perform: action)
+        .accessibilityLabel(app.name)
+        .accessibilityValue(app.size > 0 ? app.size.formattedBytes : "")
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 }

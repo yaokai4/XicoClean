@@ -31,6 +31,7 @@ public struct XRingGauge<Center: View>: View {
     let size: CGFloat
     let center: Center
     @State private var spin = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(progress: Double, spinning: Bool = false,
                 colors: [Color] = XColor.brandGradientColors,
@@ -66,7 +67,7 @@ public struct XRingGauge<Center: View>: View {
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
                 .xGlow(colors.first!, radius: 18)
-                .animation(.easeInOut(duration: 0.5), value: progress)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.5), value: progress)
 
             if spinning {
                 Circle()
@@ -80,13 +81,15 @@ public struct XRingGauge<Center: View>: View {
             center.padding(lineWidth + XSpacing.l)
         }
         .frame(width: size, height: size)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue("\(Int((max(0, min(progress, 1)) * 100).rounded()))%")
         .onAppear { restartSpin() }
         .onChange(of: spinning) { _ in restartSpin() }
     }
 
     private func restartSpin() {
         spin = false
-        guard spinning else { return }
+        guard spinning, !reduceMotion else { return }   // Reduce Motion 下不做无限旋转
         withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { spin = true }
     }
 }
@@ -119,6 +122,7 @@ public struct XMiniRing<Center: View>: View {
             center
         }
         .frame(width: size, height: size)
+        .accessibilityHidden(true)   // 装饰性：信息由相邻文字承载
     }
 }
 

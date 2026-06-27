@@ -7,6 +7,7 @@ public struct XScanOrb: View {
     let label: String
     let colors: [Color]
     let size: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(value: String, label: String,
                 colors: [Color] = XColor.ringColors, size: CGFloat = 300) {
@@ -17,6 +18,33 @@ public struct XScanOrb: View {
     }
 
     public var body: some View {
+        Group {
+            if reduceMotion { staticOrb } else { animatedOrb }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("正在扫描")
+        .accessibilityValue("\(label) \(value)")
+    }
+
+    /// Reduce Motion 下的静态降级：无旋转/粒子，仅静态环 + 数值
+    private var staticOrb: some View {
+        let lineW = size * 0.03
+        return ZStack {
+            Circle().stroke(XColor.surfaceAlt.opacity(0.38), lineWidth: lineW)
+            Circle()
+                .trim(from: 0, to: 0.7)
+                .stroke(AngularGradient(colors: colors + [colors[0]], center: .center),
+                        style: StrokeStyle(lineWidth: lineW, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 6) {
+                Text(value).xHeroNumber().foregroundStyle(XColor.textPrimary)
+                Text(label).font(XFont.body).foregroundStyle(XColor.textSecondary).tracking(0.3)
+            }
+        }
+        .frame(width: size, height: size)
+    }
+
+    @ViewBuilder private var animatedOrb: some View {
         let lineW = size * 0.03
         let r = size / 2 - lineW / 2
         let c0 = colors[0]
@@ -86,6 +114,7 @@ public struct XCheckbox: View {
     let isOn: Bool
     let colors: [Color]
     let toggle: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(isOn: Bool, colors: [Color] = XColor.brandGradientColors, toggle: @escaping () -> Void) {
         self.isOn = isOn
@@ -94,24 +123,30 @@ public struct XCheckbox: View {
     }
 
     public var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(isOn ? Color.clear : XColor.textTertiary.opacity(0.6), lineWidth: 1.5)
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-                .opacity(isOn ? 1 : 0)
-                .scaleEffect(isOn ? 1 : 0.6)
-            if isOn {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 10, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .transition(.scale.combined(with: .opacity))
+        // 用 Button 实现：自动获得键盘可达（Tab 聚焦 + 空格/回车触发）与无障碍 trait
+        Button(action: toggle) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(isOn ? Color.clear : XColor.textTertiary.opacity(0.6), lineWidth: 1.5)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .opacity(isOn ? 1 : 0)
+                    .scaleEffect(isOn ? 1 : 0.6)
+                if isOn {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .transition(.scale.combined(with: .opacity))
+                }
             }
+            .frame(width: 19, height: 19)
+            .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.6), value: isOn)
+            .contentShape(Rectangle())
         }
-        .frame(width: 19, height: 19)
-        .animation(.spring(response: 0.28, dampingFraction: 0.6), value: isOn)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: toggle)
+        .buttonStyle(.plain)
+        .accessibilityLabel("勾选")
+        .accessibilityValue(isOn ? "已选中" : "未选中")
+        .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -120,10 +155,19 @@ public struct XCheckbox: View {
 public struct XCelebrationBurst: View {
     let colors: [Color]
     @State private var start = Date()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     public init(colors: [Color] = [XColor.success, XColor.accentTeal, XColor.brand]) {
         self.colors = colors.isEmpty ? [XColor.brand] : colors
     }
     public var body: some View {
+        // Reduce Motion 下跳过粒子爆发（完成页另有静态对勾）
+        if reduceMotion {
+            Color.clear.allowsHitTesting(false)
+        } else {
+            burst
+        }
+    }
+    private var burst: some View {
         TimelineView(.animation) { tl in
             let e = tl.date.timeIntervalSince(start)
             Canvas { ctx, sz in

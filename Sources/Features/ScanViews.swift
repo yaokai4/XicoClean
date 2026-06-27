@@ -46,6 +46,7 @@ struct SessionScaffold<Idle: View>: View {
         VStack(spacing: XSpacing.xl) {
             ScanningIndicator(bytes: vm.progressBytes, message: vm.statusMessage)
             Button("取消") { vm.cancel() }.buttonStyle(XSecondaryButtonStyle())
+                .keyboardShortcut(.cancelAction)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -156,6 +157,7 @@ struct ModuleIdleHero: View {
                 .multilineTextAlignment(.center).frame(maxWidth: 460).lineSpacing(2)
             Button(buttonTitle, action: action)
                 .buttonStyle(XPrimaryButtonStyle(large: true))
+                .keyboardShortcut(.defaultAction)
                 .padding(.top, XSpacing.s)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -222,6 +224,7 @@ public struct SmartScanView: View {
 
             Button("开始智能扫描") { vm.start() }
                 .buttonStyle(XPrimaryButtonStyle(large: true))
+                .keyboardShortcut(.defaultAction)
                 .padding(.top, XSpacing.xs)
         }
         .padding(.horizontal, XSpacing.xl)

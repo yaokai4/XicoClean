@@ -24,27 +24,31 @@ struct TreemapView: View {
         let color = Self.color(for: child.name)
         let isHover = hovered == child.id
         let showLabel = frame.width > 64 && frame.height > 34
-        return RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(color.opacity(isHover ? 0.95 : 0.78))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
-            )
-            .overlay(alignment: .topLeading) {
-                if showLabel {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(child.name).font(.system(size: 11, weight: .semibold)).lineLimit(1)
-                        Text(child.size.formattedBytes).font(.system(size: 10)).opacity(0.85)
+        return Button { onSelect(child) } label: {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(color.opacity(isHover ? 0.95 : 0.78))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
+                )
+                .overlay(alignment: .topLeading) {
+                    if showLabel {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(child.name).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                            Text(child.size.formattedBytes).font(.system(size: 10)).opacity(0.85)
+                        }
+                        .foregroundStyle(.white)
+                        .padding(6)
                     }
-                    .foregroundStyle(.white)
-                    .padding(6)
                 }
-            }
-            .frame(width: max(2, frame.width - 3), height: max(2, frame.height - 3))
-            .offset(x: frame.minX, y: frame.minY)
-            .onHover { hovered = $0 ? child.id : nil }
-            .onTapGesture { onSelect(child) }
-            .help("\(child.name) — \(child.size.formattedBytes)")
+        }
+        .buttonStyle(.plain)
+        .frame(width: max(2, frame.width - 3), height: max(2, frame.height - 3))
+        .offset(x: frame.minX, y: frame.minY)
+        .onHover { hovered = $0 ? child.id : nil }
+        .help("\(child.name) — \(child.size.formattedBytes)")
+        .accessibilityLabel("\(child.name)，\(child.size.formattedBytes)")
+        .accessibilityAddTraits(.isButton)
     }
 
     // MARK: 布局
