@@ -22,6 +22,7 @@ final class ProgressThrottle: @unchecked Sendable {
 public final class ModuleSessionViewModel: ObservableObject {
     public enum Phase: Equatable {
         case idle, scanning, results, empty, cleaning, finished
+        case failed(String)
     }
 
     @Published public var phase: Phase = .idle
@@ -30,18 +31,20 @@ public final class ModuleSessionViewModel: ObservableObject {
     @Published public var statusMessage: String = ""
     @Published public var groups: [ScanResultGroup] = []
     @Published public var lastReport: CleaningReport?
+    /// 失败是否由缺少完全磁盘访问权限导致（用于在失败态给出「开启权限」入口）
+    @Published public var permissionIssue = false
 
     public let title: String
     public let intent: DeleteIntent
     private let env: XicoEnvironment
-    private let scanProvider: @Sendable (@escaping ProgressHandler) async -> [ScanResult]
+    private let scanProvider: @Sendable (@escaping ProgressHandler) async throws -> [ScanResult]
     private var scanTask: Task<Void, Never>?
     private let throttle = ProgressThrottle()
 
     public init(env: XicoEnvironment,
                 title: String,
                 intent: DeleteIntent,
-                scanProvider: @escaping @Sendable (@escaping ProgressHandler) async -> [ScanResult]) {
+                scanProvider: @escaping @Sendable (@escaping ProgressHandler) async throws -> [ScanResult]) {
         self.env = env
         self.title = title
         self.intent = intent
@@ -68,15 +71,36 @@ public final class ModuleSessionViewModel: ObservableObject {
         statusMessage = "正在扫描…"
         groups = []
         lastReport = nil
+        permissionIssue = false
 
         let handler = makeHandler()
         scanTask = Task {
-            let results = await scanProvider(handler)
-            let merged = results.flatMap { $0.groups }.sorted { $0.totalSize > $1.totalSize }
-            if Task.isCancelled { return }
-            self.groups = merged
-            self.phase = merged.isEmpty ? .empty : .results
+            do {
+                let results = try await scanProvider(handler)
+                let merged = results.flatMap { $0.groups }.sorted { $0.totalSize > $1.totalSize }
+                if Task.isCancelled { return }
+                self.groups = merged
+                if !merged.isEmpty {
+                    self.phase = .results
+                } else if !self.env.permissions.hasFullDiskAccess() {
+                    // 空结果可能只是没权限——绝不伪装成「很干净」
+                    self.permissionIssue = true
+                    self.phase = .failed("未获完全磁盘访问权限，部分位置无法扫描。授权后可发现更多可清理项。")
+                } else {
+                    self.phase = .empty
+                }
+            } catch is CancellationError {
+                // 用户取消：保持 cancel() 设定的状态
+            } catch {
+                if Task.isCancelled { return }
+                self.phase = .failed("扫描时出错：\(error.localizedDescription)")
+            }
         }
+    }
+
+    /// 打开「完全磁盘访问」系统设置（失败态的权限入口）
+    public func openPermissionSettings() {
+        env.permissions.openFullDiskAccessSettings()
     }
 
     public func cancel() {

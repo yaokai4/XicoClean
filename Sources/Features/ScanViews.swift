@@ -9,6 +9,7 @@ struct SessionScaffold<Idle: View>: View {
     @ObservedObject var vm: ModuleSessionViewModel
     let cleanButtonTitle: String
     @ViewBuilder var idle: () -> Idle
+    @State private var confirmPermanent = false
 
     var body: some View {
         Group {
@@ -18,9 +19,27 @@ struct SessionScaffold<Idle: View>: View {
             case .results, .cleaning: resultsView
             case .empty:              emptyView
             case .finished:           finishedView
+            case let .failed(message): failedView(message)
             }
         }
         .animation(.easeInOut(duration: 0.35), value: vm.phase)
+    }
+
+    private func failedView(_ message: String) -> some View {
+        VStack(spacing: XSpacing.l) {
+            XEmptyState(systemImage: vm.permissionIssue ? "lock.shield" : "exclamationmark.triangle",
+                        title: vm.permissionIssue ? "需要完全磁盘访问权限" : "扫描未完成",
+                        subtitle: message)
+                .frame(maxHeight: 320)
+            HStack(spacing: XSpacing.m) {
+                if vm.permissionIssue {
+                    Button("开启完全磁盘访问") { vm.openPermissionSettings() }
+                        .buttonStyle(XPrimaryButtonStyle())
+                }
+                Button("重试") { vm.start() }.buttonStyle(XSecondaryButtonStyle())
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var scanningView: some View {
@@ -56,11 +75,19 @@ struct SessionScaffold<Idle: View>: View {
                 if vm.phase == .cleaning {
                     HStack(spacing: XSpacing.s) { ProgressView().controlSize(.small); Text("清理中…").font(XFont.caption) }
                 } else {
-                    Button("\(cleanButtonTitle) · \(vm.selectedSize.formattedBytes)") { vm.clean() }
+                    Button("\(cleanButtonTitle) · \(vm.selectedSize.formattedBytes)") {
+                        if vm.intent == .permanent { confirmPermanent = true } else { vm.clean() }
+                    }
                         .buttonStyle(XPrimaryButtonStyle(enabled: vm.selectedCount > 0))
                         .disabled(vm.selectedCount == 0)
                 }
             }
+        }
+        .confirmationDialog("确认彻底删除？", isPresented: $confirmPermanent, titleVisibility: .visible) {
+            Button("彻底删除 \(vm.selectedCount) 项（不可恢复）", role: .destructive) { vm.clean() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这些项目将被永久删除，无法从废纸篓恢复。")
         }
     }
 
@@ -254,9 +281,8 @@ public struct ModuleScanView: View {
             env: env, title: meta?.title ?? "", intent: intent,
             scanProvider: { handler in
                 guard let scanner = env.scanner(for: moduleID) else { return [] }
-                let result = (try? await scanner.scan(progress: handler))
-                    ?? ScanResult(moduleID: moduleID, groups: [])
-                return [result]
+                // 不再吞掉错误：失败会上抛到 ViewModel 呈现为失败态，而非伪装成「很干净」
+                return [try await scanner.scan(progress: handler)]
             }))
     }
 
