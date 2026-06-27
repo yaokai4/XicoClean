@@ -1,0 +1,109 @@
+#!/bin/bash
+# 打包 Xico.app：嵌入并签名特权助手（XicoHelper），使其可经 SMAppService 注册。
+# 在临时目录组装+签名（避开 iCloud 同步反复加的扩展属性），再 ditto 回 build/。
+# 用法: scripts/make_app.sh [debug|release]
+set -euo pipefail
+
+CONFIG="${1:-release}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+# 清理 iCloud 同步产生的冲突副本（"* 2.swift" 等），否则会重复声明编译失败
+find Sources Tests \( -name "* [0-9].swift" -o -name "* [0-9].json" \) -delete 2>/dev/null || true
+
+APP_BUNDLE_ID="com.xico.app"
+HELPER_LABEL="com.xico.app.helper"
+
+echo "▶︎ swift build -c $CONFIG (Xico + XicoHelper)"
+swift build -c "$CONFIG" --product Xico
+swift build -c "$CONFIG" --product XicoHelper
+
+BIN_DIR=".build/$CONFIG"
+WORK="$(mktemp -d)"
+APP="$WORK/Xico.app"
+CONTENTS="$APP/Contents"
+
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$CONTENTS/Library/LaunchDaemons"
+cp "$BIN_DIR/Xico" "$CONTENTS/MacOS/Xico"
+cp "$BIN_DIR/XicoHelper" "$CONTENTS/MacOS/XicoHelper"
+[ -d "$BIN_DIR/Xico_Domain.bundle" ] && cp -R "$BIN_DIR/Xico_Domain.bundle" "$CONTENTS/Resources/"
+
+cat > "$CONTENTS/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Xico</string>
+    <key>CFBundleDisplayName</key><string>Xico</string>
+    <key>CFBundleIdentifier</key><string>${APP_BUNDLE_ID}</string>
+    <key>CFBundleExecutable</key><string>Xico</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.2.0</string>
+    <key>CFBundleVersion</key><string>2</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>LSUIElement</key><false/>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>CFBundleIconFile</key><string>Xico</string>
+</dict>
+</plist>
+PLIST
+
+# 生成 App 图标（用刚构建的二进制渲染主图，再转 icns）
+echo "▶︎ 生成 App 图标"
+"$BIN_DIR/Xico" --icon >/dev/null 2>&1 || true
+MASTER="/tmp/xico-icon/icon-master.png"
+if [ -f "$MASTER" ]; then
+  ICONSET="$WORK/Xico.iconset"; mkdir -p "$ICONSET"
+  for s in 16 32 128 256 512; do
+    sips -z $s $s "$MASTER" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null 2>&1
+    d=$((s * 2)); sips -z $d $d "$MASTER" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null 2>&1
+  done
+  iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/Xico.icns" 2>/dev/null \
+    && echo "  ✓ Xico.icns" || echo "  ⚠︎ iconutil 失败，跳过图标"
+else
+  echo "  ⚠︎ 未生成图标主图"
+fi
+
+cat > "$CONTENTS/Library/LaunchDaemons/${HELPER_LABEL}.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>${HELPER_LABEL}</string>
+    <key>BundleProgram</key><string>Contents/MacOS/XicoHelper</string>
+    <key>MachServices</key>
+    <dict><key>${HELPER_LABEL}</key><true/></dict>
+    <key>AssociatedBundleIdentifiers</key>
+    <array><string>${APP_BUNDLE_ID}</string></array>
+</dict>
+</plist>
+PLIST
+
+# 选择签名身份：优先 Developer ID（分发），否则 Apple Development（本机测试），否则 ad-hoc
+IDENTITY="$(security find-identity -v -p codesigning | grep -m1 'Developer ID Application' | awk '{print $2}' || true)"
+[ -z "${IDENTITY:-}" ] && IDENTITY="$(security find-identity -v -p codesigning | grep -m1 'Apple Development' | awk '{print $2}' || true)"
+[ -z "${IDENTITY:-}" ] && IDENTITY="-"
+echo "▶︎ 签名身份: ${IDENTITY}"
+
+xattr -cr "$APP" 2>/dev/null || true
+codesign --force --options runtime --sign "$IDENTITY" "$CONTENTS/MacOS/XicoHelper"
+codesign --force --options runtime --sign "$IDENTITY" "$APP"
+codesign --verify --strict "$APP" && echo "✓ 签名校验通过"
+
+# 输出到 ~/Applications（非 iCloud 同步，避免 FinderInfo 反复污染签名）
+DEST="$HOME/Applications/Xico.app"
+rm -rf "$DEST"; mkdir -p "$HOME/Applications"
+ditto "$APP" "$DEST"
+rm -rf "$WORK"
+codesign --verify --strict "$DEST" && echo "✓ 落盘后签名仍校验通过"
+
+echo "✓ 已生成: $DEST"
+TEAM="$(codesign -dvvv "$DEST" 2>&1 | grep TeamIdentifier | cut -d= -f2 || true)"
+echo "  TeamIdentifier: ${TEAM:-未签名}"
+echo ""
+echo "启用特权助手以执行维护任务："
+echo "  1) open ~/Applications/Xico.app"
+echo "  2) 进入「维护」页 → 点「安装助手」"
+echo "  3) 在系统设置 › 通用 › 登录项与扩展 中批准 Xico 的后台项目"
+echo "  注：本机测试用 Apple Development 身份即可；对外分发需 Developer ID + 公证(notarytool)。"

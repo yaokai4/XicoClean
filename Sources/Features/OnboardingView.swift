@@ -1,0 +1,68 @@
+import SwiftUI
+import DesignSystem
+
+public struct OnboardingView: View {
+    @ObservedObject var model: AppModel
+    @State private var appeared = false
+
+    public init(model: AppModel) { self.model = model }
+
+    public var body: some View {
+        ZStack {
+            AppBackground()
+            VStack(spacing: XSpacing.xl) {
+                XBrandMark(size: 76)
+                    .xGlow(XColor.brand, radius: 36)
+                    .scaleEffect(appeared ? 1 : 0.6)
+
+                VStack(spacing: XSpacing.s) {
+                    Text("欢迎使用 Xico").xLargeTitle().foregroundStyle(XColor.textPrimary)
+                    Text("让你的 Mac 重新变快、变干净、腾出空间")
+                        .font(XFont.body).foregroundStyle(XColor.textSecondary)
+                }
+
+                VStack(spacing: XSpacing.m) {
+                    feature("sparkles", [XColor.ringPeri, XColor.ringLav], "智能清理", "一键扫描系统垃圾、缓存与应用残留")
+                    feature("circle.hexagongrid.fill", [XColor.ringLav, XColor.ringRose], "空间透镜", "可视化磁盘占用，快速定位大文件")
+                    feature("checkmark.shield.fill", [XColor.ringPeri, XColor.ringMint], "绝对安全", "全部移入废纸篓，随时一键撤销")
+                }
+                .frame(maxWidth: 460)
+
+                XCard {
+                    HStack(spacing: XSpacing.m) {
+                        XIconTile(systemImage: "externaldrive.fill.badge.checkmark",
+                                  colors: [XColor.brand, XColor.brandEnd], size: 36)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("开启完全磁盘访问权限").font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                            Text("扫描全部垃圾需要此权限，一次授权长期有效。")
+                                .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        }
+                        Spacer()
+                        Button("去开启") { model.openFullDiskAccessSettings() }.buttonStyle(.bordered)
+                    }
+                }
+                .frame(maxWidth: 460)
+
+                Button("开始使用") { model.completeOnboarding() }
+                    .buttonStyle(XPrimaryButtonStyle(large: true))
+                    .padding(.top, XSpacing.s)
+            }
+            .padding(XSpacing.xxxl)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 24)
+        }
+        .onAppear { withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) { appeared = true } }
+    }
+
+    private func feature(_ icon: String, _ colors: [Color], _ title: String, _ sub: String) -> some View {
+        HStack(spacing: XSpacing.m) {
+            XIconTile(systemImage: icon, colors: colors, size: 40)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).xHeadline().foregroundStyle(XColor.textPrimary)
+                Text(sub).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+            }
+            Spacer()
+        }
+    }
+}

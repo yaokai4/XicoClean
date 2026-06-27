@@ -1,0 +1,110 @@
+import Foundation
+import Domain
+
+/// 基于 FileManager 的文件系统实现
+public struct LocalFileSystemService: FileSystemService {
+    private var fm: FileManager { .default }
+
+    public init() {}
+
+    public func exists(_ url: URL) -> Bool {
+        fm.fileExists(atPath: url.path)
+    }
+
+    public func contentsOfDirectory(_ url: URL) -> [URL] {
+        (try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [])) ?? []
+    }
+
+    public func allocatedSize(of url: URL) -> Int64 {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey]
+        guard let rv = try? url.resourceValues(forKeys: keys) else { return 0 }
+
+        if rv.isDirectory == true {
+            var total: Int64 = 0
+            guard let en = fm.enumerator(at: url,
+                                         includingPropertiesForKeys: Array(keys),
+                                         options: [],
+                                         errorHandler: { _, _ in true }) else { return 0 }
+            for case let f as URL in en {
+                guard let r = try? f.resourceValues(forKeys: keys), r.isDirectory != true else { continue }
+                total += Int64(r.totalFileAllocatedSize ?? r.fileSize ?? 0)
+            }
+            return total
+        } else {
+            return Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
+        }
+    }
+
+    public func entry(for url: URL) -> FileEntry? {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey,
+                                         .contentModificationDateKey, .contentAccessDateKey]
+        guard let rv = try? url.resourceValues(forKeys: keys) else { return nil }
+        let isDir = rv.isDirectory ?? false
+        let size = isDir ? allocatedSize(of: url) : Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
+        return FileEntry(url: url, size: size, isDirectory: isDir,
+                         modificationDate: rv.contentModificationDate, accessDate: rv.contentAccessDate)
+    }
+
+    public func trash(_ url: URL) throws -> URL {
+        var resulting: NSURL?
+        try fm.trashItem(at: url, resultingItemURL: &resulting)
+        return (resulting as URL?) ?? url
+    }
+
+    public func remove(_ url: URL) throws {
+        try fm.removeItem(at: url)
+    }
+
+    public func restore(_ item: RestorableItem) throws {
+        let parent = item.originalURL.deletingLastPathComponent()
+        try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        try fm.moveItem(at: item.trashedURL, to: item.originalURL)
+    }
+
+    public func volumeCapacity(for url: URL) -> VolumeCapacity? {
+        let keys: Set<URLResourceKey> = [.volumeTotalCapacityKey,
+                                         .volumeAvailableCapacityForImportantUsageKey,
+                                         .volumeAvailableCapacityKey]
+        guard let rv = try? url.resourceValues(forKeys: keys) else { return nil }
+        let total = Int64(rv.volumeTotalCapacity ?? 0)
+        let avail = rv.volumeAvailableCapacityForImportantUsage ?? Int64(rv.volumeAvailableCapacity ?? 0)
+        return VolumeCapacity(total: total, available: avail)
+    }
+
+    public func deepEnumerate(_ url: URL, includeFiles: Bool) -> AsyncStream<FileEntry> {
+        AsyncStream { continuation in
+            let task = Task.detached(priority: .utility) {
+                // 仅取逻辑大小（大文件/重复文件够用），省去 totalFileAllocatedSize 的额外开销
+                let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey,
+                                              .contentModificationDateKey, .contentAccessDateKey]
+                guard let en = self.fm.enumerator(at: url,
+                                                  includingPropertiesForKeys: keys,
+                                                  options: [.skipsHiddenFiles],
+                                                  errorHandler: { _, _ in true }) else {
+                    continuation.finish(); return
+                }
+                // 非隐藏的「可再生」目录：含海量小文件但无用户级大文件，整棵跳过以提速
+                // （隐藏的 .git/.cache/.gradle 等已被 skipsHiddenFiles 跳过）
+                let pruneDirs: Set<String> = ["node_modules", "Pods", "Carthage",
+                                              "__pycache__", "DerivedData", ".build"]
+                while let next = en.nextObject() {
+                    guard let fileURL = next as? URL else { continue }
+                    if Task.isCancelled { break }
+                    guard let rv = try? fileURL.resourceValues(forKeys: Set(keys)) else { continue }
+                    let isDir = rv.isDirectory ?? false
+                    if isDir && pruneDirs.contains(fileURL.lastPathComponent) {
+                        en.skipDescendants()
+                        continue
+                    }
+                    if isDir && !includeFiles { continue }
+                    let size = Int64(rv.fileSize ?? 0)
+                    continuation.yield(FileEntry(url: fileURL, size: size, isDirectory: isDir,
+                                                 modificationDate: rv.contentModificationDate,
+                                                 accessDate: rv.contentAccessDate))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
