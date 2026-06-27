@@ -58,37 +58,65 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
                 Self.log.error("拒绝受保护路径: \(std, privacy: .public) — \(reason, privacy: .public)")
                 failures.append(path); continue
             }
-            // 5) 防 TOCTOU：整条路径（含叶）必须真实存在且无任一分量是符号链接，
-            //    否则攻击者可在校验后把中间分量换成软链让 removeItem 删穿。
-            guard Self.isSymlinkFreeAndExtant(std) else {
-                Self.log.error("拒绝含符号链接/不存在的路径: \(std, privacy: .public)")
-                failures.append(path); continue
-            }
-            let url = URL(fileURLWithPath: std)
+            // 5) 防 TOCTOU：用 openat(O_NOFOLLOW) 从白名单根逐级下钻、unlinkat 锚定删除，
+            //    内核保证不跟随符号链接，即使白名单根全局可写也无法被换链穿透。
             let size = (try? fm.attributesOfItem(atPath: std)[.size] as? Int64) ?? 0
-            do {
-                try fm.removeItem(at: url)
+            if Self.safeRemove(std) {
                 freed += size
                 Self.log.notice("已删除: \(std, privacy: .public) (\(size) bytes)")
-            } catch {
-                Self.log.error("删除失败: \(std, privacy: .public) — \(error.localizedDescription, privacy: .public)")
+            } else {
+                Self.log.error("删除失败/被拒: \(std, privacy: .public)")
                 failures.append(path)
             }
         }
         reply(freed, failures)
     }
 
-    /// 从根逐分量 lstat：要求每一段都存在且都不是符号链接。
-    /// 配合「目标根目录为 root 所有、非特权进程不可写入」即可消除 TOCTOU 换链竞态。
-    static func isSymlinkFreeAndExtant(_ path: String) -> Bool {
-        var current = "/"
-        for comp in (path as NSString).pathComponents where comp != "/" {
-            current = (current as NSString).appendingPathComponent(comp)
-            var st = stat()
-            guard lstat(current, &st) == 0 else { return false }
-            if (st.st_mode & S_IFMT) == S_IFLNK { return false }
+    /// 从白名单根逐级 openat(O_NOFOLLOW) 下钻到父目录，再 fd 锚定递归删除。
+    /// 任一分量是符号链接 → openat 失败 → 整体拒绝；无 TOCTOU 换链窗口。
+    static func safeRemove(_ path: String) -> Bool {
+        guard let root = XicoHelperSecurity.deletableRoots.first(where: { path == $0 || path.hasPrefix($0 + "/") }),
+              path != root else { return false }   // 绝不删白名单根本身
+        let rootFD = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard rootFD >= 0 else { return false }
+        defer { close(rootFD) }
+
+        let rel = String(path.dropFirst(root.count + 1))
+        let comps = rel.split(separator: "/").map(String.init)
+        guard let leaf = comps.last else { return false }
+
+        var parentFD = rootFD
+        var opened: [Int32] = []
+        defer { opened.forEach { close($0) } }
+        for comp in comps.dropLast() {
+            let fd = openat(parentFD, comp, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { return false }
+            opened.append(fd); parentFD = fd
         }
-        return current != "/"
+        return removeEntry(parentFD: parentFD, name: leaf)
+    }
+
+    /// fd 相对地递归删除一个条目（不跟随符号链接）
+    static func removeEntry(parentFD: Int32, name: String) -> Bool {
+        var st = stat()
+        guard fstatat(parentFD, name, &st, AT_SYMLINK_NOFOLLOW) == 0 else { return false }
+        let type = st.st_mode & S_IFMT
+        if type == S_IFLNK { return unlinkat(parentFD, name, 0) == 0 }   // 删软链本身，不跟随
+        if type == S_IFDIR {
+            let dirFD = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard dirFD >= 0, let dir = fdopendir(dirFD) else { if dirFD >= 0 { close(dirFD) }; return false }
+            var ok = true
+            while let ent = readdir(dir) {
+                let n = withUnsafeBytes(of: ent.pointee.d_name) { raw -> String in
+                    String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+                }
+                if n == "." || n == ".." { continue }
+                if !removeEntry(parentFD: dirFD, name: n) { ok = false }
+            }
+            closedir(dir)   // 同时关闭 dirFD
+            return ok && unlinkat(parentFD, name, AT_REMOVEDIR) == 0
+        }
+        return unlinkat(parentFD, name, 0) == 0
     }
 
     // MARK: XPC 连接校验（纵深防御第一道闸门）

@@ -10,18 +10,25 @@ public actor ScanCoordinator {
 
     /// 运行全部模块并返回每个模块的结果（并发执行）。
     /// 转发各模块内部的细粒度进度（正在扫描的项 + 累计大小），让扫描"看得见在干活"。
-    public func scanAll(progress: @escaping ProgressHandler = { _ in }) async -> [ScanResult] {
+    /// 若**所有**模块都失败，则抛出首个错误——绝不把失败静默成空结果（避免伪装成"很干净"）。
+    public func scanAll(progress: @escaping ProgressHandler = { _ in }) async throws -> [ScanResult] {
         let total = modules.count
         let counter = Counter()
         let agg = ProgressAggregator()
+        let errors = ErrorCollector()
 
-        return await withTaskGroup(of: ScanResult?.self) { group in
+        let results = await withTaskGroup(of: ScanResult?.self) { group in
             for module in modules {
                 let title = module.metadata.title
                 group.addTask {
-                    let result = try? await module.scan { p in
-                        let running = agg.update(title, p.bytesFound)
-                        progress(ScanProgress(message: p.message, bytesFound: running))
+                    var result: ScanResult?
+                    do {
+                        result = try await module.scan { p in
+                            let running = agg.update(title, p.bytesFound)
+                            progress(ScanProgress(message: p.message, bytesFound: running))
+                        }
+                    } catch {
+                        await errors.add(error)
                     }
                     let done = await counter.increment()
                     progress(ScanProgress(
@@ -38,7 +45,18 @@ public actor ScanCoordinator {
             }
             return results
         }
+        // 部分成功就返回部分结果；全部失败才上抛错误（让上层显示失败态而非空态）
+        if results.isEmpty, let first = await errors.first {
+            throw first
+        }
+        return results
     }
+}
+
+/// 收集并发模块的错误
+private actor ErrorCollector {
+    private(set) var first: Error?
+    func add(_ error: Error) { if first == nil { first = error } }
 }
 
 /// 并发安全的计数器

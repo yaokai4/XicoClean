@@ -63,9 +63,14 @@ final class UninstallerModel: ObservableObject {
         guard !items.isEmpty else { return }
         working = true
         let env = self.env
+        let appName = selected?.name ?? "应用"
         Task {
             let report = await env.cleaningEngine.execute(CleaningPlan(items: items, intent: .trash))
             self.lastFreed = report.reclaimedBytes
+            // 计入清理历史并广播刷新（此前卸载释放的空间被系统性少计）
+            env.history.record(module: "卸载 · \(appName)",
+                               reclaimedBytes: report.reclaimedBytes, removedCount: report.removedCount)
+            NotificationCenter.default.post(name: .xicoDidClean, object: nil)
             self.working = false
             self.selected = nil
             self.targets = []

@@ -238,6 +238,13 @@ public struct SystemJunkScanner: ScannerModule {
         let lower = name.lowercased()
         let systemPrefixes = ["com.apple", "group.com.apple", "apple.", "com.crashlytics", "org.swift"]
         if systemPrefixes.contains(where: { lower.hasPrefix($0) }) { return false }
+        // 应用扩展点的 bundle id 常与宿主 App 不同（如 com.x.OneDrive.FileProvider 宿主是 com.x.OneDrive-mac），
+        // 易被误判为残留——一律豁免，避免误删活跃组件（误判比漏判更致命）。
+        let extensionSuffixes = ["fileprovider", "findersync", "shareextension", "actionextension",
+                                 "widget", "notificationservice", "intents", "intentsextension",
+                                 "networkextension", "systemextension", "endpointsecurity",
+                                 "quicklook", "spotlight", "xpc", "helper", "agent"]
+        if extensionSuffixes.contains(where: { lower.hasSuffix("." + $0) }) { return false }
         var idx = parts.count
         while idx >= 2 {
             let candidate = parts.prefix(idx).joined(separator: ".")

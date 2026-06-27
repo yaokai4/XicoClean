@@ -40,6 +40,8 @@ public final class ModuleSessionViewModel: ObservableObject {
     private let scanProvider: @Sendable (@escaping ProgressHandler) async throws -> [ScanResult]
     private var scanTask: Task<Void, Never>?
     private let throttle = ProgressThrottle()
+    /// 本次清理写入历史的记录 id（撤销时据此回滚，避免累计释放虚高）
+    private var lastHistoryID: UUID?
 
     public init(env: XicoEnvironment,
                 title: String,
@@ -141,9 +143,9 @@ public final class ModuleSessionViewModel: ObservableObject {
             self.lastReport = report
             self.removeCleaned(report)
             // 记入持久化清理历史（可追溯：累计释放 / 最近记录跨会话留存）
-            env.history.record(module: self.title,
-                               reclaimedBytes: report.reclaimedBytes,
-                               removedCount: report.removedCount)
+            self.lastHistoryID = env.history.record(module: self.title,
+                                                    reclaimedBytes: report.reclaimedBytes,
+                                                    removedCount: report.removedCount)
             self.phase = .finished
             NotificationCenter.default.post(name: .xicoDidClean, object: nil)
         }
@@ -151,9 +153,12 @@ public final class ModuleSessionViewModel: ObservableObject {
 
     public func undo() {
         guard let report = lastReport, !report.restorable.isEmpty else { return }
+        // 回滚历史，避免撤销后「累计释放」仍计入这次清理
+        if let id = lastHistoryID { env.history.remove(id: id); lastHistoryID = nil }
         Task {
             _ = await env.cleaningEngine.undo(report)
             self.lastReport = nil
+            NotificationCenter.default.post(name: .xicoDidClean, object: nil)
             self.start()
         }
     }

@@ -177,7 +177,7 @@ public struct SmartScanView: View {
         self.env = env
         _vm = StateObject(wrappedValue: ModuleSessionViewModel(
             env: env, title: "智能扫描", intent: .trash,
-            scanProvider: { handler in await env.smartScanCoordinator().scanAll(progress: handler) }))
+            scanProvider: { handler in try await env.smartScanCoordinator().scanAll(progress: handler) }))
     }
 
     public var body: some View {

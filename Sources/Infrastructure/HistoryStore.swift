@@ -25,11 +25,17 @@ public final class HistoryStore: @unchecked Sendable {
     private var records: [CleaningRecord]
     private let maxRecords = 500
 
-    public init() {
-        let base = (try? FileManager.default.url(for: .applicationSupportDirectory,
-                                                 in: .userDomainMask, appropriateFor: nil, create: true))
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        let dir = base.appendingPathComponent("Xico", isDirectory: true)
+    /// directory 可注入（测试用临时目录，避免污染真实清理历史）；默认 Application Support/Xico。
+    public init(directory: URL? = nil) {
+        let dir: URL
+        if let directory {
+            dir = directory
+        } else {
+            let base = (try? FileManager.default.url(for: .applicationSupportDirectory,
+                                                     in: .userDomainMask, appropriateFor: nil, create: true))
+                ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+            dir = base.appendingPathComponent("Xico", isDirectory: true)
+        }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("history.json")
         if let data = try? Data(contentsOf: url),
@@ -40,13 +46,23 @@ public final class HistoryStore: @unchecked Sendable {
         }
     }
 
-    /// 追加一条记录（reclaimedBytes<=0 时忽略，避免噪音）
-    public func record(module: String, reclaimedBytes: Int64, removedCount: Int, date: Date = Date()) {
-        guard reclaimedBytes > 0 || removedCount > 0 else { return }
+    /// 追加一条记录（reclaimedBytes<=0 且 removedCount<=0 时忽略）。返回记录 id，便于撤销时回滚。
+    @discardableResult
+    public func record(module: String, reclaimedBytes: Int64, removedCount: Int, date: Date = Date()) -> UUID? {
+        guard reclaimedBytes > 0 || removedCount > 0 else { return nil }
         lock.lock(); defer { lock.unlock() }
-        records.insert(CleaningRecord(date: date, module: module,
-                                      reclaimedBytes: reclaimedBytes, removedCount: removedCount), at: 0)
+        let rec = CleaningRecord(date: date, module: module,
+                                 reclaimedBytes: reclaimedBytes, removedCount: removedCount)
+        records.insert(rec, at: 0)
         if records.count > maxRecords { records = Array(records.prefix(maxRecords)) }
+        persist()
+        return rec.id
+    }
+
+    /// 移除一条记录（撤销清理时回滚历史，避免「累计释放」虚高）
+    public func remove(id: UUID) {
+        lock.lock(); defer { lock.unlock() }
+        records.removeAll { $0.id == id }
         persist()
     }
 

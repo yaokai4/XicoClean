@@ -20,8 +20,8 @@ public struct PermissionsManager: Sendable {
                 return false
             }
         }
-        // 探针目录都不存在时，保守地认为可用（不阻断功能）
-        return true
+        // 探针目录都不存在时，保守地判为「未授权」：宁可显示授权入口，也不把没权限伪装成可用
+        return false
     }
 
     /// 打开系统设置的「完全磁盘访问权限」面板
