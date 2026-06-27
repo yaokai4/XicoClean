@@ -30,6 +30,34 @@ final class SafetyRulesTests: XCTestCase {
         assertDenied("/Volumes/External")
     }
 
+    /// 这些是 root 可删、SIP 不挡、删之会瘫系统的要害目录——助手红线必须拒
+    func testDeniesRootCriticalAreas() {
+        assertDenied("/Library/LaunchDaemons/com.evil.plist")
+        assertDenied("/Library/LaunchAgents/x.plist")
+        assertDenied("/Library/Extensions/foo.kext")
+        assertDenied("/Library/Preferences/com.apple.x.plist")
+        assertDenied("/Library/Security/foo")
+        assertDenied("/Library/Keychains/System.keychain")
+        assertDenied("/private/etc/sudoers")
+        assertDenied("/private/var/db/sudo/x")
+        assertDenied("/cores/core.123")
+        assertDenied("/opt/homebrew/bin/brew")
+    }
+
+    /// 助手白名单：只允许这些系统级垃圾根
+    func testHelperDeletableWhitelist() {
+        XCTAssertTrue(XicoHelperSecurity.isUnderDeletableRoot("/Library/Caches/com.foo/x"))
+        XCTAssertTrue(XicoHelperSecurity.isUnderDeletableRoot("/Library/Logs/foo.log"))
+        XCTAssertTrue(XicoHelperSecurity.isUnderDeletableRoot("/private/var/log/system.log"))
+        XCTAssertFalse(XicoHelperSecurity.isUnderDeletableRoot("/Library/LaunchDaemons/x.plist"))
+        XCTAssertFalse(XicoHelperSecurity.isUnderDeletableRoot("/Users/alice/Documents"))
+        XCTAssertFalse(XicoHelperSecurity.isUnderDeletableRoot("/Library/CachesEvil")) // 前缀粘连不算
+    }
+
+    func testTeamIdentifierConfigured() {
+        XCTAssertTrue(XicoHelperSecurity.isTeamIdentifierConfigured, "应已设置真实 10 位 Team ID")
+    }
+
     // MARK: 任意用户的敏感目录（助手不知发起方是谁，必须全部守住）
 
     func testDeniesAnyUserSensitiveDirs() {

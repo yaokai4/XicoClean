@@ -26,8 +26,19 @@ public struct XicoSafetyRules: Sendable {
         lowered("/usr"),
         lowered("/bin"),
         lowered("/sbin"),
-        lowered("/private/var/db/dslocal"),
-        lowered("/Library/Apple")
+        lowered("/cores"),
+        lowered("/opt"),
+        lowered("/private/etc"),
+        lowered("/private/var/db"),            // 含 sudo / dslocal / ConfigurationProfiles 等关键状态
+        lowered("/Library/Apple"),
+        lowered("/Library/LaunchDaemons"),     // 第三方 root 守护进程清单（删之即瘫）
+        lowered("/Library/LaunchAgents"),
+        lowered("/Library/Extensions"),
+        lowered("/Library/Preferences"),
+        lowered("/Library/Security"),
+        lowered("/Library/Keychains")          // 系统钥匙串
+        // 注意：刻意不含 /private/var/folders（用户级 Darwin 缓存，主程合法清理）
+        //       与 /Library/Caches、/Library/Logs（系统级垃圾，经助手白名单清理）
     ]
 
     private static let allowExceptionsStatic: [[String]] = [
@@ -51,15 +62,15 @@ public struct XicoSafetyRules: Sendable {
             return
         }
         let h = home.standardizedFileURL
-        var exact: Set<[String]> = [Self.lower(h.pathComponents)]
+        var exact: Set<[String]> = [Self.canonicalLower(h.pathComponents)]
         for child in ["Library", "Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music"] {
-            exact.insert(Self.lower(h.appendingPathComponent(child).pathComponents))
+            exact.insert(Self.canonicalLower(h.appendingPathComponent(child).pathComponents))
         }
         extraDenyExact = exact
         extraDenySubtrees = [
-            Self.lower(h.appendingPathComponent("Library/Keychains").pathComponents),
-            Self.lower(h.appendingPathComponent(".ssh").pathComponents),
-            Self.lower(h.appendingPathComponent(".gnupg").pathComponents)
+            Self.canonicalLower(h.appendingPathComponent("Library/Keychains").pathComponents),
+            Self.canonicalLower(h.appendingPathComponent(".ssh").pathComponents),
+            Self.canonicalLower(h.appendingPathComponent(".gnupg").pathComponents)
         ]
     }
 
@@ -75,7 +86,7 @@ public struct XicoSafetyRules: Sendable {
 
     /// 已标准化/解析后的 path components 判定（核心逻辑，可直接单测）。
     public func denyReason(forResolvedComponents target: [String]) -> String? {
-        let t = target.map { $0.lowercased() }   // 不区分大小写匹配
+        let t = Self.canonicalLower(target)   // 不区分大小写 + firmlink 统一
 
         // 1. 空 / 根目录
         if t.isEmpty || t == ["/"] {
@@ -130,9 +141,17 @@ public struct XicoSafetyRules: Sendable {
         return Array(target.prefix(root.count)) == root
     }
 
-    private static func lower(_ components: [String]) -> [String] { components.map { $0.lowercased() } }
+    /// 小写 + firmlink 统一：standardizedFileURL 对「存在」的路径会把 /private/var 砍成 /var、
+    /// 对「不存在」的路径则保留 /private/var，两侧不一致会漏匹配。此处强制统一到无 /private 形态。
+    static func canonicalLower(_ components: [String]) -> [String] {
+        var c = components.map { $0.lowercased() }
+        if c.count >= 3, c[1] == "private", c[2] == "var" || c[2] == "etc" || c[2] == "tmp" {
+            c.remove(at: 1)
+        }
+        return c
+    }
 
     private static func lowered(_ path: String) -> [String] {
-        lower(URL(fileURLWithPath: path).standardizedFileURL.pathComponents)
+        canonicalLower(URL(fileURLWithPath: path).pathComponents)
     }
 }
