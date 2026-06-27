@@ -8,6 +8,12 @@
 #        xcrun notarytool store-credentials "XicoNotary" \
 #          --apple-id "hi@yaokai.me" --team-id "AQ5TMWUPMH" --password "App专用密码"
 #
+# 注意：此处 --team-id 是 notarytool 用的「账号 Team ID」（AQ5TMWUPMH）；
+#       与运行期特权助手 XPC 校验用的「证书 OU / Team ID」是不同字段——
+#       后者见 Sources/Shared/HelperSecurity.swift 的 teamIdentifier（本机证书实测 OU=P22K8NF89K，
+#       用 `security find-certificate -c "Apple Development: ..." -p | openssl x509 -noout -subject` 可核对）。
+#       换账号/证书时两处都要按各自来源更新，勿混用。
+#
 # 之后每次发布只需：scripts/notarize.sh
 set -euo pipefail
 

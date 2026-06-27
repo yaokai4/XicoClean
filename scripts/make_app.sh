@@ -107,9 +107,12 @@ APP_ENT="$ROOT/Resources/signing/Xico.entitlements"
 HELPER_ENT="$ROOT/Resources/signing/XicoHelper.entitlements"
 
 xattr -cr "$APP" 2>/dev/null || true
+# 公证要求安全时间戳；ad-hoc(-) 不支持时间戳服务器，故仅在真实身份下加 --timestamp
+TS=""
+[ "$IDENTITY" != "-" ] && TS="--timestamp"
 # 先签内嵌助手（带 Hardened Runtime + entitlements），再签主程（含其内嵌资源）
-codesign --force --options runtime --entitlements "$HELPER_ENT" --sign "$IDENTITY" "$CONTENTS/MacOS/XicoHelper"
-codesign --force --options runtime --entitlements "$APP_ENT" --sign "$IDENTITY" "$APP"
+codesign --force --options runtime $TS --entitlements "$HELPER_ENT" --sign "$IDENTITY" "$CONTENTS/MacOS/XicoHelper"
+codesign --force --options runtime $TS --entitlements "$APP_ENT" --sign "$IDENTITY" "$APP"
 codesign --verify --strict "$APP" && echo "✓ 签名校验通过"
 
 # 输出到 ~/Applications（非 iCloud 同步，避免 FinderInfo 反复污染签名）

@@ -23,12 +23,16 @@ jobs:
         run: swift build
 
       - name: Run tests (safety red-line is the release gate)
-        run: swift test
+        run: swift test 2>&1 | tee test.log
 
-      # 安全红线与清理闭环必须全绿，否则不可合入
+      # 安全红线与清理闭环必须真实执行过，否则不可合入（复用上一步日志，不重复跑）
       - name: Verify safety regression suites ran
         run: |
-          swift test 2>&1 | tee test.log
           grep -q "SafetyEngineTests" test.log
           grep -q "SafetyRulesTests" test.log
           grep -q "CleaningRoundTripTests" test.log
+
+      - name: Verify Universal release build + signing pipeline
+        run: |
+          swift build -c release --arch arm64 --arch x86_64 --product Xico
+          lipo -info .build/apple/Products/Release/Xico | grep -q "x86_64 arm64"
