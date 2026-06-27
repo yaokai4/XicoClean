@@ -14,11 +14,22 @@ find Sources Tests \( -name "* [0-9].swift" -o -name "* [0-9].json" \) -delete 2
 APP_BUNDLE_ID="com.xico.app"
 HELPER_LABEL="com.xico.app.helper"
 
-echo "▶︎ swift build -c $CONFIG (Xico + XicoHelper)"
-swift build -c "$CONFIG" --product Xico
-swift build -c "$CONFIG" --product XicoHelper
+# Universal Binary（arm64 + x86_64），让 Intel 与 Apple Silicon 都能运行
+ARCHS="--arch arm64 --arch x86_64"
+echo "▶︎ swift build -c $CONFIG $ARCHS (Xico + XicoHelper, Universal)"
+swift build -c "$CONFIG" $ARCHS --product Xico
+swift build -c "$CONFIG" $ARCHS --product XicoHelper
 
-BIN_DIR=".build/$CONFIG"
+# Universal 构建时产物在 .build/apple/Products/<Config>；单架构兜底到 .build/<Config>
+case "$CONFIG" in
+  release) PROD_DIR="Release" ;;
+  debug)   PROD_DIR="Debug" ;;
+  *)       PROD_DIR="$CONFIG" ;;
+esac
+BIN_DIR=".build/apple/Products/$PROD_DIR"
+[ -x "$BIN_DIR/Xico" ] || BIN_DIR=".build/$CONFIG"
+echo "  产物目录: $BIN_DIR"
+lipo -info "$BIN_DIR/Xico" 2>/dev/null || true
 WORK="$(mktemp -d)"
 APP="$WORK/Xico.app"
 CONTENTS="$APP/Contents"
@@ -45,6 +56,12 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>LSUIElement</key><false/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>CFBundleIconFile</key><string>Xico</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+    <key>NSHumanReadableCopyright</key><string>© 2026 Xico. 保留所有权利。</string>
+    <key>NSSupportsSuddenTermination</key><true/>
+    <key>NSSupportsAutomaticTermination</key><true/>
 </dict>
 </plist>
 PLIST
@@ -86,9 +103,13 @@ IDENTITY="$(security find-identity -v -p codesigning | grep -m1 'Developer ID Ap
 [ -z "${IDENTITY:-}" ] && IDENTITY="-"
 echo "▶︎ 签名身份: ${IDENTITY}"
 
+APP_ENT="$ROOT/Resources/signing/Xico.entitlements"
+HELPER_ENT="$ROOT/Resources/signing/XicoHelper.entitlements"
+
 xattr -cr "$APP" 2>/dev/null || true
-codesign --force --options runtime --sign "$IDENTITY" "$CONTENTS/MacOS/XicoHelper"
-codesign --force --options runtime --sign "$IDENTITY" "$APP"
+# 先签内嵌助手（带 Hardened Runtime + entitlements），再签主程（含其内嵌资源）
+codesign --force --options runtime --entitlements "$HELPER_ENT" --sign "$IDENTITY" "$CONTENTS/MacOS/XicoHelper"
+codesign --force --options runtime --entitlements "$APP_ENT" --sign "$IDENTITY" "$APP"
 codesign --verify --strict "$APP" && echo "✓ 签名校验通过"
 
 # 输出到 ~/Applications（非 iCloud 同步，避免 FinderInfo 反复污染签名）
