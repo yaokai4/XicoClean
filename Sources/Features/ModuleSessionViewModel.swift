@@ -140,6 +140,10 @@ public final class ModuleSessionViewModel: ObservableObject {
             let report = await env.cleaningEngine.execute(plan, progress: handler)
             self.lastReport = report
             self.removeCleaned(report)
+            // 记入持久化清理历史（可追溯：累计释放 / 最近记录跨会话留存）
+            env.history.record(module: self.title,
+                               reclaimedBytes: report.reclaimedBytes,
+                               removedCount: report.removedCount)
             self.phase = .finished
             NotificationCenter.default.post(name: .xicoDidClean, object: nil)
         }

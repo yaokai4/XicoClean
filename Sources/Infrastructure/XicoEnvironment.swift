@@ -15,6 +15,7 @@ public final class XicoEnvironment: @unchecked Sendable {
     public let maintenanceRunner: MaintenanceRunner
     public let liveMetrics: LiveMetricsSampler
     public let helper: HelperProxy
+    public let history: HistoryStore
 
     private let scanners: [ModuleID: ScannerModule]
 
@@ -35,6 +36,7 @@ public final class XicoEnvironment: @unchecked Sendable {
         self.maintenanceRunner = MaintenanceRunner()
         self.liveMetrics = LiveMetricsSampler(fs: fs)
         self.helper = HelperProxy()
+        self.history = HistoryStore()
 
         var map: [ModuleID: ScannerModule] = [:]
         map[.systemJunk] = SystemJunkScanner(definitions: definitions.definitions, fs: fs, safety: safety)

@@ -1,10 +1,14 @@
 import SwiftUI
+import Domain
 import Infrastructure
 import DesignSystem
 
 public struct SettingsView: View {
     @ObservedObject var model: AppModel
     @State private var helperStatus: HelperProxy.Status = .notInstalled
+    @State private var history: [CleaningRecord] = []
+    @State private var totalReclaimed: Int64 = 0
+    @State private var totalCleanups = 0
     @AppStorage("xico.mb.cpu") private var mbCPU = true
     @AppStorage("xico.mb.memory") private var mbMemory = true
     @AppStorage("xico.mb.network") private var mbNetwork = true
@@ -25,6 +29,7 @@ public struct SettingsView: View {
             ScrollView {
                 VStack(spacing: XSpacing.m) {
                     aboutCard
+                    historyCard
                     appearanceCard
                     menuBarCard
                     permissionCard
@@ -36,7 +41,53 @@ public struct SettingsView: View {
                 .frame(maxWidth: .infinity)
             }
         }
-        .onAppear { helperStatus = model.env.helper.status() }
+        .onAppear {
+            helperStatus = model.env.helper.status()
+            reloadHistory()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in reloadHistory() }
+    }
+
+    private func reloadHistory() {
+        history = model.env.history.recent(8)
+        totalReclaimed = model.env.history.totalReclaimedAllTime
+        totalCleanups = model.env.history.totalCleanups
+    }
+
+    private var historyCard: some View {
+        XCard {
+            VStack(alignment: .leading, spacing: XSpacing.s) {
+                HStack(spacing: XSpacing.m) {
+                    XIconTile(systemImage: "clock.arrow.circlepath", colors: [XColor.accentTeal, XColor.success], size: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("清理历史").xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(totalCleanups == 0 ? "完成一次清理后会在这里看到记录"
+                             : "累计释放 \(totalReclaimed.formattedBytes) · 共 \(totalCleanups) 次清理")
+                            .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    }
+                    Spacer()
+                    if totalCleanups > 0 {
+                        Button("清空记录") { model.env.history.clear(); reloadHistory() }
+                            .buttonStyle(.bordered)
+                    }
+                }
+                if !history.isEmpty {
+                    Divider().padding(.vertical, 2)
+                    ForEach(history) { rec in
+                        HStack(spacing: XSpacing.m) {
+                            Text(rec.module).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                            Text(rec.date, format: .relative(presentation: .named))
+                                .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                            Spacer()
+                            Text("\(rec.removedCount) 项").font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                            Text(rec.reclaimedBytes.formattedBytes)
+                                .font(XFont.mono).foregroundStyle(XColor.success)
+                                .frame(minWidth: 72, alignment: .trailing)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private var aboutCard: some View {
