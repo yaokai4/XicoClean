@@ -58,7 +58,19 @@ public struct LocalFileSystemService: FileSystemService {
     public func restore(_ item: RestorableItem) throws {
         let parent = item.originalURL.deletingLastPathComponent()
         try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
-        try fm.moveItem(at: item.trashedURL, to: item.originalURL)
+        var dest = item.originalURL
+        // 原位已存在同名项：恢复到不冲突的名字，避免覆盖或静默失败（撤销绝不丢数据）
+        if fm.fileExists(atPath: dest.path) {
+            let base = item.originalURL.deletingPathExtension().lastPathComponent
+            let ext = item.originalURL.pathExtension
+            var i = 1
+            repeat {
+                let name = ext.isEmpty ? "\(base) (恢复 \(i))" : "\(base) (恢复 \(i)).\(ext)"
+                dest = parent.appendingPathComponent(name)
+                i += 1
+            } while fm.fileExists(atPath: dest.path)
+        }
+        try fm.moveItem(at: item.trashedURL, to: dest)
     }
 
     public func volumeCapacity(for url: URL) -> VolumeCapacity? {

@@ -36,7 +36,7 @@ public final class AppModel: ObservableObject {
     public let env: XicoEnvironment
 
     @Published public var selection: ModuleID? = .smartScan
-    @Published public var hasFullDiskAccess: Bool = true
+    @Published public var hasFullDiskAccess: Bool = false
     @Published public var permissionBannerDismissed: Bool = false {
         didSet { UserDefaults.standard.set(permissionBannerDismissed, forKey: "xico.fdaDismissed") }
     }

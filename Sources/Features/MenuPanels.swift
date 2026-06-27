@@ -73,7 +73,7 @@ public struct MenuMetricPanel: View {
                 HStack(spacing: XSpacing.m) {
                     ringGauge(s.cpuUsage)
                     VStack(alignment: .leading, spacing: XSpacing.s) {
-                        metricChip("温度", s.thermal.rawValue)
+                        metricChip("热状态", s.thermal.rawValue)
                         if let rpm = s.fanRPM { metricChip("风扇", "\(rpm) RPM") }
                     }
                     Spacer(minLength: 0)

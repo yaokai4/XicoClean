@@ -39,14 +39,25 @@ public struct DuplicatesScanner: Sendable {
             progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: 0))
         }
 
-        // 2. 同大小者做头尾哈希
+        // 2. 同大小者先做头尾哈希快速筛，命中再做全量哈希确认（杜绝中段不同被误判 → 防删错）
         var groups: [ScanResultGroup] = []
         for (size, urls) in bySize where urls.count > 1 {
             if Task.isCancelled { break }
-            var byHash: [String: [URL]] = [:]
+            // 2a. 头尾哈希快速分桶
+            var byPartial: [String: [URL]] = [:]
             for url in urls {
                 if let h = partialHash(url, size: size) {
-                    byHash[h, default: []].append(url)
+                    byPartial[h, default: []].append(url)
+                }
+            }
+            // 2b. 仅对头尾相同者做全量哈希确认（只有逐字节内容一致才算重复）
+            var byHash: [String: [URL]] = [:]
+            for (_, candidates) in byPartial where candidates.count > 1 {
+                for url in candidates {
+                    if Task.isCancelled { break }
+                    if let full = fullHash(url) {
+                        byHash[full, default: []].append(url)
+                    }
                 }
             }
             for (hash, dupURLs) in byHash where dupURLs.count > 1 {
@@ -59,10 +70,11 @@ public struct DuplicatesScanner: Sendable {
                                                isSelected: idx != 0))
                 }
                 let wasted = Int64(dupURLs.count - 1) * size
+                let cloneNote = anyAreClones(dupURLs) ? " · 含 APFS 克隆，删除可能不释放空间" : ""
                 groups.append(ScanResultGroup(
                     id: hash,
                     title: "\(sorted[0].lastPathComponent) · \(dupURLs.count) 份",
-                    description: "可释放 \(wasted.formattedBytes)（保留 1 份）",
+                    description: "可释放约 \(wasted.formattedBytes)（保留 1 份）\(cloneNote)",
                     systemImage: "doc.on.doc", safety: .caution, items: items))
             }
         }
@@ -76,6 +88,32 @@ public struct DuplicatesScanner: Sendable {
         guard let vals = try? url.resourceValues(forKeys: [.fileResourceIdentifierKey]),
               let id = vals.fileResourceIdentifier else { return nil }
         return "\(id)"
+    }
+
+    /// 全量逐块哈希：只有内容逐字节一致才判为重复，杜绝头尾相同中段不同的误删。
+    private func fullHash(_ url: URL, chunk: Int = 1 << 20) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            if Task.isCancelled { return nil }
+            guard let data = try? handle.read(upToCount: chunk), !data.isEmpty else { break }
+            hasher.update(data: data)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// 这组内是否存在 APFS 克隆（写时复制）：克隆彼此 fileResourceIdentifier 不同但共享底层存储，
+    /// 删除其一通常不立刻释放空间。用「分配大小远小于逻辑大小」作保守启发式提示。
+    private func anyAreClones(_ urls: [URL]) -> Bool {
+        for url in urls {
+            guard let vals = try? url.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey]),
+                  let logical = vals.fileSize, logical > 0,
+                  let allocated = vals.totalFileAllocatedSize else { continue }
+            // 克隆/稀疏文件：实际分配明显小于逻辑大小
+            if allocated < logical / 2 { return true }
+        }
+        return false
     }
 
     private func partialHash(_ url: URL, size: Int64) -> String? {

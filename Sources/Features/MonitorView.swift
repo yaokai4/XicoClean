@@ -174,10 +174,11 @@ public struct MonitorView: View {
     private var thermalCard: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.m) {
-                cardHeader("thermometer.medium", "温度状态")
+                cardHeader("thermometer.medium", "热状态")
                 HStack {
                     XBadge(snap?.thermal.rawValue ?? "—", color: thermalColor)
                     Spacer()
+                    Text("系统热压力等级").font(XFont.caption).foregroundStyle(XColor.textTertiary)
                 }
             }
         }

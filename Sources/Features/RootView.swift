@@ -294,7 +294,7 @@ public struct MenuBarView: View {
                 HStack {
                     Image(systemName: "thermometer.medium").font(.system(size: 12)).foregroundStyle(XColor.brand)
                         .frame(width: 18)
-                    Text("温度").font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Text("热状态").font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     Spacer()
                     XBadge(s.thermal.rawValue, color: thermalColor(s.thermal))
                 }

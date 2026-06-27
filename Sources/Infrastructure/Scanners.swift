@@ -57,15 +57,32 @@ enum PathExpander {
         return home.path + String(path.dropFirst())
     }
 
+    /// 多段 glob：支持任意分量含通配符（中段 "*"、前缀 "Name*"、尾部 "/*"）。
+    /// 逐段从根下钻：普通分量直接拼接，含 "*" 的分量列目录并用 fnmatch 过滤。
     static func expand(_ pattern: String, home: URL, fs: FileSystemService) -> [URL] {
         let p = expandHome(pattern, home: home)
-        if p.hasSuffix("/*") {
-            let parent = URL(fileURLWithPath: String(p.dropLast(2)))
-            return fs.contentsOfDirectory(parent)
-        } else {
-            let u = URL(fileURLWithPath: p)
-            return fs.exists(u) ? [u] : []
+        let comps = URL(fileURLWithPath: p).pathComponents
+        var frontier: [URL] = [URL(fileURLWithPath: "/")]
+        for comp in comps.dropFirst() where comp != "/" {
+            if comp.contains("*") {
+                var next: [URL] = []
+                for dir in frontier {
+                    for child in fs.contentsOfDirectory(dir) where match(comp, child.lastPathComponent) {
+                        next.append(child)
+                    }
+                }
+                frontier = next
+                if frontier.isEmpty { break }
+            } else {
+                frontier = frontier.map { $0.appendingPathComponent(comp) }
+            }
         }
+        return frontier.filter { fs.exists($0) }
+    }
+
+    /// shell 风格通配匹配（仅文件名级，不跨 "/"）
+    static func match(_ pattern: String, _ name: String) -> Bool {
+        fnmatch(pattern, name, 0) == 0
     }
 }
 
@@ -92,7 +109,9 @@ func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
                 let running = runningIDs.contains(url.lastPathComponent)
                 items.append(CleanableItem(url: url, displayName: FriendlyName.resolve(url.lastPathComponent),
                                            detail: url.path, size: size, safety: def.safety,
-                                           note: running ? "正在运行 · 清理后会自动重建" : nil))
+                                           // 运行中的应用缓存默认不勾选，避免一键清理误删活跃缓存致其异常
+                                           isSelected: running ? false : nil,
+                                           note: running ? "正在运行 · 建议退出后再清理" : nil))
                 runningTotal += size
                 progress(ScanProgress(message: url.lastPathComponent, bytesFound: runningTotal))
             }
@@ -153,7 +172,8 @@ public struct SystemJunkScanner: ScannerModule {
             let isRunning = running.contains(url.lastPathComponent)
             items.append(CleanableItem(url: url, displayName: FriendlyName.resolve(url.lastPathComponent),
                                        detail: url.path, size: size, safety: .caution,
-                                       note: isRunning ? "正在运行 · 清理后会自动重建" : nil))
+                                       isSelected: isRunning ? false : nil,
+                                       note: isRunning ? "正在运行 · 建议退出后再清理" : nil))
             progress(ScanProgress(message: url.lastPathComponent, bytesFound: 0))
         }
         guard !items.isEmpty else { return nil }
