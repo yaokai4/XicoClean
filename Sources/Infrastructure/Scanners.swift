@@ -155,7 +155,16 @@ public struct SystemJunkScanner: ScannerModule {
         var groups = scanDefinitions(definitions, moduleID: .systemJunk, fs: fs, safety: safety,
                                      home: home, progress: progress, runningIDs: running).groups
         if let darwin = darwinTempCacheGroup(running: running, progress: progress) { groups.append(darwin) }
-        if let leftovers = leftoversGroup(progress: progress) { groups.append(leftovers) }
+        let (leftovers, orphanContainerPaths) = leftoversGroup(progress: progress)
+        // 去重：孤儿容器整体已计入「残留」，从「沙盒应用缓存」里剔除其下子项，避免重复计入夸大总量
+        if !orphanContainerPaths.isEmpty,
+           let idx = groups.firstIndex(where: { $0.id == "containers-caches" }) {
+            groups[idx].items.removeAll { item in
+                orphanContainerPaths.contains { item.url.path.hasPrefix($0 + "/") }
+            }
+            if groups[idx].items.isEmpty { groups.remove(at: idx) }
+        }
+        if let leftovers { groups.append(leftovers) }
         groups.sort { $0.totalSize > $1.totalSize }
         return ScanResult(moduleID: .systemJunk, groups: groups)
     }
@@ -186,10 +195,11 @@ public struct SystemJunkScanner: ScannerModule {
     /// 已卸载应用残留：仅扫沙盒容器与窗口状态（按 bundle id 一一对应，误判极低）。
     /// 刻意不扫 Application Support —— 那里混有 Adobe dunamis 等"无独立 App 的框架组件"，
     /// 会被误判成残留，对清理器而言误删比漏删更致命。
-    private func leftoversGroup(progress: @escaping ProgressHandler) -> ScanResultGroup? {
-        let roots = ["Library/Containers", "Library/Saved Application State"]
-            .map { home.appendingPathComponent($0) }
+    private func leftoversGroup(progress: @escaping ProgressHandler) -> (group: ScanResultGroup?, orphanContainerPaths: Set<String>) {
+        let containersRoot = home.appendingPathComponent("Library/Containers")
+        let roots = [containersRoot, home.appendingPathComponent("Library/Saved Application State")]
         var items: [CleanableItem] = []
+        var orphanContainerPaths = Set<String>()
         for root in roots {
             for url in fs.contentsOfDirectory(root) {
                 if Task.isCancelled { break }
@@ -198,16 +208,18 @@ public struct SystemJunkScanner: ScannerModule {
                 guard safety.verify(url, intent: .trash).isAllowed else { continue }
                 let size = fs.allocatedSize(of: url)
                 guard size > 0 else { continue }
+                if root == containersRoot { orphanContainerPaths.insert(url.path) }
                 items.append(CleanableItem(url: url, displayName: name, detail: url.path,
                                            size: size, safety: .caution, note: "已卸载应用残留"))
                 progress(ScanProgress(message: name, bytesFound: 0))
             }
         }
-        guard !items.isEmpty else { return nil }
+        guard !items.isEmpty else { return (nil, orphanContainerPaths) }
         items.sort { $0.size > $1.size }
-        return ScanResultGroup(id: "app-leftovers", title: "已卸载应用残留",
+        let group = ScanResultGroup(id: "app-leftovers", title: "已卸载应用残留",
                                description: "已不在本机的应用遗留的支持文件。确认不再需要后再清理（移入废纸篓可恢复）。",
                                systemImage: "questionmark.folder", safety: .caution, items: items)
+        return (group, orphanContainerPaths)
     }
 
     static func darwinUserCacheURL() -> URL? {
