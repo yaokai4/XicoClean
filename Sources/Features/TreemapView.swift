@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Domain
 import DesignSystem
 
@@ -47,6 +48,10 @@ struct TreemapView: View {
         .offset(x: frame.minX, y: frame.minY)
         .onHover { hovered = $0 ? child.id : nil }
         .help("\(child.name) — \(child.size.formattedBytes)")
+        .contextMenu {
+            Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([child.url]) }
+            Button("快速查看") { quickLook(child.url) }
+        }
         .accessibilityLabel("\(child.name)，\(child.size.formattedBytes)")
         .accessibilityAddTraits(.isButton)
     }

@@ -18,6 +18,7 @@ public final class XicoEnvironment: @unchecked Sendable {
     public let helper: HelperProxy
     public let history: HistoryStore
     public let license: LicenseService
+    public let ignoreList: IgnoreListStore
 
     private let scanners: [ModuleID: ScannerModule]
 
@@ -48,6 +49,7 @@ public final class XicoEnvironment: @unchecked Sendable {
         self.liveMetrics = LiveMetricsSampler(fs: fs)
         self.history = HistoryStore()
         self.license = license ?? LicenseService.live()
+        self.ignoreList = IgnoreListStore()
 
         var map: [ModuleID: ScannerModule] = [:]
         map[.largeFiles] = LargeFilesScanner(fs: fs, safety: safety)

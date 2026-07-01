@@ -92,7 +92,11 @@ public final class ModuleSessionViewModel: ObservableObject {
         scanTask = Task {
             do {
                 let results = try await scanProvider(handler)
-                let merged = results.flatMap { $0.groups }.sorted { $0.totalSize > $1.totalSize }
+                var merged = results.flatMap { $0.groups }.sorted { $0.totalSize > $1.totalSize }
+                // 应用用户忽略清单：被排除的项不出现在结果里（对标 CleanMyMac 排除列表）
+                let ignore = self.env.ignoreList
+                for i in merged.indices { merged[i].items.removeAll { ignore.isIgnored($0.url) } }
+                merged.removeAll { $0.items.isEmpty }
                 if Task.isCancelled { return }
                 self.groups = merged
                 if !merged.isEmpty {
@@ -135,6 +139,15 @@ public final class ModuleSessionViewModel: ObservableObject {
     public func setGroup(_ groupID: String, selected: Bool) {
         guard let gi = groups.firstIndex(where: { $0.id == groupID }) else { return }
         for i in groups[gi].items.indices { groups[gi].items[i].isSelected = selected }
+    }
+
+    /// 把某项加入「忽略清单」并从当前结果移除——它今后不再被扫描/清理。
+    public func ignore(groupID: String, itemID: UUID) {
+        guard let gi = groups.firstIndex(where: { $0.id == groupID }),
+              let item = groups[gi].items.first(where: { $0.id == itemID }) else { return }
+        env.ignoreList.add(item.url)
+        groups[gi].items.removeAll { $0.id == itemID }
+        if groups[gi].items.isEmpty { groups.remove(at: gi) }
     }
 
     public func groupSelectionState(_ group: ScanResultGroup) -> Bool {
@@ -180,6 +193,10 @@ public final class ModuleSessionViewModel: ObservableObject {
                                                     removedCount: report.removedCount,
                                                     restorable: self.intent == .trash ? report.restorable : [])
             self.phase = .finished
+            if report.reclaimedBytes > 0 {
+                Notifier.notifyCleaningDone(reclaimed: report.reclaimedBytes.formattedBytes,
+                                            count: report.removedCount)
+            }
             NotificationCenter.default.post(name: .xicoDidClean, object: nil)
         }
     }

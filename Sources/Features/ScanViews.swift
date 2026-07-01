@@ -91,7 +91,8 @@ struct SessionScaffold<Idle: View>: View {
                             index: idx,
                             allSelected: vm.groupSelectionState(group),
                             onToggleGroup: { vm.setGroup(group.id, selected: $0) },
-                            onToggleItem: { vm.toggleItem(groupID: group.id, itemID: $0) })
+                            onToggleItem: { vm.toggleItem(groupID: group.id, itemID: $0) },
+                            onIgnoreItem: { vm.ignore(groupID: group.id, itemID: $0) })
                     }
                 }
                 .padding(XSpacing.xl)

@@ -26,6 +26,7 @@ extension SafetyLevel {
 struct ItemRowView: View {
     let item: CleanableItem
     let onToggle: () -> Void
+    var onIgnore: (() -> Void)? = nil
     @State private var hover = false
 
     var body: some View {
@@ -67,13 +68,28 @@ struct ItemRowView: View {
         .animation(.easeOut(duration: 0.15), value: hover)
         .onHover { hover = $0 }
         .contextMenu {
+            Button("快速查看") { quickLook(item.url) }
             Button("在 Finder 中显示") { revealInFinder(item.url) }
+            if let onIgnore {
+                Divider()
+                Button("永不清理此项") { onIgnore() }
+            }
         }
     }
 }
 
 func revealInFinder(_ url: URL) {
     NSWorkspace.shared.activateFileViewerSelecting([url])
+}
+
+/// 用系统 Quick Look 预览（qlmanage -p 弹出标准预览面板，稳健且无需接管 responder 链）。
+func quickLook(_ url: URL) {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/qlmanage")
+    proc.arguments = ["-p", url.path]
+    proc.standardOutput = FileHandle.nullDevice
+    proc.standardError = FileHandle.nullDevice
+    try? proc.run()
 }
 
 // MARK: - 结果分组卡片（含交错入场动画）
@@ -84,6 +100,7 @@ struct ResultGroupCard: View {
     let allSelected: Bool
     let onToggleGroup: (Bool) -> Void
     let onToggleItem: (UUID) -> Void
+    var onIgnoreItem: ((UUID) -> Void)? = nil
     @State private var expanded = false
     @State private var appeared = false
     @State private var showAll = false
@@ -129,7 +146,8 @@ struct ResultGroupCard: View {
                         let items = sortedItems
                         let shown = showAll ? items : Array(items.prefix(Self.previewCap))
                         ForEach(shown) { item in
-                            ItemRowView(item: item) { onToggleItem(item.id) }
+                            ItemRowView(item: item, onToggle: { onToggleItem(item.id) },
+                                        onIgnore: onIgnoreItem.map { cb in { cb(item.id) } })
                         }
                         if items.count > Self.previewCap && !showAll {
                             // 关键：隐藏项仍会被清理。给出可点击入口让用户能审阅全部，

@@ -38,6 +38,7 @@ public struct SettingsView: View {
                     aboutCard
                     licenseCard
                     definitionsCard
+                    ignoreListCard
                     historyCard
                     appearanceCard
                     menuBarCard
@@ -55,6 +56,7 @@ public struct SettingsView: View {
             definitionsStatus = model.env.definitionsUpdater.status()
             licenseStatus = model.env.license.status()
             reloadHistory()
+            reloadIgnored()
         }
         .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in reloadHistory() }
         .alert("操作未完成", isPresented: Binding(get: { helperError != nil }, set: { if !$0 { helperError = nil } })) {
@@ -133,6 +135,39 @@ public struct SettingsView: View {
             }
         }
     }
+
+    @State private var ignored: [String] = []
+
+    private var ignoreListCard: some View {
+        XCard {
+            VStack(alignment: .leading, spacing: XSpacing.s) {
+                HStack(spacing: XSpacing.m) {
+                    XIconTile(systemImage: "hand.raised.slash", colors: [XColor.auroraViolet, XColor.auroraBlue], size: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("忽略清单").xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(ignored.isEmpty ? "在扫描结果中右键「永不清理此项」可加入这里"
+                             : "\(ignored.count) 项已排除，永不扫描/清理")
+                            .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    }
+                    Spacer()
+                }
+                if !ignored.isEmpty {
+                    Divider().padding(.vertical, 2)
+                    ForEach(ignored, id: \.self) { path in
+                        HStack(spacing: XSpacing.s) {
+                            Text(path).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                                .lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Button("移除") { model.env.ignoreList.remove(path); reloadIgnored() }
+                                .buttonStyle(.link).font(XFont.caption)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func reloadIgnored() { ignored = model.env.ignoreList.all() }
 
     private var aboutCard: some View {
         XCard {
