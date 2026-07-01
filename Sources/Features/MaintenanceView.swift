@@ -10,6 +10,7 @@ public struct MaintenanceView: View {
     @State private var running: String?
     @State private var status: HelperProxy.Status = .notInstalled
     @State private var confirmTask: MaintenanceTask?
+    @State private var installError: String?
 
     public init(env: XicoEnvironment) { self.env = env }
 
@@ -37,6 +38,11 @@ public struct MaintenanceView: View {
         } message: {
             if let task = confirmTask, let msg = task.confirmationMessage { Text(msg) }
         }
+        .alert("安装助手失败", isPresented: Binding(get: { installError != nil }, set: { if !$0 { installError = nil } })) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(installError ?? "")
+        }
     }
 
     private var confirmBinding: Binding<Bool> {
@@ -56,15 +62,22 @@ public struct MaintenanceView: View {
             if status == .requiresApproval {
                 Button("去系统设置批准") { env.helper.openLoginItemsSettings() }.buttonStyle(.borderedProminent)
             } else {
-                Button("安装助手") {
-                    try? env.helper.install()
-                    status = env.helper.status()
-                    if status == .requiresApproval { env.helper.openLoginItemsSettings() }
-                }.buttonStyle(.borderedProminent)
+                Button("安装助手") { installHelper() }.buttonStyle(.borderedProminent)
             }
         }
         .padding(XSpacing.m)
         .background(XColor.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: XRadius.tile))
+    }
+
+    private func installHelper() {
+        do {
+            try env.helper.install()
+            status = env.helper.status()
+            if status == .requiresApproval { env.helper.openLoginItemsSettings() }
+        } catch {
+            // 不再静默吞掉：把失败原因显示给用户（此前 try? 让"装不上"毫无反馈）
+            installError = "安装助手失败：\(error.localizedDescription)"
+        }
     }
 
     private var bannerText: String {

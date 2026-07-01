@@ -7,6 +7,7 @@ import DesignSystem
 public struct SettingsView: View {
     @ObservedObject var model: AppModel
     @State private var helperStatus: HelperProxy.Status = .notInstalled
+    @State private var helperError: String?
     @State private var history: [CleaningRecord] = []
     @State private var totalReclaimed: Int64 = 0
     @State private var totalCleanups = 0
@@ -56,6 +57,11 @@ public struct SettingsView: View {
             reloadHistory()
         }
         .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in reloadHistory() }
+        .alert("安装助手失败", isPresented: Binding(get: { helperError != nil }, set: { if !$0 { helperError = nil } })) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(helperError ?? "")
+        }
     }
 
     @State private var undoingID: UUID?
@@ -347,9 +353,13 @@ public struct SettingsView: View {
                 Button("去批准") { model.env.helper.openLoginItemsSettings() }.buttonStyle(.bordered)
             default:
                 Button("安装") {
-                    try? model.env.helper.install()
-                    helperStatus = model.env.helper.status()
-                    if helperStatus == .requiresApproval { model.env.helper.openLoginItemsSettings() }
+                    do {
+                        try model.env.helper.install()
+                        helperStatus = model.env.helper.status()
+                        if helperStatus == .requiresApproval { model.env.helper.openLoginItemsSettings() }
+                    } catch {
+                        helperError = "安装助手失败：\(error.localizedDescription)"
+                    }
                 }.buttonStyle(.bordered)
             }
         }

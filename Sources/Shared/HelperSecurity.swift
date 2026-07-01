@@ -1,5 +1,10 @@
 import Foundation
 
+/// 助手版本单一事实源——version() 握手用它比对，protocol 变更后能识别旧助手并自愈。
+public enum XicoHelperInfo {
+    public static let version = "0.3.0"
+}
+
 /// 特权助手与主应用之间的「互信」配置。
 ///
 /// 助手以 root 运行，绝不信任任意调用方：仅接受满足下方代码签名要求的连接
@@ -16,9 +21,17 @@ public enum XicoHelperSecurity {
 
     /// 允许连接助手的客户端代码签名要求（designated requirement 风格）。
     /// 含义：Apple 颁发的证书链 + 指定 bundle id + 指定 Team ID 的叶证书。
+    /// 发布构建额外要求 **Developer ID Application** 叶证书标记 OID
+    /// （1.2.840.113635.100.6.1.13），把「同 Team 的任意 Apple 证书」收紧为「正式分发证书」；
+    /// DEBUG 不加该约束，否则用 Apple Development 证书签的本地调试版会被助手拒连。
     public static var clientCodeRequirement: String {
-        "anchor apple generic and identifier \"\(mainAppBundleID)\" "
-        + "and certificate leaf[subject.OU] = \"\(teamIdentifier)\""
+        let base = "anchor apple generic and identifier \"\(mainAppBundleID)\" "
+            + "and certificate leaf[subject.OU] = \"\(teamIdentifier)\""
+        #if DEBUG
+        return base
+        #else
+        return base + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+        #endif
     }
 
     /// Team ID 是否已正确配置：必须是恰好 10 位大写字母/数字（Apple Team ID 形态）。

@@ -8,15 +8,38 @@ import Shared
 ///   1. 连接级：仅接受满足代码签名要求（同 Team ID 的 Xico 主应用）的调用方；
 ///   2. 操作级：删除前用与主应用同一份 SafetyEngine 红线（Shared.XicoSafetyRules）复校，并解析符号链接；
 ///   3. 审计：每次特权操作与判定结果都落 os_log。
+/// 空闲计时器：无新连接超过 timeout 秒即 exit(0)，由 launchd 按需重新拉起。
+final class IdleExit: @unchecked Sendable {
+    static let shared = IdleExit()
+    private let timeout: TimeInterval = 90
+    private var timer: DispatchSourceTimer?
+    private let queue = DispatchQueue(label: "com.xico.app.helper.idle")
+
+    func arm() { touch() }
+
+    func touch() {
+        queue.async {
+            self.timer?.cancel()
+            let t = DispatchSource.makeTimerSource(queue: self.queue)
+            t.schedule(deadline: .now() + self.timeout)
+            t.setEventHandler { exit(0) }
+            t.resume()
+            self.timer = t
+        }
+    }
+}
+
 final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
 
     private static let log = Logger(subsystem: XicoHelperMachServiceName, category: "helper")
 
     /// 助手端独立持有的红线（home 无关：保护所有用户的敏感目录）
     private let safety = XicoSafetyRules()
+    /// root 递归删除核心（白名单注入化，逻辑与单测共用同一实现）
+    private let remover = HelperFileRemover(deletableRoots: XicoHelperSecurity.deletableRoots)
 
     func version(reply: @escaping (String) -> Void) {
-        reply("0.2.0")
+        reply(XicoHelperInfo.version)
     }
 
     func runMaintenance(_ rawTask: String, reply: @escaping (Bool, String?) -> Void) {
@@ -60,7 +83,7 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
             // 5) 防 TOCTOU：用 openat(O_NOFOLLOW) 从白名单根逐级下钻、unlinkat 锚定删除，
             //    内核保证不跟随符号链接，即使白名单根全局可写也无法被换链穿透。
             let size = Self.allocatedSize(atPath: std)
-            if Self.safeRemove(std) {
+            if remover.safeRemove(std) {
                 freed += size
                 Self.log.notice("已删除: \(std, privacy: .public) (\(size) bytes)")
             } else {
@@ -92,53 +115,6 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
         return total
     }
 
-    /// 从白名单根逐级 openat(O_NOFOLLOW) 下钻到父目录，再 fd 锚定递归删除。
-    /// 任一分量是符号链接 → openat 失败 → 整体拒绝；无 TOCTOU 换链窗口。
-    static func safeRemove(_ path: String) -> Bool {
-        guard let root = XicoHelperSecurity.deletableRoots.first(where: { path == $0 || path.hasPrefix($0 + "/") }),
-              path != root else { return false }   // 绝不删白名单根本身
-        let rootFD = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard rootFD >= 0 else { return false }
-        defer { close(rootFD) }
-
-        let rel = String(path.dropFirst(root.count + 1))
-        let comps = rel.split(separator: "/").map(String.init)
-        guard let leaf = comps.last else { return false }
-
-        var parentFD = rootFD
-        var opened: [Int32] = []
-        defer { opened.forEach { close($0) } }
-        for comp in comps.dropLast() {
-            let fd = openat(parentFD, comp, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            guard fd >= 0 else { return false }
-            opened.append(fd); parentFD = fd
-        }
-        return removeEntry(parentFD: parentFD, name: leaf)
-    }
-
-    /// fd 相对地递归删除一个条目（不跟随符号链接）
-    static func removeEntry(parentFD: Int32, name: String) -> Bool {
-        var st = stat()
-        guard fstatat(parentFD, name, &st, AT_SYMLINK_NOFOLLOW) == 0 else { return false }
-        let type = st.st_mode & S_IFMT
-        if type == S_IFLNK { return unlinkat(parentFD, name, 0) == 0 }   // 删软链本身，不跟随
-        if type == S_IFDIR {
-            let dirFD = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            guard dirFD >= 0, let dir = fdopendir(dirFD) else { if dirFD >= 0 { close(dirFD) }; return false }
-            var ok = true
-            while let ent = readdir(dir) {
-                let n = withUnsafeBytes(of: ent.pointee.d_name) { raw -> String in
-                    String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
-                }
-                if n == "." || n == ".." { continue }
-                if !removeEntry(parentFD: dirFD, name: n) { ok = false }
-            }
-            closedir(dir)   // 同时关闭 dirFD
-            return ok && unlinkat(parentFD, name, AT_REMOVEDIR) == 0
-        }
-        return unlinkat(parentFD, name, 0) == 0
-    }
-
     // MARK: XPC 连接校验（纵深防御第一道闸门）
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection conn: NSXPCConnection) -> Bool {
@@ -158,6 +134,7 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
         conn.exportedInterface = NSXPCInterface(with: XicoHelperProtocol.self)
         conn.exportedObject = self
         conn.resume()
+        IdleExit.shared.touch()   // 有活干，推迟空闲退出
         return true
     }
 
@@ -184,4 +161,10 @@ let delegate = HelperService()
 let listener = NSXPCListener(machServiceName: XicoHelperMachServiceName)
 listener.delegate = delegate
 listener.resume()
+
+// 空闲自动退出：root 守护进程不必长驻，缩短攻击面暴露窗口。
+// launchd 会在下次有连接时按需重新拉起（MachService on-demand）。
+// 每次接受连接时刷新计时；90 秒无新连接即退出。
+IdleExit.shared.arm()
+
 RunLoop.main.run()
