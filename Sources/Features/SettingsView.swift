@@ -57,7 +57,7 @@ public struct SettingsView: View {
             reloadHistory()
         }
         .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in reloadHistory() }
-        .alert("安装助手失败", isPresented: Binding(get: { helperError != nil }, set: { if !$0 { helperError = nil } })) {
+        .alert("操作未完成", isPresented: Binding(get: { helperError != nil }, set: { if !$0 { helperError = nil } })) {
             Button("好", role: .cancel) {}
         } message: {
             Text(helperError ?? "")
@@ -144,7 +144,24 @@ public struct SettingsView: View {
                     Text("版本 \(version)").font(XFont.caption).foregroundStyle(XColor.textTertiary)
                 }
                 Spacer()
+                VStack(spacing: XSpacing.xs) {
+                    Button("购买") { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
+                        .buttonStyle(.bordered)
+                    Button("导出诊断日志") { exportDiagnostics() }
+                        .buttonStyle(.bordered)
+                }
             }
+        }
+    }
+
+    /// 导出最近日志到用户选择的位置，便于反馈问题（不含任何自动上报）。
+    private func exportDiagnostics() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Xico-诊断日志.txt"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if !XicoDiagnostics.export(to: url) {
+            helperError = "导出诊断日志失败，请重试。"
         }
     }
 

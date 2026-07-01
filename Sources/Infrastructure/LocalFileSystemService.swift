@@ -12,7 +12,14 @@ public struct LocalFileSystemService: FileSystemService {
     }
 
     public func contentsOfDirectory(_ url: URL) -> [URL] {
-        (try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [])) ?? []
+        do {
+            return try fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [])
+        } catch {
+            // 权限不足/不存在是常态（无 FDA 时大量目录读不到），用 debug 级别避免刷屏，
+            // 但保留可诊断线索——不再完全静默。
+            XicoLog.fs.debug("列目录失败 \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return []
+        }
     }
 
     public func allocatedSize(of url: URL) -> Int64 {

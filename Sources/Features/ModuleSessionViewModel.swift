@@ -108,6 +108,7 @@ public final class ModuleSessionViewModel: ObservableObject {
                 // 用户取消：保持 cancel() 设定的状态
             } catch {
                 if Task.isCancelled { return }
+                XicoLog.scan.error("扫描失败 [\(self.title, privacy: .public)]: \(error.localizedDescription, privacy: .public)")
                 self.phase = .failed("扫描时出错：\(error.localizedDescription)")
             }
         }

@@ -121,8 +121,11 @@ public final class HistoryStore: @unchecked Sendable {
     }
 
     private func persist() {
-        if let data = try? JSONEncoder().encode(records) {
-            try? data.write(to: url, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(records)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            XicoLog.history.error("清理历史写盘失败：\(error.localizedDescription, privacy: .public)")
         }
     }
 }

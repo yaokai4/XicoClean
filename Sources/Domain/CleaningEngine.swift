@@ -1,8 +1,10 @@
 import Foundation
+import os
 
 /// 清理引擎：执行清理计划。
 /// 默认所有删除走废纸篓（可恢复）；每一项删除前都经过 SafetyEngine 校验。
 public actor CleaningEngine {
+    private static let log = Logger(subsystem: "com.xico.app", category: "clean")
     private let safety: SafetyEngine
     private let fs: FileSystemService
     private let privileged: PrivilegedCleaningService?
@@ -73,6 +75,7 @@ public actor CleaningEngine {
                 reclaimed += item.size
                 removed += 1
             } catch {
+                Self.log.error("删除失败 \(item.url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 failures.append(CleaningFailure(url: item.url, reason: error.localizedDescription))
             }
 
@@ -97,6 +100,7 @@ public actor CleaningEngine {
                 try fs.restore(item)
                 restored += 1
             } catch {
+                Self.log.error("撤销恢复失败 \(item.originalURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 failed.append(item)
             }
         }
