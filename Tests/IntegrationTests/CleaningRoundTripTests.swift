@@ -42,9 +42,78 @@ final class CleaningRoundTripTests: XCTestCase {
         XCTAssertEqual(report.restorable.count, 1)
 
         // 撤销 → 回到原位
-        let restored = await engine.undo(report)
-        XCTAssertEqual(restored, 1)
+        let undo = await engine.undo(report)
+        XCTAssertEqual(undo.restored, 1)
+        XCTAssertTrue(undo.allSucceeded)
+        XCTAssertTrue(undo.failed.isEmpty)
         XCTAssertTrue(fs.exists(file), "撤销后文件应被还原")
+    }
+
+    // MARK: 撤销边界（2026-07 审计：撤销失败此前被静默吞掉）
+
+    /// 废纸篓项在撤销前已消失（等价于用户清空了废纸篓）→ undo 必须报告失败清单，不假装成功
+    func testUndoReportsFailureWhenTrashedItemGone() async throws {
+        let dir = try makeSandbox()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("junk.dat")
+        try Data(repeating: 0xCD, count: 4096).write(to: file)
+
+        let item = CleanableItem(url: file, displayName: "junk.dat", size: 4096)
+        let report = await engine.execute(CleaningPlan(items: [item], intent: .trash))
+        XCTAssertEqual(report.restorable.count, 1)
+
+        // 模拟「废纸篓被清空」：删掉废纸篓中的项
+        let trashed = report.restorable[0].trashedURL
+        try? FileManager.default.removeItem(at: trashed)
+
+        let undo = await engine.undo(report)
+        XCTAssertEqual(undo.restored, 0)
+        XCTAssertFalse(undo.allSucceeded, "废纸篓已空时 undo 不能假装成功")
+        XCTAssertEqual(undo.failed.count, 1)
+    }
+
+    /// 原位已存在同名项 → 恢复到不冲突的新名字，绝不覆盖用户既有文件
+    func testUndoRestoresToUniqueNameOnCollision() async throws {
+        let dir = try makeSandbox()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("dup.txt")
+        try "original".data(using: .utf8)!.write(to: file)
+
+        let item = CleanableItem(url: file, displayName: "dup.txt", size: 8)
+        let report = await engine.execute(CleaningPlan(items: [item], intent: .trash))
+        XCTAssertFalse(fs.exists(file))
+
+        // 原位又出现了一个同名文件（用户新建）
+        try "newer".data(using: .utf8)!.write(to: file)
+
+        let undo = await engine.undo(report)
+        XCTAssertEqual(undo.restored, 1)
+        XCTAssertTrue(undo.allSucceeded)
+        // 原文件未被覆盖
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "newer")
+        // 恢复项以「(恢复 N)」命名存在
+        let restoredCopies = (try FileManager.default.contentsOfDirectory(atPath: dir.path))
+            .filter { $0.contains("恢复") }
+        XCTAssertEqual(restoredCopies.count, 1, "冲突时应生成一个不覆盖的恢复副本")
+    }
+
+    /// 双重撤销：第二次 undo 应把（已经放回的）项判为失败，而不是崩溃或重复
+    func testDoubleUndoIsSafe() async throws {
+        let dir = try makeSandbox()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("junk.dat")
+        try Data(repeating: 0x11, count: 4096).write(to: file)
+
+        let item = CleanableItem(url: file, displayName: "junk.dat", size: 4096)
+        let report = await engine.execute(CleaningPlan(items: [item], intent: .trash))
+
+        let first = await engine.undo(report)
+        XCTAssertTrue(first.allSucceeded)
+        // 第二次撤销：废纸篓项已被移回，trashedURL 不再存在 → 记为失败，不崩溃
+        let second = await engine.undo(report)
+        XCTAssertEqual(second.restored, 0)
+        XCTAssertEqual(second.failed.count, 1)
+        XCTAssertTrue(fs.exists(file), "文件仍在原位（第一次已恢复）")
     }
 
     func testCleaningRefusesProtectedPath() async throws {

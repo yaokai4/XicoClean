@@ -35,12 +35,20 @@ public final class ModuleSessionViewModel: ObservableObject {
     @Published public var permissionIssue = false
     /// 失败是否由试用结束或许可证无效导致
     @Published public var licenseIssue = false
+    /// 撤销部分失败时的提示（非空即弹窗）；保留 lastReport 以便重试。
+    @Published public var undoFailedItems: [RestorableItem] = []
+    public var undoFailedAlert: Bool {
+        get { !undoFailedItems.isEmpty }
+        set { if !newValue { undoFailedItems = [] } }
+    }
+    private var isCleaning = false
 
     public let title: String
     public let intent: DeleteIntent
     private let env: XicoEnvironment
     private let scanProvider: @Sendable (@escaping ProgressHandler) async throws -> [ScanResult]
     private var scanTask: Task<Void, Never>?
+    private var cleanTask: Task<Void, Never>?
     private let throttle = ProgressThrottle()
     /// 本次清理写入历史的记录 id（撤销时据此回滚，避免累计释放虚高）
     private var lastHistoryID: UUID?
@@ -137,13 +145,15 @@ public final class ModuleSessionViewModel: ObservableObject {
     public func clean() {
         guard ensureLicensed() else { return }
         let items = selectedItems
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty, !isCleaning else { return }
+        isCleaning = true
         phase = .cleaning
         progress = 0
         statusMessage = "正在清理…"
 
         let handler = makeHandler()
-        Task {
+        cleanTask = Task {
+            defer { self.isCleaning = false }
             let normalItems = items.filter { !$0.requiresHelper }
             let privilegedItems = items.filter(\.requiresHelper)
             var reports: [CleaningReport] = []
@@ -162,10 +172,12 @@ public final class ModuleSessionViewModel: ObservableObject {
             let report = Self.merge(reports)
             self.lastReport = report
             self.removeCleaned(report)
-            // 记入持久化清理历史（可追溯：累计释放 / 最近记录跨会话留存）
+            // 记入持久化清理历史（可追溯：累计释放 / 最近记录跨会话留存）；
+            // 同时持久化 restorable 映射，使「撤销」在离开完成页甚至重启后仍可用。
             self.lastHistoryID = env.history.record(module: self.title,
                                                     reclaimedBytes: report.reclaimedBytes,
-                                                    removedCount: report.removedCount)
+                                                    removedCount: report.removedCount,
+                                                    restorable: self.intent == .trash ? report.restorable : [])
             self.phase = .finished
             NotificationCenter.default.post(name: .xicoDidClean, object: nil)
         }
@@ -173,14 +185,29 @@ public final class ModuleSessionViewModel: ObservableObject {
 
     public func undo() {
         guard let report = lastReport, !report.restorable.isEmpty else { return }
-        // 回滚历史，避免撤销后「累计释放」仍计入这次清理
-        if let id = lastHistoryID { env.history.remove(id: id); lastHistoryID = nil }
         Task {
-            _ = await env.cleaningEngine.undo(report)
-            self.lastReport = nil
-            NotificationCenter.default.post(name: .xicoDidClean, object: nil)
-            self.start()
+            let result = await env.cleaningEngine.undo(report)
+            if result.allSucceeded {
+                // 全部恢复：回滚历史累计、清空报告后重扫
+                if let id = lastHistoryID { env.history.remove(id: id); lastHistoryID = nil }
+                self.lastReport = nil
+                NotificationCenter.default.post(name: .xicoDidClean, object: nil)
+                self.start()
+            } else {
+                // 部分失败：保留报告与历史记录（把已恢复项摘掉，剩下的仍可重试），弹窗告知。
+                let remaining = report.restorable.filter { result.failed.contains($0) }
+                self.lastReport = CleaningReport(
+                    removedCount: report.removedCount, reclaimedBytes: report.reclaimedBytes,
+                    failures: report.failures, restorable: remaining)
+                self.undoFailedItems = result.failed
+                NotificationCenter.default.post(name: .xicoDidClean, object: nil)
+            }
         }
+    }
+
+    /// 在废纸篓中显示未能恢复的项，便于用户手动处理。
+    public func revealUndoFailuresInTrash() {
+        for item in undoFailedItems { revealInFinder(item.trashedURL) }
     }
 
     public func reset() {

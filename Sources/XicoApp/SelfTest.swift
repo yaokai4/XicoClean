@@ -80,10 +80,10 @@ private func cleaningRoundTrip(_ env: XicoEnvironment) async -> Bool {
     let item = CleanableItem(url: file, displayName: "junk.dat", size: 65536)
     let report = await env.cleaningEngine.execute(CleaningPlan(items: [item], intent: .trash))
     let removed = !FileManager.default.fileExists(atPath: file.path)
-    let restored = await env.cleaningEngine.undo(report)
+    let undo = await env.cleaningEngine.undo(report)
     let backOK = FileManager.default.fileExists(atPath: file.path)
     try? FileManager.default.removeItem(at: dir)
-    return report.removedCount == 1 && removed && restored == 1 && backOK
+    return report.removedCount == 1 && removed && undo.restored == 1 && undo.allSucceeded && backOK
 }
 
 private func countNodes(_ n: DiskNode) -> Int { 1 + n.children.reduce(0) { $0 + countNodes($1) } }

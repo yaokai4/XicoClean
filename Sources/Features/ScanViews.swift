@@ -23,6 +23,12 @@ struct SessionScaffold<Idle: View>: View {
             }
         }
         .animation(.easeInOut(duration: 0.35), value: vm.phase)
+        .alert("部分项目未能恢复", isPresented: $vm.undoFailedAlert) {
+            Button("在废纸篓中显示") { vm.revealUndoFailuresInTrash() }
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("有 \(vm.undoFailedItems.count) 项无法自动放回原位（可能废纸篓已被清空、文件被移动或所在卷已卸载）。这些项仍可在废纸篓中手动找回。")
+        }
     }
 
     private func failedView(_ message: String) -> some View {

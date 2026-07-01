@@ -214,13 +214,24 @@ public struct CleaningReport: Sendable {
     }
 }
 
-public struct RestorableItem: Sendable {
+public struct RestorableItem: Sendable, Codable, Equatable {
     public let originalURL: URL
     public let trashedURL: URL
     public init(originalURL: URL, trashedURL: URL) {
         self.originalURL = originalURL
         self.trashedURL = trashedURL
     }
+}
+
+/// 撤销结果：区分「已恢复」与「未能恢复」，让 UI 能如实反馈而非假装全成功。
+public struct UndoResult: Sendable {
+    public let restored: Int
+    public let failed: [RestorableItem]
+    public init(restored: Int, failed: [RestorableItem]) {
+        self.restored = restored
+        self.failed = failed
+    }
+    public var allSucceeded: Bool { failed.isEmpty }
 }
 
 // MARK: - 文件系统模型

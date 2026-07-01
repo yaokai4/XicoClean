@@ -58,10 +58,33 @@ public struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in reloadHistory() }
     }
 
+    @State private var undoingID: UUID?
+
     private func reloadHistory() {
         history = model.env.history.recent(8)
         totalReclaimed = model.env.history.totalReclaimedAllTime
         totalCleanups = model.env.history.totalCleanups
+    }
+
+    /// 从历史记录跨会话撤销：把该次清理的废纸篓项放回原位。
+    private func undoRecord(_ rec: CleaningRecord) {
+        guard rec.canUndo, undoingID == nil else { return }
+        undoingID = rec.id
+        let report = CleaningReport(removedCount: rec.removedCount, reclaimedBytes: rec.reclaimedBytes,
+                                    failures: [], restorable: rec.restorable)
+        Task {
+            let result = await model.env.cleaningEngine.undo(report)
+            // 无论全成功还是部分成功，都清除该记录的可撤销标记（已尝试放回）；
+            // 全成功再把累计释放回滚。
+            if result.allSucceeded {
+                model.env.history.remove(id: rec.id)
+            } else {
+                model.env.history.clearRestorable(id: rec.id)
+            }
+            reloadHistory()
+            undoingID = nil
+            NotificationCenter.default.post(name: .xicoDidClean, object: nil)
+        }
     }
 
     private var historyCard: some View {
@@ -89,6 +112,11 @@ public struct SettingsView: View {
                             Text(rec.date, format: .relative(presentation: .named))
                                 .font(XFont.caption).foregroundStyle(XColor.textTertiary)
                             Spacer()
+                            if rec.canUndo {
+                                Button("撤销") { undoRecord(rec) }
+                                    .buttonStyle(.link).font(XFont.caption)
+                                    .disabled(undoingID == rec.id)
+                            }
                             Text("\(rec.removedCount) 项").font(XFont.caption).foregroundStyle(XColor.textSecondary)
                             Text(rec.reclaimedBytes.formattedBytes)
                                 .font(XFont.mono).foregroundStyle(XColor.success)

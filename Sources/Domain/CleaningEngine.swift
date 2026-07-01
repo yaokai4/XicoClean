@@ -86,17 +86,20 @@ public actor CleaningEngine {
         return CleaningReport(removedCount: removed, reclaimedBytes: reclaimed, failures: failures, restorable: restorable)
     }
 
-    /// 撤销上一次清理：把废纸篓中的项移回原位
-    public func undo(_ report: CleaningReport) async -> Int {
+    /// 撤销上一次清理：把废纸篓中的项移回原位。
+    /// 返回已恢复数与**未能恢复的清单**——废纸篓被清空 / 文件被移动 / 卷已卸载时，
+    /// 上层据此保留可重试入口并如实告知用户，绝不静默假装成功。
+    public func undo(_ report: CleaningReport) async -> UndoResult {
         var restored = 0
+        var failed: [RestorableItem] = []
         for item in report.restorable {
             do {
                 try fs.restore(item)
                 restored += 1
             } catch {
-                continue
+                failed.append(item)
             }
         }
-        return restored
+        return UndoResult(restored: restored, failed: failed)
     }
 }
