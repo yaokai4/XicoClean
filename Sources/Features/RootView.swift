@@ -227,7 +227,8 @@ struct DetailView: View {
         case .malware:      ModuleScanView(env: model.env, moduleID: .malware, intent: .trash)
         case .monitor:      MonitorView(env: model.env)
         case .settings:     SettingsView(model: model)
-        case let id:        PlaceholderView(meta: ModuleCatalog.all.first { $0.id == id })
+        // 未知模块 ID（例如开发用 --open=<拼写错误>）回落到仪表盘，而非过时的「即将推出」占位页。
+        default:            SmartScanView(env: model.env)
         }
     }
 }

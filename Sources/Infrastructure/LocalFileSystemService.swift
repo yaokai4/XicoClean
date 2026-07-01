@@ -25,7 +25,12 @@ public struct LocalFileSystemService: FileSystemService {
                                          includingPropertiesForKeys: Array(keys),
                                          options: [],
                                          errorHandler: { _, _ in true }) else { return 0 }
+            var seen = 0
             for case let f as URL in en {
+                // 取消传播：巨型目录（几十 GB 容器）逐文件递归可达分钟级，
+                // 每 256 项检查一次取消，用户点「取消」后立刻返回已累计值，不再空转占死线程。
+                seen += 1
+                if seen & 0xFF == 0 && Task.isCancelled { return total }
                 guard let r = try? f.resourceValues(forKeys: keys), r.isDirectory != true else { continue }
                 total += Int64(r.totalFileAllocatedSize ?? r.fileSize ?? 0)
             }

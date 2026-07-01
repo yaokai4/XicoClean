@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Domain
 import Infrastructure
 
@@ -83,6 +84,15 @@ public final class AppModel: ObservableObject {
         refreshMetrics()
         NotificationCenter.default.addObserver(forName: .xicoDidClean, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refreshMetrics() }
+        }
+        // 用户去系统设置授予「完全磁盘访问」/ 批准助手 / 导入许可证后回到 App，
+        // 必须重新读状态——否则横幅一直挂到重启（审计 C1）。
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshPermissions()
+                self?.refreshLicense()
+            }
         }
     }
 

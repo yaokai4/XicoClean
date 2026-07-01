@@ -86,6 +86,14 @@ struct ResultGroupCard: View {
     let onToggleItem: (UUID) -> Void
     @State private var expanded = false
     @State private var appeared = false
+    @State private var showAll = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// 结果项按大小降序，最能省空间的排在最前，信息层级更清晰。
+    private var sortedItems: [CleanableItem] {
+        group.items.sorted { $0.size > $1.size }
+    }
+    private static let previewCap = 80
 
     var body: some View {
         XCard {
@@ -118,14 +126,23 @@ struct ResultGroupCard: View {
                 if expanded {
                     Divider().padding(.vertical, 2)
                     VStack(spacing: 0) {
-                        ForEach(group.items.prefix(80)) { item in
+                        let items = sortedItems
+                        let shown = showAll ? items : Array(items.prefix(Self.previewCap))
+                        ForEach(shown) { item in
                             ItemRowView(item: item) { onToggleItem(item.id) }
                         }
-                        if group.items.count > 80 {
-                            Text("还有 \(group.items.count - 80) 项…")
-                                .font(XFont.caption).foregroundStyle(XColor.textTertiary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.top, XSpacing.xs)
+                        if items.count > Self.previewCap && !showAll {
+                            // 关键：隐藏项仍会被清理。给出可点击入口让用户能审阅全部，
+                            // 并明确说明"未展示项也在清理范围内"（审计 C2）。
+                            Button {
+                                withAnimation(.easeOut(duration: reduceMotion ? 0 : 0.2)) { showAll = true }
+                            } label: {
+                                Text("显示全部 \(items.count) 项（其余 \(items.count - Self.previewCap) 项已勾选，将一并清理）")
+                                    .font(XFont.caption).foregroundStyle(XColor.brand)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.top, XSpacing.xs)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                     .transition(.opacity.combined(with: .move(edge: .top)))
@@ -134,10 +151,14 @@ struct ResultGroupCard: View {
         }
         .hoverLift(2)
         .opacity(appeared ? 1 : 0)
-        .offset(y: appeared ? 0 : 16)
+        .offset(y: (appeared || reduceMotion) ? 0 : 16)
         .onAppear {
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.82).delay(Double(index) * 0.05)) {
-                appeared = true
+            if reduceMotion {
+                appeared = true   // 降低动态效果：不做交错入场位移
+            } else {
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.82).delay(Double(index) * 0.05)) {
+                    appeared = true
+                }
             }
         }
     }

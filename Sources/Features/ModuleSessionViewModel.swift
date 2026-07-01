@@ -216,8 +216,9 @@ public final class ModuleSessionViewModel: ObservableObject {
             scanTask?.cancel()
             permissionIssue = false
             licenseIssue = true
-            phase = .failed("试用已结束或许可证无效。请在设置中导入有效许可证后继续。\(status.summary)")
-            NotificationCenter.default.post(name: .xicoOpenSettings, object: nil)
+            // 不再自动跳转设置页（会让失败提示一闪而过看不到）。停在失败态，
+            // 由失败态视图提供「购买 / 导入许可证」入口（见 ScanViews 许可证失败态）。
+            phase = .failed("试用已结束或许可证无效。\(status.summary)")
             return false
         }
         licenseIssue = false

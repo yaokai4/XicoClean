@@ -103,7 +103,8 @@ public struct XPrimaryButtonStyle: ButtonStyle {
     public func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(large ? XFont.title : XFont.headline)
-            .foregroundStyle(.white)
+            // 禁用态背景是浅色 surfaceAlt，白字会消失——改用次要文字色保证浅色模式可读
+            .foregroundStyle(enabled ? AnyShapeStyle(.white) : AnyShapeStyle(XColor.textTertiary))
             .padding(.horizontal, large ? XSpacing.xxl : XSpacing.xl)
             .padding(.vertical, large ? XSpacing.l : XSpacing.m)
             .background(

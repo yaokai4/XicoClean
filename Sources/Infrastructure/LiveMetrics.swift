@@ -36,8 +36,11 @@ public struct MacInfo: Sendable {
     public let uptime: String
 }
 
-/// 实时系统指标采样（CPU / 内存 / 网络 / 磁盘 / 温度）。状态在主线程使用。
+/// 实时系统指标采样（CPU / 内存 / 网络 / 磁盘 / 温度）。
+/// 差分状态（prevCPU/prevNet）用锁保护——类型系统层面 Sendable，任何线程调 sample()
+/// 都不会被编译器拦，无锁会算错速率甚至数据竞争（审计）。
 public final class LiveMetricsSampler: @unchecked Sendable {
+    private let stateLock = NSLock()
     private var prevCPU: host_cpu_load_info?
     private var prevNet: (down: UInt64, up: UInt64)?
     private var prevNetTime: Date?
@@ -64,6 +67,7 @@ public final class LiveMetricsSampler: @unchecked Sendable {
 
     private func sampleCPU() -> Double {
         guard let cur = cpuTicks() else { return 0 }
+        stateLock.lock(); defer { stateLock.unlock() }
         defer { prevCPU = cur }
         guard let prev = prevCPU else { return 0 }
         let user = Double(cur.cpu_ticks.0) - Double(prev.cpu_ticks.0)
@@ -110,6 +114,7 @@ public final class LiveMetricsSampler: @unchecked Sendable {
     private func sampleNetwork() -> (down: Double, up: Double) {
         let cur = netCounters()
         let now = Date()
+        stateLock.lock(); defer { stateLock.unlock() }
         defer { prevNet = cur; prevNetTime = now }
         guard let prev = prevNet, let prevTime = prevNetTime else { return (0, 0) }
         let dt = now.timeIntervalSince(prevTime)

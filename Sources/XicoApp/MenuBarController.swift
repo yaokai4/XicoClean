@@ -59,13 +59,39 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         for id in desired where statusItems[id] == nil {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             item.button?.target = self
-            item.button?.action = #selector(togglePopover(_:))
+            item.button?.action = #selector(handleClick(_:))
+            // 左键打开面板，右键弹出菜单（打开/设置/退出）——退出不再只藏在弹窗电源图标里
+            item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
             item.button?.identifier = NSUserInterfaceItemIdentifier(id)
             item.button?.imageScaling = .scaleNone
             statusItems[id] = item
         }
         updateImages()
     }
+
+    private func contextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "打开 Xico", action: #selector(openMainWindow), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",").target = self
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "退出 Xico", action: #selector(quit), keyEquivalent: "q").target = self
+        return menu
+    }
+
+    @objc private func openMainWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        for window in NSApp.windows where window.canBecomeMain {
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    @objc private func openSettings() {
+        model.selection = .settings
+        openMainWindow()
+    }
+
+    @objc private func quit() { NSApp.terminate(nil) }
 
     private func updateImages() {
         let s = model.liveSnapshot
@@ -99,7 +125,18 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         return model.netDownHistory.map { $0 / maxV }
     }
 
-    @objc private func togglePopover(_ sender: NSStatusBarButton) {
+    @objc private func handleClick(_ sender: NSStatusBarButton) {
+        // 右键（或按住 Control 左键）→ 上下文菜单
+        if let event = NSApp.currentEvent,
+           event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+            if let item = statusItems.first(where: { $0.value.button === sender })?.value {
+                let menu = contextMenu()
+                item.menu = menu
+                item.button?.performClick(nil)   // 弹出菜单
+                item.menu = nil                  // 立即摘除，恢复左键打开面板
+            }
+            return
+        }
         guard let id = sender.identifier?.rawValue else { return }
         let sameOpen = popover.isShown && popover.contentViewController?.identifier?.rawValue == id
         if popover.isShown { popover.performClose(nil) }

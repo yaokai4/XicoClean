@@ -57,6 +57,18 @@ struct XicoMain: App {
             RootView(model: model)
         }
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            // 单窗口应用：禁掉 ⌘N 开出共享同一 AppModel 的第二个主窗口
+            CommandGroup(replacing: .newItem) {}
+            // ⌘, 路由到应用内设置页（无独立 Settings 场景）
+            CommandGroup(replacing: .appSettings) {
+                Button("设置…") {
+                    model.selection = .settings
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
         // 菜单栏由 AppKit 的 MenuBarController 接管（见 AppDelegate）
     }
 }

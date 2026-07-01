@@ -4,9 +4,16 @@ import Domain
 import Infrastructure
 import DesignSystem
 
+/// 线程安全的可变 URL 盒子：主线程（选文件夹）写、后台扫描闭包读，
+/// 必须加锁——URL 是多字结构，跨线程无同步读写是未定义行为（TSan 必报）。
 final class PathBox: @unchecked Sendable {
-    var url: URL
-    init(_ u: URL) { url = u }
+    private let lock = NSLock()
+    private var _url: URL
+    var url: URL {
+        get { lock.lock(); defer { lock.unlock() }; return _url }
+        set { lock.lock(); _url = newValue; lock.unlock() }
+    }
+    init(_ u: URL) { _url = u }
 }
 
 public struct DuplicatesView: View {
