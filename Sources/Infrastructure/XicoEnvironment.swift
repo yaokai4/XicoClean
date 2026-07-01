@@ -50,12 +50,15 @@ public final class XicoEnvironment: @unchecked Sendable {
         self.license = license ?? LicenseService.live()
 
         var map: [ModuleID: ScannerModule] = [:]
-        map[.systemJunk] = SystemJunkScanner(definitions: definitions.definitions, fs: fs, safety: safety)
         map[.largeFiles] = LargeFilesScanner(fs: fs, safety: safety)
         map[.trash] = TrashScanner(fs: fs)
-        map[.privacy] = PrivacyScanner(definitions: definitions.definitions, fs: fs, safety: safety)
         map[.malware] = ThreatScanner(fs: fs, safety: safety)
-        self.scanners = map
+        self.scanners = map   // 非定义驱动的扫描器（无需随规则库更新而变）
+    }
+
+    /// 当前生效的清理定义（优先已签名缓存，否则内置）——每次取，规则库在线更新后免重启即生效。
+    private func currentDefinitions() -> [CleanupDefinition] {
+        definitionsUpdater.currentLibrary().definitions
     }
 
     /// 默认线上环境
@@ -75,12 +78,17 @@ public final class XicoEnvironment: @unchecked Sendable {
     }
 
     public func scanner(for id: ModuleID) -> ScannerModule? {
-        scanners[id]
+        // 定义驱动的扫描器每次从当前规则库现构建（构造成本极低），使在线更新免重启生效。
+        switch id {
+        case .systemJunk: return SystemJunkScanner(definitions: currentDefinitions(), fs: fs, safety: safety)
+        case .privacy:    return PrivacyScanner(definitions: currentDefinitions(), fs: fs, safety: safety)
+        default:          return scanners[id]
+        }
     }
 
     public func isImplemented(_ id: ModuleID) -> Bool {
         let extra: Set<ModuleID> = [.smartScan, .spaceLens, .duplicates, .uninstaller, .optimization, .maintenance, .monitor]
-        return scanners[id] != nil || extra.contains(id)
+        return scanner(for: id) != nil || extra.contains(id)
     }
 
     public func duplicatesScanner(root: URL) -> DuplicatesScanner {

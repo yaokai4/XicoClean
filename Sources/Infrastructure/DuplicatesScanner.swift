@@ -40,27 +40,56 @@ public struct DuplicatesScanner: Sendable {
         }
 
         // 2. 同大小者先做头尾哈希快速筛，命中再做全量哈希确认（杜绝中段不同被误判 → 防删错）
-        var groups: [ScanResultGroup] = []
+        // 2a. 先在各 size 桶内做头尾哈希，收集需要全量确认的候选（url, size）。
+        var fullHashCandidates: [(url: URL, size: Int64)] = []
         for (size, urls) in bySize where urls.count > 1 {
             if Task.isCancelled { break }
-            // 2a. 头尾哈希快速分桶
             var byPartial: [String: [URL]] = [:]
             for url in urls {
-                if let h = partialHash(url, size: size) {
-                    byPartial[h, default: []].append(url)
-                }
+                if let h = partialHash(url, size: size) { byPartial[h, default: []].append(url) }
             }
-            // 2b. 仅对头尾相同者做全量哈希确认（只有逐字节内容一致才算重复）
-            var byHash: [String: [URL]] = [:]
             for (_, candidates) in byPartial where candidates.count > 1 {
-                for url in candidates {
-                    if Task.isCancelled { break }
-                    if let full = fullHash(url) {
-                        byHash[full, default: []].append(url)
-                    }
-                }
+                for url in candidates { fullHashCandidates.append((url, size)) }
             }
-            for (hash, dupURLs) in byHash where dupURLs.count > 1 {
+        }
+
+        // 2b. 并发全量哈希（4 路），按完成计数上报进度，消除"哈希阶段像卡死"的观感。
+        let total = fullHashCandidates.count
+        let hashed = await withTaskGroup(of: (URL, Int64, String?).self) { group -> [(URL, Int64, String)] in
+            let lanes = 4
+            var iterator = fullHashCandidates.makeIterator()
+            var inFlight = 0
+            func addNext() {
+                guard let c = iterator.next() else { return }
+                inFlight += 1
+                group.addTask { (c.url, c.size, self.fullHash(c.url)) }
+            }
+            for _ in 0..<lanes { addNext() }
+            var out: [(URL, Int64, String)] = []
+            var done = 0
+            for await (url, size, hash) in group {
+                done += 1
+                progress(ScanProgress(fraction: total > 0 ? Double(done) / Double(total) : nil,
+                                      message: "校验 \(url.lastPathComponent)", bytesFound: scanned))
+                if let hash { out.append((url, size, hash)) }
+                addNext()
+            }
+            return out
+        }
+
+        // 2c. 按 (size, 全量哈希) 分组：只有逐字节内容一致才算重复。
+        var groups: [ScanResultGroup] = []
+        var byHashKey: [String: [URL]] = [:]
+        var sizeForKey: [String: Int64] = [:]
+        for (url, size, hash) in hashed {
+            let key = "\(size)-\(hash)"
+            byHashKey[key, default: []].append(url)
+            sizeForKey[key] = size
+        }
+        for (key, dupURLs) in byHashKey where dupURLs.count > 1 {
+            let size = sizeForKey[key] ?? 0
+            let hash = key
+            do {
                 let sorted = dupURLs.sorted { $0.path.count < $1.path.count }
                 var items: [CleanableItem] = []
                 for (idx, url) in sorted.enumerated() {

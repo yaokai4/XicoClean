@@ -191,8 +191,12 @@ public struct SystemJunkScanner: ScannerModule {
         }
         var groups = scanDefinitions(definitions, moduleID: .systemJunk, fs: fs, safety: safety,
                                      home: home, progress: progress, runningIDs: running).groups
-        if let darwin = darwinTempCacheGroup(running: running, progress: progress) { groups.append(darwin) }
-        let (leftovers, orphanContainerPaths) = leftoversGroup(progress: progress)
+        // 继续累计已发现字节，避免后续分组从 0 汇报导致进度环数字中途回跳。
+        var base = groups.reduce(Int64(0)) { $0 + $1.totalSize }
+        if let darwin = darwinTempCacheGroup(running: running, baseTotal: base, progress: progress) {
+            groups.append(darwin); base += darwin.totalSize
+        }
+        let (leftovers, orphanContainerPaths) = leftoversGroup(baseTotal: base, progress: progress)
         // 去重：孤儿容器整体已计入「残留」，从「沙盒应用缓存」里剔除其下子项，避免重复计入夸大总量
         if !orphanContainerPaths.isEmpty,
            let idx = groups.firstIndex(where: { $0.id == "containers-caches" }) {
@@ -207,9 +211,11 @@ public struct SystemJunkScanner: ScannerModule {
     }
 
     /// macOS 给各 App 分配的每用户临时缓存（/private/var/folders/.../C），无需 root，删除安全可重建。
-    private func darwinTempCacheGroup(running: Set<String>, progress: @escaping ProgressHandler) -> ScanResultGroup? {
+    private func darwinTempCacheGroup(running: Set<String>, baseTotal: Int64,
+                                      progress: @escaping ProgressHandler) -> ScanResultGroup? {
         guard let dir = Self.darwinUserCacheURL() else { return nil }
         var items: [CleanableItem] = []
+        var total = baseTotal
         for url in fs.contentsOfDirectory(dir) {
             if Task.isCancelled { break }
             guard safety.verify(url, intent: .trash).isAllowed else { continue }
@@ -220,7 +226,8 @@ public struct SystemJunkScanner: ScannerModule {
                                        detail: url.path, size: size, safety: .caution,
                                        isSelected: isRunning ? false : nil,
                                        note: isRunning ? "正在运行 · 建议退出后再清理" : nil))
-            progress(ScanProgress(message: url.lastPathComponent, bytesFound: 0))
+            total += size
+            progress(ScanProgress(message: url.lastPathComponent, bytesFound: total))
         }
         guard !items.isEmpty else { return nil }
         items.sort { $0.size > $1.size }
@@ -232,11 +239,12 @@ public struct SystemJunkScanner: ScannerModule {
     /// 已卸载应用残留：仅扫沙盒容器与窗口状态（按 bundle id 一一对应，误判极低）。
     /// 刻意不扫 Application Support —— 那里混有 Adobe dunamis 等"无独立 App 的框架组件"，
     /// 会被误判成残留，对清理器而言误删比漏删更致命。
-    private func leftoversGroup(progress: @escaping ProgressHandler) -> (group: ScanResultGroup?, orphanContainerPaths: Set<String>) {
+    private func leftoversGroup(baseTotal: Int64, progress: @escaping ProgressHandler) -> (group: ScanResultGroup?, orphanContainerPaths: Set<String>) {
         let containersRoot = home.appendingPathComponent("Library/Containers")
         let roots = [containersRoot, home.appendingPathComponent("Library/Saved Application State")]
         var items: [CleanableItem] = []
         var orphanContainerPaths = Set<String>()
+        var total = baseTotal
         for root in roots {
             for url in fs.contentsOfDirectory(root) {
                 if Task.isCancelled { break }
@@ -248,7 +256,8 @@ public struct SystemJunkScanner: ScannerModule {
                 if root == containersRoot { orphanContainerPaths.insert(url.path) }
                 items.append(CleanableItem(url: url, displayName: name, detail: url.path,
                                            size: size, safety: .caution, note: "已卸载应用残留"))
-                progress(ScanProgress(message: name, bytesFound: 0))
+                total += size
+                progress(ScanProgress(message: name, bytesFound: total))
             }
         }
         guard !items.isEmpty else { return (nil, orphanContainerPaths) }
@@ -347,6 +356,7 @@ public struct LargeFilesScanner: ScannerModule {
         let safety = self.safety
         let threshold = self.threshold
 
+        let home = self.home
         // 各用户目录并发遍历，重叠 I/O 提速
         var items = await withTaskGroup(of: [CleanableItem].self) { group in
             for root in roots {
@@ -365,6 +375,20 @@ public struct LargeFilesScanner: ScannerModule {
                     return local
                 }
             }
+            // 家目录顶层的大文件（如 ~/big.dmg）——此前只遍历子目录，整层漏掉
+            group.addTask {
+                var local: [CleanableItem] = []
+                for url in fs.contentsOfDirectory(home) {
+                    if Task.isCancelled { break }
+                    guard let e = fs.entry(for: url), !e.isDirectory, e.size >= threshold else { continue }
+                    guard safety.verify(url, intent: .trash).isAllowed else { continue }
+                    local.append(CleanableItem(url: url, displayName: url.lastPathComponent,
+                                               detail: url.path, size: e.size, safety: .caution, isSelected: false))
+                    let running = counter.add(e.size)
+                    progress(ScanProgress(message: url.lastPathComponent, bytesFound: running))
+                }
+                return local
+            }
             var all: [CleanableItem] = []
             for await part in group { all += part }
             return all
@@ -378,14 +402,17 @@ public struct LargeFilesScanner: ScannerModule {
         return ScanResult(moduleID: .largeFiles, groups: items.isEmpty ? [] : [group])
     }
 
-    /// 用户内容目录（跳过资源库与隐藏目录，避免遍历海量小文件拖慢扫描）
+    /// 用户内容目录 + ~/Library（大文件常藏在 Containers/Application Support/iOS 备份里）。
+    /// deepEnumerate 会剪掉 node_modules/DerivedData 等海量小文件目录，故纳入 Library 不至于拖垮。
     private func scanRoots() -> [URL] {
-        let skip: Set<String> = ["Library"]
-        return fs.contentsOfDirectory(home).filter { url in
+        let skipDot = true
+        var roots = fs.contentsOfDirectory(home).filter { url in
             let name = url.lastPathComponent
-            guard !name.hasPrefix("."), !skip.contains(name) else { return false }
+            guard !(skipDot && name.hasPrefix(".")), name != "Library" else { return false }
             return (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
         }
+        roots.append(home.appendingPathComponent("Library"))
+        return roots
     }
 }
 
@@ -405,21 +432,39 @@ public struct TrashScanner: ScannerModule {
     }
 
     public func scan(progress: @escaping ProgressHandler) async throws -> ScanResult {
-        let trash = home.appendingPathComponent(".Trash")
         var items: [CleanableItem] = []
         var total: Int64 = 0
-        for url in fs.contentsOfDirectory(trash) {
-            if Task.isCancelled { break }
-            let size = fs.allocatedSize(of: url)
-            items.append(CleanableItem(url: url, displayName: url.lastPathComponent,
-                                       detail: url.path, size: size, safety: .safe))
-            total += size
-            progress(ScanProgress(message: url.lastPathComponent, bytesFound: total))
+        // 主废纸篓 + 各外置/网络卷的 .Trashes/<uid>（此前只扫家目录 .Trash，外置卷全漏）
+        for trash in trashLocations() {
+            for url in fs.contentsOfDirectory(trash) {
+                if Task.isCancelled { break }
+                let size = fs.allocatedSize(of: url)
+                items.append(CleanableItem(url: url, displayName: url.lastPathComponent,
+                                           detail: url.path, size: size, safety: .safe))
+                total += size
+                progress(ScanProgress(message: url.lastPathComponent, bytesFound: total))
+            }
         }
         items.sort { $0.size > $1.size }
         let group = ScanResultGroup(id: "trash", title: "废纸篓内容",
-                                    description: "清空将彻底删除这些项目（不可恢复）。",
+                                    description: "清空将彻底删除这些项目（不可恢复）。含外置卷废纸篓。",
                                     systemImage: "trash.circle", safety: .safe, items: items)
         return ScanResult(moduleID: .trash, groups: items.isEmpty ? [] : [group])
+    }
+
+    private func trashLocations() -> [URL] {
+        var locations = [home.appendingPathComponent(".Trash")]
+        let uid = getuid()
+        let keys: [URLResourceKey] = [.volumeIsInternalKey]
+        let mounted = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
+        for vol in mounted {
+            // 跳过系统盘（其废纸篓即家目录 .Trash，已含）；只补外置/其它卷
+            let isInternal = (try? vol.resourceValues(forKeys: [.volumeIsInternalKey]))?.volumeIsInternal ?? true
+            if isInternal { continue }
+            let volTrash = vol.appendingPathComponent(".Trashes/\(uid)")
+            if fs.exists(volTrash) { locations.append(volTrash) }
+        }
+        return locations
     }
 }
