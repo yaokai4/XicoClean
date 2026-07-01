@@ -201,9 +201,13 @@ public final class ModuleSessionViewModel: ObservableObject {
         }
     }
 
+    private var isUndoing = false
+
     public func undo() {
-        guard let report = lastReport, !report.restorable.isEmpty else { return }
+        guard let report = lastReport, !report.restorable.isEmpty, !isUndoing else { return }
+        isUndoing = true
         Task {
+            defer { self.isUndoing = false }
             let result = await env.cleaningEngine.undo(report)
             if result.allSucceeded {
                 // 全部恢复：回滚历史累计、清空报告后重扫

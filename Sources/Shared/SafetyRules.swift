@@ -76,9 +76,11 @@ public struct XicoSafetyRules: Sendable {
     ]
 
     /// 以这些扩展名结尾的「库包」整体受保护（照片/音乐/影片/图库等 bundle，删=图库全毁）。小写。
+    // 仅包含「资料库/图库 bundle 目录」后缀；刻意不含 .motn 等单文件类型，
+    // 避免把名为 X.motn 的普通模板文件误判为受保护资料库。
     private static let protectedPackageSuffixesLower: Set<String> = [
         "photoslibrary", "photolibrary", "aplibrary", "migratedaperturelibrary",
-        "musiclibrary", "tvlibrary", "imovielibrary", "fcpbundle", "motn"
+        "musiclibrary", "tvlibrary", "imovielibrary", "fcpbundle"
     ]
 
     // MARK: 注入 home 的额外保护（与通用规则取并集，均小写）

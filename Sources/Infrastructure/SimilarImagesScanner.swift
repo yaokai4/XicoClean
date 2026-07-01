@@ -67,8 +67,14 @@ public struct SimilarImagesScanner: Sendable {
             var placed = false
             for i in clusters.indices {
                 if let rep = clusters[i].first {
-                    var distance: Float = 0
-                    try? rep.print.computeDistance(&distance, to: item.print)
+                    // 距离默认设为「无穷远」：一旦 computeDistance 抛错（指纹不兼容/损坏），
+                    // 视为不相似而非相似——出错方向必须偏向不聚类，绝不能默认把不同图片并入同组预删。
+                    var distance = Float.greatestFiniteMagnitude
+                    do {
+                        try rep.print.computeDistance(&distance, to: item.print)
+                    } catch {
+                        continue   // 无法比较 → 不归入此簇
+                    }
                     if distance < distanceThreshold {
                         clusters[i].append(item); placed = true; break
                     }
