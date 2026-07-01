@@ -90,12 +90,21 @@ public final class XicoEnvironment: @unchecked Sendable {
     }
 
     public func isImplemented(_ id: ModuleID) -> Bool {
-        let extra: Set<ModuleID> = [.smartScan, .spaceLens, .duplicates, .uninstaller, .optimization, .maintenance, .monitor]
+        let extra: Set<ModuleID> = [.smartScan, .spaceLens, .duplicates, .similarImages,
+                                    .uninstaller, .appUpdater, .optimization, .maintenance, .monitor]
         return scanner(for: id) != nil || extra.contains(id)
     }
 
     public func duplicatesScanner(root: URL) -> DuplicatesScanner {
         DuplicatesScanner(fs: fs, safety: safety, root: root)
+    }
+
+    public func similarImagesScanner() -> SimilarImagesScanner {
+        SimilarImagesScanner(fs: fs, safety: safety)
+    }
+
+    public func appUpdateService() -> AppUpdateService {
+        AppUpdateService(uninstaller: uninstaller)
     }
 
     /// 智能扫描聚合：系统垃圾 + 隐私（均为定义驱动、快速）。
@@ -116,8 +125,10 @@ public enum ModuleCatalog {
         ModuleMetadata(id: .spaceLens, title: "空间透镜", subtitle: "可视化磁盘占用", systemImage: "circle.hexagongrid.fill", category: .filesSpace),
         ModuleMetadata(id: .largeFiles, title: "大文件与旧文件", subtitle: "找出大块头", systemImage: "doc.viewfinder", category: .filesSpace),
         ModuleMetadata(id: .duplicates, title: "重复文件", subtitle: "内容级查重", systemImage: "doc.on.doc", category: .filesSpace),
+        ModuleMetadata(id: .similarImages, title: "相似图片", subtitle: "感知查重 · 保留最佳", systemImage: "photo.on.rectangle.angled", category: .filesSpace),
 
         ModuleMetadata(id: .uninstaller, title: "卸载器", subtitle: "彻底卸载含残留", systemImage: "xmark.bin", category: .applications),
+        ModuleMetadata(id: .appUpdater, title: "应用更新", subtitle: "检查可更新的应用", systemImage: "arrow.triangle.2.circlepath", category: .applications),
 
         ModuleMetadata(id: .optimization, title: "优化", subtitle: "登录项 / 高耗进程", systemImage: "speedometer", category: .performance),
         ModuleMetadata(id: .maintenance, title: "维护", subtitle: "缓存 / 索引 / 重启", systemImage: "wrench.and.screwdriver", category: .performance),

@@ -22,6 +22,8 @@ public extension ModuleID {
     static let maintenance = ModuleID("maintenance")
     static let malware = ModuleID("malware")
     static let monitor = ModuleID("monitor")
+    static let similarImages = ModuleID("similar-images")
+    static let appUpdater = ModuleID("app-updater")
     static let settings = ModuleID("settings")
 }
 
