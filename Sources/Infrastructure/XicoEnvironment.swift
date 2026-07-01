@@ -52,7 +52,6 @@ public final class XicoEnvironment: @unchecked Sendable {
         var map: [ModuleID: ScannerModule] = [:]
         map[.largeFiles] = LargeFilesScanner(fs: fs, safety: safety)
         map[.trash] = TrashScanner(fs: fs)
-        map[.malware] = ThreatScanner(fs: fs, safety: safety)
         self.scanners = map   // 非定义驱动的扫描器（无需随规则库更新而变）
     }
 
@@ -82,6 +81,8 @@ public final class XicoEnvironment: @unchecked Sendable {
         switch id {
         case .systemJunk: return SystemJunkScanner(definitions: currentDefinitions(), fs: fs, safety: safety)
         case .privacy:    return PrivacyScanner(definitions: currentDefinitions(), fs: fs, safety: safety)
+        case .malware:    return ThreatScanner(fs: fs, safety: safety,
+                                               extraSignatures: definitionsUpdater.currentLibrary().threatSignatures)
         default:          return scanners[id]
         }
     }
