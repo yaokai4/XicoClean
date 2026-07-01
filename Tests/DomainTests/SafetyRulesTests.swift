@@ -97,14 +97,17 @@ final class SafetyRulesTests: XCTestCase {
         assertDenied("/Users/alice/Library/CloudStorage/OneDrive-Personal/x")
     }
 
-    /// 邮件 / 信息 / iPhone 备份——本地不可逆数据
-    func testDeniesMailMessagesBackups() {
+    /// 邮件 / 信息——本地不可逆数据整棵封死
+    func testDeniesMailMessages() {
         assertDenied("/Users/alice/Library/Mail")
         assertDenied("/Users/alice/Library/Mail/V10/inbox.mbox")
         assertDenied("/Users/alice/Library/Messages")
         assertDenied("/Users/alice/Library/Messages/chat.db")
-        assertDenied("/Users/alice/Library/Application Support/MobileSync/Backup")
-        assertDenied("/Users/alice/Library/Application Support/MobileSync/Backup/0000/Manifest.db")
+    }
+
+    /// iPhone 备份**不**红线（合法可清理项，靠 caution + 强确认保护），但备份根本身仍可清
+    func testAllowsIPhoneBackupsForCleaning() {
+        assertAllowed("/Users/alice/Library/Application Support/MobileSync/Backup/0000/Manifest.db")
     }
 
     /// 应用数据根 / 容器根 / 钥匙串目录**本身**不可删（防止一键删掉整个数据根）

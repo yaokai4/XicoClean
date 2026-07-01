@@ -3,7 +3,10 @@ import Domain
 import Infrastructure
 
 /// 全功能自检：真实跑每个模块，量耗时、抓错误。用法：Xico --selftest
-func runSelfTest() async {
+/// 返回是否全部关键检查通过（供 CI 用退出码判定，不再永远 exit 0）。
+@discardableResult
+func runSelfTest() async -> Bool {
+    var ok = true
     func log(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
     func time<T>(_ name: String, _ block: () async -> T, describe: (T) -> String) async {
         let start = Date()
@@ -38,7 +41,9 @@ func runSelfTest() async {
     }
 
     log("[清理闭环]")
-    await time("移废纸篓+撤销", { await cleaningRoundTrip(env) }, describe: { $0 ? "✓ 通过" : "✗ 失败" })
+    let roundTrip = await cleaningRoundTrip(env)
+    if !roundTrip { ok = false }
+    log(String(format: "  %-22@ %@", "移废纸篓+撤销" as NSString, (roundTrip ? "✓ 通过" : "✗ 失败") as NSString))
 
     log("[应用与系统]")
     await time("卸载器列表", { env.uninstaller.listApps() }, describe: { "\($0.count) 个应用" })
@@ -68,7 +73,8 @@ func runSelfTest() async {
     await time("树扫描(Caches)", { await env.diskTreeScanner.scan(caches) },
                describe: { "\(countNodes($0)) 节点 / \($0.size.formattedBytes)" })
 
-    log("=== 自检完成（无崩溃即通过）===")
+    log(ok ? "=== 自检完成：全部关键检查通过 ===" : "=== 自检完成：存在失败项（见上）===")
+    return ok
 }
 
 private func cleaningRoundTrip(_ env: XicoEnvironment) async -> Bool {

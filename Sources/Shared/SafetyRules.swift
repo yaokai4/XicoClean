@@ -52,15 +52,18 @@ public struct XicoSafetyRules: Sendable {
 
     /// /Users/<user>/Library/<这些子树> 整棵受保护——当代 Mac 上最大的数据损失面：
     /// 云同步目录一旦被删会把删除同步到云端与其它设备，废纸篓救不回远端；
-    /// 邮件/信息/iPhone 备份删了同样不可逆。这些目录内**没有任何合法可清理项**，故整棵封死。
+    /// 邮件/信息删了同样不可逆。这些目录内**没有任何合法可清理项**，故整棵封死。
     /// 均以 home 相对分量、小写存储。
+    ///
+    /// 注意：iPhone/iPad 本地备份（MobileSync/Backup）**刻意不在此列**——它是合法的
+    /// 可清理项（对标 CleanMyMac 的 iOS 备份清理），由规则库标为 caution、默认不勾选、
+    /// 清理前二次强警示；红线一刀切会误伤该功能。
     static let protectedLibrarySubtreesLower: [[String]] = [
         ["library", "mobile documents"],          // iCloud Drive（含"桌面与文稿"同步）
         ["library", "cloudstorage"],              // Dropbox/OneDrive/Google Drive 文件提供器挂载点
         ["library", "mail"],                       // Apple Mail 本地邮件库
         ["library", "messages"],                   // 信息（iMessage）本地库
-        ["library", "keychains"],                   // 用户钥匙串（含 login.keychain-db 等，整棵封死）
-        ["library", "application support", "mobilesync", "backup"] // iPhone/iPad 本地备份
+        ["library", "keychains"]                    // 用户钥匙串（含 login.keychain-db 等，整棵封死）
     ]
 
     /// /Users/<user>/Library/<这些目录> **本身**不可删（防止一键删掉整个应用数据根），

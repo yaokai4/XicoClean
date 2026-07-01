@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if CommandLine.arguments.contains("--selftest") {
-            Task { await runSelfTest(); NSApp.terminate(nil) }
+            Task { let ok = await runSelfTest(); exit(ok ? 0 : 1) }
             return
         }
         // 正常启动：用 AppKit 接管菜单栏（瞬态弹窗，自动消失 + 可在设置里编辑）
