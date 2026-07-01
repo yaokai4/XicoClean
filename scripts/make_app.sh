@@ -18,6 +18,13 @@ fi
 APP_BUNDLE_ID="com.xico.app"
 HELPER_LABEL="com.xico.app.helper"
 
+# 版本单一事实源：优先 git tag（形如 v1.2.0 → 1.2.0），回落到 0.2.0；
+# build 号取提交计数，保证单调递增。可用环境变量 XICO_VERSION 覆盖。
+VERSION="${XICO_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)}"
+[ -z "$VERSION" ] && VERSION="0.2.0"
+BUILD="${XICO_BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
+echo "▶︎ 版本 $VERSION (build $BUILD)"
+
 xml_escape() {
   printf '%s' "$1" \
     | sed -e 's/&/\&amp;/g' \
@@ -71,8 +78,8 @@ cat <<PLIST
     <key>CFBundleIdentifier</key><string>${APP_BUNDLE_ID}</string>
     <key>CFBundleExecutable</key><string>Xico</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.2.0</string>
-    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+    <key>CFBundleVersion</key><string>${BUILD}</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSUIElement</key><false/>
@@ -88,6 +95,9 @@ PLIST
 append_info_string "XicoDefinitionsURL" "${XICO_DEFINITIONS_URL:-}"
 append_info_string "XicoDefinitionsPublicKeys" "${XICO_DEFINITIONS_PUBLIC_KEYS:-}"
 append_info_string "XicoLicensePublicKeys" "${XICO_LICENSE_PUBLIC_KEYS:-}"
+append_info_string "XicoPurchaseURL" "${XICO_PURCHASE_URL:-https://xico.app/buy}"
+# 更新源（Sparkle 兼容的 appcast 键；内置更新检查器也读它）
+append_info_string "SUFeedURL" "${XICO_FEED_URL:-https://xico.app/appcast.xml}"
 cat <<PLIST
 </dict>
 </plist>

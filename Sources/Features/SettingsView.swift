@@ -142,14 +142,48 @@ public struct SettingsView: View {
                     Text("Xico").xLargeTitle().foregroundStyle(XColor.textPrimary)
                     Text("macOS 系统清理 · 磁盘管理 · 性能优化").font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     Text("版本 \(version)").font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                    HStack(spacing: XSpacing.s) {
+                        Button("隐私政策") { NSWorkspace.shared.open(URL(string: "https://xico.app/privacy")!) }
+                            .buttonStyle(.link).font(XFont.caption)
+                        Text("·").foregroundStyle(XColor.textTertiary)
+                        Button("许可协议") { NSWorkspace.shared.open(URL(string: "https://xico.app/eula")!) }
+                            .buttonStyle(.link).font(XFont.caption)
+                    }
                 }
                 Spacer()
                 VStack(spacing: XSpacing.xs) {
+                    Button(checkingUpdate ? "检查中…" : "检查更新") { checkForUpdate() }
+                        .buttonStyle(.bordered).disabled(checkingUpdate)
                     Button("购买") { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
                         .buttonStyle(.bordered)
                     Button("导出诊断日志") { exportDiagnostics() }
                         .buttonStyle(.bordered)
                 }
+            }
+            if let msg = updateMessage {
+                Text(msg).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    @State private var checkingUpdate = false
+    @State private var updateMessage: String?
+
+    private func checkForUpdate() {
+        checkingUpdate = true
+        updateMessage = nil
+        Task {
+            let result = await UpdateChecker().check()
+            checkingUpdate = false
+            switch result {
+            case .upToDate:
+                updateMessage = "已是最新版本（\(version)）。"
+            case let .available(info):
+                updateMessage = "发现新版本 \(info.version)，点击前往下载。"
+                NSWorkspace.shared.open(info.downloadURL)
+            case let .failed(reason):
+                updateMessage = "检查更新失败：\(reason)"
             }
         }
     }

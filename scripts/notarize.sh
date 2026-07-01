@@ -38,6 +38,19 @@ codesign -dvvv "$APP" 2>&1 | grep -q "Developer ID Application" \
   || { echo "✗ 签名身份不是 Developer ID，无法公证。"; exit 1; }
 codesign --verify --strict --deep "$APP" && echo "✓ 代码签名校验通过"
 
+# 2.5 校验发布关键 Info.plist 键非空——否则会产出「拒收一切正版许可证 / 无法在线更新」的坏包。
+echo "▶︎ 校验发布 Info.plist 键"
+PLIST="$APP/Contents/Info.plist"
+for key in XicoLicensePublicKeys XicoDefinitionsURL XicoDefinitionsPublicKeys SUFeedURL; do
+  val="$(plutil -extract "$key" raw -o - "$PLIST" 2>/dev/null || true)"
+  if [ -z "$val" ]; then
+    echo "✗ Info.plist 缺少或为空: $key"
+    echo "  发布前必须设置对应环境变量（见 scripts/release_preflight.sh）后重跑。"
+    exit 1
+  fi
+done
+echo "✓ 发布 Info.plist 键齐备"
+
 # 3. 压缩后提交公证
 mkdir -p "$DIST"
 ZIP="$DIST/Xico.zip"
@@ -61,5 +74,21 @@ ditto "$APP" "$STAGE/Xico.app"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname "Xico" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$STAGE"
+
+# 5.5 签名并公证 DMG 本身（此前 DMG 未签未公证，安装体验差一档）
+DMG_IDENTITY="$(security find-identity -v -p codesigning | grep -m1 'Developer ID Application' | awk '{print $2}')"
+codesign --force --timestamp --sign "$DMG_IDENTITY" "$DMG" && echo "✓ DMG 已签名"
+echo "▶︎ 公证 DMG"
+xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
+xcrun stapler staple "$DMG" && echo "✓ DMG 公证装订完成"
+
+# 6. 生成 / 更新 appcast（Sparkle 兼容；有 Sparkle 工具链时自动，否则给出手工提示）
+if command -v generate_appcast >/dev/null 2>&1; then
+  echo "▶︎ generate_appcast $DIST"
+  generate_appcast "$DIST" && echo "✓ 已更新 $DIST/appcast.xml（上传到 SUFeedURL 对应位置）"
+else
+  echo "ℹ︎ 未安装 Sparkle 的 generate_appcast；如需自动更新，请生成 appcast.xml 并发布到 SUFeedURL。"
+fi
+
 echo "✓ 发布完成: $DMG"
 echo "  该 DMG 可直接分发；他人下载打开拖入「应用程序」即可，Gatekeeper 放行。"
