@@ -62,12 +62,15 @@ public final class XicoEnvironment: @unchecked Sendable {
     public static func live() -> XicoEnvironment {
         let bundled = DefinitionsLibrary.bundled()
         let updater = DefinitionsUpdateService.live(bundled: bundled)
+        let library = updater.currentLibrary()
+        // 吊销名单随签名规则库下发（退款/盗版吊销的最低成本通道）
+        let license = LicenseService.live(revokedLicenseIDs: Set(library.revokedLicenseIDs))
         return XicoEnvironment(
             fs: LocalFileSystemService(),
             safety: DefaultSafetyEngine(),
-            definitions: updater.currentLibrary(),
+            definitions: library,
             definitionsUpdater: updater,
-            license: LicenseService.live()
+            license: license
         )
     }
 

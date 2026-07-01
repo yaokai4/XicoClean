@@ -58,9 +58,13 @@ final class UninstallerModel: ObservableObject {
     var selectedSize: Int64 { targets.filter(\.isSelected).reduce(0) { $0 + $1.size } }
     var selectedCount: Int { targets.filter(\.isSelected).count }
 
+    @Published var licenseBlocked = false
+
     func uninstall() {
         let items = targets.filter(\.isSelected)
         guard !items.isEmpty else { return }
+        // 卸载同样是删除操作，必须过许可证门禁（与扫描/清理一致，堵住"试用到期仍可卸载"）
+        guard env.license.status().state.allowsCommercialUse else { licenseBlocked = true; return }
         working = true
         let env = self.env
         let appName = selected?.name ?? "应用"
@@ -99,6 +103,12 @@ public struct UninstallerView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("将把应用本体与已勾选的 \(model.selectedCount) 项关联文件移入废纸篓（\(model.selectedSize.formattedBytes)），可在访达废纸篓中恢复。请确认勾选项中没有你仍需要的数据。")
+        }
+        .alert("需要有效许可证", isPresented: $model.licenseBlocked) {
+            Button("购买") { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("试用已结束或许可证无效。购买后即可继续使用卸载功能。")
         }
     }
 

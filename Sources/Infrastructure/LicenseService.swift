@@ -110,6 +110,7 @@ public enum LicenseError: Error, LocalizedError, Sendable, Equatable {
 
 public final class LicenseService: @unchecked Sendable {
     private static let trialStartKey = "xico.license.trialStartedAt"
+    private static let lastSeenKey = "xico.license.lastSeenDate"
 
     private let productID: String
     private let appMajorVersion: Int
@@ -117,6 +118,9 @@ public final class LicenseService: @unchecked Sendable {
     private let licenseURL: URL
     private let defaults: UserDefaults
     private let trialDays: Int
+    private let anchor: SecureAnchorStore
+    /// 已吊销的许可证 ID（经签名规则库通道下发）——命中即视为无效。
+    private let revokedLicenseIDs: Set<String>
 
     public init(
         productID: String = "com.xico.app",
@@ -124,7 +128,9 @@ public final class LicenseService: @unchecked Sendable {
         trustedPublicKeys: [String: Data],
         licenseDirectory: URL? = nil,
         defaults: UserDefaults = .standard,
-        trialDays: Int = 14
+        trialDays: Int = 14,
+        anchor: SecureAnchorStore = KeychainAnchorStore(),
+        revokedLicenseIDs: Set<String> = []
     ) {
         self.productID = productID
         self.appMajorVersion = appMajorVersion
@@ -134,9 +140,11 @@ public final class LicenseService: @unchecked Sendable {
         self.licenseURL = directory.appendingPathComponent("license.xico-license")
         self.defaults = defaults
         self.trialDays = trialDays
+        self.anchor = anchor
+        self.revokedLicenseIDs = revokedLicenseIDs
     }
 
-    public static func live() -> LicenseService {
+    public static func live(revokedLicenseIDs: Set<String> = []) -> LicenseService {
         let bundle = Bundle.main
         // Release 构建**只**信任随 App 签名嵌入、受 codesign 保护的 Info.plist 公钥。
         // 开发调试通道（环境变量 / UserDefaults 覆盖）仅在 DEBUG 编译存在——否则终端用户
@@ -147,10 +155,22 @@ public final class LicenseService: @unchecked Sendable {
             ?? UserDefaults.standard.string(forKey: "xico.license.publicKeys")
             ?? keyString
         #endif
-        return LicenseService(trustedPublicKeys: parsePublicKeys(keyString))
+        return LicenseService(trustedPublicKeys: parsePublicKeys(keyString),
+                              revokedLicenseIDs: revokedLicenseIDs)
     }
 
-    public func status(now: Date = Date()) -> LicenseStatus {
+    /// 购买页地址：优先取 Info.plist 的 XicoPurchaseURL（发布时通过 make_app.sh 注入），
+    /// 缺省回落到官网占位地址。用于「购买」按钮，让试用到期用户有付费路径。
+    public static func purchaseURL() -> URL {
+        if let s = Bundle.main.object(forInfoDictionaryKey: "XicoPurchaseURL") as? String,
+           let u = URL(string: s) { return u }
+        return URL(string: "https://xico.app/buy")!
+    }
+
+    public func status(now wallClock: Date = Date()) -> LicenseStatus {
+        // 防时钟回拨：用单调递增的「已见过的最晚时间」作为有效当前时间，
+        // 把系统时钟往回调不能让过期许可证复活、也不能重置/延长试用。
+        let now = effectiveNow(wallClock)
         let trialStart = trialStartedAt(now: now)
         if let data = try? Data(contentsOf: licenseURL) {
             do {
@@ -179,6 +199,19 @@ public final class LicenseService: @unchecked Sendable {
             trialStartedAt: trialStart,
             licenseURL: licenseURL
         )
+    }
+
+    /// 有效当前时间 = max(墙钟, 历史见过的最晚时间)。同时把新的最晚时间写回两处存储。
+    private func effectiveNow(_ wallClock: Date) -> Date {
+        let seenDefaults = defaults.object(forKey: Self.lastSeenKey) as? Date
+        let seenAnchor = anchor.date(forKey: Self.lastSeenKey)
+        let lastSeen = [seenDefaults, seenAnchor].compactMap { $0 }.max()
+        let effective = max(wallClock, lastSeen ?? wallClock)
+        if lastSeen == nil || effective > lastSeen! {
+            defaults.set(effective, forKey: Self.lastSeenKey)
+            anchor.set(effective, forKey: Self.lastSeenKey)
+        }
+        return effective
     }
 
     @discardableResult
@@ -217,6 +250,9 @@ public final class LicenseService: @unchecked Sendable {
         guard !payload.licenseID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw LicenseError.invalidPayload("licenseID 不能为空")
         }
+        guard !revokedLicenseIDs.contains(payload.licenseID) else {
+            throw LicenseError.invalidPayload("许可证已被吊销")
+        }
         guard payload.maxMajorVersion >= appMajorVersion else {
             throw LicenseError.invalidPayload("许可证不支持当前主版本")
         }
@@ -226,10 +262,17 @@ public final class LicenseService: @unchecked Sendable {
     }
 
     private func trialStartedAt(now: Date) -> Date {
-        if let existing = defaults.object(forKey: Self.trialStartKey) as? Date {
-            return existing
+        // 取 UserDefaults 与钥匙串锚点中的最早值——删掉任一副本都不能重置试用。
+        let fromDefaults = defaults.object(forKey: Self.trialStartKey) as? Date
+        let fromAnchor = anchor.date(forKey: Self.trialStartKey)
+        if let earliest = [fromDefaults, fromAnchor].compactMap({ $0 }).min() {
+            // 回填缺失的副本，保证两处一致
+            if fromDefaults == nil { defaults.set(earliest, forKey: Self.trialStartKey) }
+            if fromAnchor == nil { anchor.set(earliest, forKey: Self.trialStartKey) }
+            return earliest
         }
         defaults.set(now, forKey: Self.trialStartKey)
+        anchor.set(now, forKey: Self.trialStartKey)
         return now
     }
 

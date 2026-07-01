@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Domain
 import Infrastructure
 import DesignSystem
@@ -247,8 +248,10 @@ struct LicenseBanner: View {
                     .font(XFont.caption).foregroundStyle(XColor.textSecondary)
             }
             Spacer()
-            Button("打开设置") { model.selection = .settings }
+            Button("购买") { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
                 .buttonStyle(XPrimaryButtonStyle())
+            Button("导入许可证") { model.selection = .settings }
+                .buttonStyle(XSecondaryButtonStyle())
             Button { withAnimation(.spring(response: 0.3)) { model.licenseBannerDismissed = true } } label: {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
                     .foregroundStyle(XColor.textTertiary)

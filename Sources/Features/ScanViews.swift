@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Combine
 import Domain
 import Infrastructure
@@ -43,10 +44,12 @@ struct SessionScaffold<Idle: View>: View {
                         .buttonStyle(XPrimaryButtonStyle())
                 }
                 if vm.licenseIssue {
-                    Button("打开设置") {
+                    Button("购买 Xico") { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
+                        .buttonStyle(XPrimaryButtonStyle())
+                    Button("导入许可证 / 设置") {
                         NotificationCenter.default.post(name: .xicoOpenSettings, object: nil)
                     }
-                    .buttonStyle(XPrimaryButtonStyle())
+                    .buttonStyle(XSecondaryButtonStyle())
                 }
                 Button("重试") { vm.start() }.buttonStyle(XSecondaryButtonStyle())
             }

@@ -51,10 +51,22 @@ public struct CleanupDefinition: Codable, Sendable, Identifiable {
 public struct DefinitionsLibrary: Codable, Sendable {
     public let version: Int
     public let definitions: [CleanupDefinition]
+    /// 已吊销的许可证 ID（经签名规则库通道下发，实现最低成本的退款吊销）。
+    public let revokedLicenseIDs: [String]
 
-    public init(version: Int, definitions: [CleanupDefinition]) {
+    public init(version: Int, definitions: [CleanupDefinition], revokedLicenseIDs: [String] = []) {
         self.version = version
         self.definitions = definitions
+        self.revokedLicenseIDs = revokedLicenseIDs
+    }
+
+    // 旧版/精简 JSON 无 revokedLicenseIDs 字段——容错默认空。
+    private enum CodingKeys: String, CodingKey { case version, definitions, revokedLicenseIDs }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        definitions = try c.decode([CleanupDefinition].self, forKey: .definitions)
+        revokedLicenseIDs = try c.decodeIfPresent([String].self, forKey: .revokedLicenseIDs) ?? []
     }
 
     /// 从打包资源加载内置定义库
