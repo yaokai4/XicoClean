@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Xico",
+    defaultLocalization: "zh-Hans",
     platforms: [
         .macOS(.v13)
     ],
@@ -34,7 +35,8 @@ let package = Package(
         ),
         // 设计系统：Design Tokens、配色、字体、可复用组件、动效
         .target(
-            name: "DesignSystem"
+            name: "DesignSystem",
+            resources: [.process("Resources")]
         ),
         // 功能模块：各页面的 View + ViewModel
         .target(
@@ -57,7 +59,7 @@ let package = Package(
         ),
         .testTarget(
             name: "FeatureTests",
-            dependencies: ["Features", "Domain"]
+            dependencies: ["Features", "Domain", "DesignSystem"]
         )
     ],
     swiftLanguageModes: [.v6]

@@ -78,7 +78,7 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: XSpacing.l) {
                     ForEach(ModuleCatalog.grouped(), id: \.0) { category, modules in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(category.title)
+                            Text(xLoc(category.title))
                                 .xSectionLabel()
                                 .foregroundStyle(XColor.textTertiary)
                                 .padding(.leading, XSpacing.m)
@@ -167,7 +167,7 @@ struct SidebarTile: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(selected ? .white : XColor.textSecondary)
                     .frame(width: 22, height: 22)
-                Text(meta.title)
+                Text(xLoc(meta.title))
                     .font(selected ? XFont.headline : XFont.bodyEmphasis)
                     .foregroundStyle(selected ? .white : XColor.textPrimary)
                 Spacer()
