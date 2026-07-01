@@ -40,7 +40,6 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
     func removeProtected(paths: [String], reply: @escaping (Int64, [String]) -> Void) {
         var freed: Int64 = 0
         var failures: [String] = []
-        let fm = FileManager.default
         for path in paths {
             // 纵深防御，逐层校验（任一不过即拒绝）：
             // 1) 必须是绝对路径（拒相对/空路径，避免依赖助手 CWD）
@@ -60,7 +59,7 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
             }
             // 5) 防 TOCTOU：用 openat(O_NOFOLLOW) 从白名单根逐级下钻、unlinkat 锚定删除，
             //    内核保证不跟随符号链接，即使白名单根全局可写也无法被换链穿透。
-            let size = (try? fm.attributesOfItem(atPath: std)[.size] as? Int64) ?? 0
+            let size = Self.allocatedSize(atPath: std)
             if Self.safeRemove(std) {
                 freed += size
                 Self.log.notice("已删除: \(std, privacy: .public) (\(size) bytes)")
@@ -70,6 +69,27 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
             }
         }
         reply(freed, failures)
+    }
+
+    static func allocatedSize(atPath path: String) -> Int64 {
+        let url = URL(fileURLWithPath: path)
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey]
+        guard let rv = try? url.resourceValues(forKeys: keys) else { return 0 }
+        if rv.isDirectory != true {
+            return Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
+        }
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: Array(keys),
+            options: [],
+            errorHandler: { _, _ in true }
+        ) else { return 0 }
+        var total: Int64 = Int64(rv.totalFileAllocatedSize ?? 0)
+        for case let child as URL in enumerator {
+            guard let values = try? child.resourceValues(forKeys: keys), values.isDirectory != true else { continue }
+            total += Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+        }
+        return total
     }
 
     /// 从白名单根逐级 openat(O_NOFOLLOW) 下钻到父目录，再 fd 锚定递归删除。

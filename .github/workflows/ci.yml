@@ -23,14 +23,26 @@ jobs:
         run: swift build
 
       - name: Run tests (safety red-line is the release gate)
-        run: swift test 2>&1 | tee test.log
-
-      # 安全红线与清理闭环必须真实执行过，否则不可合入（复用上一步日志，不重复跑）
-      - name: Verify safety regression suites ran
+        shell: bash
         run: |
-          grep -q "SafetyEngineTests" test.log
-          grep -q "SafetyRulesTests" test.log
-          grep -q "CleaningRoundTripTests" test.log
+          set -o pipefail
+          swift test 2>&1 | tee test.log
+
+      # 安全红线与清理闭环必须真实执行过 **且全部通过**，否则不可合入。
+      # 注意：仅 grep 套件名无法区分"跑了但全红"——必须核对 "All tests ... passed" 且无失败计数。
+      - name: Verify safety regression suites ran AND passed
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in SafetyEngineTests SafetyRulesTests CleaningRoundTripTests; do
+            grep -q "$suite" test.log || { echo "::error::$suite 未出现在测试日志中（可能未编译/未运行）"; exit 1; }
+          done
+          # 任何一条 "Executed N tests, with M failures" 中 M>0 即失败
+          if grep -E "with [1-9][0-9]* failure" test.log; then
+            echo "::error::检测到测试失败"; exit 1
+          fi
+          grep -Eq "Test Suite 'All tests' passed|Test run with .* tests? .* passed|[0-9]+ tests?; [0-9]+ passed; 0 failed" test.log \
+            || { echo "::error::未找到测试全部通过的确认行"; exit 1; }
 
       - name: Verify Universal release build + signing pipeline
         run: |

@@ -28,6 +28,11 @@ public struct RootView: View {
         .frame(minWidth: 1080, minHeight: 720)
         .preferredColorScheme(model.appearance.colorScheme)
         .onAppear { model.startMetricsTimer() }
+        .onReceive(NotificationCenter.default.publisher(for: .xicoOpenSettings)) { _ in
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+                model.selection = .settings
+            }
+        }
     }
 }
 
@@ -196,6 +201,9 @@ struct DetailView: View {
                 if model.showPermissionBanner {
                     PermissionBanner().environmentObject(model)
                 }
+                if model.showLicenseBanner {
+                    LicenseBanner().environmentObject(model)
+                }
                 page
                     .id(model.selection)
                     .transition(.opacity.combined(with: .offset(y: 8)))
@@ -221,6 +229,44 @@ struct DetailView: View {
         case .settings:     SettingsView(model: model)
         case let id:        PlaceholderView(meta: ModuleCatalog.all.first { $0.id == id })
         }
+    }
+}
+
+struct LicenseBanner: View {
+    @EnvironmentObject var model: AppModel
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: XSpacing.m) {
+            XIconTile(systemImage: "checkmark.seal.fill", colors: [XColor.warning, XColor.accentPink], size: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("需要有效许可证")
+                    .font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                Text(model.licenseStatus?.summary ?? "请在设置中导入有效许可证后继续。")
+                    .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+            }
+            Spacer()
+            Button("打开设置") { model.selection = .settings }
+                .buttonStyle(XPrimaryButtonStyle())
+            Button { withAnimation(.spring(response: 0.3)) { model.licenseBannerDismissed = true } } label: {
+                Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(XColor.textTertiary)
+                    .frame(width: 24, height: 24)
+                    .background(XColor.surfaceAlt.opacity(hover ? 1 : 0), in: Circle())
+            }
+            .buttonStyle(.plain).onHover { hover = $0 }
+        }
+        .padding(XSpacing.m)
+        .background(
+            RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
+                .fill(XColor.surface)
+                .overlay(RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
+                    .strokeBorder(XColor.warning.opacity(0.35), lineWidth: 1))
+        )
+        .xSoftShadow()
+        .padding(.horizontal, XSpacing.xl)
+        .padding(.top, XSpacing.m)
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 }
 

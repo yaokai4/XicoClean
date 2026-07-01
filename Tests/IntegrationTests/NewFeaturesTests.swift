@@ -8,6 +8,10 @@ final class NewFeaturesTests: XCTestCase {
     let fs = LocalFileSystemService()
     lazy var safety = DefaultSafetyEngine()
 
+    private var runLocalSmokeTests: Bool {
+        ProcessInfo.processInfo.environment["XICO_RUN_LOCAL_SMOKE_TESTS"] == "1"
+    }
+
     func testThreatScannerRunsWithoutCrash() async throws {
         let scanner = ThreatScanner(fs: fs, safety: safety)
         let result = try await scanner.scan { _ in }
@@ -18,6 +22,9 @@ final class NewFeaturesTests: XCTestCase {
     }
 
     func testMaintenanceRunnerExecutesUserTask() async throws {
+        guard runLocalSmokeTests else {
+            throw XCTSkip("Set XICO_RUN_LOCAL_SMOKE_TESTS=1 to execute local maintenance commands.")
+        }
         // qlmanage -r cache：清快速查看缓存，无害、用户级
         let runner = MaintenanceRunner()
         let (ok, msg) = await runner.run(.flushQuickLook)

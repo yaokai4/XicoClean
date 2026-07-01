@@ -9,6 +9,7 @@ public struct MaintenanceView: View {
     @State private var rootResults: [String: (Bool, String)] = [:]
     @State private var running: String?
     @State private var status: HelperProxy.Status = .notInstalled
+    @State private var confirmTask: MaintenanceTask?
 
     public init(env: XicoEnvironment) { self.env = env }
 
@@ -28,6 +29,18 @@ public struct MaintenanceView: View {
             }
         }
         .onAppear { status = env.helper.status() }
+        .confirmationDialog(confirmTask?.title ?? "", isPresented: confirmBinding, titleVisibility: .visible) {
+            if let task = confirmTask {
+                Button("确认执行", role: .destructive) { performRoot(task) }
+                Button("取消", role: .cancel) {}
+            }
+        } message: {
+            if let task = confirmTask, let msg = task.confirmationMessage { Text(msg) }
+        }
+    }
+
+    private var confirmBinding: Binding<Bool> {
+        Binding(get: { confirmTask != nil }, set: { if !$0 { confirmTask = nil } })
     }
 
     private func sectionLabel(_ t: String) -> some View {
@@ -127,6 +140,15 @@ public struct MaintenanceView: View {
     }
 
     private func runRoot(_ task: MaintenanceTask) {
+        if task.needsConfirmation {
+            confirmTask = task
+        } else {
+            performRoot(task)
+        }
+    }
+
+    private func performRoot(_ task: MaintenanceTask) {
+        confirmTask = nil
         running = "r-" + task.rawValue
         Task {
             let (ok, out) = await env.helper.runMaintenance(task)

@@ -14,7 +14,10 @@ func runSelfTest() async {
 
     let env = XicoEnvironment.live()
     log("=== Xico 全功能自检 ===")
-    log("定义库 v\(env.definitions.version)（\(env.definitions.definitions.count) 条） · FDA=\(env.permissions.hasFullDiskAccess()) · 助手=\(env.helper.status())")
+    let definitionsStatus = env.definitionsUpdater.status()
+    let definitionsSource = definitionsStatus.cachedVersion == env.definitions.version ? "signed-cache" : "bundled"
+    let license = env.license.status()
+    log("定义库 v\(env.definitions.version)（\(env.definitions.definitions.count) 条，\(definitionsSource)） · 授权=\(license.state.title) · FDA=\(env.permissions.hasFullDiskAccess()) · 助手=\(env.helper.status())")
 
     log("[扫描器]")
     for id in [ModuleID.systemJunk, .privacy, .trash, .largeFiles, .malware] {

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Domain
 import Infrastructure
 import DesignSystem
@@ -9,6 +10,11 @@ public struct SettingsView: View {
     @State private var history: [CleaningRecord] = []
     @State private var totalReclaimed: Int64 = 0
     @State private var totalCleanups = 0
+    @State private var definitionsStatus: DefinitionsUpdateStatus?
+    @State private var definitionsMessage: String?
+    @State private var definitionsUpdating = false
+    @State private var licenseStatus: LicenseStatus?
+    @State private var licenseMessage: String?
     @AppStorage("xico.mb.cpu") private var mbCPU = true
     @AppStorage("xico.mb.memory") private var mbMemory = true
     @AppStorage("xico.mb.network") private var mbNetwork = true
@@ -29,6 +35,8 @@ public struct SettingsView: View {
             ScrollView {
                 VStack(spacing: XSpacing.m) {
                     aboutCard
+                    licenseCard
+                    definitionsCard
                     historyCard
                     appearanceCard
                     menuBarCard
@@ -43,6 +51,8 @@ public struct SettingsView: View {
         }
         .onAppear {
             helperStatus = model.env.helper.status()
+            definitionsStatus = model.env.definitionsUpdater.status()
+            licenseStatus = model.env.license.status()
             reloadHistory()
         }
         .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in reloadHistory() }
@@ -101,6 +111,141 @@ public struct SettingsView: View {
                 }
                 Spacer()
             }
+        }
+    }
+
+    private var licenseCard: some View {
+        XCard {
+            VStack(alignment: .leading, spacing: XSpacing.s) {
+                HStack(spacing: XSpacing.m) {
+                    XIconTile(systemImage: licenseIcon,
+                              colors: licenseAllowsUse ? [XColor.accentTeal, XColor.success] : [XColor.warning, XColor.accentPink],
+                              size: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("商业授权").xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(licenseSubtitle).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    }
+                    Spacer()
+                    Button("导入许可证") { importLicense() }.buttonStyle(.bordered)
+                    if licenseStatus?.licenseID != nil {
+                        Button("移除") {
+                            model.env.license.clearLicense()
+                            licenseStatus = model.env.license.status()
+                            model.refreshLicense()
+                            licenseMessage = "已移除本机许可证。"
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                if let licenseMessage {
+                    Divider().padding(.vertical, 2)
+                    Text(licenseMessage)
+                        .font(XFont.caption)
+                        .foregroundStyle(XColor.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private var licenseAllowsUse: Bool {
+        (licenseStatus ?? model.env.license.status()).state.allowsCommercialUse
+    }
+
+    private var licenseIcon: String {
+        switch (licenseStatus ?? model.env.license.status()).state {
+        case .licensed: return "checkmark.seal.fill"
+        case .trial: return "timer"
+        case .expired, .invalid: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var licenseSubtitle: String {
+        let status = licenseStatus ?? model.env.license.status()
+        return "\(status.state.title) · \(status.summary)"
+    }
+
+    private func importLicense() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json, .data]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            licenseStatus = try model.env.license.installLicense(fromEnvelopeData: data)
+            model.refreshLicense()
+            licenseMessage = "许可证已验证并安装。"
+        } catch {
+            licenseStatus = model.env.license.status()
+            model.refreshLicense()
+            licenseMessage = error.localizedDescription
+        }
+    }
+
+    private var definitionsCard: some View {
+        XCard {
+            VStack(alignment: .leading, spacing: XSpacing.s) {
+                HStack(spacing: XSpacing.m) {
+                    XIconTile(systemImage: "checkmark.shield.fill",
+                              colors: definitionsTrusted ? [XColor.accentTeal, XColor.success] : [XColor.warning, XColor.accentPink],
+                              size: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("清理规则库").xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(definitionsSubtitle).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    }
+                    Spacer()
+                    if definitionsUpdating {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("检查更新") { refreshDefinitions() }
+                            .buttonStyle(.bordered)
+                            .disabled(!(definitionsStatus?.endpointConfigured ?? false) || !(definitionsStatus?.trustConfigured ?? false))
+                    }
+                }
+                if let definitionsMessage {
+                    Divider().padding(.vertical, 2)
+                    Text(definitionsMessage)
+                        .font(XFont.caption)
+                        .foregroundStyle(XColor.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private var definitionsTrusted: Bool {
+        definitionsStatus?.trustConfigured == true
+    }
+
+    private var definitionsSubtitle: String {
+        let status = definitionsStatus ?? model.env.definitionsUpdater.status()
+        let cached = status.cachedVersion.map { " · 已缓存 v\($0)" } ?? ""
+        let config: String
+        if status.endpointConfigured && status.trustConfigured {
+            config = "在线更新已启用"
+        } else if !status.endpointConfigured {
+            config = "使用内置离线规则"
+        } else {
+            config = "缺少可信公钥配置"
+        }
+        return "当前 v\(status.activeVersion)\(cached) · \(config)"
+    }
+
+    private func refreshDefinitions() {
+        definitionsUpdating = true
+        definitionsMessage = nil
+        Task {
+            do {
+                let library = try await model.env.definitionsUpdater.refresh()
+                definitionsStatus = model.env.definitionsUpdater.status()
+                definitionsMessage = "已下载并验证规则库 v\(library.version)。重新启动 Xico 后生效。"
+            } catch {
+                definitionsStatus = model.env.definitionsUpdater.status()
+                definitionsMessage = error.localizedDescription
+            }
+            definitionsUpdating = false
         }
     }
 

@@ -10,7 +10,7 @@
 ## 快速开始（运行 App）
 
 ```bash
-# 1. 运行测试（24 个，含安全引擎红线测试）
+# 1. 运行测试
 swift test
 
 # 2. 开发期直接运行
@@ -50,11 +50,70 @@ open build/Xico.app
 - `scripts/make_app.sh release` 会**嵌入并签名** `XicoHelper`（自动选用 Developer ID / Apple Development 身份），
   写入 `Contents/Library/LaunchDaemons/com.xico.app.helper.plist`，签名校验通过。
 - 在「维护」页点「安装助手」即可经 `SMAppService` 注册；首次需在系统设置 › 登录项与扩展中批准。
+- 发布构建可通过 `XICO_DEFINITIONS_URL`、`XICO_DEFINITIONS_PUBLIC_KEYS`、`XICO_LICENSE_PUBLIC_KEYS`
+  将在线规则库与许可证信任配置写入 App 的 `Info.plist`。
 
 ### 待完成（对外分发相关）
-- ⏳ 公证（Notarization，需 Developer ID + `notarytool`）
-- ⏳ Sparkle 自动更新、商业化（FastSpring/Paddle）
+- ⏳ 公证实机放行（脚本已具备；需 Developer ID + `notarytool` 凭证）
+- ⏳ Sparkle 自动更新、支付履约（FastSpring/Paddle / Paddle webhooks）
 - ⏳ Phase 2：恶意软件移除、相似图片查重、应用更新器
+
+### 规则库在线更新（已具备签名链路）
+
+Xico 的清理规则库支持「内置离线规则 + 已签名缓存 + HTTPS 在线更新」三层模式。在线规则必须用 Ed25519 签名 envelope，App 只接受配置过可信公钥且版本号更高的规则库；签名失败、密钥不受信任或版本回退都会拒绝并保留当前规则。
+
+```bash
+# 生成发布用密钥对（私钥只放 CI/发布机密钥库，不提交仓库）
+scripts/sign_definitions.swift --generate-keypair
+
+# 用私钥签名规则库，产出可放到 HTTPS/CDN 的 definitions.signed.json
+XICO_DEFINITIONS_PRIVATE_KEY="<private-base64>" \
+  scripts/sign_definitions.swift \
+  --input Sources/Domain/Resources/definitions.json \
+  --output dist/definitions.signed.json \
+  --key-id release-v1
+
+# 本地/CI 自检签名工具
+scripts/sign_definitions.swift --self-test
+```
+
+开发期可通过 `XICO_DEFINITIONS_URL` 与 `XICO_DEFINITIONS_PUBLIC_KEYS` 试跑在线更新；格式为 `key-id:public-key-base64`，多个 key 用逗号分隔。
+
+### 商业授权与试用（已具备签名许可证链路）
+
+Xico 内置 14 天试用期；试用结束或许可证无效时，清理/扫描会被功能门禁拦截，并引导用户到设置页导入许可证。许可证同样使用 Ed25519 签名 envelope，App 只接受配置过可信公钥、产品 ID 匹配且未过期的许可证。
+
+```bash
+# 生成许可证发布密钥对
+scripts/sign_license.swift --generate-keypair
+
+# 签发许可证
+XICO_LICENSE_PRIVATE_KEY="<private-base64>" \
+  scripts/sign_license.swift \
+  --license-id customer-2026-001 \
+  --customer "Customer Name" \
+  --output dist/customer.xico-license \
+  --key-id release-v1 \
+  --expires-at 2027-12-31
+
+# 本地/CI 自检签名工具
+scripts/sign_license.swift --self-test
+```
+
+开发期可通过 `XICO_LICENSE_PUBLIC_KEYS` 或 UserDefaults `xico.license.publicKeys` 配置信任公钥；格式同样为 `key-id:public-key-base64`，多个 key 用逗号分隔。
+
+### 发布预检
+
+```bash
+# 检查冲突副本、签名脚本、发布公钥、Developer ID、公证凭证，并跑完整质量门禁
+XICO_DEFINITIONS_URL="https://example.com/definitions.signed.json" \
+XICO_DEFINITIONS_PUBLIC_KEYS="release-v1:<definitions-public-base64>" \
+XICO_LICENSE_PUBLIC_KEYS="release-v1:<license-public-base64>" \
+scripts/release_preflight.sh
+
+# 发布机预检通过后再公证打包
+scripts/notarize.sh
+```
 
 ---
 

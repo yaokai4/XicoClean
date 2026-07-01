@@ -20,6 +20,18 @@ final class ScanCoordinatorTests: XCTestCase {
             ])
         }
     }
+    struct FixedScanner: ScannerModule {
+        let metadata: ModuleMetadata
+        let url: URL
+        let safety: SafetyLevel
+        func scan(progress: @escaping ProgressHandler) async throws -> ScanResult {
+            ScanResult(moduleID: metadata.id, groups: [
+                ScanResultGroup(id: metadata.id.rawValue, title: metadata.title, items: [
+                    CleanableItem(url: url, displayName: url.lastPathComponent, size: 10, safety: safety)
+                ])
+            ])
+        }
+    }
 
     private func meta(_ id: String) -> ModuleMetadata {
         ModuleMetadata(id: ModuleID(id), title: id, subtitle: "", systemImage: "x", category: .cleanup)
@@ -41,5 +53,17 @@ final class ScanCoordinatorTests: XCTestCase {
                                               OKScanner(metadata: meta("b"))])
         let results = try await coord.scanAll()
         XCTAssertEqual(results.count, 1, "部分成功应返回成功模块的结果")
+    }
+
+    func testOverlappingPathsKeepMoreSpecificItem() async throws {
+        let parent = URL(fileURLWithPath: "/tmp/Xico/Cache")
+        let child = URL(fileURLWithPath: "/tmp/Xico/Cache/Browser")
+        let coord = ScanCoordinator(modules: [
+            FixedScanner(metadata: meta("parent"), url: parent, safety: .safe),
+            FixedScanner(metadata: meta("child"), url: child, safety: .caution)
+        ])
+
+        let paths = try await coord.scanAll().flatMap { $0.groups }.flatMap { $0.items }.map(\.url.path)
+        XCTAssertEqual(paths, [child.path])
     }
 }

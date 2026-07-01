@@ -46,3 +46,17 @@ public enum SafetyVerdict: Sendable, Equatable {
 public protocol SafetyEngine: Sendable {
     func verify(_ url: URL, intent: DeleteIntent) -> SafetyVerdict
 }
+
+public struct PrivilegedRemovalReport: Sendable {
+    public let freedBytes: Int64
+    public let failures: [URL]
+
+    public init(freedBytes: Int64, failures: [URL]) {
+        self.freedBytes = freedBytes
+        self.failures = failures
+    }
+}
+
+public protocol PrivilegedCleaningService: Sendable {
+    func removeProtected(_ urls: [URL]) async -> PrivilegedRemovalReport
+}

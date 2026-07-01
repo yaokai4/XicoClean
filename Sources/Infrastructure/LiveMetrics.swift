@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Domain
 
 public enum ThermalLevel: String, Sendable {
@@ -97,7 +98,7 @@ public final class LiveMetricsSampler: @unchecked Sendable {
             }
         }
         guard result == KERN_SUCCESS else { return (0, total, 0, 0, 0) }
-        let page = Int64(vm_kernel_page_size)
+        let page = Int64(getpagesize())
         let active = Int64(stats.active_count) * page
         let wired = Int64(stats.wire_count) * page
         let compressed = Int64(stats.compressor_page_count) * page
@@ -170,7 +171,7 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         guard size > 0 else { return "" }
         var buf = [CChar](repeating: 0, count: size)
         sysctlbyname(name, &buf, &size, nil, 0)
-        return String(cString: buf)
+        return xicoString(fromNullTerminated: buf)
     }
 
     private func formatUptime(_ seconds: TimeInterval) -> String {

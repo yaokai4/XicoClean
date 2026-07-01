@@ -46,7 +46,8 @@ public struct ThreatScanner: ScannerModule {
                 let size = fs.allocatedSize(of: url)
                 items.append(CleanableItem(url: url, displayName: url.lastPathComponent,
                                            detail: url.path, size: max(size, 1),
-                                           safety: .risky, isSelected: true))
+                                           safety: .risky, isSelected: false,
+                                           note: "高风险 · 请审阅"))
                 progress(ScanProgress(message: url.lastPathComponent, bytesFound: 0))
             }
         }

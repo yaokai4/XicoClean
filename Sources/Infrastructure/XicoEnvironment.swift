@@ -6,6 +6,7 @@ public final class XicoEnvironment: @unchecked Sendable {
     public let fs: FileSystemService
     public let safety: SafetyEngine
     public let definitions: DefinitionsLibrary
+    public let definitionsUpdater: DefinitionsUpdateService
     public let cleaningEngine: CleaningEngine
     public let metrics: MetricsSampler
     public let permissions: PermissionsManager
@@ -16,18 +17,28 @@ public final class XicoEnvironment: @unchecked Sendable {
     public let liveMetrics: LiveMetricsSampler
     public let helper: HelperProxy
     public let history: HistoryStore
+    public let license: LicenseService
 
     private let scanners: [ModuleID: ScannerModule]
 
     public init(
         fs: FileSystemService,
         safety: SafetyEngine,
-        definitions: DefinitionsLibrary
+        definitions: DefinitionsLibrary,
+        definitionsUpdater: DefinitionsUpdateService? = nil,
+        license: LicenseService? = nil
     ) {
         self.fs = fs
         self.safety = safety
         self.definitions = definitions
-        self.cleaningEngine = CleaningEngine(safety: safety, fs: fs)
+        self.definitionsUpdater = definitionsUpdater ?? DefinitionsUpdateService(
+            bundled: definitions,
+            endpoint: nil,
+            trustedPublicKeys: [:]
+        )
+        let helper = HelperProxy()
+        self.helper = helper
+        self.cleaningEngine = CleaningEngine(safety: safety, fs: fs, privileged: helper)
         self.metrics = MetricsSampler(fs: fs)
         self.permissions = PermissionsManager()
         self.diskTreeScanner = DiskTreeScanner(fs: fs)
@@ -35,8 +46,8 @@ public final class XicoEnvironment: @unchecked Sendable {
         self.optimization = OptimizationService()
         self.maintenanceRunner = MaintenanceRunner()
         self.liveMetrics = LiveMetricsSampler(fs: fs)
-        self.helper = HelperProxy()
         self.history = HistoryStore()
+        self.license = license ?? LicenseService.live()
 
         var map: [ModuleID: ScannerModule] = [:]
         map[.systemJunk] = SystemJunkScanner(definitions: definitions.definitions, fs: fs, safety: safety)
@@ -49,10 +60,14 @@ public final class XicoEnvironment: @unchecked Sendable {
 
     /// 默认线上环境
     public static func live() -> XicoEnvironment {
-        XicoEnvironment(
+        let bundled = DefinitionsLibrary.bundled()
+        let updater = DefinitionsUpdateService.live(bundled: bundled)
+        return XicoEnvironment(
             fs: LocalFileSystemService(),
             safety: DefaultSafetyEngine(),
-            definitions: DefinitionsLibrary.bundled()
+            definitions: updater.currentLibrary(),
+            definitionsUpdater: updater,
+            license: LicenseService.live()
         )
     }
 

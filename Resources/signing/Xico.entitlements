@@ -2,11 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!--
-      Xico 主程：非沙盒（Developer ID 分发）+ Hardened Runtime（由 codesign --options runtime 开启）。
-      刻意不声明 com.apple.security.app-sandbox（非沙盒）。
-      未来若集成 Sparkle 等第三方框架，再按需添加 cs.disable-library-validation。
-    -->
     <key>com.apple.security.cs.allow-jit</key>
     <false/>
 </dict>

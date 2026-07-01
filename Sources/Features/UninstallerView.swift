@@ -81,6 +81,7 @@ final class UninstallerModel: ObservableObject {
 
 public struct UninstallerView: View {
     @StateObject private var model: UninstallerModel
+    @State private var confirmUninstall = false
     public init(env: XicoEnvironment) {
         _model = StateObject(wrappedValue: UninstallerModel(env: env))
     }
@@ -92,6 +93,13 @@ public struct UninstallerView: View {
             detail
         }
         .onAppear { if model.apps.isEmpty { model.load() } }
+        .confirmationDialog("确认卸载 \(model.selected?.name ?? "应用")？",
+                            isPresented: $confirmUninstall, titleVisibility: .visible) {
+            Button("卸载并移入废纸篓（\(model.selectedCount) 项）", role: .destructive) { model.uninstall() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将把应用本体与已勾选的 \(model.selectedCount) 项关联文件移入废纸篓（\(model.selectedSize.formattedBytes)），可在访达废纸篓中恢复。请确认勾选项中没有你仍需要的数据。")
+        }
     }
 
     private var appList: some View {
@@ -164,7 +172,7 @@ public struct UninstallerView: View {
                     if model.working {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("卸载 · \(model.selectedSize.formattedBytes)") { model.uninstall() }
+                        Button("卸载 · \(model.selectedSize.formattedBytes)") { confirmUninstall = true }
                             .buttonStyle(XPrimaryButtonStyle(enabled: model.selectedCount > 0))
                             .disabled(model.selectedCount == 0)
                     }

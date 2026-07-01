@@ -5,6 +5,8 @@ import Infrastructure
 public extension Notification.Name {
     /// 清理完成后广播，便于各处刷新磁盘占用
     static let xicoDidClean = Notification.Name("xicoDidClean")
+    /// 授权门禁触发后打开设置页
+    static let xicoOpenSettings = Notification.Name("xicoOpenSettings")
 }
 
 /// 外观偏好：跟随系统 / 浅色 / 深色
@@ -43,6 +45,8 @@ public final class AppModel: ObservableObject {
     @Published public var liveSnapshot: SystemSnapshot?
     @Published public var capacity: VolumeCapacity?
     @Published public var macInfo: MacInfo?
+    @Published public var licenseStatus: LicenseStatus?
+    @Published public var licenseBannerDismissed: Bool = false
 
     // 滚动历史（用于菜单栏折线图）
     @Published public var cpuHistory: [Double] = []
@@ -75,6 +79,7 @@ public final class AppModel: ObservableObject {
             appearance = a
         }
         refreshPermissions()
+        refreshLicense()
         refreshMetrics()
         NotificationCenter.default.addObserver(forName: .xicoDidClean, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refreshMetrics() }
@@ -94,6 +99,13 @@ public final class AppModel: ObservableObject {
         push(&memHistory, s.memoryUsedFraction)
         push(&netDownHistory, s.netDownBytesPerSec)
         push(&netUpHistory, s.netUpBytesPerSec)
+    }
+
+    public func refreshLicense() {
+        licenseStatus = env.license.status()
+        if licenseStatus?.state.allowsCommercialUse == true {
+            licenseBannerDismissed = false
+        }
     }
 
     private func push(_ arr: inout [Double], _ v: Double) {
@@ -119,4 +131,8 @@ public final class AppModel: ObservableObject {
     }
 
     var showPermissionBanner: Bool { !hasFullDiskAccess && !permissionBannerDismissed }
+    var showLicenseBanner: Bool {
+        guard let licenseStatus else { return false }
+        return !licenseStatus.state.allowsCommercialUse && !licenseBannerDismissed
+    }
 }

@@ -33,6 +33,8 @@ public final class ModuleSessionViewModel: ObservableObject {
     @Published public var lastReport: CleaningReport?
     /// 失败是否由缺少完全磁盘访问权限导致（用于在失败态给出「开启权限」入口）
     @Published public var permissionIssue = false
+    /// 失败是否由试用结束或许可证无效导致
+    @Published public var licenseIssue = false
 
     public let title: String
     public let intent: DeleteIntent
@@ -58,6 +60,7 @@ public final class ModuleSessionViewModel: ObservableObject {
     public var selectedItems: [CleanableItem] {
         groups.flatMap { $0.items.filter(\.isSelected) }
     }
+    public var selectedRequiresHelper: Bool { selectedItems.contains(where: \.requiresHelper) }
     public var selectedSize: Int64 { selectedItems.reduce(0) { $0 + $1.size } }
     public var selectedCount: Int { selectedItems.count }
     public var totalReclaimable: Int64 { groups.reduce(0) { $0 + $1.totalSize } }
@@ -66,6 +69,7 @@ public final class ModuleSessionViewModel: ObservableObject {
     // MARK: 扫描
 
     public func start() {
+        guard ensureLicensed() else { return }
         scanTask?.cancel()
         phase = .scanning
         progress = 0
@@ -74,6 +78,7 @@ public final class ModuleSessionViewModel: ObservableObject {
         groups = []
         lastReport = nil
         permissionIssue = false
+        licenseIssue = false
 
         let handler = makeHandler()
         scanTask = Task {
@@ -130,16 +135,31 @@ public final class ModuleSessionViewModel: ObservableObject {
     // MARK: 清理
 
     public func clean() {
+        guard ensureLicensed() else { return }
         let items = selectedItems
         guard !items.isEmpty else { return }
         phase = .cleaning
         progress = 0
         statusMessage = "正在清理…"
 
-        let plan = CleaningPlan(items: items, intent: intent)
         let handler = makeHandler()
         Task {
-            let report = await env.cleaningEngine.execute(plan, progress: handler)
+            let normalItems = items.filter { !$0.requiresHelper }
+            let privilegedItems = items.filter(\.requiresHelper)
+            var reports: [CleaningReport] = []
+            if !normalItems.isEmpty {
+                reports.append(await env.cleaningEngine.execute(
+                    CleaningPlan(items: normalItems, intent: self.intent),
+                    progress: handler
+                ))
+            }
+            if !privilegedItems.isEmpty {
+                reports.append(await env.cleaningEngine.execute(
+                    CleaningPlan(items: privilegedItems, intent: .permanent),
+                    progress: handler
+                ))
+            }
+            let report = Self.merge(reports)
             self.lastReport = report
             self.removeCleaned(report)
             // 记入持久化清理历史（可追溯：累计释放 / 最近记录跨会话留存）
@@ -179,6 +199,29 @@ public final class ModuleSessionViewModel: ObservableObject {
             groups[gi].items.removeAll { $0.isSelected && !failedPaths.contains($0.url.path) }
         }
         groups.removeAll { $0.items.isEmpty }
+    }
+
+    private static func merge(_ reports: [CleaningReport]) -> CleaningReport {
+        CleaningReport(
+            removedCount: reports.reduce(0) { $0 + $1.removedCount },
+            reclaimedBytes: reports.reduce(0) { $0 + $1.reclaimedBytes },
+            failures: reports.flatMap(\.failures),
+            restorable: reports.flatMap(\.restorable)
+        )
+    }
+
+    private func ensureLicensed() -> Bool {
+        let status = env.license.status()
+        guard status.state.allowsCommercialUse else {
+            scanTask?.cancel()
+            permissionIssue = false
+            licenseIssue = true
+            phase = .failed("试用已结束或许可证无效。请在设置中导入有效许可证后继续。\(status.summary)")
+            NotificationCenter.default.post(name: .xicoOpenSettings, object: nil)
+            return false
+        }
+        licenseIssue = false
+        return true
     }
 
     private func makeHandler() -> ProgressHandler {

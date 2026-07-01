@@ -53,7 +53,7 @@ struct TreemapView: View {
 
     // MARK: 布局
 
-    static func squarify(_ items: [DiskNode], in rect: CGRect) -> [(DiskNode, CGRect)] {
+    nonisolated static func squarify(_ items: [DiskNode], in rect: CGRect) -> [(DiskNode, CGRect)] {
         guard !items.isEmpty, rect.width > 0, rect.height > 0 else { return [] }
         if items.count == 1 { return [(items[0], rect)] }
 

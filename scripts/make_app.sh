@@ -8,11 +8,32 @@ CONFIG="${1:-release}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# 清理 iCloud 同步产生的冲突副本（"* 2.swift" 等），否则会重复声明编译失败
-find Sources Tests \( -name "* [0-9].swift" -o -name "* [0-9].json" \) -delete 2>/dev/null || true
+# iCloud 同步产生的冲突副本（"* 2.swift" 等）会导致重复声明编译失败。
+# 发布脚本只检测并失败，不自动删除源码；需要时显式运行 scripts/clean_conflicts.sh。
+if find Sources Tests \( -name "* [0-9].swift" -o -name "* [0-9].json" \) -print -quit | grep -q .; then
+  echo "✗ 发现疑似 iCloud 冲突副本。请先检查并运行 scripts/clean_conflicts.sh。"
+  exit 1
+fi
 
 APP_BUNDLE_ID="com.xico.app"
 HELPER_LABEL="com.xico.app.helper"
+
+xml_escape() {
+  printf '%s' "$1" \
+    | sed -e 's/&/\&amp;/g' \
+          -e 's/</\&lt;/g' \
+          -e 's/>/\&gt;/g' \
+          -e 's/"/\&quot;/g' \
+          -e "s/'/\&apos;/g"
+}
+
+append_info_string() {
+  local key="$1"
+  local value="$2"
+  if [ -n "$value" ]; then
+    printf '    <key>%s</key><string>%s</string>\n' "$key" "$(xml_escape "$value")"
+  fi
+}
 
 # Universal Binary（arm64 + x86_64），让 Intel 与 Apple Silicon 都能运行
 ARCHS="--arch arm64 --arch x86_64"
@@ -39,7 +60,8 @@ cp "$BIN_DIR/Xico" "$CONTENTS/MacOS/Xico"
 cp "$BIN_DIR/XicoHelper" "$CONTENTS/MacOS/XicoHelper"
 [ -d "$BIN_DIR/Xico_Domain.bundle" ] && cp -R "$BIN_DIR/Xico_Domain.bundle" "$CONTENTS/Resources/"
 
-cat > "$CONTENTS/Info.plist" <<PLIST
+{
+cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -62,9 +84,15 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>NSHumanReadableCopyright</key><string>© 2026 Xico. 保留所有权利。</string>
     <key>NSSupportsSuddenTermination</key><true/>
     <key>NSSupportsAutomaticTermination</key><true/>
+PLIST
+append_info_string "XicoDefinitionsURL" "${XICO_DEFINITIONS_URL:-}"
+append_info_string "XicoDefinitionsPublicKeys" "${XICO_DEFINITIONS_PUBLIC_KEYS:-}"
+append_info_string "XicoLicensePublicKeys" "${XICO_LICENSE_PUBLIC_KEYS:-}"
+cat <<PLIST
 </dict>
 </plist>
 PLIST
+} > "$CONTENTS/Info.plist"
 
 # 生成 App 图标（用刚构建的二进制渲染主图，再转 icns）
 echo "▶︎ 生成 App 图标"

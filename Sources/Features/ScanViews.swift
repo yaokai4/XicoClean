@@ -27,8 +27,8 @@ struct SessionScaffold<Idle: View>: View {
 
     private func failedView(_ message: String) -> some View {
         VStack(spacing: XSpacing.l) {
-            XEmptyState(systemImage: vm.permissionIssue ? "lock.shield" : "exclamationmark.triangle",
-                        title: vm.permissionIssue ? "需要完全磁盘访问权限" : "扫描未完成",
+            XEmptyState(systemImage: failedIcon,
+                        title: failedTitle,
                         subtitle: message)
                 .frame(maxHeight: 320)
             HStack(spacing: XSpacing.m) {
@@ -36,10 +36,28 @@ struct SessionScaffold<Idle: View>: View {
                     Button("开启完全磁盘访问") { vm.openPermissionSettings() }
                         .buttonStyle(XPrimaryButtonStyle())
                 }
+                if vm.licenseIssue {
+                    Button("打开设置") {
+                        NotificationCenter.default.post(name: .xicoOpenSettings, object: nil)
+                    }
+                    .buttonStyle(XPrimaryButtonStyle())
+                }
                 Button("重试") { vm.start() }.buttonStyle(XSecondaryButtonStyle())
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var failedIcon: String {
+        if vm.permissionIssue { return "lock.shield" }
+        if vm.licenseIssue { return "checkmark.seal" }
+        return "exclamationmark.triangle"
+    }
+
+    private var failedTitle: String {
+        if vm.permissionIssue { return "需要完全磁盘访问权限" }
+        if vm.licenseIssue { return "需要有效许可证" }
+        return "扫描未完成"
     }
 
     private var scanningView: some View {
@@ -71,25 +89,47 @@ struct SessionScaffold<Idle: View>: View {
             }
             XActionBar(
                 title: "已选 \(vm.selectedCount) 项",
-                subtitle: vm.intent == .permanent ? "将彻底删除（不可恢复）" : "将移入废纸篓，可随时撤销"
+                subtitle: actionSubtitle
             ) {
                 if vm.phase == .cleaning {
                     HStack(spacing: XSpacing.s) { ProgressView().controlSize(.small); Text("清理中…").font(XFont.caption) }
                 } else {
                     Button("\(cleanButtonTitle) · \(vm.selectedSize.formattedBytes)") {
-                        if vm.intent == .permanent { confirmPermanent = true } else { vm.clean() }
+                        if vm.intent == .permanent || vm.selectedRequiresHelper { confirmPermanent = true } else { vm.clean() }
                     }
                         .buttonStyle(XPrimaryButtonStyle(enabled: vm.selectedCount > 0))
                         .disabled(vm.selectedCount == 0)
                 }
             }
         }
-        .confirmationDialog("确认彻底删除？", isPresented: $confirmPermanent, titleVisibility: .visible) {
-            Button("彻底删除 \(vm.selectedCount) 项（不可恢复）", role: .destructive) { vm.clean() }
+        .confirmationDialog(confirmTitle, isPresented: $confirmPermanent, titleVisibility: .visible) {
+            Button(confirmButtonTitle, role: .destructive) { vm.clean() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("这些项目将被永久删除，无法从废纸篓恢复。")
+            Text(confirmMessage)
         }
+    }
+
+    private var actionSubtitle: String {
+        if vm.intent == .permanent { return "将彻底删除（不可恢复）" }
+        if vm.selectedRequiresHelper { return "普通项目移入废纸篓；管理员项目将彻底删除" }
+        return "将移入废纸篓，可随时撤销"
+    }
+
+    private var confirmTitle: String {
+        vm.selectedRequiresHelper ? "确认清理管理员项目？" : "确认彻底删除？"
+    }
+
+    private var confirmButtonTitle: String {
+        if vm.selectedRequiresHelper { return "确认清理 \(vm.selectedCount) 项" }
+        return "彻底删除 \(vm.selectedCount) 项（不可恢复）"
+    }
+
+    private var confirmMessage: String {
+        if vm.selectedRequiresHelper {
+            return "管理员权限项目会经特权助手永久删除，无法从废纸篓恢复；普通项目仍会移入废纸篓。"
+        }
+        return "这些项目将被永久删除，无法从废纸篓恢复。"
     }
 
     private var emptyView: some View {

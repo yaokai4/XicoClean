@@ -1,5 +1,6 @@
 import Foundation
 import ServiceManagement
+import Domain
 import Shared
 
 /// 特权助手客户端：注册 / 状态查询 / 经 XPC 调用。
@@ -48,7 +49,7 @@ public final class HelperProxy: @unchecked Sendable {
             connection.remoteObjectInterface = NSXPCInterface(with: XicoHelperProtocol.self)
             connection.resume()
 
-            let resumeOnce = ResumeGuard(continuation)
+            let resumeOnce = ResumeGuard<(Bool, String?)>(continuation)
             let proxy = connection.remoteObjectProxyWithErrorHandler { error in
                 resumeOnce.finish((false, "无法连接助手：\(error.localizedDescription)"))
                 connection.invalidate()
@@ -65,14 +66,49 @@ public final class HelperProxy: @unchecked Sendable {
             }
         }
     }
+
+    public func removeProtected(paths: [String]) async -> (Int64, [String]) {
+        await withCheckedContinuation { continuation in
+            let connection = NSXPCConnection(machServiceName: XicoHelperMachServiceName, options: .privileged)
+            connection.remoteObjectInterface = NSXPCInterface(with: XicoHelperProtocol.self)
+            connection.resume()
+
+            let resumeOnce = ResumeGuard<(Int64, [String])>(continuation)
+            let proxy = connection.remoteObjectProxyWithErrorHandler { _ in
+                resumeOnce.finish((0, paths))
+                connection.invalidate()
+            } as? XicoHelperProtocol
+
+            guard let proxy else {
+                resumeOnce.finish((0, paths))
+                connection.invalidate()
+                return
+            }
+            proxy.removeProtected(paths: paths) { freed, failures in
+                resumeOnce.finish((freed, failures))
+                connection.invalidate()
+            }
+        }
+    }
+}
+
+extension HelperProxy: PrivilegedCleaningService {
+    public func removeProtected(_ urls: [URL]) async -> PrivilegedRemovalReport {
+        let paths = urls.map(\.path)
+        let (freed, failures) = await removeProtected(paths: paths)
+        return PrivilegedRemovalReport(
+            freedBytes: freed,
+            failures: failures.map { URL(fileURLWithPath: $0) }
+        )
+    }
 }
 
 /// 确保 continuation 只 resume 一次
-private final class ResumeGuard: @unchecked Sendable {
-    private var continuation: CheckedContinuation<(Bool, String?), Never>?
+private final class ResumeGuard<Value: Sendable>: @unchecked Sendable {
+    private var continuation: CheckedContinuation<Value, Never>?
     private let lock = NSLock()
-    init(_ c: CheckedContinuation<(Bool, String?), Never>) { continuation = c }
-    func finish(_ value: (Bool, String?)) {
+    init(_ c: CheckedContinuation<Value, Never>) { continuation = c }
+    func finish(_ value: sending Value) {
         lock.lock(); defer { lock.unlock() }
         continuation?.resume(returning: value)
         continuation = nil

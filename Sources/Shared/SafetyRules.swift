@@ -50,6 +50,34 @@ public struct XicoSafetyRules: Sendable {
         "library", "documents", "desktop", "downloads", "pictures", "movies", "music"
     ]
 
+    /// /Users/<user>/Library/<这些子树> 整棵受保护——当代 Mac 上最大的数据损失面：
+    /// 云同步目录一旦被删会把删除同步到云端与其它设备，废纸篓救不回远端；
+    /// 邮件/信息/iPhone 备份删了同样不可逆。这些目录内**没有任何合法可清理项**，故整棵封死。
+    /// 均以 home 相对分量、小写存储。
+    static let protectedLibrarySubtreesLower: [[String]] = [
+        ["library", "mobile documents"],          // iCloud Drive（含"桌面与文稿"同步）
+        ["library", "cloudstorage"],              // Dropbox/OneDrive/Google Drive 文件提供器挂载点
+        ["library", "mail"],                       // Apple Mail 本地邮件库
+        ["library", "messages"],                   // 信息（iMessage）本地库
+        ["library", "keychains"],                   // 用户钥匙串（含 login.keychain-db 等，整棵封死）
+        ["library", "application support", "mobilesync", "backup"] // iPhone/iPad 本地备份
+    ]
+
+    /// /Users/<user>/Library/<这些目录> **本身**不可删（防止一键删掉整个应用数据根），
+    /// 但其内部精确定位的子项仍可删——卸载器删 `App Support/<bundleID>`、
+    /// 容器缓存清理 `Containers/*/Data/Library/Caches/*` 等合法路径不受影响。home 相对、小写。
+    static let protectedLibraryExactLower: [[String]] = [
+        ["library", "application support"],        // 应用数据根
+        ["library", "group containers"],           // App Group 共享容器根
+        ["library", "containers"]                  // 沙盒应用容器根
+    ]
+
+    /// 以这些扩展名结尾的「库包」整体受保护（照片/音乐/影片/图库等 bundle，删=图库全毁）。小写。
+    private static let protectedPackageSuffixesLower: Set<String> = [
+        "photoslibrary", "photolibrary", "aplibrary", "migratedaperturelibrary",
+        "musiclibrary", "tvlibrary", "imovielibrary", "fcpbundle", "motn"
+    ]
+
     // MARK: 注入 home 的额外保护（与通用规则取并集，均小写）
 
     private let extraDenyExact: Set<[String]>
@@ -62,16 +90,25 @@ public struct XicoSafetyRules: Sendable {
             return
         }
         let h = home.standardizedFileURL
-        var exact: Set<[String]> = [Self.canonicalLower(h.pathComponents)]
+        let homeLower = Self.canonicalLower(h.pathComponents)
+        var exact: Set<[String]> = [homeLower]
         for child in ["Library", "Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music"] {
             exact.insert(Self.canonicalLower(h.appendingPathComponent(child).pathComponents))
         }
+        // 应用数据根 / 容器根 / 钥匙串目录本身（相对注入 home，精确保护）
+        for rel in Self.protectedLibraryExactLower {
+            exact.insert(homeLower + rel)
+        }
         extraDenyExact = exact
-        extraDenySubtrees = [
-            Self.canonicalLower(h.appendingPathComponent("Library/Keychains").pathComponents),
-            Self.canonicalLower(h.appendingPathComponent(".ssh").pathComponents),
-            Self.canonicalLower(h.appendingPathComponent(".gnupg").pathComponents)
+        var subtrees: [[String]] = [
+            homeLower + [".ssh"],
+            homeLower + [".gnupg"]
         ]
+        // 云同步/邮件/信息/iPhone 备份子树（相对注入 home，整棵保护）
+        for rel in Self.protectedLibrarySubtreesLower {
+            subtrees.append(homeLower + rel)
+        }
+        extraDenySubtrees = subtrees
     }
 
     // MARK: 判定
@@ -104,6 +141,13 @@ public struct XicoSafetyRules: Sendable {
         if Self.denyExactStatic.contains(t) || extraDenyExact.contains(t) {
             return "“\(target.last ?? "")” 是受保护的系统/用户目录"
         }
+        // 4.5 库包整体保护（照片/音乐/影片图库等 bundle，任意位置）——删包=图库全毁
+        if let bad = t.first(where: { comp in
+            guard let dot = comp.lastIndex(of: ".") else { return false }
+            return Self.protectedPackageSuffixesLower.contains(String(comp[comp.index(after: dot)...]))
+        }) {
+            return "“\(bad)” 是受保护的图库/资料库，禁止删除"
+        }
         // 5. 任意用户主目录保护（home 无关，保护所有用户）
         if t.count >= 2 && t[1] == "users" {
             if t.count == 3 {
@@ -112,11 +156,18 @@ public struct XicoSafetyRules: Sendable {
             if t.count == 4 && Self.protectedHomeChildrenLower.contains(t[3]) {
                 return "“\(target.count > 3 ? target[3] : "")” 是受保护的用户内容目录"
             }
-            if t.count >= 5 && t[3] == "library" && t[4] == "keychains" {
-                return "钥匙串受保护，禁止删除"
-            }
             if t.count >= 4 && (t[3] == ".ssh" || t[3] == ".gnupg") {
                 return "密钥目录受保护，禁止删除"
+            }
+            // 5.1 家目录内的云同步/邮件/信息/iPhone 备份子树整体保护。
+            //     以 home 相对分量（t[3...]）匹配 protectedLibrarySubtreesLower。
+            let relative = Array(t.dropFirst(3))   // ["library", "mobile documents", ...]
+            for subtree in Self.protectedLibrarySubtreesLower where Self.isInsideOrEqual(relative, subtree) {
+                return "“\(subtree.last ?? "")” 是受保护的用户数据目录（云同步/邮件/备份），禁止删除"
+            }
+            // 5.2 应用数据根 / 容器根 / 钥匙串目录**本身**不可删（内部精确子项仍可删）。
+            for exact in Self.protectedLibraryExactLower where relative == exact {
+                return "“\(exact.last ?? "")” 是受保护的应用数据根目录，禁止整体删除"
             }
         }
         // 6. 通用子树保护（含例外放行）

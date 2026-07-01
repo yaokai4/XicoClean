@@ -9,9 +9,14 @@ final class CleaningRoundTripTests: XCTestCase {
     lazy var safety = DefaultSafetyEngine()
     lazy var engine = CleaningEngine(safety: safety, fs: fs)
 
-    /// 在一个安全可清理的位置（~/Library/Caches）造测试数据
+    private var runLocalSmokeTests: Bool {
+        ProcessInfo.processInfo.environment["XICO_RUN_LOCAL_SMOKE_TESTS"] == "1"
+    }
+
+    /// 在临时目录里构造一个形似用户缓存的位置，避免默认测试污染真实 ~/Library/Caches。
     func makeSandbox() throws -> URL {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("XicoIntegration-\(UUID().uuidString)")
             .appendingPathComponent("Library/Caches/XicoIntegrationTest-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
@@ -54,6 +59,9 @@ final class CleaningRoundTripTests: XCTestCase {
     }
 
     func testSystemJunkScannerRunsAgainstRealFS() async throws {
+        guard runLocalSmokeTests else {
+            throw XCTSkip("Set XICO_RUN_LOCAL_SMOKE_TESTS=1 to scan the local machine.")
+        }
         let scanner = SystemJunkScanner(
             definitions: DefinitionsLibrary.bundled().definitions, fs: fs, safety: safety)
         let result = try await scanner.scan { _ in }
@@ -65,12 +73,16 @@ final class CleaningRoundTripTests: XCTestCase {
     }
 
     func testDiskTreeScannerProducesTree() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("XicoDiskTree-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("A"), withIntermediateDirectories: true)
+        try Data(repeating: 1, count: 128 * 1024).write(to: root.appendingPathComponent("A/file.bin"))
+
         let scanner = DiskTreeScanner(fs: fs)
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Caches")
         let tree = await scanner.scan(root)
-        XCTAssertEqual(tree.url.lastPathComponent, "Caches")
-        XCTAssertGreaterThanOrEqual(tree.size, 0)
+        XCTAssertEqual(tree.url.lastPathComponent, root.lastPathComponent)
+        XCTAssertGreaterThan(tree.size, 0)
         print("ℹ️ 空间透镜：\(tree.name) = \(tree.size.formattedBytes)，\(tree.children.count) 个子块")
     }
 }

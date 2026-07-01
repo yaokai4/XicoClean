@@ -60,5 +60,5 @@ let package = Package(
             dependencies: ["Features", "Domain"]
         )
     ],
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )

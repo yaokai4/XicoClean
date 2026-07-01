@@ -89,6 +89,8 @@ public struct CleanableItem: Identifiable, Sendable, Hashable {
     public let size: Int64
     public let safety: SafetyLevel
     public var isSelected: Bool
+    /// 是否需要特权助手执行。此类项目默认不勾选，且不承诺废纸篓撤销。
+    public let requiresHelper: Bool
     /// 附注（如"正在运行"/"已卸载残留"），用于在结果里给用户上下文提示
     public let note: String?
 
@@ -100,6 +102,7 @@ public struct CleanableItem: Identifiable, Sendable, Hashable {
         size: Int64,
         safety: SafetyLevel = .safe,
         isSelected: Bool? = nil,
+        requiresHelper: Bool = false,
         note: String? = nil
     ) {
         self.id = id
@@ -108,7 +111,8 @@ public struct CleanableItem: Identifiable, Sendable, Hashable {
         self.detail = detail.isEmpty ? url.path : detail
         self.size = size
         self.safety = safety
-        self.isSelected = isSelected ?? safety.defaultSelected
+        self.requiresHelper = requiresHelper
+        self.isSelected = isSelected ?? (requiresHelper ? false : safety.defaultSelected)
         self.note = note
     }
 }

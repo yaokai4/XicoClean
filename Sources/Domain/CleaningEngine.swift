@@ -5,10 +5,12 @@ import Foundation
 public actor CleaningEngine {
     private let safety: SafetyEngine
     private let fs: FileSystemService
+    private let privileged: PrivilegedCleaningService?
 
-    public init(safety: SafetyEngine, fs: FileSystemService) {
+    public init(safety: SafetyEngine, fs: FileSystemService, privileged: PrivilegedCleaningService? = nil) {
         self.safety = safety
         self.fs = fs
+        self.privileged = privileged
     }
 
     public func execute(_ plan: CleaningPlan, progress: @escaping ProgressHandler = { _ in }) async -> CleaningReport {
@@ -31,6 +33,34 @@ public actor CleaningEngine {
             }
 
             guard fs.exists(item.url) else { continue }
+
+            if item.requiresHelper {
+                guard let privileged else {
+                    failures.append(CleaningFailure(url: item.url, reason: "需要安装并批准特权助手"))
+                    continue
+                }
+                guard plan.intent == .permanent else {
+                    failures.append(CleaningFailure(url: item.url, reason: "管理员权限项目当前仅支持明确确认后的彻底删除"))
+                    continue
+                }
+                let report = await privileged.removeProtected([item.url])
+                // 按 path 字符串比较，避免目录尾斜杠/directory-hint 差异导致 URL== 失配、
+                // 把"部分成功但已消失"的失败误记为成功。
+                let failedPaths = Set(report.failures.map { $0.standardizedFileURL.path })
+                if failedPaths.contains(item.url.standardizedFileURL.path) {
+                    failures.append(CleaningFailure(url: item.url, reason: "特权助手拒绝或删除失败"))
+                } else {
+                    // 直接采用助手实测释放字节，避免用扫描期估算 max() 虚高统计。
+                    reclaimed += report.freedBytes > 0 ? report.freedBytes : item.size
+                    removed += 1
+                }
+                progress(ScanProgress(
+                    fraction: total > 0 ? Double(index + 1) / Double(total) : nil,
+                    message: item.displayName,
+                    bytesFound: reclaimed
+                ))
+                continue
+            }
 
             do {
                 switch plan.intent {

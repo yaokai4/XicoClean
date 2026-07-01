@@ -16,15 +16,31 @@ final class AtomicInt: @unchecked Sendable {
 
 /// 把缓存目录名（常是 bundle id）解析成可读的应用名，让清理结果"看得懂"。
 enum FriendlyName {
-    private static let lock = NSLock()
-    private static var cache: [String: String] = [:]
+    private static let store = FriendlyNameStore()
 
     static func resolve(_ folder: String) -> String {
-        lock.lock(); defer { lock.unlock() }
-        if let hit = cache[folder] { return hit }
-        let value = compute(folder)
-        cache[folder] = value
-        return value
+        store.resolve(folder)
+    }
+
+    private final class FriendlyNameStore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cache: [String: String] = [:]
+
+        func resolve(_ folder: String) -> String {
+            lock.lock()
+            if let hit = cache[folder] {
+                lock.unlock()
+                return hit
+            }
+            lock.unlock()
+
+            let value = FriendlyName.compute(folder)
+
+            lock.lock()
+            cache[folder] = value
+            lock.unlock()
+            return value
+        }
     }
 
     private static func compute(_ folder: String) -> String {
@@ -84,6 +100,18 @@ enum PathExpander {
     static func match(_ pattern: String, _ name: String) -> Bool {
         fnmatch(pattern, name, 0) == 0
     }
+
+    static func isExcluded(_ url: URL, byRoots roots: [String]) -> Bool {
+        let target = normalized(url)
+        return roots.contains { root in
+            let normalizedRoot = normalized(URL(fileURLWithPath: root))
+            return target == normalizedRoot || target.hasPrefix(normalizedRoot + "/")
+        }
+    }
+
+    private static func normalized(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
 }
 
 /// 把一组定义跑成扫描结果（系统垃圾 / 隐私共用）。
@@ -102,16 +130,25 @@ func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
         for pattern in def.paths {
             for url in PathExpander.expand(pattern, home: home, fs: fs) {
                 if Task.isCancelled { break }
-                if excludePaths.contains(where: { url.path.hasPrefix($0) }) { continue }
+                if PathExpander.isExcluded(url, byRoots: excludePaths) { continue }
                 guard safety.verify(url, intent: .trash).isAllowed else { continue }
                 let size = fs.allocatedSize(of: url)
                 guard size > 0 else { continue }
                 let running = runningIDs.contains(url.lastPathComponent)
+                let note: String?
+                if def.requiresHelper {
+                    note = "需要管理员权限 · 彻底删除"
+                } else if running {
+                    note = "正在运行 · 建议退出后再清理"
+                } else {
+                    note = nil
+                }
                 items.append(CleanableItem(url: url, displayName: FriendlyName.resolve(url.lastPathComponent),
                                            detail: url.path, size: size, safety: def.safety,
                                            // 运行中的应用缓存默认不勾选，避免一键清理误删活跃缓存致其异常
-                                           isSelected: running ? false : nil,
-                                           note: running ? "正在运行 · 建议退出后再清理" : nil))
+                                           isSelected: (running || def.requiresHelper) ? false : nil,
+                                           requiresHelper: def.requiresHelper,
+                                           note: note))
                 runningTotal += size
                 progress(ScanProgress(message: url.lastPathComponent, bytesFound: runningTotal))
             }
@@ -226,7 +263,7 @@ public struct SystemJunkScanner: ScannerModule {
         var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
         let n = confstr(_CS_DARWIN_USER_CACHE_DIR, &buf, buf.count)
         guard n > 0 else { return nil }
-        return URL(fileURLWithPath: String(cString: buf), isDirectory: true)
+        return URL(fileURLWithPath: xicoString(fromNullTerminated: buf), isDirectory: true)
     }
 
     /// 形似 reverse-DNS bundle id、非苹果/系统、且本机查不到对应 App → 视为残留。

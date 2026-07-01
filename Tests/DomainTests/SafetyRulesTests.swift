@@ -86,6 +86,61 @@ final class SafetyRulesTests: XCTestCase {
         assertAllowed("/Library/Caches/com.foo/stale") // 系统级缓存（非 Apple 子树）
     }
 
+    // MARK: 云同步 / 邮件 / 应用数据 / 图库包（2026-07 审计新增红线）
+
+    /// 云同步目录整棵封死——删除会同步到云端与其它设备，废纸篓救不回远端（"产品死亡"级）
+    func testDeniesCloudSyncSubtrees() {
+        assertDenied("/Users/alice/Library/Mobile Documents")
+        assertDenied("/Users/alice/Library/Mobile Documents/com~apple~CloudDocs/report.key")
+        assertDenied("/Users/alice/Library/CloudStorage")
+        assertDenied("/Users/alice/Library/CloudStorage/Dropbox/Work/secret.pdf")
+        assertDenied("/Users/alice/Library/CloudStorage/OneDrive-Personal/x")
+    }
+
+    /// 邮件 / 信息 / iPhone 备份——本地不可逆数据
+    func testDeniesMailMessagesBackups() {
+        assertDenied("/Users/alice/Library/Mail")
+        assertDenied("/Users/alice/Library/Mail/V10/inbox.mbox")
+        assertDenied("/Users/alice/Library/Messages")
+        assertDenied("/Users/alice/Library/Messages/chat.db")
+        assertDenied("/Users/alice/Library/Application Support/MobileSync/Backup")
+        assertDenied("/Users/alice/Library/Application Support/MobileSync/Backup/0000/Manifest.db")
+    }
+
+    /// 应用数据根 / 容器根 / 钥匙串目录**本身**不可删（防止一键删掉整个数据根）
+    func testDeniesAppDataRootsThemselves() {
+        assertDenied("/Users/alice/Library/Application Support")
+        assertDenied("/Users/alice/Library/Group Containers")
+        assertDenied("/Users/alice/Library/Containers")
+        assertDenied("/Users/alice/Library/Keychains")
+        assertDenied("/Users/alice/Library/Keychains/login.keychain-db")
+    }
+
+    /// 但精确定位的子项仍可删——卸载器与容器缓存清理的合法路径不能被误伤
+    func testAllowsPreciseChildrenOfAppDataRoots() {
+        assertAllowed("/Users/alice/Library/Application Support/com.foo.bar")
+        assertAllowed("/Users/alice/Library/Application Support/Slack/Cache/x")
+        assertAllowed("/Users/alice/Library/Group Containers/group.com.foo/x")
+        assertAllowed("/Users/alice/Library/Containers/com.foo/Data/Library/Caches/Stale")
+    }
+
+    /// 图库包（照片/音乐/影片等 bundle）整体保护——任意位置，删包=图库全毁
+    func testDeniesLibraryPackages() {
+        assertDenied("/Users/alice/Pictures/Photos Library.photoslibrary")
+        assertDenied("/Users/alice/Pictures/Photos Library.photoslibrary/database/Photos.sqlite")
+        assertDenied("/Users/alice/Music/Music Library.musiclibrary")
+        assertDenied("/Users/alice/Movies/iMovie Library.imovielibrary")
+        assertDenied("/Volumes/External/Backup.photoslibrary")   // 外置卷上的图库同样保护
+    }
+
+    /// 注入 home（非 /Users 布局，如单测/迁移）同样守住上述子树
+    func testInjectedHomeGuardsCloudAndAppData() {
+        let injected = XicoSafetyRules(home: URL(fileURLWithPath: "/private/tmp/xico-tester"))
+        XCTAssertNotNil(injected.denyReason(for: URL(fileURLWithPath: "/private/tmp/xico-tester/Library/Mobile Documents/x")))
+        XCTAssertNotNil(injected.denyReason(for: URL(fileURLWithPath: "/private/tmp/xico-tester/Library/Application Support")))
+        XCTAssertNil(injected.denyReason(for: URL(fileURLWithPath: "/private/tmp/xico-tester/Library/Application Support/com.foo/Cache")))
+    }
+
     // MARK: 直接对已解析分量判定（不依赖文件系统）
 
     func testResolvedComponentsAPI() {

@@ -27,7 +27,7 @@ public enum MaintenanceTask: String, Sendable, Codable, CaseIterable {
         case .flushDNS: return "清空 DNS 解析缓存，解决某些网络访问异常。"
         case .rebuildSpotlight: return "mdutil -E — 重建搜索索引（重建期间搜索会变慢）。"
         case .runPeriodicScripts: return "periodic daily weekly monthly — 清理旧日志、轮转等。"
-        case .deleteLocalSnapshots: return "tmutil — 删除占用磁盘的本地快照，立刻腾出空间。"
+        case .deleteLocalSnapshots: return "tmutil — 删除全部本地快照腾出空间；删除后将无法回滚到这些时间点。"
         }
     }
     public var systemImage: String {
@@ -37,6 +37,21 @@ public enum MaintenanceTask: String, Sendable, Codable, CaseIterable {
         case .rebuildSpotlight: return "magnifyingglass"
         case .runPeriodicScripts: return "wrench.and.screwdriver"
         case .deleteLocalSnapshots: return "clock.arrow.circlepath"
+        }
+    }
+
+    /// 执行前是否需要二次确认（有不可逆后果的任务）
+    public var needsConfirmation: Bool {
+        self == .deleteLocalSnapshots
+    }
+
+    /// 二次确认弹窗的说明文案
+    public var confirmationMessage: String? {
+        switch self {
+        case .deleteLocalSnapshots:
+            return "将删除本机全部本地 Time Machine 快照。删除后无法再回滚到这些时间点；连接外置备份盘完成的备份不受影响。若你依赖本地快照做误删恢复，请谨慎。"
+        default:
+            return nil
         }
     }
 }

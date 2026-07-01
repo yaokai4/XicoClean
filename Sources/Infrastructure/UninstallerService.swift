@@ -58,18 +58,34 @@ public struct UninstallerService: Sendable {
         fs.allocatedSize(of: app.url)
     }
 
+    /// 关联文件定位所用的标识片段是否可安全用于拼接路径。
+    /// 拒绝空 / 过短 / 含路径分隔符 / 相对分量的值——畸形 Info.plist 的空
+    /// CFBundleDisplayName 曾可拼出 `~/Library/Application Support`（整个应用数据根）作为删除目标。
+    static func isValidPathToken(_ token: String) -> Bool {
+        let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.count >= 2 else { return false }              // 单字符/空一律拒绝
+        if t == "." || t == ".." { return false }
+        if t.contains("/") || t.contains("\\") { return false }
+        if t.hasPrefix(".") { return false }                  // 隐藏/相对起头
+        return true
+    }
+
     /// 应用本体 + 全部关联文件
     public func uninstallTargets(for app: InstalledApp) -> [CleanableItem] {
         var items: [CleanableItem] = []
         var seen = Set<String>()
 
-        func add(_ url: URL, safety level: SafetyLevel) {
+        func add(_ url: URL, safety level: SafetyLevel, selected: Bool = true) {
+            // 深度断言：关联文件至少要落在 `~/Library/<类别>/<具体项>`（≥6 分量）之下，
+            // 绝不允许目标是 `~/Library/<类别>` 这一级本身（红线亦会拦，此为第一道闸）。
+            let underLibrary = url.path.hasPrefix(home.appendingPathComponent("Library").path + "/")
+            if underLibrary && url.pathComponents.count < 6 { return }
             guard !seen.contains(url.path), fs.exists(url),
                   safety.verify(url, intent: .trash).isAllowed else { return }
             seen.insert(url.path)
             let size = fs.allocatedSize(of: url)
             items.append(CleanableItem(url: url, displayName: url.lastPathComponent,
-                                       detail: url.path, size: size, safety: level, isSelected: true))
+                                       detail: url.path, size: size, safety: level, isSelected: selected))
         }
 
         // 应用本体
@@ -78,26 +94,37 @@ public struct UninstallerService: Sendable {
         let lib = home.appendingPathComponent("Library")
         let bid = app.bundleID
         let name = app.name
+        let bidOK = Self.isValidPathToken(bid)
+        let nameOK = Self.isValidPathToken(name)
 
-        // 按 bundleID / 名称定位的固定位置
-        let fixed: [URL] = [
-            lib.appendingPathComponent("Application Support/\(bid)"),
-            lib.appendingPathComponent("Application Support/\(name)"),
-            lib.appendingPathComponent("Caches/\(bid)"),
-            lib.appendingPathComponent("Preferences/\(bid).plist"),
-            lib.appendingPathComponent("Containers/\(bid)"),
-            lib.appendingPathComponent("Saved Application State/\(bid).savedState"),
-            lib.appendingPathComponent("Logs/\(bid)"),
-            lib.appendingPathComponent("HTTPStorages/\(bid)"),
-            lib.appendingPathComponent("WebKit/\(bid)")
-        ]
-        for url in fixed { add(url, safety: .caution) }
+        // 按 bundleID 定位（bundleID 唯一性高，默认勾选）
+        if bidOK {
+            let byBID: [URL] = [
+                lib.appendingPathComponent("Application Support/\(bid)"),
+                lib.appendingPathComponent("Caches/\(bid)"),
+                lib.appendingPathComponent("Preferences/\(bid).plist"),
+                lib.appendingPathComponent("Containers/\(bid)"),
+                lib.appendingPathComponent("Saved Application State/\(bid).savedState"),
+                lib.appendingPathComponent("Logs/\(bid)"),
+                lib.appendingPathComponent("HTTPStorages/\(bid)"),
+                lib.appendingPathComponent("WebKit/\(bid)")
+            ]
+            for url in byBID { add(url, safety: .caution) }
+        }
 
-        // 需要模糊匹配的位置
-        for groupDir in ["Group Containers", "LaunchAgents"] {
-            let dir = lib.appendingPathComponent(groupDir)
-            for url in fs.contentsOfDirectory(dir) where url.lastPathComponent.contains(bid) {
-                add(url, safety: .caution)
+        // 按显示名定位（易与共享 vendor 目录碰撞，如 Firefox 含书签/密码）——默认**不勾选**，
+        // 需用户主动确认，避免"卸载 App A 顺手删掉同厂商 App B 的数据"。
+        if nameOK {
+            add(lib.appendingPathComponent("Application Support/\(name)"), safety: .caution, selected: false)
+        }
+
+        // 需要模糊匹配的位置（子串包含 bundleID）
+        if bidOK {
+            for groupDir in ["Group Containers", "LaunchAgents"] {
+                let dir = lib.appendingPathComponent(groupDir)
+                for url in fs.contentsOfDirectory(dir) where url.lastPathComponent.contains(bid) {
+                    add(url, safety: .caution)
+                }
             }
         }
 

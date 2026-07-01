@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Domain
 
 public struct SystemMetrics: Sendable {
@@ -43,7 +44,7 @@ public struct MetricsSampler: Sendable {
             }
         }
         guard result == KERN_SUCCESS else { return (0, total) }
-        let pageSize = Int64(vm_kernel_page_size)
+        let pageSize = Int64(getpagesize())
         let active = Int64(stats.active_count) * pageSize
         let wired = Int64(stats.wire_count) * pageSize
         let compressed = Int64(stats.compressor_page_count) * pageSize
