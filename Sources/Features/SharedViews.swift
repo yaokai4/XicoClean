@@ -12,6 +12,14 @@ extension SafetyLevel {
         case .risky: return XColor.danger
         }
     }
+    /// 删除后会怎样——给用户「删这个安全吗」的判断依据（智能解释）。
+    var explanation: String {
+        switch self {
+        case .safe: return "删除安全：这些是可再生的缓存/临时文件，应用会在需要时自动重建。默认已勾选。"
+        case .caution: return "请留意：删除本身可恢复（移入废纸篓），但重建或再获取需要时间/流量。默认不勾选，确认后再删。"
+        case .risky: return "高风险：可能涉及重要或不可逆的数据。请逐项确认，默认不勾选。"
+        }
+    }
     var gradient: [Color] {
         switch self {
         case .safe: return [XColor.accentTeal, XColor.success]
@@ -104,6 +112,7 @@ struct ResultGroupCard: View {
     @State private var expanded = false
     @State private var appeared = false
     @State private var showAll = false
+    @State private var showInfo = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// 结果项按大小降序，最能省空间的排在最前，信息层级更清晰。
@@ -126,6 +135,29 @@ struct ResultGroupCard: View {
                         }
                     }
                     Spacer()
+                    // 智能解释：这是什么 / 删了会怎样
+                    Button { showInfo.toggle() } label: {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(XColor.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("这是什么 / 删除后会怎样")
+                    .popover(isPresented: $showInfo, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: XSpacing.s) {
+                            Text(group.title).xHeadline().foregroundStyle(XColor.textPrimary)
+                            if !group.description.isEmpty {
+                                Text(group.description).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                            }
+                            Divider()
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.shield").foregroundStyle(group.safety.tint)
+                                Text(group.safety.label).font(XFont.caption).foregroundStyle(group.safety.tint)
+                            }
+                            Text(group.safety.explanation).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        }
+                        .padding(XSpacing.m).frame(width: 320)
+                    }
                     Text(group.totalSize.formattedBytes).xNumber().foregroundStyle(XColor.textPrimary)
                     Button {
                         withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { expanded.toggle() }
