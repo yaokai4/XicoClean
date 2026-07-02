@@ -197,10 +197,13 @@ public struct XicoSafetyRules: Sendable {
         return Array(target.prefix(root.count)) == root
     }
 
-    /// 小写 + firmlink 统一：standardizedFileURL 对「存在」的路径会把 /private/var 砍成 /var、
-    /// 对「不存在」的路径则保留 /private/var，两侧不一致会漏匹配。此处强制统一到无 /private 形态。
-    static func canonicalLower(_ components: [String]) -> [String] {
-        var c = components.map { $0.lowercased() }
+    /// 小写 + Unicode NFC 归一 + firmlink 统一：
+    /// - standardizedFileURL 对「存在」的路径会把 /private/var 砍成 /var、对「不存在」的保留 /private/var，
+    ///   两侧不一致会漏匹配 → 强制统一到无 /private 形态。
+    /// - macOS 文件名可能以 NFD（分解）或 NFC（预组合）出现（如 é），两种字节序列指向同一文件；
+    ///   统一 precomposed(NFC) 后比较，杜绝用 NFD 形态绕过红线前缀匹配。
+    public static func canonicalLower(_ components: [String]) -> [String] {
+        var c = components.map { $0.precomposedStringWithCanonicalMapping.lowercased() }
         if c.count >= 3, c[1] == "private", c[2] == "var" || c[2] == "etc" || c[2] == "tmp" {
             c.remove(at: 1)
         }

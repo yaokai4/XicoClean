@@ -35,6 +35,10 @@ public final class ModuleSessionViewModel: ObservableObject {
     @Published public var permissionIssue = false
     /// 失败是否由试用结束或许可证无效导致
     @Published public var licenseIssue = false
+    /// 部分模块失败时的降级提示（非空即在结果页顶部显示横幅）
+    @Published public var scanWarning: String?
+    /// 扫描完成后计算降级提示（如智能扫描的失败模块清单）
+    public var postScanWarning: (@Sendable () -> String?)?
     /// 撤销部分失败时的提示（非空即弹窗）；保留 lastReport 以便重试。
     @Published public var undoFailedItems: [RestorableItem] = []
     public var undoFailedAlert: Bool {
@@ -89,6 +93,7 @@ public final class ModuleSessionViewModel: ObservableObject {
         lastReport = nil
         permissionIssue = false
         licenseIssue = false
+        scanWarning = nil
 
         let handler = makeHandler()
         scanTask = Task {
@@ -101,6 +106,7 @@ public final class ModuleSessionViewModel: ObservableObject {
                 merged.removeAll { $0.items.isEmpty }
                 if Task.isCancelled { return }
                 self.groups = merged
+                self.scanWarning = self.postScanWarning?()
                 if !merged.isEmpty {
                     self.phase = .results
                 } else if !self.env.permissions.hasFullDiskAccess() {

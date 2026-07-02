@@ -64,6 +64,13 @@ public actor CleaningEngine {
                 continue
             }
 
+            // TOCTOU 收窄：扫描→清理可能间隔数分钟，删除前紧邻再校一次红线，
+            // 若期间该路径变成受保护目标（如中途被换成指向红线区的链接）即拒绝。
+            guard safety.verify(item.url, intent: plan.intent).isAllowed else {
+                Self.log.error("清理前复校被拒（路径已变化）: \(item.url.path, privacy: .public)")
+                failures.append(CleaningFailure(url: item.url, reason: "删除前安全复校未通过（路径可能已变化）"))
+                continue
+            }
             do {
                 switch plan.intent {
                 case .trash:

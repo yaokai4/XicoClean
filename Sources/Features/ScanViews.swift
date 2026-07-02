@@ -83,6 +83,15 @@ struct SessionScaffold<Idle: View>: View {
             SummaryHeader(total: vm.totalReclaimable, selected: vm.selectedSize,
                           count: vm.selectedCount, itemCount: vm.totalItemCount,
                           onRescan: { vm.start() })
+            if let warning = vm.scanWarning {
+                HStack(spacing: XSpacing.s) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(XColor.warning)
+                    Text(warning).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Spacer()
+                }
+                .padding(.horizontal, XSpacing.xl).padding(.vertical, XSpacing.s)
+                .background(XColor.warning.opacity(0.12))
+            }
             ScrollView {
                 LazyVStack(spacing: XSpacing.m) {
                     ForEach(Array(vm.groups.enumerated()), id: \.element.id) { idx, group in
@@ -225,9 +234,16 @@ public struct SmartScanView: View {
 
     public init(env: XicoEnvironment) {
         self.env = env
-        _vm = StateObject(wrappedValue: ModuleSessionViewModel(
+        let failures = FailureBox()
+        let model = ModuleSessionViewModel(
             env: env, title: "智能扫描", intent: .trash,
-            scanProvider: { handler in try await env.smartScanCoordinator().scanAll(progress: handler) }))
+            scanProvider: { handler in
+                failures.reset()
+                return try await env.smartScanCoordinator().scanAll(
+                    progress: handler, onModuleFailure: { failures.add($0) })
+            })
+        model.postScanWarning = { failures.summary() }
+        _vm = StateObject(wrappedValue: model)
     }
 
     public var body: some View {
@@ -316,6 +332,19 @@ public struct SmartScanView: View {
         if s >= 85 { return "你的 Mac 状态很好" }
         if s >= 65 { return "运行顺畅，仍可优化" }
         return "建议清理，释放空间"
+    }
+}
+
+/// 线程安全地收集失败模块名（并发扫描期写、主线程读）。
+final class FailureBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var names: [String] = []
+    func reset() { lock.lock(); names = []; lock.unlock() }
+    func add(_ name: String) { lock.lock(); names.append(name); lock.unlock() }
+    func summary() -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard !names.isEmpty else { return nil }
+        return "部分模块扫描失败：\(names.joined(separator: "、"))。结果可能不完整。"
     }
 }
 

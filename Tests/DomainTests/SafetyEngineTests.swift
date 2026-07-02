@@ -14,6 +14,23 @@ final class SafetyEngineTests: XCTestCase {
 
     func url(_ p: String) -> URL { URL(fileURLWithPath: p) }
 
+    // MARK: - DeleteIntent 差异化（2026-07：permanent 对内容目录更严）
+
+    func testPermanentDeniedInContentDirsButTrashAllowed() {
+        // 内容目录内的文件：trash 放行（可恢复），permanent 拒绝（彻底删除不可逆）
+        for p in ["/Users/tester/Documents/old.pages", "/Users/tester/Desktop/x.png",
+                  "/Users/tester/Downloads/big.dmg", "/Users/tester/Pictures/a.heic",
+                  "/Users/tester/Movies/v.mov", "/Users/tester/Music/s.m4a"] {
+            XCTAssertTrue(engine.verify(url(p), intent: .trash).isAllowed, "trash 应放行: \(p)")
+            XCTAssertFalse(engine.verify(url(p), intent: .permanent).isAllowed, "permanent 应拒绝: \(p)")
+        }
+    }
+
+    func testPermanentAllowedOutsideContentDirs() {
+        // 缓存/垃圾区的 permanent 删除仍允许（废纸篓、helper 项走 permanent）
+        XCTAssertTrue(engine.verify(url("/Users/tester/Library/Caches/com.foo/x"), intent: .permanent).isAllowed)
+    }
+
     // MARK: - 必须拒绝
 
     func testDeniesRootDirectory() {

@@ -11,7 +11,8 @@ public actor ScanCoordinator {
     /// 运行全部模块并返回每个模块的结果（并发执行）。
     /// 转发各模块内部的细粒度进度（正在扫描的项 + 累计大小），让扫描"看得见在干活"。
     /// 若**所有**模块都失败，则抛出首个错误——绝不把失败静默成空结果（避免伪装成"很干净"）。
-    public func scanAll(progress: @escaping ProgressHandler = { _ in }) async throws -> [ScanResult] {
+    public func scanAll(progress: @escaping ProgressHandler = { _ in },
+                        onModuleFailure: @escaping @Sendable (String) -> Void = { _ in }) async throws -> [ScanResult] {
         let total = modules.count
         let counter = Counter()
         let agg = ProgressAggregator()
@@ -29,6 +30,7 @@ public actor ScanCoordinator {
                         }
                     } catch {
                         await errors.add(error)
+                        onModuleFailure(title)   // 部分模块失败：上报模块名，供 UI 降级横幅提示
                     }
                     let done = await counter.increment()
                     progress(ScanProgress(

@@ -78,6 +78,19 @@ final class SafetyRulesTests: XCTestCase {
         assertDenied("/USERS/alice/DOCUMENTS")
     }
 
+    /// Unicode NFD/NFC 归一：同一目录名的分解/预组合两种形态都应命中红线。
+    /// 说明：Swift 的 String == / Hashable 本身按 Unicode 规范等价比较，NFD 与 NFC 天然相等；
+    /// canonicalLower 里额外做 precomposed(NFC) 归一是显式加固。此测试锁定该不变量。
+    func testUnicodeNormalizationDeny() {
+        let nfc = "José"                                    // 预组合
+        let nfd = "Jose\u{0301}"                            // 分解（e + 组合重音）
+        // 字节表示不同（utf8 长度不同），但语义等价
+        XCTAssertNotEqual(Array(nfc.utf8), Array(nfd.utf8))
+        let rules = XicoSafetyRules(home: URL(fileURLWithPath: "/Users/\(nfc)"))
+        XCTAssertNotNil(rules.denyReason(for: URL(fileURLWithPath: "/Users/\(nfd)/Documents")))
+        XCTAssertNotNil(rules.denyReason(for: URL(fileURLWithPath: "/Users/\(nfd)/Library/Mail/x")))
+    }
+
     func testAllowsRealJunk() {
         assertAllowed("/Users/alice/Library/Caches/com.foo.bar/Cache.db")
         assertAllowed("/Users/alice/Library/Logs/foo.log")
