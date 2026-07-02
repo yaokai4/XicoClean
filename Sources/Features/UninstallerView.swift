@@ -102,7 +102,7 @@ public struct UninstallerView: View {
             Button("卸载并移入废纸篓（\(model.selectedCount) 项）", role: .destructive) { model.uninstall() }
             Button(xLoc("取消"), role: .cancel) {}
         } message: {
-            Text("将把应用本体与已勾选的 \(model.selectedCount) 项关联文件移入废纸篓（\(model.selectedSize.formattedBytes)），可在访达废纸篓中恢复。请确认勾选项中没有你仍需要的数据。")
+            Text(xLocF("将把应用本体与已勾选的 %d 项关联文件移入废纸篓（%@），可在访达废纸篓中恢复。请确认勾选项中没有你仍需要的数据。", model.selectedCount, model.selectedSize.formattedBytes))
         }
         .alert(xLoc("需要有效许可证"), isPresented: $model.licenseBlocked) {
             Button(xLoc("购买")) { NSWorkspace.shared.open(LicenseService.purchaseURL()) }

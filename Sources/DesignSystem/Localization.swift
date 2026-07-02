@@ -17,3 +17,9 @@ public extension Text {
         self.init(xLoc(key))
     }
 }
+
+/// 带参数的本地化：key 是含占位符（%d / %@）的中文格式串，按当前语言取模板后填充。
+/// 例：xLocF("共发现 %d 项", count) → 英文环境下 "%d items found" 填充。
+public func xLocF(_ key: String, _ args: CVarArg...) -> String {
+    String(format: xLoc(key), arguments: args)
+}

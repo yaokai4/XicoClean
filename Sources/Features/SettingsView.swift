@@ -125,7 +125,7 @@ public struct SettingsView: View {
                                     .buttonStyle(.link).font(XFont.caption)
                                     .disabled(undoingID == rec.id)
                             }
-                            Text("\(rec.removedCount) 项").font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                            Text(xLocF("%d 项", rec.removedCount)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                             Text(rec.reclaimedBytes.formattedBytes)
                                 .font(XFont.mono).foregroundStyle(XColor.success)
                                 .frame(minWidth: 72, alignment: .trailing)
@@ -176,7 +176,7 @@ public struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Xico").xLargeTitle().foregroundStyle(XColor.textPrimary)
                     Text(xLoc("macOS 系统清理 · 磁盘管理 · 性能优化")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                    Text("版本 \(version)").font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                    Text(xLocF("版本 %@", version)).font(XFont.caption).foregroundStyle(XColor.textTertiary)
                     HStack(spacing: XSpacing.s) {
                         Button(xLoc("隐私政策")) { NSWorkspace.shared.open(URL(string: "https://xico.app/privacy")!) }
                             .buttonStyle(.link).font(XFont.caption)

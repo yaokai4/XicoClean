@@ -131,7 +131,7 @@ struct SidebarView: View {
                 HStack {
                     Text(xLoc("磁盘")).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
                     Spacer()
-                    Text("\(cap.available.formattedBytes) 可用").font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Text(xLocF("%@ 可用", cap.available.formattedBytes)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 }
                 XDiskBar(usedFraction: cap.usedFraction, label: "", height: 8)
             }

@@ -146,7 +146,7 @@ public struct MonitorView: View {
             VStack(alignment: .leading, spacing: XSpacing.m) {
                 cardHeader("internaldrive.fill", xLoc("磁盘"))
                 XDiskBar(usedFraction: snap?.diskUsedFraction ?? 0, label: "", height: 10)
-                Text("\((snap?.diskFree ?? 0).formattedBytes) 可用 / \((snap?.diskTotal ?? 0).formattedBytes)")
+                Text(xLocF("%@ 可用 / %@", (snap?.diskFree ?? 0).formattedBytes, (snap?.diskTotal ?? 0).formattedBytes))
                     .font(XFont.caption).foregroundStyle(XColor.textSecondary)
             }
         }

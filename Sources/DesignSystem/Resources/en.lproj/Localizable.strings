@@ -200,3 +200,17 @@
 "需要管理员权限" = "Requires Administrator Privileges";
 "风扇" = "Fan";
 "高风险：可能涉及重要或不可逆的数据。请逐项确认，默认不勾选。" = "High risk: may involve important or irreversible data. Review each item; not selected by default.";
+"有 %d 项无法自动放回原位（可能废纸篓已被清空、文件被移动或所在卷已卸载）。这些项仍可在废纸篓中手动找回。" = "%d item(s) could not be restored automatically (the Trash may have been emptied, the files moved, or their volume unmounted). You can still find them manually in the Trash.";
+"共发现 %d 项 · 可清理" = "%d items found · cleanable";
+"已选 %d 项" = "%d selected";
+"共 %@" = "%@ total";
+"磁盘已用 %d%% · 一键扫描，安全释放空间" = "Disk %d%% used · One-tap scan to safely free up space";
+"显示全部 %d 项（其余 %d 项已勾选，将一并清理）" = "Show all %d items (%d more are selected and will be cleaned)";
+"已释放 %@" = "Freed %@";
+"清理了 %d 项" = "Cleaned %d items";
+" · %d 项被跳过" = " · %d skipped";
+"%d 项" = "%d items";
+"版本 %@" = "Version %@";
+"将把应用本体与已勾选的 %d 项关联文件移入废纸篓（%@），可在访达废纸篓中恢复。请确认勾选项中没有你仍需要的数据。" = "The app and %d selected related files (%@) will be moved to the Trash; you can restore them from Finder. Please confirm none of the selected items contain data you still need.";
+"%@ 可用 / %@" = "%@ free / %@";
+"%@ 可用" = "%@ available";

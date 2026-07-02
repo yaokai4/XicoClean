@@ -187,7 +187,7 @@ struct ResultGroupCard: View {
                             Button {
                                 withAnimation(.easeOut(duration: reduceMotion ? 0 : 0.2)) { showAll = true }
                             } label: {
-                                Text("显示全部 \(items.count) 项（其余 \(items.count - Self.previewCap) 项已勾选，将一并清理）")
+                                Text(xLocF("显示全部 %d 项（其余 %d 项已勾选，将一并清理）", items.count, items.count - Self.previewCap))
                                     .font(XFont.caption).foregroundStyle(XColor.brand)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.top, XSpacing.xs)
@@ -253,11 +253,11 @@ struct CompletionView: View {
                 .scaleEffect(pop ? 1 : 0.3)
                 .opacity(pop ? 1 : 0)
 
-                Text("已释放 \(report.reclaimedBytes.formattedBytes)")
+                Text(xLocF("已释放 %@", report.reclaimedBytes.formattedBytes))
                     .xLargeTitle().foregroundStyle(XColor.textPrimary)
                     .contentTransition(.numericText())
-                Text("清理了 \(report.removedCount) 项" +
-                     (report.failures.isEmpty ? "" : " · \(report.failures.count) 项被跳过"))
+                Text(xLocF("清理了 %d 项", report.removedCount) +
+                     (report.failures.isEmpty ? "" : xLocF(" · %d 项被跳过", report.failures.count)))
                     .font(XFont.body).foregroundStyle(XColor.textSecondary)
                 HStack(spacing: XSpacing.m) {
                     if intent == .trash && !report.restorable.isEmpty {

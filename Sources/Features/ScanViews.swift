@@ -28,7 +28,7 @@ struct SessionScaffold<Idle: View>: View {
             Button(xLoc("在废纸篓中显示")) { vm.revealUndoFailuresInTrash() }
             Button(xLoc("好"), role: .cancel) {}
         } message: {
-            Text("有 \(vm.undoFailedItems.count) 项无法自动放回原位（可能废纸篓已被清空、文件被移动或所在卷已卸载）。这些项仍可在废纸篓中手动找回。")
+            Text(xLocF("有 %d 项无法自动放回原位（可能废纸篓已被清空、文件被移动或所在卷已卸载）。这些项仍可在废纸篓中手动找回。", vm.undoFailedItems.count))
         }
     }
 
@@ -181,12 +181,12 @@ struct SummaryHeader: View {
     var body: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("共发现 \(itemCount) 项 · 可清理").font(XFont.caption).foregroundStyle(XColor.textSecondary).tracking(0.2)
+                Text(xLocF("共发现 %d 项 · 可清理", itemCount)).font(XFont.caption).foregroundStyle(XColor.textSecondary).tracking(0.2)
                 Text(total.formattedBytes).xLargeTitle().foregroundStyle(XColor.textPrimary)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
-                Text("已选 \(count) 项").font(XFont.caption).foregroundStyle(XColor.textSecondary).tracking(0.2)
+                Text(xLocF("已选 %d 项", count)).font(XFont.caption).foregroundStyle(XColor.textSecondary).tracking(0.2)
                 Text(selected.formattedBytes).xTitle().foregroundStyle(XColor.brand)
             }
             Button { onRescan() } label: { Image(systemName: "arrow.clockwise") }
@@ -273,7 +273,7 @@ public struct SmartScanView: View {
                         .font(XFont.hero).foregroundStyle(XColor.textPrimary)
                     Text(xLoc("可用空间")).font(XFont.body).foregroundStyle(XColor.textSecondary)
                     if let cap = capacity {
-                        Text("共 \(cap.total.formattedBytes)").font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                        Text(xLocF("共 %@", cap.total.formattedBytes)).font(XFont.caption).foregroundStyle(XColor.textTertiary)
                     }
                 }
             }
@@ -309,7 +309,7 @@ public struct SmartScanView: View {
                     .font(.system(size: 22, weight: .bold, design: .rounded))
                     .foregroundStyle(XColor.textPrimary)
             }
-            Text("磁盘已用 \(Int(disk * 100))% · 一键扫描，安全释放空间")
+            Text(xLocF("磁盘已用 %d%% · 一键扫描，安全释放空间", Int(disk * 100)))
                 .font(XFont.callout).foregroundStyle(XColor.textSecondary)
         }
         .padding(.bottom, XSpacing.xs)
