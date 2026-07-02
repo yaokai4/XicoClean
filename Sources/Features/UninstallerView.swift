@@ -105,7 +105,7 @@ public struct UninstallerView: View {
             Text(xLocF("将把应用本体与已勾选的 %d 项关联文件移入废纸篓（%@），可在访达废纸篓中恢复。请确认勾选项中没有你仍需要的数据。", model.selectedCount, model.selectedSize.formattedBytes))
         }
         .alert(xLoc("需要有效许可证"), isPresented: $model.licenseBlocked) {
-            Button(xLoc("购买")) { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
+            Button(xLoc("升级")) { NotificationCenter.default.post(name: .xicoShowPricing, object: nil) }
             Button(xLoc("好"), role: .cancel) {}
         } message: {
             Text(xLoc("试用已结束或许可证无效。购买后即可继续使用卸载功能。"))

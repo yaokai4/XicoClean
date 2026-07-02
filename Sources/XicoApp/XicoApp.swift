@@ -32,6 +32,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { let ok = await runSelfTest(); exit(ok ? 0 : 1) }
             return
         }
+        if CommandLine.arguments.contains("--probe-sensors") {
+            probeSensors()
+            NSApp.terminate(nil)
+            return
+        }
+        if CommandLine.arguments.contains("--liveshots") {
+            renderLiveShots()
+            NSApp.terminate(nil)
+            return
+        }
         // 正常启动：用 AppKit 接管菜单栏（瞬态弹窗，自动消失 + 可在设置里编辑）
         menuBar = MenuBarController(model: .shared)
         NSApp.activate(ignoringOtherApps: true)

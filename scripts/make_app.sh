@@ -65,7 +65,16 @@ CONTENTS="$APP/Contents"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$CONTENTS/Library/LaunchDaemons"
 cp "$BIN_DIR/Xico" "$CONTENTS/MacOS/Xico"
 cp "$BIN_DIR/XicoHelper" "$CONTENTS/MacOS/XicoHelper"
-[ -d "$BIN_DIR/Xico_Domain.bundle" ] && cp -R "$BIN_DIR/Xico_Domain.bundle" "$CONTENTS/Resources/"
+# 拷贝全部 SPM 资源包（Xico_Domain.bundle=规则库、Xico_DesignSystem.bundle=本地化 等）。
+# 漏拷任何一个都会导致 Bundle.module 运行时断言崩溃——这是启动闪退的根因。
+bundle_count=0
+for b in "$BIN_DIR"/*.bundle; do
+  [ -e "$b" ] || continue
+  cp -R "$b" "$CONTENTS/Resources/"
+  echo "  ✓ 嵌入资源包 $(basename "$b")"
+  bundle_count=$((bundle_count + 1))
+done
+echo "▶︎ 已嵌入 $bundle_count 个资源包"
 
 {
 cat <<PLIST
@@ -164,6 +173,16 @@ codesign --verify --strict "$DEST" && echo "✓ 落盘后签名仍校验通过"
 echo "✓ 已生成: $DEST"
 TEAM="$(codesign -dvvv "$DEST" 2>&1 | grep TeamIdentifier | cut -d= -f2 || true)"
 echo "  TeamIdentifier: ${TEAM:-未签名}"
+
+# 启动冒烟测试：--selftest 会真实初始化 XicoEnvironment（含 Bundle.module 本地化查表），
+# 若漏嵌资源包等会立刻崩溃。捕获到即让打包失败，避免把闪退包交到用户手里。
+echo "▶︎ 启动冒烟测试（--selftest）"
+if "$DEST/Contents/MacOS/Xico" --selftest >/dev/null 2>&1; then
+  echo "✓ 冒烟测试通过：App 可正常初始化"
+else
+  echo "✗ 冒烟测试失败：App 启动即异常（可能漏嵌资源包/签名问题）。请勿分发此包。"
+  exit 1
+fi
 echo ""
 echo "启用特权助手以执行维护任务："
 echo "  1) open ~/Applications/Xico.app"

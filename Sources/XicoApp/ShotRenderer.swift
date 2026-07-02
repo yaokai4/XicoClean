@@ -9,16 +9,17 @@ import Features
 @MainActor
 func renderShots() {
     let env = XicoEnvironment.live()
+    let model = AppModel(env: env)
     let dir = URL(fileURLWithPath: "/tmp/xico-shots")
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
     let shots: [(String, AnyView)] = [
-        ("01-systemjunk-idle", AnyView(ModuleScanView(env: env, moduleID: .systemJunk, intent: .trash))),
+        ("01-systemjunk-idle", AnyView(ModuleScanView(model: model, moduleID: .systemJunk, intent: .trash))),
         ("02-duplicates-idle", AnyView(DuplicatesView(env: env))),
         ("03-uninstaller",     AnyView(UninstallerView(env: env))),
         ("04-optimization",    AnyView(OptimizationView(env: env))),
         ("05-maintenance",     AnyView(MaintenanceView(env: env))),
-        ("06-privacy-idle",    AnyView(ModuleScanView(env: env, moduleID: .privacy, intent: .trash)))
+        ("06-privacy-idle",    AnyView(ModuleScanView(model: model, moduleID: .privacy, intent: .trash)))
     ]
 
     for scheme in [ColorScheme.dark, .light] {

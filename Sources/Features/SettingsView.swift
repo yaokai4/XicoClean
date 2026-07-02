@@ -21,6 +21,13 @@ public struct SettingsView: View {
     @AppStorage("xico.mb.network") private var mbNetwork = true
     @AppStorage("xico.mb.combined") private var mbCombined = false
     @AppStorage("xico.mb.style") private var mbStyle = MenuBarStyle.iconValue.rawValue
+    @AppStorage("xico.mb.interval") private var mbInterval = 2.0
+    @AppStorage("xico.mb.temp") private var mbTemp = false
+    @AppStorage("xico.mb.disk") private var mbDisk = false
+    @AppStorage("xico.mb.gpu") private var mbGPU = false
+    // 默认单色（模板图，随菜单栏深浅自动黑/白）——克制、像 Sensei/iStat 默认那样不刺眼。
+    // 彩虹极光留给点开后的详情面板与 App 内部。想要彩色菜单栏的用户可自行打开。
+    @AppStorage("xico.mb.colored") private var mbColored = false
 
     public init(model: AppModel) { self.model = model }
 
@@ -41,7 +48,11 @@ public struct SettingsView: View {
                     ignoreListCard
                     historyCard
                     appearanceCard
+                    ThemePickerCard(selectedID: Binding(
+                        get: { model.themeID },
+                        set: { model.themeID = $0 }))
                     menuBarCard
+                    alertsCard
                     permissionCard
                     helperCard
                     resetCard
@@ -82,12 +93,11 @@ public struct SettingsView: View {
                                     failures: [], restorable: rec.restorable)
         Task {
             let result = await model.env.cleaningEngine.undo(report)
-            // 无论全成功还是部分成功，都清除该记录的可撤销标记（已尝试放回）；
-            // 全成功再把累计释放回滚。
+            // 全成功：移除记录并回滚累计释放。部分失败：仅保留仍未恢复的项为可撤销，可重试。
             if result.allSucceeded {
                 model.env.history.remove(id: rec.id)
             } else {
-                model.env.history.clearRestorable(id: rec.id)
+                model.env.history.updateRestorable(id: rec.id, to: result.failed)
             }
             reloadHistory()
             undoingID = nil
@@ -189,7 +199,7 @@ public struct SettingsView: View {
                 VStack(spacing: XSpacing.xs) {
                     Button(checkingUpdate ? xLoc("检查中…") : xLoc("检查更新")) { checkForUpdate() }
                         .buttonStyle(.bordered).disabled(checkingUpdate)
-                    Button(xLoc("购买")) { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
+                    Button(xLoc("升级 Pro")) { model.showPricing = true }
                         .buttonStyle(.bordered)
                     Button(xLoc("导出诊断日志")) { exportDiagnostics() }
                         .buttonStyle(.bordered)
@@ -391,8 +401,16 @@ public struct SettingsView: View {
                 toggleRow(xLoc("处理器 CPU"), $mbCPU)
                 toggleRow(xLoc("内存"), $mbMemory)
                 toggleRow(xLoc("网络速度"), $mbNetwork)
+                toggleRow(xLoc("处理器温度"), $mbTemp)
+                toggleRow(xLoc("GPU 占用"), $mbGPU)
+                toggleRow(xLoc("磁盘占用"), $mbDisk)
                 toggleRow(xLoc("合并总览面板"), $mbCombined)
                 Divider().padding(.vertical, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    toggleRow(xLoc("彩色图标"), $mbColored)
+                    Text(xLoc("关：随菜单栏深浅自动黑白（推荐，克制）；开：每指标单色着色"))
+                        .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                }
                 HStack {
                     Text(xLoc("显示样式")).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                     Spacer()
@@ -403,6 +421,17 @@ public struct SettingsView: View {
                     }
                     .labelsHidden().pickerStyle(.menu).frame(width: 150)
                 }
+                HStack {
+                    Text(xLoc("更新频率")).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                    Spacer()
+                    Picker("", selection: $mbInterval) {
+                        Text(xLoc("快速（1 秒）")).tag(1.0)
+                        Text(xLoc("标准（2 秒）")).tag(2.0)
+                        Text(xLoc("省电（3 秒）")).tag(3.0)
+                    }
+                    .labelsHidden().pickerStyle(.menu).frame(width: 150)
+                    .onChange(of: mbInterval) { model.applyRefreshInterval($0) }
+                }
             }
         }
     }
@@ -412,6 +441,66 @@ public struct SettingsView: View {
             Text(title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
             Spacer()
             Toggle("", isOn: binding).toggleStyle(.switch).labelsHidden()
+        }
+    }
+
+    // MARK: 阈值告警
+
+    private var alertsCard: some View {
+        XCard {
+            VStack(alignment: .leading, spacing: XSpacing.s) {
+                HStack(spacing: XSpacing.m) {
+                    XIconTile(systemImage: "bell.badge", colors: [XColor.warning, XColor.accentPink], size: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(xLoc("阈值告警")).xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(xLoc("指标持续越过阈值时发系统通知")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    }
+                    Spacer()
+                }
+                Divider().padding(.vertical, 2)
+                ForEach(Array(model.alertRules.enumerated()), id: \.element.id) { idx, rule in
+                    alertRuleRow(idx: idx, rule: rule)
+                }
+            }
+        }
+    }
+
+    private func alertRuleRow(idx: Int, rule: AlertRule) -> some View {
+        HStack(spacing: XSpacing.m) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(rule.metric.title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                Text(rule.durationSeconds > 0
+                     ? xLocF("%@ 持续 %d 秒", rule.thresholdText, rule.durationSeconds)
+                     : rule.thresholdText)
+                    .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+            }
+            Spacer()
+            Picker("", selection: Binding(
+                get: { rule.threshold },
+                set: { newVal in
+                    model.alertRules[idx].threshold = newVal
+                    model.saveAlertRules()
+                })) {
+                ForEach(thresholdOptions(for: rule.metric), id: \.self) { v in
+                    Text(rule.metric == .cpuTemp ? "\(Int(v))°C" : "\(Int(v * 100))%").tag(v)
+                }
+            }
+            .labelsHidden().pickerStyle(.menu).frame(width: 92)
+            Toggle("", isOn: Binding(
+                get: { rule.enabled },
+                set: { on in
+                    model.alertRules[idx].enabled = on
+                    model.saveAlertRules()
+                })).toggleStyle(.switch).labelsHidden()
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func thresholdOptions(for metric: AlertMetric) -> [Double] {
+        switch metric {
+        case .cpuTemp: return [80, 85, 90, 95, 100]
+        case .battery: return [0.10, 0.15, 0.20, 0.30]
+        default: return [0.70, 0.80, 0.85, 0.90, 0.95]
         }
     }
 

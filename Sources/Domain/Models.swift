@@ -22,6 +22,7 @@ public extension ModuleID {
     static let maintenance = ModuleID("maintenance")
     static let malware = ModuleID("malware")
     static let monitor = ModuleID("monitor")
+    static let hardware = ModuleID("hardware")
     static let similarImages = ModuleID("similar-images")
     static let appUpdater = ModuleID("app-updater")
     static let shredder = ModuleID("shredder")
@@ -272,13 +273,24 @@ public struct VolumeCapacity: Sendable {
 // MARK: - 字节格式化
 
 public extension Int64 {
-    /// 友好的容量字符串，如 "1.2 GB"（0 显示为 "0 B"，不出现 "Zero bytes"）
+    /// 友好的容量字符串，如 "1.2 GB"（0 显示为 "0 B"，不出现 "Zero bytes"）。
+    /// 磁盘/文件用十进制口径（对齐 Finder）。
     var formattedBytes: String {
         if self <= 0 { return "0 B" }
         let f = ByteCountFormatter()
         f.countStyle = .file
         f.allowsNonnumericFormatting = false
         f.allowedUnits = [.useBytes, .useKB, .useMB, .useGB, .useTB]
+        return f.string(fromByteCount: self)
+    }
+
+    /// 内存容量字符串（二进制口径，对齐活动监视器：16 GiB → "16 GB"）。
+    var formattedMemory: String {
+        if self <= 0 { return "0 B" }
+        let f = ByteCountFormatter()
+        f.countStyle = .memory   // 1024 基
+        f.allowsNonnumericFormatting = false
+        f.allowedUnits = [.useMB, .useGB]
         return f.string(fromByteCount: self)
     }
 }

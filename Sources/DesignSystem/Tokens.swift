@@ -9,7 +9,8 @@ public enum XColor {
     public static let auroraViolet = dynamic(light: 0x8B6FE6, dark: 0xA790F0)
     public static let auroraOrchid = dynamic(light: 0xB873D8, dark: 0xC79AE8)
     public static let auroraRose   = dynamic(light: 0xD874B0, dark: 0xE6A6CE)
-    public static let brand        = auroraViolet
+    /// 品牌强调色——随当前主题变化（图标、高亮、选中态）
+    public static var brand: Color { XThemeStore.current.accent }
     public static let brandEnd     = auroraRose
     public static let accentTeal   = dynamic(light: 0x3AC9C2, dark: 0x86E6DC)
     public static let accentPink   = dynamic(light: 0xE070AC, dark: 0xF0A8CE)
@@ -20,7 +21,8 @@ public enum XColor {
     public static let ringLav    = dynamic(light: 0xAE8AEC, dark: 0xCBB0FF)
     public static let ringPeri   = dynamic(light: 0x7E9BF2, dark: 0xAEC2FF)
     public static let ringMint   = dynamic(light: 0x5BC9C2, dark: 0xAFEDE4)
-    public static var ringColors: [Color] { [ringRose, ringLav, ringPeri, ringMint] }
+    // 仪表/图表默认配色——随当前主题变化
+    public static var ringColors: [Color] { XThemeStore.current.ring }
 
     public static let success      = dynamic(light: 0x1FB87A, dark: 0x35DEA0)
     public static let warning      = dynamic(light: 0xF59E0B, dark: 0xFFC53D)
@@ -40,20 +42,31 @@ public enum XColor {
     public static let border        = dynamic(light: 0xE5E8F1, dark: 0x2A2F44)
     public static let hairline      = dynamic(light: 0xEDEFF6, dark: 0x1D2131)
 
-    // 渐变（克制三段，配白字清晰）
-    public static var brandGradientColors: [Color] { [auroraBlue, auroraViolet, auroraOrchid] }
+    // 渐变（三段，配白字清晰）——随当前主题变化
+    public static var brandGradientColors: [Color] { XThemeStore.current.gradient }
     public static var brandGradient: LinearGradient {
-        LinearGradient(colors: [auroraBlue, auroraViolet, auroraOrchid], startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: XThemeStore.current.gradient, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
     public static var successGradient: LinearGradient {
         LinearGradient(colors: [accentTeal, success], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
+    /// 主题强调色（图标、分段标题）。
+    public static var themeAccent: Color { XThemeStore.current.accent }
 
-    /// 健康分 / 占用率 → 颜色（默认通透光环色，临界才转红）
+    /// 健康分 / 占用率 → 颜色。占用率高是常态（编译/渲染/跑分），不该一到高位就告警红。
+    /// 仅贴顶（>0.97）才用「暖橙→粉」提示偏高，纯红留给温度/内存压力这类真正危险量。
     public static func gauge(_ fraction: Double) -> [Color] {
-        if fraction > 0.93 { return [danger, accentPink] }
+        if fraction > 0.97 { return [warning, accentPink] }
         return ringColors
     }
+
+    /// GPU 专用光环：高占用是「在干活」而非告警，永不转红，用清凉的紫罗兰渐变。
+    public static func gpuGauge(_ fraction: Double) -> [Color] {
+        [auroraViolet, auroraOrchid]
+    }
+
+    /// 便捷构造动态色（供主题定义用）。
+    public static func dyn(_ light: Int, _ dark: Int) -> Color { dynamic(light: light, dark: dark) }
 
     static func dynamic(light: Int, dark: Int) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in

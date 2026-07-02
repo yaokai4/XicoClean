@@ -85,5 +85,54 @@ func renderGlyphs() {
     strip(dark: false, style: .iconValue, "glyphs-light.png")
     strip(dark: true, style: .valueOnly, "glyphs-valueonly.png")
     strip(dark: true, style: .graph, "glyphs-graph.png")
+
+    // 彩色模式 + 全部新指标（温度/磁盘/GPU），对标 iStat 彩色菜单栏
+    func coloredStrip(dark: Bool, _ name: String) {
+        let cpu = MenuBarGlyph.cpu(fraction: 0.62, history: cpuH, style: .iconValue, colored: true)
+        let mem = MenuBarGlyph.memory(fraction: 0.71, history: cpuH, style: .iconValue, colored: true)
+        let temp = MenuBarGlyph.temperature(celsius: 44, style: .iconValue, colored: true)
+        let gpu = MenuBarGlyph.gpu(fraction: 0.26, history: cpuH, style: .iconValue, colored: true)
+        let disk = MenuBarGlyph.disk(fraction: 0.39, style: .iconValue, colored: true)
+        let net = MenuBarGlyph.network(down: 1_250_000, up: 386_000, history: netH, style: .iconValue, colored: true)
+        let view = HStack(spacing: 16) {
+            ForEach(Array([net, disk, temp, gpu, mem, cpu].enumerated()), id: \.offset) { _, img in
+                Image(nsImage: img)
+            }
+        }
+        .padding(.horizontal, 18).padding(.vertical, 6)
+        .background(dark ? Color(white: 0.16) : Color(white: 0.95))
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 3
+        if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: dir.appendingPathComponent(name))
+        }
+    }
+    coloredStrip(dark: true, "glyphs-colored-dark.png")
+    coloredStrip(dark: false, "glyphs-colored-light.png")
+
+    // rich 样式（指标专属迷你可视化）——彩色，对标 iStat 菜单栏
+    func richStrip(dark: Bool, _ name: String) {
+        let cpu = MenuBarGlyph.cpu(fraction: 0.62, history: cpuH, style: .rich, colored: true)
+        let mem = MenuBarGlyph.memory(fraction: 0.71, history: cpuH, style: .rich, colored: true)
+        let gpu = MenuBarGlyph.gpu(fraction: 0.26, history: cpuH, style: .rich, colored: true)
+        let disk = MenuBarGlyph.disk(fraction: 0.39, style: .rich, colored: true)
+        let temp = MenuBarGlyph.temperature(celsius: 44, style: .rich, colored: true)
+        let net = MenuBarGlyph.network(down: 1_250_000, up: 386_000, history: netH, style: .rich, colored: true)
+        let view = HStack(spacing: 16) {
+            ForEach(Array([net, disk, temp, gpu, mem, cpu].enumerated()), id: \.offset) { _, img in
+                Image(nsImage: img)
+            }
+        }
+        .padding(.horizontal, 18).padding(.vertical, 6)
+        .background(dark ? Color(white: 0.16) : Color(white: 0.95))
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 3
+        if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: dir.appendingPathComponent(name))
+        }
+    }
+    richStrip(dark: true, "glyphs-rich-dark.png")
     FileHandle.standardError.write("glyphs rendered to \(dir.path)\n".data(using: .utf8)!)
 }

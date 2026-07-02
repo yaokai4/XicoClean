@@ -28,11 +28,15 @@ public struct RootView: View {
         }
         .frame(minWidth: 1080, minHeight: 720)
         .preferredColorScheme(model.appearance.colorScheme)
+        .sheet(isPresented: $model.showPricing) { PricingView(model: model) }
         .onAppear { model.startMetricsTimer() }
         .onReceive(NotificationCenter.default.publisher(for: .xicoOpenSettings)) { _ in
             withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
                 model.selection = .settings
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .xicoShowPricing)) { _ in
+            model.showPricing = true
         }
     }
 }
@@ -162,23 +166,26 @@ struct SidebarTile: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: XSpacing.s) {
+            HStack(spacing: XSpacing.s + 2) {
                 Image(systemName: meta.systemImage)
-                    .font(.system(size: 14, weight: .semibold))
+                    // 图标字号/字重恒定，仅颜色随选中变化——避免选中时行高跳动。
+                    .font(.system(size: 14, weight: selected ? .semibold : .regular))
                     .foregroundStyle(selected ? .white : XColor.textSecondary)
-                    .frame(width: 22, height: 22)
+                    .frame(width: 20, height: 20)
                 Text(xLoc(meta.title))
-                    .font(selected ? XFont.headline : XFont.bodyEmphasis)
+                    // 字号恒定 13.5pt，仅字重随选中变化（medium→semibold），杜绝选中放大导致的重排。
+                    .font(.system(size: 13.5, weight: selected ? .semibold : .medium))
                     .foregroundStyle(selected ? .white : XColor.textPrimary)
-                Spacer()
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, XSpacing.s)
-            .padding(.vertical, 7)
+            .padding(.horizontal, XSpacing.s + 2)
+            .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
                     .fill(selected ? AnyShapeStyle(XColor.brandGradient)
                                    : AnyShapeStyle(hover ? XColor.surfaceHover : Color.clear))
-                    .shadow(color: selected ? XColor.brand.opacity(0.3) : .clear, radius: 7, y: 3)
+                    // 更柔、更扩散的投影，收敛"发光块"的刺眼感。
+                    .shadow(color: selected ? XColor.brand.opacity(0.22) : .clear, radius: 9, y: 3)
             )
             .contentShape(Rectangle())
         }
@@ -215,24 +222,25 @@ struct DetailView: View {
 
     @ViewBuilder private var page: some View {
         switch model.selection ?? .smartScan {
-        case .smartScan:    SmartScanView(env: model.env)
-        case .systemJunk:   ModuleScanView(env: model.env, moduleID: .systemJunk, intent: .trash)
-        case .largeFiles:   ModuleScanView(env: model.env, moduleID: .largeFiles, intent: .trash)
-        case .trash:        ModuleScanView(env: model.env, moduleID: .trash, intent: .permanent)
+        case .smartScan:    SmartScanView(model: model)
+        case .systemJunk:   ModuleScanView(model: model, moduleID: .systemJunk, intent: .trash)
+        case .largeFiles:   ModuleScanView(model: model, moduleID: .largeFiles, intent: .trash)
+        case .trash:        ModuleScanView(model: model, moduleID: .trash, intent: .permanent)
         case .spaceLens:    SpaceLensView(env: model.env)
         case .duplicates:   DuplicatesView(env: model.env)
         case .similarImages: SimilarImagesView(env: model.env)
         case .shredder:     ShredderView(env: model.env)
         case .uninstaller:  UninstallerView(env: model.env)
         case .appUpdater:   AppUpdaterView(env: model.env)
-        case .privacy:      ModuleScanView(env: model.env, moduleID: .privacy, intent: .trash)
+        case .privacy:      ModuleScanView(model: model, moduleID: .privacy, intent: .trash)
         case .optimization: OptimizationView(env: model.env)
         case .maintenance:  MaintenanceView(env: model.env)
-        case .malware:      ModuleScanView(env: model.env, moduleID: .malware, intent: .trash)
+        case .malware:      ModuleScanView(model: model, moduleID: .malware, intent: .trash)
+        case .hardware:     HardwareView(env: model.env)
         case .monitor:      MonitorView(env: model.env)
         case .settings:     SettingsView(model: model)
         // 未知模块 ID（例如开发用 --open=<拼写错误>）回落到仪表盘，而非过时的「即将推出」占位页。
-        default:            SmartScanView(env: model.env)
+        default:            SmartScanView(model: model)
         }
     }
 }
@@ -251,7 +259,7 @@ struct LicenseBanner: View {
                     .font(XFont.caption).foregroundStyle(XColor.textSecondary)
             }
             Spacer()
-            Button(xLoc("购买")) { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
+            Button(xLoc("升级")) { model.showPricing = true }
                 .buttonStyle(XPrimaryButtonStyle())
             Button(xLoc("导入许可证")) { model.selection = .settings }
                 .buttonStyle(XSecondaryButtonStyle())

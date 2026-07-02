@@ -23,10 +23,19 @@ let package = Package(
         .target(
             name: "Shared"
         ),
+        // C 互操作垫片：通过 IOHIDEventSystemClient 私有 API 读取 Apple Silicon 温度传感器
+        // （只读、无副作用；不可用时静默返回 0，供 Swift 侧降级）
+        .target(
+            name: "CSensors",
+            linkerSettings: [
+                .linkedFramework("IOKit"),
+                .linkedFramework("CoreFoundation")
+            ]
+        ),
         // 与系统交互的具体实现：文件系统、权限、扫描模块、指标采样
         .target(
             name: "Infrastructure",
-            dependencies: ["Domain", "Shared"]
+            dependencies: ["Domain", "Shared", "CSensors"]
         ),
         // 特权助手守护进程（root；需正式签名 + SMAppService 注册）
         .executableTarget(

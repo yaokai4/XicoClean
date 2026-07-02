@@ -83,12 +83,18 @@ public final class HistoryStore: @unchecked Sendable {
 
     /// 撤销后清除某记录的 restorable 映射（保留统计，但标记为已恢复不可再撤销）。
     public func clearRestorable(id: UUID) {
+        updateRestorable(id: id, to: [])
+    }
+
+    /// 把某记录的 restorable 映射更新为指定子集。撤销部分失败时用来仅保留仍未恢复的项，
+    /// 使这些项可重试（而非一次失败就丢掉全部重试能力）。
+    public func updateRestorable(id: UUID, to items: [RestorableItem]) {
         lock.lock(); defer { lock.unlock() }
         guard let i = records.firstIndex(where: { $0.id == id }) else { return }
         let r = records[i]
         records[i] = CleaningRecord(id: r.id, date: r.date, module: r.module,
                                     reclaimedBytes: r.reclaimedBytes, removedCount: r.removedCount,
-                                    restorable: [])
+                                    restorable: items)
         persist()
     }
 

@@ -9,6 +9,7 @@ final class ShredderModel: ObservableObject {
     @Published var files: [URL] = []
     @Published var working = false
     @Published var resultText: String?
+    @Published var licenseBlocked = false
 
     private let env: XicoEnvironment
     init(env: XicoEnvironment) { self.env = env }
@@ -32,6 +33,8 @@ final class ShredderModel: ObservableObject {
 
     func shred() {
         guard !files.isEmpty, !working else { return }
+        // 执行时刻实时复核许可证——粉碎是不可恢复的删除类付费功能，防试用到期绕过（对齐 clean/uninstall 门禁）
+        guard env.license.status().state.allowsCommercialUse else { licenseBlocked = true; return }
         working = true
         resultText = nil
         let env = self.env
@@ -76,6 +79,12 @@ public struct ShredderView: View {
             Button(xLoc("取消"), role: .cancel) {}
         } message: {
             Text(xLoc("将对每个文件多次随机覆写后删除，无法从废纸篓恢复、也难以用恢复工具找回。请确认这些文件确实不再需要。"))
+        }
+        .alert(xLoc("需要有效许可证"), isPresented: $model.licenseBlocked) {
+            Button(xLoc("升级")) { NotificationCenter.default.post(name: .xicoShowPricing, object: nil) }
+            Button(xLoc("好"), role: .cancel) {}
+        } message: {
+            Text(xLoc("试用已结束或许可证无效。升级后即可继续使用文件粉碎。"))
         }
     }
 

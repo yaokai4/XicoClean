@@ -1,6 +1,8 @@
 import Foundation
 import Darwin
 import Domain
+import IOKit.ps
+import CSensors
 
 public enum ThermalLevel: String, Sendable {
     case nominal = "正常"
@@ -10,21 +12,48 @@ public enum ThermalLevel: String, Sendable {
 }
 
 public struct SystemSnapshot: Sendable {
-    public let cpuUsage: Double          // 0...1
-    public let memoryUsed: Int64
+    public let cpuUsage: Double          // 0...1 聚合
+    public let perCore: [Double]         // 每逻辑核 0...1
+    public let cpuUser: Double           // 0...1
+    public let cpuSystem: Double         // 0...1
+    public let load1: Double
+    public let load5: Double
+    public let load15: Double
+    public let memoryUsed: Int64         // 活动监视器口径「已使用」
     public let memoryTotal: Int64
-    public let memoryActive: Int64
-    public let memoryWired: Int64
-    public let memoryCompressed: Int64
+    public let memoryApp: Int64          // 应用内存
+    public let memoryWired: Int64        // 联动内存
+    public let memoryCompressed: Int64   // 已压缩
+    public let memoryCached: Int64        // 缓存文件（计入可用）
+    public let swapUsed: Int64
+    public let swapTotal: Int64
+    public let memoryPressure: Int      // 1=正常 2=警告 4=危险（kern.memorystatus_vm_pressure_level）
+    public let pageIns: Int64           // 累计换入字节
+    public let pageOuts: Int64          // 累计换出字节
     public let diskFree: Int64
     public let diskTotal: Int64
     public let netDownBytesPerSec: Double
     public let netUpBytesPerSec: Double
+    public let gpuUsage: Double?          // 0...1（IOAccelerator）
+    public let cpuTemp: Double?           // ℃（Apple Silicon HID / Intel SMC）
+    public let gpuTemp: Double?           // ℃
+    public let batteryPercent: Int?       // 0...100（无电池为 nil）
+    public let batteryCharging: Bool
     public let thermal: ThermalLevel
     public let fanRPM: Int?
 
+    // 兼容旧字段：活跃 ≈ 应用内存（菜单栏/仪表沿用）
+    public var memoryActive: Int64 { memoryApp }
     public var memoryUsedFraction: Double { memoryTotal > 0 ? Double(memoryUsed) / Double(memoryTotal) : 0 }
     public var diskUsedFraction: Double { diskTotal > 0 ? Double(diskTotal - diskFree) / Double(diskTotal) : 0 }
+    public var swapUsedFraction: Double { swapTotal > 0 ? Double(swapUsed) / Double(swapTotal) : 0 }
+    /// 内存压力 0...1（正常≈0.25 警告≈0.6 危险≈0.9），供压力环显示。
+    public var memoryPressureFraction: Double {
+        switch memoryPressure { case 4: return 0.9; case 2: return 0.6; default: return 0.25 }
+    }
+    public var memoryPressureLabel: String {
+        switch memoryPressure { case 4: return "危险"; case 2: return "警告"; default: return "正常" }
+    }
 }
 
 public struct MacInfo: Sendable {
@@ -36,47 +65,62 @@ public struct MacInfo: Sendable {
     public let uptime: String
 }
 
-/// 实时系统指标采样（CPU / 内存 / 网络 / 磁盘 / 温度）。
-/// 差分状态（prevCPU/prevNet）用锁保护——类型系统层面 Sendable，任何线程调 sample()
-/// 都不会被编译器拦，无锁会算错速率甚至数据竞争（审计）。
+/// 实时系统指标采样（CPU / 每核 / 内存 / 网络 / 磁盘 / 温度 / GPU）。
+/// 差分状态（prevCPU/prevNet/prevPerCore）用锁保护——类型系统层面 Sendable。
 public final class LiveMetricsSampler: @unchecked Sendable {
     private let stateLock = NSLock()
     private var prevCPU: host_cpu_load_info?
+    private var prevPerCore: [(user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)]?
     private var prevNet: (down: UInt64, up: UInt64)?
     private var prevNetTime: Date?
     private let fs: FileSystemService
     private let smc = SMCReader()
+    private let sensors = SensorReader()
+    private let hardware = HardwareProfileService()
 
     public init(fs: FileSystemService = LocalFileSystemService()) { self.fs = fs }
 
     public func sample() -> SystemSnapshot {
         let cpu = sampleCPU()
+        let cores = samplePerCore()
         let mem = sampleMemory()
+        let swap = sampleSwap()
         let net = sampleNetwork()
+        let load = loadAverage()
         let cap = fs.volumeCapacity(for: FileManager.default.homeDirectoryForCurrentUser)
+        let gpu = hardware.acceleratorPerformance().utilization.map { min(1, max(0, $0 / 100)) }
+        let temp = sensors.summary()
+        let battery = batteryStatus()
         return SystemSnapshot(
-            cpuUsage: cpu,
+            cpuUsage: cpu.busy, perCore: cores, cpuUser: cpu.user, cpuSystem: cpu.system,
+            load1: load.0, load5: load.1, load15: load.2,
             memoryUsed: mem.used, memoryTotal: mem.total,
-            memoryActive: mem.active, memoryWired: mem.wired, memoryCompressed: mem.compressed,
+            memoryApp: mem.app, memoryWired: mem.wired, memoryCompressed: mem.compressed, memoryCached: mem.cached,
+            swapUsed: swap.used, swapTotal: swap.total,
+            memoryPressure: memoryPressureLevel(), pageIns: mem.pageIns, pageOuts: mem.pageOuts,
             diskFree: cap?.available ?? 0, diskTotal: cap?.total ?? 0,
             netDownBytesPerSec: net.down, netUpBytesPerSec: net.up,
+            gpuUsage: gpu,
+            cpuTemp: temp.cpu, gpuTemp: temp.gpu,
+            batteryPercent: battery.percent, batteryCharging: battery.charging,
             thermal: thermalLevel(), fanRPM: smc.fanRPM())
     }
 
-    // MARK: CPU
+    // MARK: CPU 聚合
 
-    private func sampleCPU() -> Double {
-        guard let cur = cpuTicks() else { return 0 }
+    private func sampleCPU() -> (busy: Double, user: Double, system: Double) {
+        guard let cur = cpuTicks() else { return (0, 0, 0) }
         stateLock.lock(); defer { stateLock.unlock() }
         defer { prevCPU = cur }
-        guard let prev = prevCPU else { return 0 }
+        guard let prev = prevCPU else { return (0, 0, 0) }
         let user = Double(cur.cpu_ticks.0) - Double(prev.cpu_ticks.0)
         let sys  = Double(cur.cpu_ticks.1) - Double(prev.cpu_ticks.1)
         let idle = Double(cur.cpu_ticks.2) - Double(prev.cpu_ticks.2)
         let nice = Double(cur.cpu_ticks.3) - Double(prev.cpu_ticks.3)
         let busy = max(0, user + sys + nice)
         let total = busy + max(0, idle)
-        return total > 0 ? busy / total : 0
+        guard total > 0 else { return (0, 0, 0) }
+        return (busy / total, (user + nice) / total, sys / total)
     }
 
     private func cpuTicks() -> host_cpu_load_info? {
@@ -90,9 +134,49 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         return result == KERN_SUCCESS ? info : nil
     }
 
-    // MARK: 内存
+    // MARK: CPU 每核心（host_processor_info / PROCESSOR_CPU_LOAD_INFO）
 
-    private func sampleMemory() -> (used: Int64, total: Int64, active: Int64, wired: Int64, compressed: Int64) {
+    private func samplePerCore() -> [Double] {
+        var cpuCount: natural_t = 0
+        var infoArray: processor_info_array_t?
+        var infoCount: mach_msg_type_number_t = 0
+        let kr = host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO,
+                                     &cpuCount, &infoArray, &infoCount)
+        guard kr == KERN_SUCCESS, let array = infoArray else { return [] }
+        defer {
+            let size = vm_size_t(UInt(infoCount) * UInt(MemoryLayout<integer_t>.size))
+            vm_deallocate(mach_task_self_, vm_address_t(bitPattern: array), size)
+        }
+
+        var cur: [(user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)] = []
+        cur.reserveCapacity(Int(cpuCount))
+        for i in 0..<Int(cpuCount) {
+            let base = i * Int(CPU_STATE_MAX)
+            let user = UInt32(bitPattern: array[base + Int(CPU_STATE_USER)])
+            let system = UInt32(bitPattern: array[base + Int(CPU_STATE_SYSTEM)])
+            let idle = UInt32(bitPattern: array[base + Int(CPU_STATE_IDLE)])
+            let nice = UInt32(bitPattern: array[base + Int(CPU_STATE_NICE)])
+            cur.append((user, system, idle, nice))
+        }
+
+        stateLock.lock(); defer { stateLock.unlock() }
+        defer { prevPerCore = cur }
+        guard let prev = prevPerCore, prev.count == cur.count else { return Array(repeating: 0, count: cur.count) }
+
+        return (0..<cur.count).map { i in
+            let du = Double(cur[i].user &- prev[i].user)
+            let ds = Double(cur[i].system &- prev[i].system)
+            let dn = Double(cur[i].nice &- prev[i].nice)
+            let di = Double(cur[i].idle &- prev[i].idle)
+            let busy = max(0, du + ds + dn)
+            let total = busy + max(0, di)
+            return total > 0 ? min(1, busy / total) : 0
+        }
+    }
+
+    // MARK: 内存（活动监视器口径）
+
+    private func sampleMemory() -> (used: Int64, total: Int64, app: Int64, wired: Int64, compressed: Int64, cached: Int64, pageIns: Int64, pageOuts: Int64) {
         let total = Int64(ProcessInfo.processInfo.physicalMemory)
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.stride / MemoryLayout<integer_t>.stride)
@@ -101,15 +185,57 @@ public final class LiveMetricsSampler: @unchecked Sendable {
                 host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
             }
         }
-        guard result == KERN_SUCCESS else { return (0, total, 0, 0, 0) }
+        guard result == KERN_SUCCESS else { return (0, total, 0, 0, 0, 0, 0, 0) }
         let page = Int64(getpagesize())
-        let active = Int64(stats.active_count) * page
+        // 活动监视器口径：
+        //   应用内存 = internal_page_count − purgeable_count
+        //   联动     = wire_count
+        //   已压缩   = compressor_page_count
+        //   缓存文件 = external_page_count + purgeable_count（计入「可用」）
+        //   已使用   = 应用 + 联动 + 已压缩
+        let purgeable = Int64(stats.purgeable_count)
+        let internalPages = Int64(stats.internal_page_count)
+        let external = Int64(stats.external_page_count)
+        let app = max(0, (internalPages - purgeable)) * page
         let wired = Int64(stats.wire_count) * page
         let compressed = Int64(stats.compressor_page_count) * page
-        return (active + wired + compressed, total, active, wired, compressed)
+        let cached = (external + purgeable) * page
+        let used = app + wired + compressed
+        let pageIns = Int64(stats.pageins) * page
+        let pageOuts = Int64(stats.pageouts) * page
+        return (used, total, app, wired, compressed, cached, pageIns, pageOuts)
     }
 
-    // MARK: 网络速率
+    /// CPU 当前频率（MHz）：性能核 / 能效核。经 IOReport DVFS 驻留率加权。
+    /// 不可用（Intel / 接口变更）返回 nil。内部阻塞约 90ms，请在后台调用。
+    public func cpuFrequency() -> (performance: Double, efficiency: Double)? {
+        var p: Double = 0, e: Double = 0
+        return xico_cpu_frequency(&p, &e) == 1 ? (p, e) : nil
+    }
+
+    /// 内存压力等级：1=正常 2=警告 4=危险。
+    private func memoryPressureLevel() -> Int {
+        var level: Int32 = 1
+        var size = MemoryLayout<Int32>.size
+        return sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nil, 0) == 0 ? Int(level) : 1
+    }
+
+    private func sampleSwap() -> (used: Int64, total: Int64) {
+        var usage = xsw_usage()
+        var size = MemoryLayout<xsw_usage>.stride
+        var mib: [Int32] = [CTL_VM, VM_SWAPUSAGE]
+        let r = sysctl(&mib, 2, &usage, &size, nil, 0)
+        guard r == 0 else { return (0, 0) }
+        return (Int64(usage.xsu_used), Int64(usage.xsu_total))
+    }
+
+    private func loadAverage() -> (Double, Double, Double) {
+        var loads = [Double](repeating: 0, count: 3)
+        guard getloadavg(&loads, 3) == 3 else { return (0, 0, 0) }
+        return (loads[0], loads[1], loads[2])
+    }
+
+    // MARK: 网络速率（NET_RT_IFLIST2，64 位计数，排除虚拟接口）
 
     private func sampleNetwork() -> (down: Double, up: Double) {
         let cur = netCounters()
@@ -119,30 +245,69 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         guard let prev = prevNet, let prevTime = prevNetTime else { return (0, 0) }
         let dt = now.timeIntervalSince(prevTime)
         guard dt > 0 else { return (0, 0) }
+        // 64 位计数几乎不会回绕；仍做 >= 保护防止接口重置
         let down = cur.down >= prev.down ? Double(cur.down - prev.down) / dt : 0
         let up = cur.up >= prev.up ? Double(cur.up - prev.up) / dt : 0
         return (down, up)
     }
 
+    /// 只统计物理网络接口（en/ppp 等），排除 lo/utun/awdl/llw/bridge/gif/stf/ap/anpi 等虚拟接口，
+    /// 避免 VPN 双倍计费与自组网干扰。
     private func netCounters() -> (down: UInt64, up: UInt64) {
+        var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
+        var len = 0
+        guard sysctl(&mib, 6, nil, &len, nil, 0) == 0, len > 0 else { return (0, 0) }
+        var buf = [UInt8](repeating: 0, count: len)
+        guard sysctl(&mib, 6, &buf, &len, nil, 0) == 0 else { return (0, 0) }
+
         var down: UInt64 = 0, up: UInt64 = 0
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0 else { return (0, 0) }
-        defer { freeifaddrs(ifaddr) }
-        var ptr = ifaddr
-        while let p = ptr {
-            defer { ptr = p.pointee.ifa_next }
-            let name = String(cString: p.pointee.ifa_name)
-            guard !name.hasPrefix("lo"), p.pointee.ifa_addr?.pointee.sa_family == UInt8(AF_LINK),
-                  let data = p.pointee.ifa_data else { continue }
-            let netData = data.assumingMemoryBound(to: if_data.self)
-            down += UInt64(netData.pointee.ifi_ibytes)
-            up += UInt64(netData.pointee.ifi_obytes)
+        buf.withUnsafeBytes { raw in
+            var offset = 0
+            while offset + MemoryLayout<if_msghdr>.size <= len {
+                let hdr = raw.loadUnaligned(fromByteOffset: offset, as: if_msghdr.self)
+                let msglen = Int(hdr.ifm_msglen)
+                guard msglen > 0, offset + msglen <= len else { break }
+                // 读 if_msghdr2（160 字节，大于 if_msghdr）前先确认可安全读取，防越界读
+                if hdr.ifm_type == UInt8(RTM_IFINFO2),
+                   offset + MemoryLayout<if_msghdr2>.size <= len {
+                    let if2 = raw.loadUnaligned(fromByteOffset: offset, as: if_msghdr2.self)
+                    if includeInterface(index: if2.ifm_index) {
+                        down += if2.ifm_data.ifi_ibytes
+                        up += if2.ifm_data.ifi_obytes
+                    }
+                }
+                offset += msglen
+            }
         }
         return (down, up)
     }
 
-    // MARK: 温度（用公开的热状态指示）
+    private func includeInterface(index: UInt16) -> Bool {
+        var nameBuf = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
+        guard if_indextoname(UInt32(index), &nameBuf) != nil else { return false }
+        let name = String(cString: nameBuf)
+        let excludedPrefixes = ["lo", "utun", "awdl", "llw", "bridge", "gif", "stf", "ap", "anpi", "XHC"]
+        return !excludedPrefixes.contains { name.hasPrefix($0) }
+    }
+
+    // MARK: 电池（IOPSCopyPowerSourcesInfo，公开 API）
+
+    private func batteryStatus() -> (percent: Int?, charging: Bool) {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef],
+              let first = sources.first,
+              let desc = IOPSGetPowerSourceDescription(blob, first)?.takeUnretainedValue() as? [String: Any]
+        else { return (nil, false) }
+        let cur = desc[kIOPSCurrentCapacityKey] as? Int
+        let max = desc[kIOPSMaxCapacityKey] as? Int
+        let charging = (desc[kIOPSPowerSourceStateKey] as? String) == kIOPSACPowerValue
+        if let c = cur, let m = max, m > 0 {
+            return (Int((Double(c) / Double(m) * 100).rounded()), charging)
+        }
+        return (nil, charging)
+    }
+
+    // MARK: 温度（公开热状态）
 
     private func thermalLevel() -> ThermalLevel {
         switch ProcessInfo.processInfo.thermalState {
@@ -157,26 +322,25 @@ public final class LiveMetricsSampler: @unchecked Sendable {
     // MARK: Mac 详情
 
     public func macInfo() -> MacInfo {
-        let total = Int64(ProcessInfo.processInfo.physicalMemory)
-        let v = ProcessInfo.processInfo.operatingSystemVersion
-        let chip = sysctlString("machdep.cpu.brand_string")
-        let model = sysctlString("hw.model")
+        let profile = hardware.staticProfile()
         return MacInfo(
-            model: model.isEmpty ? "Mac" : model,
-            chip: chip.isEmpty ? "Apple Silicon" : chip,
-            macOS: "macOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)",
-            memory: total.formattedBytes,
-            cores: ProcessInfo.processInfo.processorCount,
-            uptime: formatUptime(ProcessInfo.processInfo.systemUptime))
+            model: profile.marketingName,
+            chip: profile.chip,
+            macOS: profile.macOS,
+            memory: profile.memoryDescription,
+            cores: profile.totalCores,
+            uptime: formatUptime(bootUptime()))
     }
 
-    private func sysctlString(_ name: String) -> String {
-        var size = 0
-        sysctlbyname(name, nil, &size, nil, 0)
-        guard size > 0 else { return "" }
-        var buf = [CChar](repeating: 0, count: size)
-        sysctlbyname(name, &buf, &size, nil, 0)
-        return xicoString(fromNullTerminated: buf)
+    /// 用 kern.boottime 计算真实开机时长（systemUptime 在睡眠时会漂移）。
+    private func bootUptime() -> TimeInterval {
+        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
+        var boot = timeval()
+        var size = MemoryLayout<timeval>.stride
+        guard sysctl(&mib, 2, &boot, &size, nil, 0) == 0, boot.tv_sec != 0 else {
+            return ProcessInfo.processInfo.systemUptime
+        }
+        return Date().timeIntervalSince1970 - Double(boot.tv_sec)
     }
 
     private func formatUptime(_ seconds: TimeInterval) -> String {

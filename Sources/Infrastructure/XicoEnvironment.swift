@@ -19,6 +19,13 @@ public final class XicoEnvironment: @unchecked Sendable {
     public let history: HistoryStore
     public let license: LicenseService
     public let ignoreList: IgnoreListStore
+    public let hardware: HardwareProfileService
+    public let sensors: SensorReader
+    public let network: NetworkInfoService
+    public let metricsHistory: MetricsHistoryStore
+    public let alertRuleStore: AlertRuleStore
+    /// 统一实时指标引擎（监视页/硬件页共享，避免各自采样丢失差分状态）。
+    @MainActor public private(set) lazy var metricsEngine = MetricsEngine()
 
     private let scanners: [ModuleID: ScannerModule]
 
@@ -50,6 +57,11 @@ public final class XicoEnvironment: @unchecked Sendable {
         self.history = HistoryStore()
         self.license = license ?? LicenseService.live()
         self.ignoreList = IgnoreListStore()
+        self.hardware = HardwareProfileService()
+        self.sensors = SensorReader()
+        self.network = NetworkInfoService()
+        self.metricsHistory = MetricsHistoryStore()
+        self.alertRuleStore = AlertRuleStore()
 
         var map: [ModuleID: ScannerModule] = [:]
         map[.largeFiles] = LargeFilesScanner(fs: fs, safety: safety)
@@ -91,7 +103,8 @@ public final class XicoEnvironment: @unchecked Sendable {
 
     public func isImplemented(_ id: ModuleID) -> Bool {
         let extra: Set<ModuleID> = [.smartScan, .spaceLens, .duplicates, .similarImages,
-                                    .uninstaller, .appUpdater, .shredder, .optimization, .maintenance, .monitor]
+                                    .uninstaller, .appUpdater, .shredder, .optimization, .maintenance,
+                                    .monitor, .hardware]
         return scanner(for: id) != nil || extra.contains(id)
     }
 
@@ -138,7 +151,8 @@ public enum ModuleCatalog {
         ModuleMetadata(id: .optimization, title: "优化", subtitle: "登录项 / 高耗进程", systemImage: "speedometer", category: .performance),
         ModuleMetadata(id: .maintenance, title: "维护", subtitle: "缓存 / 索引 / 重启", systemImage: "wrench.and.screwdriver", category: .performance),
         ModuleMetadata(id: .malware, title: "威胁防护", subtitle: "广告软件 / 可疑启动项", systemImage: "shield.lefthalf.filled", category: .performance),
-        ModuleMetadata(id: .monitor, title: "系统监视", subtitle: "CPU / 内存 / 网络实时", systemImage: "waveform.path.ecg", category: .performance),
+        ModuleMetadata(id: .hardware, title: "硬件", subtitle: "档案 · 健康 · 温度", systemImage: "cpu", category: .performance),
+        ModuleMetadata(id: .monitor, title: "系统监视", subtitle: "CPU / 内存 / 网络 / GPU 实时", systemImage: "waveform.path.ecg", category: .performance),
         ModuleMetadata(id: .privacy, title: "隐私", subtitle: "浏览器数据清理", systemImage: "hand.raised", category: .performance)
     ]
 

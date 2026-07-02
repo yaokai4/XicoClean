@@ -239,6 +239,8 @@ struct CompletionView: View {
     let onUndo: () -> Void
     let onDone: () -> Void
     @State private var pop = false
+    @State private var shownBytes: Int64 = 0   // 从 0 数到释放量的动画值
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -253,8 +255,9 @@ struct CompletionView: View {
                 .scaleEffect(pop ? 1 : 0.3)
                 .opacity(pop ? 1 : 0)
 
-                Text(xLocF("已释放 %@", report.reclaimedBytes.formattedBytes))
+                Text(xLocF("已释放 %@", shownBytes.formattedBytes))
                     .xLargeTitle().foregroundStyle(XColor.textPrimary)
+                    .monospacedDigit()
                     .contentTransition(.numericText())
                 Text(xLocF("清理了 %d 项", report.removedCount) +
                      (report.failures.isEmpty ? "" : xLocF(" · %d 项被跳过", report.failures.count)))
@@ -272,6 +275,25 @@ struct CompletionView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             withAnimation(.spring(response: 0.5, dampingFraction: 0.55)) { pop = true }
+            countUp()
+        }
+    }
+
+    /// 释放量从 0 数到目标（ease-out），命中 CleanMyMac 式满足感的关键动效。
+    private func countUp() {
+        let target = report.reclaimedBytes
+        guard target > 0, !reduceMotion else { shownBytes = target; return }
+        Task { @MainActor in
+            let start = Date()
+            let duration = 0.9
+            while true {
+                let t = min(1, Date().timeIntervalSince(start) / duration)
+                let eased = 1 - pow(1 - t, 3)   // ease-out cubic
+                shownBytes = Int64(Double(target) * eased)
+                if t >= 1 { break }
+                try? await Task.sleep(nanoseconds: 16_000_000)   // ~60fps
+            }
+            shownBytes = target
         }
     }
 }

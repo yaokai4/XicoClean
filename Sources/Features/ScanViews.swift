@@ -44,8 +44,10 @@ struct SessionScaffold<Idle: View>: View {
                         .buttonStyle(XPrimaryButtonStyle())
                 }
                 if vm.licenseIssue {
-                    Button(xLoc("购买 Xico")) { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
-                        .buttonStyle(XPrimaryButtonStyle())
+                    Button(xLoc("升级 Xico Pro")) {
+                        NotificationCenter.default.post(name: .xicoShowPricing, object: nil)
+                    }
+                    .buttonStyle(XPrimaryButtonStyle())
                     Button(xLoc("导入许可证 / 设置")) {
                         NotificationCenter.default.post(name: .xicoOpenSettings, object: nil)
                     }
@@ -227,23 +229,14 @@ struct ModuleIdleHero: View {
 
 public struct SmartScanView: View {
     private let env: XicoEnvironment
-    @StateObject private var vm: ModuleSessionViewModel
+    @ObservedObject private var vm: ModuleSessionViewModel
     @State private var capacity: VolumeCapacity?
     @State private var metrics: SystemMetrics?
     @State private var appeared = false
 
-    public init(env: XicoEnvironment) {
-        self.env = env
-        let failures = FailureBox()
-        let model = ModuleSessionViewModel(
-            env: env, title: xLoc("智能扫描"), intent: .trash,
-            scanProvider: { handler in
-                failures.reset()
-                return try await env.smartScanCoordinator().scanAll(
-                    progress: handler, onModuleFailure: { failures.add($0) })
-            })
-        model.postScanWarning = { failures.summary() }
-        _vm = StateObject(wrappedValue: model)
+    public init(model: AppModel) {
+        self.env = model.env
+        self.vm = model.smartScanSession   // 缓存的智能扫描会话，切换不丢结果
     }
 
     public var body: some View {
@@ -255,22 +248,62 @@ public struct SmartScanView: View {
             .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in refresh() }
     }
 
+    @State private var lastUndoable: CleaningRecord?
+    @State private var undoing = false
+
     private func refresh() {
         capacity = env.fs.volumeCapacity(for: FileManager.default.homeDirectoryForCurrentUser)
         metrics = env.metrics.sample()
+        lastUndoable = env.history.recent(3).first(where: \.canUndo)
+    }
+
+    /// 撤销最近一次清理（把废纸篓项放回原位）——把独家卖点「可撤销」放到主页可发现处。
+    private func undoLast() {
+        guard let rec = lastUndoable, !undoing else { return }
+        undoing = true
+        let report = CleaningReport(removedCount: rec.removedCount, reclaimedBytes: rec.reclaimedBytes,
+                                    failures: [], restorable: rec.restorable)
+        Task {
+            let result = await env.cleaningEngine.undo(report)
+            if result.allSucceeded { env.history.remove(id: rec.id) }
+            // 部分失败：只保留仍未恢复的项为可撤销，用户可重试（而非丢掉全部重试能力）
+            else { env.history.updateRestorable(id: rec.id, to: result.failed) }
+            refresh()
+            undoing = false
+        }
+    }
+
+    @ViewBuilder private var recentCleanupCard: some View {
+        if let rec = lastUndoable {
+            HStack(spacing: XSpacing.m) {
+                XIconTile(systemImage: "clock.arrow.circlepath", colors: [XColor.accentTeal, XColor.success], size: 30)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(xLocF("上次清理释放 %@", rec.reclaimedBytes.formattedBytes))
+                        .font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                    Text(xLoc("移入废纸篓 · 可一键放回原位")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                }
+                Spacer()
+                Button(undoing ? xLoc("撤销中…") : xLoc("撤销")) { undoLast() }
+                    .buttonStyle(XSecondaryButtonStyle())
+                    .disabled(undoing)
+            }
+            .padding(XSpacing.m)
+            .frame(maxWidth: 600)
+            .background(XColor.surface, in: RoundedRectangle(cornerRadius: XRadius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: XRadius.card, style: .continuous).strokeBorder(XColor.border, lineWidth: 1))
+        }
     }
 
     private var dashboard: some View {
         let disk = capacity?.usedFraction ?? 0
         let mem = metrics?.memoryUsedFraction ?? 0
         let health = healthScore(disk: disk, mem: mem)
-        return VStack(spacing: XSpacing.l) {
+        return VStack(spacing: XSpacing.xl) {
             healthHeader(score: health, disk: disk)
 
-            XRingGauge(progress: disk, colors: XColor.gauge(disk), size: 272) {
-                VStack(spacing: XSpacing.xs) {
-                    Text((capacity?.available ?? 0).formattedBytes)
-                        .font(XFont.hero).foregroundStyle(XColor.textPrimary)
+            XRingGauge(progress: disk, colors: XColor.gauge(disk), lineWidth: 16, size: 296) {
+                VStack(spacing: 6) {
+                    heroBytes(capacity?.available ?? 0)
                     Text(xLoc("可用空间")).font(XFont.body).foregroundStyle(XColor.textSecondary)
                     if let cap = capacity {
                         Text(xLocF("共 %@", cap.total.formattedBytes)).font(XFont.caption).foregroundStyle(XColor.textTertiary)
@@ -291,13 +324,34 @@ public struct SmartScanView: View {
             Button(xLoc("开始智能扫描")) { vm.start() }
                 .buttonStyle(XPrimaryButtonStyle(large: true))
                 .keyboardShortcut(.defaultAction)
-                .padding(.top, XSpacing.xs)
+                .padding(.top, XSpacing.s)
+
+            recentCleanupCard
         }
         .padding(.horizontal, XSpacing.xl)
         .padding(.vertical, XSpacing.l)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .scaleEffect(appeared ? 1 : 0.94)
         .opacity(appeared ? 1 : 0)
+    }
+
+    /// 环心大数字：数值与单位分开排印（值大、单位小），保证单行不换行、居中不断版。
+    private func heroBytes(_ bytes: Int64) -> some View {
+        let s = bytes.formattedBytes
+        let parts = s.split(separator: " ", maxSplits: 1)
+        let value = parts.first.map(String.init) ?? s
+        let unit = parts.count > 1 ? String(parts[1]) : ""
+        return HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text(value)
+                .font(.system(size: 46, weight: .bold, design: .rounded)).monospacedDigit()
+            Text(unit)
+                .font(.system(size: 23, weight: .semibold, design: .rounded))
+                .foregroundStyle(XColor.textSecondary)
+        }
+        .foregroundStyle(XColor.textPrimary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.6)   // 极端超长（999.99 GB）整体等比缩小而非断行
+        .layoutPriority(1)
     }
 
     private func healthHeader(score: Int, disk: Double) -> some View {
@@ -351,28 +405,16 @@ final class FailureBox: @unchecked Sendable {
 // MARK: - 单模块页
 
 public struct ModuleScanView: View {
-    @StateObject private var vm: ModuleSessionViewModel
+    // 会话由 AppModel 缓存并持有：切换侧栏再回来复用同一实例，扫描进度/结果不丢（审计 P1）。
+    @ObservedObject private var vm: ModuleSessionViewModel
     private let meta: ModuleMetadata?
     private let intent: DeleteIntent
 
-    public init(env: XicoEnvironment, moduleID: ModuleID, intent: DeleteIntent) {
+    public init(model: AppModel, moduleID: ModuleID, intent: DeleteIntent) {
         let meta = ModuleCatalog.all.first { $0.id == moduleID }
         self.meta = meta
         self.intent = intent
-        let model = ModuleSessionViewModel(
-            env: env, title: meta?.title ?? "", intent: intent,
-            scanProvider: { handler in
-                guard let scanner = env.scanner(for: moduleID) else { return [] }
-                // 不再吞掉错误：失败会上抛到 ViewModel 呈现为失败态，而非伪装成「很干净」
-                return [try await scanner.scan(progress: handler)]
-            })
-        // 威胁模块：删除 plist 前先 bootout，停用已加载的恶意 agent
-        if moduleID == .malware {
-            model.beforeClean = { items in
-                await ThreatRemediation.bootoutUserAgents(items.map(\.url))
-            }
-        }
-        _vm = StateObject(wrappedValue: model)
+        self.vm = model.moduleSession(moduleID: moduleID, intent: intent, title: meta?.title ?? "")
     }
 
     public var body: some View {

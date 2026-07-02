@@ -64,11 +64,47 @@ public final class SMCReader: @unchecked Sendable {
         return Int(count)
     }
 
+    /// 全部风扇的当前/目标/最小/最大转速（Intel 及带风扇的机型）。
+    public struct FanReading: Sendable {
+        public let index: Int
+        public let current: Int
+        public let minimum: Int?
+        public let maximum: Int?
+    }
+
+    public func allFans() -> [FanReading] {
+        guard isOpen, let count = readUInt8(key: "FNum"), count > 0 else { return [] }
+        var out: [FanReading] = []
+        for i in 0..<Int(count) {
+            guard let rpm = readFan(index: i) else { continue }
+            let mn = readFanValue(key: "F\(i)Mn")
+            let mx = readFanValue(key: "F\(i)Mx")
+            out.append(FanReading(index: i, current: rpm, minimum: mn, maximum: mx))
+        }
+        return out
+    }
+
     private func readFan(index: Int) -> Int? {
         let key = "F\(index)Ac"
         guard let val = readKey(key) else { return nil }
         let rpm = decode(val)
-        return rpm > 0 && rpm < 20000 ? Int(rpm) : nil
+        // 现实机型风扇上限约 7000–7500 RPM（本机 M1 MBP 上限 7199）。
+        // 收紧到 <9000 过滤 SMC 偶发坏帧（如 15607）——真实值都在此范围内，无副作用。
+        return rpm > 100 && rpm < 9000 ? Int(rpm) : nil
+    }
+
+    private func readFanValue(key: String) -> Int? {
+        guard let val = readKey(key) else { return nil }
+        let v = decode(val)
+        return v >= 0 && v < 20000 ? Int(v) : nil
+    }
+
+    /// 读取一个温度键（摄氏度）。Intel 机型温度键为 sp78/flt 类型；
+    /// 值域外（<-40 或 >150）视为无效返回 nil。
+    public func temperature(key: String) -> Double? {
+        guard isOpen, let val = readKey(key) else { return nil }
+        let t = decode(val)
+        return (t > -40 && t < 150) ? t : nil
     }
 
     private func readUInt8(key: String) -> UInt8? {
@@ -118,6 +154,10 @@ public final class SMCReader: @unchecked Sendable {
             return Double((UInt16(b.0) << 8 | UInt16(b.1)) >> 2)
         case "fp2e":
             return Double((UInt16(b.0) << 8 | UInt16(b.1))) / 16384.0
+        case "sp78":
+            // 有符号 8.8 定点（Intel 温度键常用）：high.low / 256
+            let raw = Int16(bitPattern: UInt16(b.0) << 8 | UInt16(b.1))
+            return Double(raw) / 256.0
         default:
             // 兜底当 float
             var f: Float = 0

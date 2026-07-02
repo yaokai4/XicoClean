@@ -17,6 +17,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     /// 各项：UserDefaults 键 + 默认是否显示。顺序即菜单栏从右到左的插入顺序。
     private let config: [(id: String, key: String, def: Bool)] = [
         ("network", "xico.mb.network", true),
+        ("disk",    "xico.mb.disk",    false),
+        ("temp",    "xico.mb.temp",    false),
+        ("gpu",     "xico.mb.gpu",     false),
         ("memory",  "xico.mb.memory",  true),
         ("cpu",     "xico.mb.cpu",     true),
         ("combined","xico.mb.combined", false)
@@ -101,20 +104,31 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     private var style: MenuBarStyle {
+        // 默认 .iconValue（图标+数值，最克制，开箱即像 Sensei/iStat 默认）。
+        // .rich 迷你可视化留给用户在设置里主动开启。
         MenuBarStyle(rawValue: UserDefaults.standard.string(forKey: "xico.mb.style") ?? "") ?? .iconValue
+    }
+    private var colored: Bool {
+        // 默认单色（false）：菜单栏保持克制，随深浅自适应黑/白，不刺眼。彩色为用户可选项。
+        UserDefaults.standard.object(forKey: "xico.mb.colored") == nil ? false : UserDefaults.standard.bool(forKey: "xico.mb.colored")
     }
 
     private func image(for id: String, snapshot s: SystemSnapshot?) -> NSImage? {
         let style = self.style
+        let colored = self.colored
         switch id {
         case "cpu":      return MenuBarGlyph.cpu(fraction: s?.cpuUsage ?? 0,
-                                                 history: model.cpuHistory, style: style)
+                                                 history: model.cpuHistory, style: style, colored: colored)
         case "memory":   return MenuBarGlyph.memory(fraction: s?.memoryUsedFraction ?? 0,
-                                                    history: model.memHistory, style: style)
+                                                    history: model.memHistory, style: style, colored: colored)
         case "network":  return MenuBarGlyph.network(down: s?.netDownBytesPerSec ?? 0,
                                                      up: s?.netUpBytesPerSec ?? 0,
-                                                     history: netNormHistory(), style: style)
-        case "combined": return MenuBarGlyph.combined()
+                                                     history: netNormHistory(), style: style, colored: colored)
+        case "temp":     return MenuBarGlyph.temperature(celsius: s?.cpuTemp, style: style, colored: colored)
+        case "disk":     return MenuBarGlyph.disk(fraction: s?.diskUsedFraction ?? 0, style: style, colored: colored)
+        case "gpu":      return MenuBarGlyph.gpu(fraction: s?.gpuUsage ?? 0,
+                                                 history: model.cpuHistory, style: style, colored: colored)
+        case "combined": return MenuBarGlyph.combined(colored: colored)
         default:         return nil
         }
     }
@@ -157,7 +171,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     @ViewBuilder private func panel(for id: String) -> some View {
         switch id {
-        case "cpu":     MenuMetricPanel(model: model, metric: .cpu)
+        case "cpu", "temp", "gpu": MenuMetricPanel(model: model, metric: .cpu)
         case "memory":  MenuMetricPanel(model: model, metric: .memory)
         case "network": MenuMetricPanel(model: model, metric: .network)
         default:        MenuBarView(model: model)
