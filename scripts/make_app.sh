@@ -175,13 +175,31 @@ TEAM="$(codesign -dvvv "$DEST" 2>&1 | grep TeamIdentifier | cut -d= -f2 || true)
 echo "  TeamIdentifier: ${TEAM:-未签名}"
 
 # 启动冒烟测试：--selftest 会真实初始化 XicoEnvironment（含 Bundle.module 本地化查表），
-# 若漏嵌资源包等会立刻崩溃。捕获到即让打包失败，避免把闪退包交到用户手里。
-echo "▶︎ 启动冒烟测试（--selftest）"
-if "$DEST/Contents/MacOS/Xico" --selftest >/dev/null 2>&1; then
-  echo "✓ 冒烟测试通过：App 可正常初始化"
+# 若漏嵌资源包等会在启动 ~1s 内断言崩溃。但 --selftest 随后还会真跑全功能自检
+# （全盘 largeFiles/malware 扫描），在满盘机器上可达 10+ 分钟——不该阻塞打包。
+# 故给它时间预算：只要撑过启动崩溃窗口即视为通过，随后主动结束它。
+echo "▶︎ 启动冒烟测试（启动存活检测，最多 ${SMOKE_BUDGET:=20}s）"
+"$DEST/Contents/MacOS/Xico" --selftest >/dev/null 2>&1 &
+SMOKE_PID=$!
+smoke_done=""
+for _ in $(seq 1 "$SMOKE_BUDGET"); do
+  if kill -0 "$SMOKE_PID" 2>/dev/null; then
+    sleep 1
+  else
+    wait "$SMOKE_PID"; rc=$?
+    if [ "$rc" -eq 0 ]; then smoke_done="ok"; else
+      echo "✗ 冒烟测试失败：App 启动即异常（退出码 $rc，可能漏嵌资源包/签名问题）。请勿分发此包。"
+      exit 1
+    fi
+    break
+  fi
+done
+if [ -z "$smoke_done" ]; then
+  # 仍在运行 = 已越过启动崩溃窗口、正在跑全功能自检；结束它并视为通过。
+  kill "$SMOKE_PID" 2>/dev/null; wait "$SMOKE_PID" 2>/dev/null || true
+  echo "✓ 冒烟测试通过：App 已成功初始化（越过 ${SMOKE_BUDGET}s 启动窗口，提前结束全量自检）"
 else
-  echo "✗ 冒烟测试失败：App 启动即异常（可能漏嵌资源包/签名问题）。请勿分发此包。"
-  exit 1
+  echo "✓ 冒烟测试通过：App 可正常初始化并完成自检"
 fi
 echo ""
 echo "启用特权助手以执行维护任务："
