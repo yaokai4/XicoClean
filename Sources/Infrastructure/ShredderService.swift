@@ -30,14 +30,9 @@ public struct ShredderService: Sendable {
             if Task.isCancelled { break }
             progress(ScanProgress(fraction: total > 0 ? Double(idx) / Double(total) : nil,
                                   message: url.lastPathComponent, bytesFound: freed))
-            // 粉碎是彻底删除：必须过 permanent 红线（内容目录内的文件因此会被拒——安全）
-            guard safety.verify(url, intent: .permanent).isAllowed else {
-                XicoLog.clean.error("粉碎被红线拒绝: \(url.path, privacy: .public)")
-                failed.append(url); continue
-            }
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            if overwriteAndRemove(url) {
-                shredded += 1; freed += Int64(size)
+            var freedForItem: Int64 = 0
+            if overwriteAndRemove(url, freed: &freedForItem) {
+                shredded += 1; freed += freedForItem
             } else {
                 failed.append(url)
             }
@@ -45,20 +40,37 @@ public struct ShredderService: Sendable {
         return Result(shredded: shredded, failed: failed, freedBytes: freed)
     }
 
-    /// 对单个文件多轮随机覆写后删除；目录则递归对其中文件覆写后整体删除。
-    private func overwriteAndRemove(_ url: URL) -> Bool {
+    /// 对单个文件多轮随机覆写后删除；目录则递归。
+    /// 关键安全约束（对抗复核发现）：
+    /// - **每一层**（包括递归子项）都过红线校验，绝不只校顶层；用 .trash 语义取基础红线
+    ///   （系统区/其他用户/云同步/钥匙串/图库包/应用数据根一律拒），但允许用户显式选定并二次确认的
+    ///   自有内容文件被粉碎——这正是粉碎功能的用途。
+    /// - **绝不跟随符号链接**：遇到软链只删链接本身，绝不进入其目标覆写/删除（否则会穿透删掉受保护目标）。
+    private func overwriteAndRemove(_ url: URL, freed: inout Int64) -> Bool {
         let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { return false }
-        if isDir.boolValue {
-            let children = (try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+        // 基础红线：系统/其他用户/云同步/钥匙串/图库包/数据根一律拒（用 .trash 取不含内容目录收紧的基础判定）
+        guard safety.verify(url, intent: .trash).isAllowed else {
+            XicoLog.clean.error("粉碎被红线拒绝: \(url.path, privacy: .public)")
+            return false
+        }
+        let rv = try? url.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey, .fileSizeKey])
+        // 符号链接：只删链接本身，绝不跟随进入目标
+        if rv?.isSymbolicLink == true {
+            return (try? fm.removeItem(at: url)) != nil
+        }
+        if rv?.isDirectory == true {
+            let children = (try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil,
+                                                        options: [])) ?? []
             var ok = true
-            for child in children where !overwriteAndRemove(child) { ok = false }
+            for child in children where !overwriteAndRemove(child, freed: &freed) { ok = false }
             return ok && ((try? fm.removeItem(at: url)) != nil)
         }
         overwriteFile(url)
-        do { try fm.removeItem(at: url); return true }
-        catch {
+        do {
+            try fm.removeItem(at: url)
+            freed += Int64(rv?.fileSize ?? 0)
+            return true
+        } catch {
             XicoLog.clean.error("粉碎删除失败: \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return false
         }

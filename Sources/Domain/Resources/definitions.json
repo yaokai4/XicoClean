@@ -62,8 +62,6 @@
     { "id": "adobe-cache", "category": "system-junk", "title": "Adobe 缓存", "description": "Adobe 应用的媒体与磁盘缓存，删除安全，会按需重建。", "paths": ["~/Library/Caches/Adobe/*", "~/Library/Application Support/Adobe/Common/Media Cache Files/*"], "safety": "safe", "systemImage": "paintbrush" },
     { "id": "ios-firmware", "category": "ios", "title": "iOS 固件更新包", "description": "旧版 iPhone/iPad 固件（IPSW），通常数 GB，可从 Apple 重新下载。", "paths": ["~/Library/iTunes/iPhone Software Updates/*", "~/Library/iTunes/iPad Software Updates/*"], "safety": "safe", "systemImage": "arrow.down.circle" },
     { "id": "mail-downloads", "category": "system-junk", "title": "邮件附件下载", "description": "Apple 邮件为预览而下载的附件副本，删除安全，可从邮件服务器重新下载。", "paths": ["~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads/*"], "safety": "caution", "systemImage": "paperclip" },
-    { "id": "quicklook-thumbs", "category": "system-junk", "title": "快速查看缩略图缓存", "description": "Quick Look 生成的缩略图缓存，删除安全、会自动重建。", "paths": ["~/Library/Caches/com.apple.QuickLook.thumbnailcache/*"], "safety": "safe", "systemImage": "eye" },
-    { "id": "wechat-cache", "category": "system-junk", "title": "微信缓存", "description": "微信沙盒容器内的缓存数据，删除安全（不含聊天记录数据库）。", "paths": ["~/Library/Containers/com.tencent.xinWeChat/Data/Library/Caches/*"], "safety": "safe", "systemImage": "message" },
-    { "id": "qq-cache", "category": "system-junk", "title": "QQ 缓存", "description": "QQ 沙盒容器内的缓存数据，删除安全。", "paths": ["~/Library/Containers/com.tencent.qq/Data/Library/Caches/*"], "safety": "safe", "systemImage": "message" }
+    { "id": "quicklook-thumbs", "category": "system-junk", "title": "快速查看缩略图缓存", "description": "Quick Look 生成的缩略图缓存，删除安全、会自动重建。", "paths": ["~/Library/Caches/com.apple.QuickLook.thumbnailcache/*"], "safety": "safe", "systemImage": "eye" }
   ]
 }

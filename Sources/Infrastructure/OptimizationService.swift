@@ -79,8 +79,10 @@ public struct OptimizationService: Sendable {
             let warn = ok ? nil : "已启用（将在下次登录完全生效）。launchctl：\(out)"
             return ToggleResult(url: target, warning: warn)
         } else {
-            // 先尝试停用已加载服务，再改名为 .disabled（持久停用）
-            let (ok, out) = await Self.runLaunchctl(["bootout", "\(domain)/\(agent.label)"])
+            // 先尝试停用已加载服务，再改名为 .disabled（持久停用）。
+            // service target 需用 plist 内的 Label（与文件名只是约定相等），优先读取、回退文件名。
+            let label = (NSDictionary(contentsOf: agent.url)?["Label"] as? String) ?? agent.label
+            let (ok, out) = await Self.runLaunchctl(["bootout", "\(domain)/\(label)"])
             let target = agent.url.appendingPathExtension("disabled")
             do {
                 try fm.moveItem(at: agent.url, to: target)
