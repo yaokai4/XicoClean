@@ -222,6 +222,7 @@ struct DetailView: View {
         case .spaceLens:    SpaceLensView(env: model.env)
         case .duplicates:   DuplicatesView(env: model.env)
         case .similarImages: SimilarImagesView(env: model.env)
+        case .shredder:     ShredderView(env: model.env)
         case .uninstaller:  UninstallerView(env: model.env)
         case .appUpdater:   AppUpdaterView(env: model.env)
         case .privacy:      ModuleScanView(env: model.env, moduleID: .privacy, intent: .trash)

@@ -91,7 +91,7 @@ public final class XicoEnvironment: @unchecked Sendable {
 
     public func isImplemented(_ id: ModuleID) -> Bool {
         let extra: Set<ModuleID> = [.smartScan, .spaceLens, .duplicates, .similarImages,
-                                    .uninstaller, .appUpdater, .optimization, .maintenance, .monitor]
+                                    .uninstaller, .appUpdater, .shredder, .optimization, .maintenance, .monitor]
         return scanner(for: id) != nil || extra.contains(id)
     }
 
@@ -105,6 +105,10 @@ public final class XicoEnvironment: @unchecked Sendable {
 
     public func appUpdateService() -> AppUpdateService {
         AppUpdateService(uninstaller: uninstaller)
+    }
+
+    public func shredderService() -> ShredderService {
+        ShredderService(safety: safety)
     }
 
     /// 智能扫描聚合：系统垃圾 + 隐私（均为定义驱动、快速）。
@@ -129,6 +133,7 @@ public enum ModuleCatalog {
 
         ModuleMetadata(id: .uninstaller, title: "卸载器", subtitle: "彻底卸载含残留", systemImage: "xmark.bin", category: .applications),
         ModuleMetadata(id: .appUpdater, title: "应用更新", subtitle: "检查可更新的应用", systemImage: "arrow.triangle.2.circlepath", category: .applications),
+        ModuleMetadata(id: .shredder, title: "文件粉碎", subtitle: "覆写后彻底删除", systemImage: "flame", category: .filesSpace),
 
         ModuleMetadata(id: .optimization, title: "优化", subtitle: "登录项 / 高耗进程", systemImage: "speedometer", category: .performance),
         ModuleMetadata(id: .maintenance, title: "维护", subtitle: "缓存 / 索引 / 重启", systemImage: "wrench.and.screwdriver", category: .performance),

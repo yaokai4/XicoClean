@@ -24,6 +24,7 @@ public extension ModuleID {
     static let monitor = ModuleID("monitor")
     static let similarImages = ModuleID("similar-images")
     static let appUpdater = ModuleID("app-updater")
+    static let shredder = ModuleID("shredder")
     static let settings = ModuleID("settings")
 }
 
