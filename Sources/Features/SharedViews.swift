@@ -15,9 +15,9 @@ extension SafetyLevel {
     /// 删除后会怎样——给用户「删这个安全吗」的判断依据（智能解释）。
     var explanation: String {
         switch self {
-        case .safe: return "删除安全：这些是可再生的缓存/临时文件，应用会在需要时自动重建。默认已勾选。"
-        case .caution: return "请留意：删除本身可恢复（移入废纸篓），但重建或再获取需要时间/流量。默认不勾选，确认后再删。"
-        case .risky: return "高风险：可能涉及重要或不可逆的数据。请逐项确认，默认不勾选。"
+        case .safe: return xLoc("删除安全：这些是可再生的缓存/临时文件，应用会在需要时自动重建。默认已勾选。")
+        case .caution: return xLoc("请留意：删除本身可恢复（移入废纸篓），但重建或再获取需要时间/流量。默认不勾选，确认后再删。")
+        case .risky: return xLoc("高风险：可能涉及重要或不可逆的数据。请逐项确认，默认不勾选。")
         }
     }
     var gradient: [Color] {
@@ -76,11 +76,11 @@ struct ItemRowView: View {
         .animation(.easeOut(duration: 0.15), value: hover)
         .onHover { hover = $0 }
         .contextMenu {
-            Button("快速查看") { quickLook(item.url) }
-            Button("在 Finder 中显示") { revealInFinder(item.url) }
+            Button(xLoc("快速查看")) { quickLook(item.url) }
+            Button(xLoc("在 Finder 中显示")) { revealInFinder(item.url) }
             if let onIgnore {
                 Divider()
-                Button("永不清理此项") { onIgnore() }
+                Button(xLoc("永不清理此项")) { onIgnore() }
             }
         }
     }
@@ -142,7 +142,7 @@ struct ResultGroupCard: View {
                             .foregroundStyle(XColor.textTertiary)
                     }
                     .buttonStyle(.plain)
-                    .help("这是什么 / 删除后会怎样")
+                    .help(xLoc("这是什么 / 删除后会怎样"))
                     .popover(isPresented: $showInfo, arrowEdge: .bottom) {
                         VStack(alignment: .leading, spacing: XSpacing.s) {
                             Text(group.title).xHeadline().foregroundStyle(XColor.textPrimary)
@@ -221,8 +221,8 @@ struct ScanningIndicator: View {
     let message: String
     var body: some View {
         VStack(spacing: XSpacing.xl) {
-            XScanOrb(value: bytes.formattedBytes, label: "已发现", size: 300)
-            Text(message.isEmpty ? "正在扫描…" : message)
+            XScanOrb(value: bytes.formattedBytes, label: xLoc("已发现"), size: 300)
+            Text(message.isEmpty ? xLoc("正在扫描…") : message)
                 .font(XFont.body).foregroundStyle(XColor.textSecondary)
                 .lineLimit(1).truncationMode(.middle).frame(maxWidth: 380)
                 .transition(.opacity)
@@ -261,9 +261,9 @@ struct CompletionView: View {
                     .font(XFont.body).foregroundStyle(XColor.textSecondary)
                 HStack(spacing: XSpacing.m) {
                     if intent == .trash && !report.restorable.isEmpty {
-                        Button("撤销") { onUndo() }.buttonStyle(XSecondaryButtonStyle())
+                        Button(xLoc("撤销")) { onUndo() }.buttonStyle(XSecondaryButtonStyle())
                     }
-                    Button("完成") { onDone() }.buttonStyle(XPrimaryButtonStyle())
+                    Button(xLoc("完成")) { onDone() }.buttonStyle(XPrimaryButtonStyle())
                 }
                 .padding(.top, XSpacing.s)
                 .opacity(pop ? 1 : 0)

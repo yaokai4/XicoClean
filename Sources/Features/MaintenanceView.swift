@@ -16,13 +16,13 @@ public struct MaintenanceView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            XHeaderBar(title: "维护", subtitle: "让 Mac 保持顺畅")
+            XHeaderBar(title: xLoc("维护"), subtitle: xLoc("让 Mac 保持顺畅"))
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: XSpacing.m) {
-                    sectionLabel("立即可用 · 无需管理员")
+                    sectionLabel(xLoc("立即可用 · 无需管理员"))
                     ForEach(UserMaintenanceTask.allCases) { task in userCard(task) }
 
-                    sectionLabel("需要管理员权限")
+                    sectionLabel(xLoc("需要管理员权限"))
                     if status != .installed { helperBanner }
                     ForEach(MaintenanceTask.allCases, id: \.self) { task in rootCard(task) }
                 }
@@ -32,14 +32,14 @@ public struct MaintenanceView: View {
         .onAppear { status = env.helper.status() }
         .confirmationDialog(confirmTask?.title ?? "", isPresented: confirmBinding, titleVisibility: .visible) {
             if let task = confirmTask {
-                Button("确认执行", role: .destructive) { performRoot(task) }
-                Button("取消", role: .cancel) {}
+                Button(xLoc("确认执行"), role: .destructive) { performRoot(task) }
+                Button(xLoc("取消"), role: .cancel) {}
             }
         } message: {
             if let task = confirmTask, let msg = task.confirmationMessage { Text(msg) }
         }
-        .alert("安装助手失败", isPresented: Binding(get: { installError != nil }, set: { if !$0 { installError = nil } })) {
-            Button("好", role: .cancel) {}
+        .alert(xLoc("安装助手失败"), isPresented: Binding(get: { installError != nil }, set: { if !$0 { installError = nil } })) {
+            Button(xLoc("好"), role: .cancel) {}
         } message: {
             Text(installError ?? "")
         }
@@ -60,9 +60,9 @@ public struct MaintenanceView: View {
             Text(bannerText).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             Spacer()
             if status == .requiresApproval {
-                Button("去系统设置批准") { env.helper.openLoginItemsSettings() }.buttonStyle(.borderedProminent)
+                Button(xLoc("去系统设置批准")) { env.helper.openLoginItemsSettings() }.buttonStyle(.borderedProminent)
             } else {
-                Button("安装助手") { installHelper() }.buttonStyle(.borderedProminent)
+                Button(xLoc("安装助手")) { installHelper() }.buttonStyle(.borderedProminent)
             }
         }
         .padding(XSpacing.m)
@@ -82,9 +82,9 @@ public struct MaintenanceView: View {
 
     private var bannerText: String {
         switch status {
-        case .requiresApproval: return "助手已注册，请在「登录项与扩展」中打开开关即可执行以下任务。"
-        case .unavailable: return "当前为开发签名版本，正式签名后可安装一次性助手执行以下任务。"
-        default: return "以下任务需 root 权限，安装一次性后台助手即可执行。"
+        case .requiresApproval: return xLoc("助手已注册，请在「登录项与扩展」中打开开关即可执行以下任务。")
+        case .unavailable: return xLoc("当前为开发签名版本，正式签名后可安装一次性助手执行以下任务。")
+        default: return xLoc("以下任务需 root 权限，安装一次性后台助手即可执行。")
         }
     }
 
@@ -103,7 +103,7 @@ public struct MaintenanceView: View {
                     if running == "u-" + task.rawValue {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("执行") { runUser(task) }.buttonStyle(.bordered)
+                        Button(xLoc("执行")) { runUser(task) }.buttonStyle(.bordered)
                     }
                 }
                 resultLine(userResults[task.rawValue])
@@ -124,7 +124,7 @@ public struct MaintenanceView: View {
                     if running == "r-" + task.rawValue {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("执行") { runRoot(task) }.buttonStyle(.bordered)
+                        Button(xLoc("执行")) { runRoot(task) }.buttonStyle(.bordered)
                             .disabled(status != .installed)
                     }
                 }
@@ -165,7 +165,7 @@ public struct MaintenanceView: View {
         running = "r-" + task.rawValue
         Task {
             let (ok, out) = await env.helper.runMaintenance(task)
-            rootResults[task.rawValue] = (ok, ok ? "完成" : (out ?? "执行失败"))
+            rootResults[task.rawValue] = (ok, ok ? xLoc("完成") : (out ?? xLoc("执行失败")))
             running = nil
         }
     }

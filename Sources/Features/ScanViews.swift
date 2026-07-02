@@ -24,9 +24,9 @@ struct SessionScaffold<Idle: View>: View {
             }
         }
         .animation(.easeInOut(duration: 0.35), value: vm.phase)
-        .alert("部分项目未能恢复", isPresented: $vm.undoFailedAlert) {
-            Button("在废纸篓中显示") { vm.revealUndoFailuresInTrash() }
-            Button("好", role: .cancel) {}
+        .alert(xLoc("部分项目未能恢复"), isPresented: $vm.undoFailedAlert) {
+            Button(xLoc("在废纸篓中显示")) { vm.revealUndoFailuresInTrash() }
+            Button(xLoc("好"), role: .cancel) {}
         } message: {
             Text("有 \(vm.undoFailedItems.count) 项无法自动放回原位（可能废纸篓已被清空、文件被移动或所在卷已卸载）。这些项仍可在废纸篓中手动找回。")
         }
@@ -40,18 +40,18 @@ struct SessionScaffold<Idle: View>: View {
                 .frame(maxHeight: 320)
             HStack(spacing: XSpacing.m) {
                 if vm.permissionIssue {
-                    Button("开启完全磁盘访问") { vm.openPermissionSettings() }
+                    Button(xLoc("开启完全磁盘访问")) { vm.openPermissionSettings() }
                         .buttonStyle(XPrimaryButtonStyle())
                 }
                 if vm.licenseIssue {
-                    Button("购买 Xico") { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
+                    Button(xLoc("购买 Xico")) { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
                         .buttonStyle(XPrimaryButtonStyle())
-                    Button("导入许可证 / 设置") {
+                    Button(xLoc("导入许可证 / 设置")) {
                         NotificationCenter.default.post(name: .xicoOpenSettings, object: nil)
                     }
                     .buttonStyle(XSecondaryButtonStyle())
                 }
-                Button("重试") { vm.start() }.buttonStyle(XSecondaryButtonStyle())
+                Button(xLoc("重试")) { vm.start() }.buttonStyle(XSecondaryButtonStyle())
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -64,15 +64,15 @@ struct SessionScaffold<Idle: View>: View {
     }
 
     private var failedTitle: String {
-        if vm.permissionIssue { return "需要完全磁盘访问权限" }
-        if vm.licenseIssue { return "需要有效许可证" }
-        return "扫描未完成"
+        if vm.permissionIssue { return xLoc("需要完全磁盘访问权限") }
+        if vm.licenseIssue { return xLoc("需要有效许可证") }
+        return xLoc("扫描未完成")
     }
 
     private var scanningView: some View {
         VStack(spacing: XSpacing.xl) {
             ScanningIndicator(bytes: vm.progressBytes, message: vm.statusMessage)
-            Button("取消") { vm.cancel() }.buttonStyle(XSecondaryButtonStyle())
+            Button(xLoc("取消")) { vm.cancel() }.buttonStyle(XSecondaryButtonStyle())
                 .keyboardShortcut(.cancelAction)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -111,7 +111,7 @@ struct SessionScaffold<Idle: View>: View {
                 subtitle: actionSubtitle
             ) {
                 if vm.phase == .cleaning {
-                    HStack(spacing: XSpacing.s) { ProgressView().controlSize(.small); Text("清理中…").font(XFont.caption) }
+                    HStack(spacing: XSpacing.s) { ProgressView().controlSize(.small); Text(xLoc("清理中…")).font(XFont.caption) }
                 } else {
                     Button("\(cleanButtonTitle) · \(vm.selectedSize.formattedBytes)") {
                         if vm.intent == .permanent || vm.selectedRequiresHelper { confirmPermanent = true } else { vm.clean() }
@@ -123,20 +123,20 @@ struct SessionScaffold<Idle: View>: View {
         }
         .confirmationDialog(confirmTitle, isPresented: $confirmPermanent, titleVisibility: .visible) {
             Button(confirmButtonTitle, role: .destructive) { vm.clean() }
-            Button("取消", role: .cancel) {}
+            Button(xLoc("取消"), role: .cancel) {}
         } message: {
             Text(confirmMessage)
         }
     }
 
     private var actionSubtitle: String {
-        if vm.intent == .permanent { return "将彻底删除（不可恢复）" }
-        if vm.selectedRequiresHelper { return "普通项目移入废纸篓；管理员项目将彻底删除" }
-        return "将移入废纸篓，可随时撤销"
+        if vm.intent == .permanent { return xLoc("将彻底删除（不可恢复）") }
+        if vm.selectedRequiresHelper { return xLoc("普通项目移入废纸篓；管理员项目将彻底删除") }
+        return xLoc("将移入废纸篓，可随时撤销")
     }
 
     private var confirmTitle: String {
-        vm.selectedRequiresHelper ? "确认清理管理员项目？" : "确认彻底删除？"
+        vm.selectedRequiresHelper ? xLoc("确认清理管理员项目？") : xLoc("确认彻底删除？")
     }
 
     private var confirmButtonTitle: String {
@@ -146,18 +146,18 @@ struct SessionScaffold<Idle: View>: View {
 
     private var confirmMessage: String {
         if vm.selectedRequiresHelper {
-            return "管理员权限项目会经特权助手永久删除，无法从废纸篓恢复；普通项目仍会移入废纸篓。"
+            return xLoc("管理员权限项目会经特权助手永久删除，无法从废纸篓恢复；普通项目仍会移入废纸篓。")
         }
-        return "这些项目将被永久删除，无法从废纸篓恢复。"
+        return xLoc("这些项目将被永久删除，无法从废纸篓恢复。")
     }
 
     private var emptyView: some View {
         VStack(spacing: XSpacing.l) {
             XEmptyState(systemImage: "checkmark.seal.fill",
-                        title: "太棒了，这里很干净 ✨",
-                        subtitle: "没有发现可清理的项目。")
+                        title: xLoc("太棒了，这里很干净 ✨"),
+                        subtitle: xLoc("没有发现可清理的项目。"))
                 .frame(maxHeight: 340)
-            Button("重新扫描") { vm.start() }.buttonStyle(XSecondaryButtonStyle())
+            Button(xLoc("重新扫描")) { vm.start() }.buttonStyle(XSecondaryButtonStyle())
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -236,7 +236,7 @@ public struct SmartScanView: View {
         self.env = env
         let failures = FailureBox()
         let model = ModuleSessionViewModel(
-            env: env, title: "智能扫描", intent: .trash,
+            env: env, title: xLoc("智能扫描"), intent: .trash,
             scanProvider: { handler in
                 failures.reset()
                 return try await env.smartScanCoordinator().scanAll(
@@ -247,7 +247,7 @@ public struct SmartScanView: View {
     }
 
     public var body: some View {
-        SessionScaffold(vm: vm, cleanButtonTitle: "清理") { dashboard }
+        SessionScaffold(vm: vm, cleanButtonTitle: xLoc("清理")) { dashboard }
             .onAppear {
                 refresh()
                 withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) { appeared = true }
@@ -271,7 +271,7 @@ public struct SmartScanView: View {
                 VStack(spacing: XSpacing.xs) {
                     Text((capacity?.available ?? 0).formattedBytes)
                         .font(XFont.hero).foregroundStyle(XColor.textPrimary)
-                    Text("可用空间").font(XFont.body).foregroundStyle(XColor.textSecondary)
+                    Text(xLoc("可用空间")).font(XFont.body).foregroundStyle(XColor.textSecondary)
                     if let cap = capacity {
                         Text("共 \(cap.total.formattedBytes)").font(XFont.caption).foregroundStyle(XColor.textTertiary)
                     }
@@ -279,16 +279,16 @@ public struct SmartScanView: View {
             }
 
             HStack(spacing: XSpacing.m) {
-                XMetricCard(value: "\(Int(disk * 100))%", label: "磁盘已用",
+                XMetricCard(value: "\(Int(disk * 100))%", label: xLoc("磁盘已用"),
                             fraction: disk, colors: XColor.gauge(disk))
-                XMetricCard(value: "\(Int(mem * 100))%", label: "内存占用",
+                XMetricCard(value: "\(Int(mem * 100))%", label: xLoc("内存占用"),
                             fraction: mem, colors: [XColor.auroraViolet, XColor.auroraRose])
-                XMetricCard(value: "\(health)", label: "健康评分",
+                XMetricCard(value: "\(health)", label: xLoc("健康评分"),
                             fraction: Double(health) / 100, colors: healthColors(health))
             }
             .frame(maxWidth: 600)
 
-            Button("开始智能扫描") { vm.start() }
+            Button(xLoc("开始智能扫描")) { vm.start() }
                 .buttonStyle(XPrimaryButtonStyle(large: true))
                 .keyboardShortcut(.defaultAction)
                 .padding(.top, XSpacing.xs)
@@ -329,9 +329,9 @@ public struct SmartScanView: View {
     }
 
     private func healthTitle(_ s: Int) -> String {
-        if s >= 85 { return "你的 Mac 状态很好" }
-        if s >= 65 { return "运行顺畅，仍可优化" }
-        return "建议清理，释放空间"
+        if s >= 85 { return xLoc("你的 Mac 状态很好") }
+        if s >= 65 { return xLoc("运行顺畅，仍可优化") }
+        return xLoc("建议清理，释放空间")
     }
 }
 
@@ -376,13 +376,13 @@ public struct ModuleScanView: View {
     }
 
     public var body: some View {
-        SessionScaffold(vm: vm, cleanButtonTitle: intent == .permanent ? "清空" : "清理") {
+        SessionScaffold(vm: vm, cleanButtonTitle: intent == .permanent ? xLoc("清空") : xLoc("清理")) {
             ModuleIdleHero(
                 icon: meta?.systemImage ?? "magnifyingglass",
                 colors: XColor.brandGradientColors,
-                title: meta?.title ?? "扫描",
+                title: meta?.title ?? xLoc("扫描"),
                 subtitle: meta?.subtitle ?? "",
-                buttonTitle: intent == .permanent ? "扫描废纸篓" : "开始扫描",
+                buttonTitle: intent == .permanent ? xLoc("扫描废纸篓") : xLoc("开始扫描"),
                 action: { vm.start() })
         }
         .onAppear {

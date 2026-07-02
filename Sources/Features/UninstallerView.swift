@@ -100,21 +100,21 @@ public struct UninstallerView: View {
         .confirmationDialog("确认卸载 \(model.selected?.name ?? "应用")？",
                             isPresented: $confirmUninstall, titleVisibility: .visible) {
             Button("卸载并移入废纸篓（\(model.selectedCount) 项）", role: .destructive) { model.uninstall() }
-            Button("取消", role: .cancel) {}
+            Button(xLoc("取消"), role: .cancel) {}
         } message: {
             Text("将把应用本体与已勾选的 \(model.selectedCount) 项关联文件移入废纸篓（\(model.selectedSize.formattedBytes)），可在访达废纸篓中恢复。请确认勾选项中没有你仍需要的数据。")
         }
-        .alert("需要有效许可证", isPresented: $model.licenseBlocked) {
-            Button("购买") { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
-            Button("好", role: .cancel) {}
+        .alert(xLoc("需要有效许可证"), isPresented: $model.licenseBlocked) {
+            Button(xLoc("购买")) { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
+            Button(xLoc("好"), role: .cancel) {}
         } message: {
-            Text("试用已结束或许可证无效。购买后即可继续使用卸载功能。")
+            Text(xLoc("试用已结束或许可证无效。购买后即可继续使用卸载功能。"))
         }
     }
 
     private var appList: some View {
         VStack(spacing: 0) {
-            XHeaderBar(title: "卸载器", subtitle: "\(model.apps.count) 个应用") {
+            XHeaderBar(title: xLoc("卸载器"), subtitle: "\(model.apps.count) 个应用") {
                 if model.loading { ProgressView().controlSize(.small) }
             }
             searchField
@@ -137,7 +137,7 @@ public struct UninstallerView: View {
         HStack(spacing: XSpacing.s) {
             Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(XColor.textTertiary)
-            TextField("搜索应用", text: $model.query)
+            TextField(xLoc("搜索应用"), text: $model.query)
                 .textFieldStyle(.plain)
                 .font(XFont.body)
         }
@@ -163,7 +163,7 @@ public struct UninstallerView: View {
                 }
                 .padding(XSpacing.xl)
 
-                Text("将一并移入废纸篓（已自动勾选关联文件）")
+                Text(xLoc("将一并移入废纸篓（已自动勾选关联文件）"))
                     .font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, XSpacing.xl)
@@ -178,7 +178,7 @@ public struct UninstallerView: View {
                 }
 
                 XActionBar(title: "已选 \(model.selectedCount) 项",
-                           subtitle: "将移入废纸篓，可在访达中恢复") {
+                           subtitle: xLoc("将移入废纸篓，可在访达中恢复")) {
                     if model.working {
                         ProgressView().controlSize(.small)
                     } else {
@@ -190,10 +190,10 @@ public struct UninstallerView: View {
             }
         } else if let freed = model.lastFreed {
             XEmptyState(systemImage: "checkmark.seal.fill", title: "已卸载，释放 \(freed.formattedBytes)",
-                        subtitle: "从左侧选择另一个应用继续。")
+                        subtitle: xLoc("从左侧选择另一个应用继续。"))
         } else {
-            XEmptyState(systemImage: "xmark.bin", title: "选择要卸载的应用",
-                        subtitle: "从左侧列表选择一个应用，Xico 会找出它的全部关联文件供你一并清除。")
+            XEmptyState(systemImage: "xmark.bin", title: xLoc("选择要卸载的应用"),
+                        subtitle: xLoc("从左侧列表选择一个应用，Xico 会找出它的全部关联文件供你一并清除。"))
         }
     }
 }
@@ -211,7 +211,7 @@ private struct AppRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(app.name).font(XFont.bodyEmphasis)
                         .foregroundStyle(selected ? .white : XColor.textPrimary).lineLimit(1)
-                    Text(app.size > 0 ? app.size.formattedBytes : "计算中…").font(XFont.caption)
+                    Text(app.size > 0 ? app.size.formattedBytes : xLoc("计算中…")).font(XFont.caption)
                         .foregroundStyle(selected ? .white.opacity(0.85) : XColor.textSecondary)
                 }
                 Spacer()

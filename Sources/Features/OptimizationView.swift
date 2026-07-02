@@ -14,10 +14,10 @@ public struct OptimizationView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            XHeaderBar(title: "优化", subtitle: "管理启动项与运行中的应用") {
+            XHeaderBar(title: xLoc("优化"), subtitle: xLoc("管理启动项与运行中的应用")) {
                 Picker("", selection: $tab) {
-                    Text("运行中的应用").tag(0)
-                    Text("启动项").tag(1)
+                    Text(xLoc("运行中的应用")).tag(0)
+                    Text(xLoc("启动项")).tag(1)
                 }
                 .pickerStyle(.segmented).frame(width: 260).labelsHidden()
             }
@@ -30,8 +30,8 @@ public struct OptimizationView: View {
         }
         .onAppear(perform: reload)
         .onChange(of: tab) { _ in reload() }
-        .alert("启动项状态", isPresented: Binding(get: { toggleWarning != nil }, set: { if !$0 { toggleWarning = nil } })) {
-            Button("好", role: .cancel) {}
+        .alert(xLoc("启动项状态"), isPresented: Binding(get: { toggleWarning != nil }, set: { if !$0 { toggleWarning = nil } })) {
+            Button(xLoc("好"), role: .cancel) {}
         } message: {
             Text(toggleWarning ?? "")
         }
@@ -39,7 +39,7 @@ public struct OptimizationView: View {
 
     @ViewBuilder private var runningSection: some View {
         if runningApps.isEmpty {
-            Text("没有正在运行的前台应用。").font(XFont.body).foregroundStyle(XColor.textSecondary)
+            Text(xLoc("没有正在运行的前台应用。")).font(XFont.body).foregroundStyle(XColor.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .center).padding(.top, XSpacing.xxl)
         }
         ForEach(runningApps) { app in
@@ -54,7 +54,7 @@ public struct OptimizationView: View {
                         Text(app.bundleID).font(XFont.caption).foregroundStyle(XColor.textSecondary).lineLimit(1)
                     }
                     Spacer()
-                    Button("退出") { env.optimization.quit(pid: app.pid); reload() }
+                    Button(xLoc("退出")) { env.optimization.quit(pid: app.pid); reload() }
                         .buttonStyle(.bordered)
                 }
             }
@@ -63,7 +63,7 @@ public struct OptimizationView: View {
 
     @ViewBuilder private var startupSection: some View {
         if agents.isEmpty {
-            Text("未发现启动代理。").font(XFont.body).foregroundStyle(XColor.textSecondary)
+            Text(xLoc("未发现启动代理。")).font(XFont.body).foregroundStyle(XColor.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .center).padding(.top, XSpacing.xxl)
         }
         ForEach(agents) { agent in
@@ -75,13 +75,13 @@ public struct OptimizationView: View {
                               size: 30)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(agent.label).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary).lineLimit(1)
-                        Text(agent.isSystem ? "系统级" : (agent.isEnabled ? "用户级 · 已启用" : "用户级 · 已停用"))
+                        Text(agent.isSystem ? xLoc("系统级") : (agent.isEnabled ? xLoc("用户级 · 已启用") : xLoc("用户级 · 已停用")))
                             .font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     Spacer()
                     if agent.isSystem {
-                        XBadge("需管理员", color: XColor.warning)
-                        Button("显示") { env.optimization.reveal(agent.url) }.buttonStyle(.bordered)
+                        XBadge(xLoc("需管理员"), color: XColor.warning)
+                        Button(xLoc("显示")) { env.optimization.reveal(agent.url) }.buttonStyle(.bordered)
                     } else {
                         Toggle("", isOn: Binding(
                             get: { agent.isEnabled },

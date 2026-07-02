@@ -92,10 +92,10 @@ public struct SpaceLensView: View {
             breadcrumb
             Spacer()
             Button { model.chooseFolder() } label: {
-                Label("选择文件夹", systemImage: "folder")
+                Label(xLoc("选择文件夹"), systemImage: "folder")
             }
             Button { model.scan() } label: {
-                Label("扫描", systemImage: "arrow.clockwise")
+                Label(xLoc("扫描"), systemImage: "arrow.clockwise")
             }
             .buttonStyle(XPrimaryButtonStyle())
         }
@@ -106,7 +106,7 @@ public struct SpaceLensView: View {
 
     private var breadcrumb: some View {
         HStack(spacing: XSpacing.xs) {
-            Button(model.scanRoot.lastPathComponent.isEmpty ? "磁盘" : model.scanRoot.lastPathComponent) {
+            Button(model.scanRoot.lastPathComponent.isEmpty ? xLoc("磁盘") : model.scanRoot.lastPathComponent) {
                 model.pop(to: -1)
             }
             .buttonStyle(.plain)
@@ -124,8 +124,8 @@ public struct SpaceLensView: View {
     @ViewBuilder private var content: some View {
         if model.isScanning {
             VStack(spacing: XSpacing.xl) {
-                XScanOrb(value: model.scannedBytes.formattedBytes, label: "正在分析空间", size: 280)
-                Button("取消") { model.cancel() }.buttonStyle(XSecondaryButtonStyle())
+                XScanOrb(value: model.scannedBytes.formattedBytes, label: xLoc("正在分析空间"), size: 280)
+                Button(xLoc("取消")) { model.cancel() }.buttonStyle(XSecondaryButtonStyle())
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let node = model.current {
@@ -143,10 +143,10 @@ public struct SpaceLensView: View {
         } else {
             VStack(spacing: XSpacing.l) {
                 XEmptyState(systemImage: "circle.hexagongrid.fill",
-                            title: "空间透镜",
-                            subtitle: "可视化某个文件夹（或整个磁盘）的空间占用，点击方块可逐层钻取。")
+                            title: xLoc("空间透镜"),
+                            subtitle: xLoc("可视化某个文件夹（或整个磁盘）的空间占用，点击方块可逐层钻取。"))
                     .frame(maxHeight: 320)
-                Button("扫描主目录") { model.scan() }
+                Button(xLoc("扫描主目录")) { model.scan() }
                     .buttonStyle(XPrimaryButtonStyle())
             }
         }

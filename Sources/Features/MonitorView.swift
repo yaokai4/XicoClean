@@ -18,7 +18,7 @@ public struct MonitorView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            XHeaderBar(title: "系统监视", subtitle: "实时刷新 · 每秒") {
+            XHeaderBar(title: xLoc("系统监视"), subtitle: xLoc("实时刷新 · 每秒")) {
                 HStack(spacing: XSpacing.xs) {
                     Circle().fill(XColor.success).frame(width: 7, height: 7)
                     Text("LIVE").font(.system(size: 10, weight: .bold)).tracking(1).foregroundStyle(XColor.success)
@@ -28,8 +28,8 @@ public struct MonitorView: View {
                 VStack(spacing: XSpacing.m) {
                     macCard
                     HStack(spacing: XSpacing.m) {
-                        ringCard(title: "处理器", value: snap?.cpuUsage ?? 0, sub: cpuSub)
-                        ringCard(title: "内存", value: snap?.memoryUsedFraction ?? 0, sub: memSub)
+                        ringCard(title: xLoc("处理器"), value: snap?.cpuUsage ?? 0, sub: cpuSub)
+                        ringCard(title: xLoc("内存"), value: snap?.memoryUsedFraction ?? 0, sub: memSub)
                     }
                     historyCard
                     HStack(spacing: XSpacing.m) {
@@ -67,10 +67,10 @@ public struct MonitorView: View {
     private var historyCard: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.m) {
-                cardHeader("waveform.path.ecg", "实时历史 · 近 1 分钟")
-                chartRow("处理器", cpuHist, XColor.brandGradientColors, "\(Int((snap?.cpuUsage ?? 0) * 100))%")
-                chartRow("内存", memHist, [XColor.auroraViolet, XColor.auroraRose], "\(Int((snap?.memoryUsedFraction ?? 0) * 100))%")
-                chartRow("网络", netNorm, [XColor.accentTeal, XColor.auroraBlue],
+                cardHeader("waveform.path.ecg", xLoc("实时历史 · 近 1 分钟"))
+                chartRow(xLoc("处理器"), cpuHist, XColor.brandGradientColors, "\(Int((snap?.cpuUsage ?? 0) * 100))%")
+                chartRow(xLoc("内存"), memHist, [XColor.auroraViolet, XColor.auroraRose], "\(Int((snap?.memoryUsedFraction ?? 0) * 100))%")
+                chartRow(xLoc("网络"), netNorm, [XColor.accentTeal, XColor.auroraBlue],
                          "↓\((snap?.netDownBytesPerSec ?? 0).formattedRate)")
             }
         }
@@ -107,10 +107,10 @@ public struct MonitorView: View {
                 }
                 Spacer()
                 HStack(spacing: XSpacing.xl) {
-                    infoCol("系统", info?.macOS ?? "—")
-                    infoCol("内存", info?.memory ?? "—")
-                    infoCol("核心", info.map { "\($0.cores)" } ?? "—")
-                    infoCol("已运行", info?.uptime ?? "—")
+                    infoCol(xLoc("系统"), info?.macOS ?? "—")
+                    infoCol(xLoc("内存"), info?.memory ?? "—")
+                    infoCol(xLoc("核心"), info.map { "\($0.cores)" } ?? "—")
+                    infoCol(xLoc("已运行"), info?.uptime ?? "—")
                 }
             }
         }
@@ -144,7 +144,7 @@ public struct MonitorView: View {
     private var diskCard: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.m) {
-                cardHeader("internaldrive.fill", "磁盘")
+                cardHeader("internaldrive.fill", xLoc("磁盘"))
                 XDiskBar(usedFraction: snap?.diskUsedFraction ?? 0, label: "", height: 10)
                 Text("\((snap?.diskFree ?? 0).formattedBytes) 可用 / \((snap?.diskTotal ?? 0).formattedBytes)")
                     .font(XFont.caption).foregroundStyle(XColor.textSecondary)
@@ -155,7 +155,7 @@ public struct MonitorView: View {
     private var networkCard: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.m) {
-                cardHeader("antenna.radiowaves.left.and.right", "网络")
+                cardHeader("antenna.radiowaves.left.and.right", xLoc("网络"))
                 HStack(spacing: XSpacing.l) {
                     rateView("arrow.down", XColor.accentTeal, snap?.netDownBytesPerSec ?? 0)
                     rateView("arrow.up", XColor.accentPink, snap?.netUpBytesPerSec ?? 0)
@@ -174,11 +174,11 @@ public struct MonitorView: View {
     private var thermalCard: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.m) {
-                cardHeader("thermometer.medium", "热状态")
+                cardHeader("thermometer.medium", xLoc("热状态"))
                 HStack {
                     XBadge(snap?.thermal.rawValue ?? "—", color: thermalColor)
                     Spacer()
-                    Text("系统热压力等级").font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                    Text(xLoc("系统热压力等级")).font(XFont.caption).foregroundStyle(XColor.textTertiary)
                 }
             }
         }
@@ -197,11 +197,11 @@ public struct MonitorView: View {
     private var memoryBreakdown: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.m) {
-                cardHeader("memorychip.fill", "内存明细")
+                cardHeader("memorychip.fill", xLoc("内存明细"))
                 HStack(spacing: XSpacing.xl) {
-                    infoCol("活跃", (snap?.memoryActive ?? 0).formattedBytes)
-                    infoCol("联动", (snap?.memoryWired ?? 0).formattedBytes)
-                    infoCol("已压缩", (snap?.memoryCompressed ?? 0).formattedBytes)
+                    infoCol(xLoc("活跃"), (snap?.memoryActive ?? 0).formattedBytes)
+                    infoCol(xLoc("联动"), (snap?.memoryWired ?? 0).formattedBytes)
+                    infoCol(xLoc("已压缩"), (snap?.memoryCompressed ?? 0).formattedBytes)
                     Spacer()
                 }
             }

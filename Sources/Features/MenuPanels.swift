@@ -6,7 +6,7 @@ public enum MenuMetric: Sendable {
     case cpu, memory, network
 
     var title: String {
-        switch self { case .cpu: return "处理器"; case .memory: return "内存"; case .network: return "网络" }
+        switch self { case .cpu: return xLoc("处理器"); case .memory: return xLoc("内存"); case .network: return xLoc("网络") }
     }
     var icon: String {
         switch self {
@@ -57,7 +57,7 @@ public struct MenuMetricPanel: View {
                     NSApp.activate(ignoringOtherApps: true)
                     model.selection = .monitor
                     for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
-                } label: { Text("打开监视器").frame(maxWidth: .infinity) }
+                } label: { Text(xLoc("打开监视器")).frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent)
                 Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }.buttonStyle(.bordered)
             }
@@ -73,8 +73,8 @@ public struct MenuMetricPanel: View {
                 HStack(spacing: XSpacing.m) {
                     ringGauge(s.cpuUsage)
                     VStack(alignment: .leading, spacing: XSpacing.s) {
-                        metricChip("热状态", s.thermal.rawValue)
-                        if let rpm = s.fanRPM { metricChip("风扇", "\(rpm) RPM") }
+                        metricChip(xLoc("热状态"), s.thermal.rawValue)
+                        if let rpm = s.fanRPM { metricChip(xLoc("风扇"), "\(rpm) RPM") }
                     }
                     Spacer(minLength: 0)
                 }
@@ -92,16 +92,16 @@ public struct MenuMetricPanel: View {
                 }
                 XLineChart(values: model.memHistory, colors: XColor.ringColors).frame(height: 44)
                 HStack {
-                    metricChip("活跃", s.memoryActive.formattedBytes)
-                    metricChip("联动", s.memoryWired.formattedBytes)
-                    metricChip("压缩", s.memoryCompressed.formattedBytes)
+                    metricChip(xLoc("活跃"), s.memoryActive.formattedBytes)
+                    metricChip(xLoc("联动"), s.memoryWired.formattedBytes)
+                    metricChip(xLoc("压缩"), s.memoryCompressed.formattedBytes)
                 }
             }
         case .network:
             VStack(alignment: .leading, spacing: XSpacing.m) {
                 HStack(spacing: XSpacing.xl) {
-                    rateColumn("arrow.down", XColor.ringMint, "下载", s.netDownBytesPerSec)
-                    rateColumn("arrow.up", XColor.ringRose, "上传", s.netUpBytesPerSec)
+                    rateColumn("arrow.down", XColor.ringMint, xLoc("下载"), s.netDownBytesPerSec)
+                    rateColumn("arrow.up", XColor.ringRose, xLoc("上传"), s.netUpBytesPerSec)
                     Spacer()
                 }
                 networkChart.frame(height: 48)

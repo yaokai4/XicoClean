@@ -29,7 +29,7 @@ public struct DuplicatesView: View {
         self.box = box
         _rootLabel = State(initialValue: start.lastPathComponent)
         _vm = StateObject(wrappedValue: ModuleSessionViewModel(
-            env: env, title: "重复文件", intent: .trash,
+            env: env, title: xLoc("重复文件"), intent: .trash,
             scanProvider: { handler in
                 let result = await env.duplicatesScanner(root: box.url).scan(progress: handler)
                 return [result]
@@ -39,11 +39,11 @@ public struct DuplicatesView: View {
     public var body: some View {
         VStack(spacing: 0) {
             folderBar
-            SessionScaffold(vm: vm, cleanButtonTitle: "删除重复") {
+            SessionScaffold(vm: vm, cleanButtonTitle: xLoc("删除重复")) {
                 ModuleIdleHero(
                     icon: "doc.on.doc", colors: [XColor.accentTeal, XColor.brand],
-                    title: "重复文件",
-                    subtitle: "在所选文件夹中按内容（大小 + 头尾哈希）查找重复文件，每组智能保留一份、勾选其余。已自动忽略硬链接。",
+                    title: xLoc("重复文件"),
+                    subtitle: xLoc("在所选文件夹中按内容（大小 + 头尾哈希）查找重复文件，每组智能保留一份、勾选其余。已自动忽略硬链接。"),
                     buttonTitle: "扫描「\(rootLabel)」",
                     action: { vm.start() })
             }
@@ -53,11 +53,11 @@ public struct DuplicatesView: View {
     private var folderBar: some View {
         HStack(spacing: XSpacing.s) {
             Image(systemName: "folder.fill").foregroundStyle(XColor.brand)
-            Text("扫描位置：").font(XFont.caption).foregroundStyle(XColor.textSecondary)
+            Text(xLoc("扫描位置：")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             Text(box.url.path).font(XFont.caption).foregroundStyle(XColor.textPrimary)
                 .lineLimit(1).truncationMode(.middle)
             Spacer()
-            Button("选择文件夹") { pickFolder() }.buttonStyle(.bordered)
+            Button(xLoc("选择文件夹")) { pickFolder() }.buttonStyle(.bordered)
         }
         .padding(.horizontal, XSpacing.xl)
         .padding(.vertical, XSpacing.s)

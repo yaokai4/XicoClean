@@ -56,13 +56,13 @@ public struct ShredderView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            XHeaderBar(title: "文件粉碎", subtitle: "多次覆写后彻底删除，难以恢复") {
-                Button("添加文件") { model.pickFiles() }.buttonStyle(.bordered)
+            XHeaderBar(title: xLoc("文件粉碎"), subtitle: xLoc("多次覆写后彻底删除，难以恢复")) {
+                Button(xLoc("添加文件")) { model.pickFiles() }.buttonStyle(.bordered)
             }
             noticeBar
             content
             if !model.files.isEmpty {
-                XActionBar(title: "已选 \(model.files.count) 项", subtitle: "粉碎不可恢复，请谨慎") {
+                XActionBar(title: "已选 \(model.files.count) 项", subtitle: xLoc("粉碎不可恢复，请谨慎")) {
                     if model.working { ProgressView().controlSize(.small) }
                     else {
                         Button("粉碎 · \(model.totalSize.formattedBytes)") { confirm = true }
@@ -72,17 +72,17 @@ public struct ShredderView: View {
             }
         }
         .confirmationDialog("确认粉碎 \(model.files.count) 项？", isPresented: $confirm, titleVisibility: .visible) {
-            Button("彻底粉碎（不可恢复）", role: .destructive) { model.shred() }
-            Button("取消", role: .cancel) {}
+            Button(xLoc("彻底粉碎（不可恢复）"), role: .destructive) { model.shred() }
+            Button(xLoc("取消"), role: .cancel) {}
         } message: {
-            Text("将对每个文件多次随机覆写后删除，无法从废纸篓恢复、也难以用恢复工具找回。请确认这些文件确实不再需要。")
+            Text(xLoc("将对每个文件多次随机覆写后删除，无法从废纸篓恢复、也难以用恢复工具找回。请确认这些文件确实不再需要。"))
         }
     }
 
     private var noticeBar: some View {
         HStack(spacing: XSpacing.s) {
             Image(systemName: "info.circle").foregroundStyle(XColor.textTertiary)
-            Text("提示：在 SSD/APFS 上，覆写不保证物理抹除（写时复制 + 磨损均衡）；对敏感数据，全盘 FileVault 加密才是最可靠的保护。")
+            Text(xLoc("提示：在 SSD/APFS 上，覆写不保证物理抹除（写时复制 + 磨损均衡）；对敏感数据，全盘 FileVault 加密才是最可靠的保护。"))
                 .font(XFont.caption).foregroundStyle(XColor.textSecondary)
             Spacer()
         }
@@ -94,10 +94,10 @@ public struct ShredderView: View {
         if model.files.isEmpty {
             VStack(spacing: XSpacing.m) {
                 if let r = model.resultText {
-                    XEmptyState(systemImage: "checkmark.seal.fill", title: "完成", subtitle: r)
+                    XEmptyState(systemImage: "checkmark.seal.fill", title: xLoc("完成"), subtitle: r)
                 } else {
-                    XEmptyState(systemImage: "flame", title: "拖入或添加要粉碎的文件",
-                                subtitle: "选择确实不想被任何人恢复的文件。粉碎前会二次确认。")
+                    XEmptyState(systemImage: "flame", title: xLoc("拖入或添加要粉碎的文件"),
+                                subtitle: xLoc("选择确实不想被任何人恢复的文件。粉碎前会二次确认。"))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

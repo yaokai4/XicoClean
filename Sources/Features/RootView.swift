@@ -129,7 +129,7 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: XSpacing.s) {
             if let cap = model.capacity {
                 HStack {
-                    Text("磁盘").font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
+                    Text(xLoc("磁盘")).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
                     Spacer()
                     Text("\(cap.available.formattedBytes) 可用").font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 }
@@ -245,15 +245,15 @@ struct LicenseBanner: View {
         HStack(spacing: XSpacing.m) {
             XIconTile(systemImage: "checkmark.seal.fill", colors: [XColor.warning, XColor.accentPink], size: 32)
             VStack(alignment: .leading, spacing: 2) {
-                Text("需要有效许可证")
+                Text(xLoc("需要有效许可证"))
                     .font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
-                Text(model.licenseStatus?.summary ?? "请在设置中导入有效许可证后继续。")
+                Text(model.licenseStatus?.summary ?? xLoc("请在设置中导入有效许可证后继续。"))
                     .font(XFont.caption).foregroundStyle(XColor.textSecondary)
             }
             Spacer()
-            Button("购买") { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
+            Button(xLoc("购买")) { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
                 .buttonStyle(XPrimaryButtonStyle())
-            Button("导入许可证") { model.selection = .settings }
+            Button(xLoc("导入许可证")) { model.selection = .settings }
                 .buttonStyle(XSecondaryButtonStyle())
             Button { withAnimation(.spring(response: 0.3)) { model.licenseBannerDismissed = true } } label: {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
@@ -286,13 +286,13 @@ struct PermissionBanner: View {
         HStack(spacing: XSpacing.m) {
             XIconTile(systemImage: "lock.shield.fill", colors: [XColor.warning, XColor.accentPink], size: 32)
             VStack(alignment: .leading, spacing: 2) {
-                Text("开启完全磁盘访问以扫描全部垃圾")
+                Text(xLoc("开启完全磁盘访问以扫描全部垃圾"))
                     .font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
-                Text("一次授权后长期有效。系统设置 › 隐私与安全性 › 完全磁盘访问权限。")
+                Text(xLoc("一次授权后长期有效。系统设置 › 隐私与安全性 › 完全磁盘访问权限。"))
                     .font(XFont.caption).foregroundStyle(XColor.textSecondary)
             }
             Spacer()
-            Button("开启") { model.openFullDiskAccessSettings() }
+            Button(xLoc("开启")) { model.openFullDiskAccessSettings() }
                 .buttonStyle(XPrimaryButtonStyle())
             Button { withAnimation(.spring(response: 0.3)) { model.permissionBannerDismissed = true } } label: {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
@@ -327,7 +327,7 @@ public struct MenuBarView: View {
         VStack(alignment: .leading, spacing: XSpacing.m) {
             HStack(spacing: XSpacing.s) {
                 XBrandMark(size: 22)
-                Text("系统状态").font(XFont.headline).foregroundStyle(XColor.textPrimary)
+                Text(xLoc("系统状态")).font(XFont.headline).foregroundStyle(XColor.textPrimary)
                 Spacer()
                 if let chip = model.macInfo?.chip {
                     Text(chip).font(XFont.caption).foregroundStyle(XColor.textTertiary)
@@ -336,23 +336,23 @@ public struct MenuBarView: View {
 
             if let s = model.liveSnapshot {
                 HStack(spacing: XSpacing.s) {
-                    ringStat("处理器", s.cpuUsage)
-                    ringStat("内存", s.memoryUsedFraction)
-                    ringStat("存储", s.diskUsedFraction)
+                    ringStat(xLoc("处理器"), s.cpuUsage)
+                    ringStat(xLoc("内存"), s.memoryUsedFraction)
+                    ringStat(xLoc("存储"), s.diskUsedFraction)
                 }
                 .padding(.vertical, XSpacing.xs)
 
                 Divider().padding(.vertical, 2)
 
-                row("antenna.radiowaves.left.and.right", "网络",
+                row("antenna.radiowaves.left.and.right", xLoc("网络"),
                     "↓ \(s.netDownBytesPerSec.formattedRate)   ↑ \(s.netUpBytesPerSec.formattedRate)")
                 if let rpm = s.fanRPM {
-                    row("fanblades", "风扇", "\(rpm) RPM")
+                    row("fanblades", xLoc("风扇"), "\(rpm) RPM")
                 }
                 HStack {
                     Image(systemName: "thermometer.medium").font(.system(size: 12)).foregroundStyle(XColor.brand)
                         .frame(width: 18)
-                    Text("热状态").font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Text(xLoc("热状态")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     Spacer()
                     XBadge(s.thermal.rawValue, color: thermalColor(s.thermal))
                 }
@@ -366,7 +366,7 @@ public struct MenuBarView: View {
                     NSApp.activate(ignoringOtherApps: true)
                     model.selection = .monitor
                     for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
-                } label: { Text("打开监视器").frame(maxWidth: .infinity) }
+                } label: { Text(xLoc("打开监视器")).frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent)
                 Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }
                     .buttonStyle(.bordered)

@@ -32,7 +32,7 @@ public struct SettingsView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            XHeaderBar(title: "设置", subtitle: "外观、权限与关于")
+            XHeaderBar(title: xLoc("设置"), subtitle: xLoc("外观、权限与关于"))
             ScrollView {
                 VStack(spacing: XSpacing.m) {
                     aboutCard
@@ -59,8 +59,8 @@ public struct SettingsView: View {
             reloadIgnored()
         }
         .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in reloadHistory() }
-        .alert("操作未完成", isPresented: Binding(get: { helperError != nil }, set: { if !$0 { helperError = nil } })) {
-            Button("好", role: .cancel) {}
+        .alert(xLoc("操作未完成"), isPresented: Binding(get: { helperError != nil }, set: { if !$0 { helperError = nil } })) {
+            Button(xLoc("好"), role: .cancel) {}
         } message: {
             Text(helperError ?? "")
         }
@@ -101,14 +101,14 @@ public struct SettingsView: View {
                 HStack(spacing: XSpacing.m) {
                     XIconTile(systemImage: "clock.arrow.circlepath", colors: [XColor.accentTeal, XColor.success], size: 36)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("清理历史").xHeadline().foregroundStyle(XColor.textPrimary)
-                        Text(totalCleanups == 0 ? "完成一次清理后会在这里看到记录"
+                        Text(xLoc("清理历史")).xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(totalCleanups == 0 ? xLoc("完成一次清理后会在这里看到记录")
                              : "累计释放 \(totalReclaimed.formattedBytes) · 共 \(totalCleanups) 次清理")
                             .font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     Spacer()
                     if totalCleanups > 0 {
-                        Button("清空记录") { model.env.history.clear(); reloadHistory() }
+                        Button(xLoc("清空记录")) { model.env.history.clear(); reloadHistory() }
                             .buttonStyle(.bordered)
                     }
                 }
@@ -121,7 +121,7 @@ public struct SettingsView: View {
                                 .font(XFont.caption).foregroundStyle(XColor.textTertiary)
                             Spacer()
                             if rec.canUndo {
-                                Button("撤销") { undoRecord(rec) }
+                                Button(xLoc("撤销")) { undoRecord(rec) }
                                     .buttonStyle(.link).font(XFont.caption)
                                     .disabled(undoingID == rec.id)
                             }
@@ -144,8 +144,8 @@ public struct SettingsView: View {
                 HStack(spacing: XSpacing.m) {
                     XIconTile(systemImage: "hand.raised.slash", colors: [XColor.auroraViolet, XColor.auroraBlue], size: 36)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("忽略清单").xHeadline().foregroundStyle(XColor.textPrimary)
-                        Text(ignored.isEmpty ? "在扫描结果中右键「永不清理此项」可加入这里"
+                        Text(xLoc("忽略清单")).xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(ignored.isEmpty ? xLoc("在扫描结果中右键「永不清理此项」可加入这里")
                              : "\(ignored.count) 项已排除，永不扫描/清理")
                             .font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
@@ -158,7 +158,7 @@ public struct SettingsView: View {
                             Text(path).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                                 .lineLimit(1).truncationMode(.middle)
                             Spacer()
-                            Button("移除") { model.env.ignoreList.remove(path); reloadIgnored() }
+                            Button(xLoc("移除")) { model.env.ignoreList.remove(path); reloadIgnored() }
                                 .buttonStyle(.link).font(XFont.caption)
                         }
                     }
@@ -175,23 +175,23 @@ public struct SettingsView: View {
                 XBrandMark(size: 56)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Xico").xLargeTitle().foregroundStyle(XColor.textPrimary)
-                    Text("macOS 系统清理 · 磁盘管理 · 性能优化").font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Text(xLoc("macOS 系统清理 · 磁盘管理 · 性能优化")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     Text("版本 \(version)").font(XFont.caption).foregroundStyle(XColor.textTertiary)
                     HStack(spacing: XSpacing.s) {
-                        Button("隐私政策") { NSWorkspace.shared.open(URL(string: "https://xico.app/privacy")!) }
+                        Button(xLoc("隐私政策")) { NSWorkspace.shared.open(URL(string: "https://xico.app/privacy")!) }
                             .buttonStyle(.link).font(XFont.caption)
                         Text("·").foregroundStyle(XColor.textTertiary)
-                        Button("许可协议") { NSWorkspace.shared.open(URL(string: "https://xico.app/eula")!) }
+                        Button(xLoc("许可协议")) { NSWorkspace.shared.open(URL(string: "https://xico.app/eula")!) }
                             .buttonStyle(.link).font(XFont.caption)
                     }
                 }
                 Spacer()
                 VStack(spacing: XSpacing.xs) {
-                    Button(checkingUpdate ? "检查中…" : "检查更新") { checkForUpdate() }
+                    Button(checkingUpdate ? xLoc("检查中…") : xLoc("检查更新")) { checkForUpdate() }
                         .buttonStyle(.bordered).disabled(checkingUpdate)
-                    Button("购买") { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
+                    Button(xLoc("购买")) { NSWorkspace.shared.open(LicenseService.purchaseURL()) }
                         .buttonStyle(.bordered)
-                    Button("导出诊断日志") { exportDiagnostics() }
+                    Button(xLoc("导出诊断日志")) { exportDiagnostics() }
                         .buttonStyle(.bordered)
                 }
             }
@@ -230,7 +230,7 @@ public struct SettingsView: View {
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
         if !XicoDiagnostics.export(to: url) {
-            helperError = "导出诊断日志失败，请重试。"
+            helperError = xLoc("导出诊断日志失败，请重试。")
         }
     }
 
@@ -242,17 +242,17 @@ public struct SettingsView: View {
                               colors: licenseAllowsUse ? [XColor.accentTeal, XColor.success] : [XColor.warning, XColor.accentPink],
                               size: 36)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("商业授权").xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(xLoc("商业授权")).xHeadline().foregroundStyle(XColor.textPrimary)
                         Text(licenseSubtitle).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     Spacer()
-                    Button("导入许可证") { importLicense() }.buttonStyle(.bordered)
+                    Button(xLoc("导入许可证")) { importLicense() }.buttonStyle(.bordered)
                     if licenseStatus?.licenseID != nil {
-                        Button("移除") {
+                        Button(xLoc("移除")) {
                             model.env.license.clearLicense()
                             licenseStatus = model.env.license.status()
                             model.refreshLicense()
-                            licenseMessage = "已移除本机许可证。"
+                            licenseMessage = xLoc("已移除本机许可证。")
                         }
                         .buttonStyle(.bordered)
                     }
@@ -296,7 +296,7 @@ public struct SettingsView: View {
             let data = try Data(contentsOf: url)
             licenseStatus = try model.env.license.installLicense(fromEnvelopeData: data)
             model.refreshLicense()
-            licenseMessage = "许可证已验证并安装。"
+            licenseMessage = xLoc("许可证已验证并安装。")
         } catch {
             licenseStatus = model.env.license.status()
             model.refreshLicense()
@@ -312,14 +312,14 @@ public struct SettingsView: View {
                               colors: definitionsTrusted ? [XColor.accentTeal, XColor.success] : [XColor.warning, XColor.accentPink],
                               size: 36)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("清理规则库").xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(xLoc("清理规则库")).xHeadline().foregroundStyle(XColor.textPrimary)
                         Text(definitionsSubtitle).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     Spacer()
                     if definitionsUpdating {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("检查更新") { refreshDefinitions() }
+                        Button(xLoc("检查更新")) { refreshDefinitions() }
                             .buttonStyle(.bordered)
                             .disabled(!(definitionsStatus?.endpointConfigured ?? false) || !(definitionsStatus?.trustConfigured ?? false))
                     }
@@ -344,11 +344,11 @@ public struct SettingsView: View {
         let cached = status.cachedVersion.map { " · 已缓存 v\($0)" } ?? ""
         let config: String
         if status.endpointConfigured && status.trustConfigured {
-            config = "在线更新已启用"
+            config = xLoc("在线更新已启用")
         } else if !status.endpointConfigured {
-            config = "使用内置离线规则"
+            config = xLoc("使用内置离线规则")
         } else {
-            config = "缺少可信公钥配置"
+            config = xLoc("缺少可信公钥配置")
         }
         return "当前 v\(status.activeVersion)\(cached) · \(config)"
     }
@@ -371,7 +371,7 @@ public struct SettingsView: View {
 
     private var appearanceCard: some View {
         settingRow(icon: "circle.lefthalf.filled", colors: [XColor.auroraViolet, XColor.auroraBlue],
-                   title: "外观", subtitle: "浅色 / 深色 / 跟随系统") {
+                   title: xLoc("外观"), subtitle: xLoc("浅色 / 深色 / 跟随系统")) {
             AppearanceToggle(appearance: $model.appearance)
         }
     }
@@ -382,19 +382,19 @@ public struct SettingsView: View {
                 HStack(spacing: XSpacing.m) {
                     XIconTile(systemImage: "menubar.rectangle", colors: [XColor.auroraBlue, XColor.auroraViolet], size: 36)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("菜单栏状态项").xHeadline().foregroundStyle(XColor.textPrimary)
-                        Text("选择常驻菜单栏显示哪些实时监控（可多选）").font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        Text(xLoc("菜单栏状态项")).xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(xLoc("选择常驻菜单栏显示哪些实时监控（可多选）")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     Spacer()
                 }
                 Divider().padding(.vertical, 2)
-                toggleRow("处理器 CPU", $mbCPU)
-                toggleRow("内存", $mbMemory)
-                toggleRow("网络速度", $mbNetwork)
-                toggleRow("合并总览面板", $mbCombined)
+                toggleRow(xLoc("处理器 CPU"), $mbCPU)
+                toggleRow(xLoc("内存"), $mbMemory)
+                toggleRow(xLoc("网络速度"), $mbNetwork)
+                toggleRow(xLoc("合并总览面板"), $mbCombined)
                 Divider().padding(.vertical, 2)
                 HStack {
-                    Text("显示样式").font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                    Text(xLoc("显示样式")).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                     Spacer()
                     Picker("", selection: $mbStyle) {
                         ForEach(MenuBarStyle.allCases, id: \.rawValue) { st in
@@ -418,12 +418,12 @@ public struct SettingsView: View {
     private var permissionCard: some View {
         settingRow(icon: "externaldrive.fill.badge.checkmark",
                    colors: model.hasFullDiskAccess ? [XColor.accentTeal, XColor.success] : [XColor.warning, XColor.accentPink],
-                   title: "完全磁盘访问权限",
-                   subtitle: model.hasFullDiskAccess ? "已授权 · 可扫描全部位置" : "未授权 · 部分垃圾扫不到") {
+                   title: xLoc("完全磁盘访问权限"),
+                   subtitle: model.hasFullDiskAccess ? xLoc("已授权 · 可扫描全部位置") : xLoc("未授权 · 部分垃圾扫不到")) {
             if model.hasFullDiskAccess {
-                XBadge("已开启", color: XColor.success)
+                XBadge(xLoc("已开启"), color: XColor.success)
             } else {
-                Button("去开启") { model.openFullDiskAccessSettings() }.buttonStyle(.bordered)
+                Button(xLoc("去开启")) { model.openFullDiskAccessSettings() }.buttonStyle(.bordered)
             }
         }
     }
@@ -431,14 +431,14 @@ public struct SettingsView: View {
     private var helperCard: some View {
         settingRow(icon: "gearshape.2.fill",
                    colors: helperStatus == .installed ? [XColor.accentTeal, XColor.success] : [XColor.auroraViolet, XColor.auroraRose],
-                   title: "特权助手",
+                   title: xLoc("特权助手"),
                    subtitle: helperSubtitle) {
             switch helperStatus {
-            case .installed: XBadge("已就绪", color: XColor.success)
+            case .installed: XBadge(xLoc("已就绪"), color: XColor.success)
             case .requiresApproval:
-                Button("去批准") { model.env.helper.openLoginItemsSettings() }.buttonStyle(.bordered)
+                Button(xLoc("去批准")) { model.env.helper.openLoginItemsSettings() }.buttonStyle(.bordered)
             default:
-                Button("安装") {
+                Button(xLoc("安装")) {
                     do {
                         try model.env.helper.install()
                         helperStatus = model.env.helper.status()
@@ -453,17 +453,17 @@ public struct SettingsView: View {
 
     private var helperSubtitle: String {
         switch helperStatus {
-        case .installed: return "已安装 · 维护中的系统级任务可用"
-        case .requiresApproval: return "已注册 · 待在登录项中批准"
-        case .unavailable: return "开发签名版本不可用 · 正式签名后可装"
-        default: return "用于执行需管理员权限的维护任务"
+        case .installed: return xLoc("已安装 · 维护中的系统级任务可用")
+        case .requiresApproval: return xLoc("已注册 · 待在登录项中批准")
+        case .unavailable: return xLoc("开发签名版本不可用 · 正式签名后可装")
+        default: return xLoc("用于执行需管理员权限的维护任务")
         }
     }
 
     private var resetCard: some View {
         settingRow(icon: "arrow.counterclockwise", colors: [XColor.textTertiary, XColor.textSecondary],
-                   title: "重新显示引导页", subtitle: "下次启动时再次展示欢迎引导") {
-            Button("重置") {
+                   title: xLoc("重新显示引导页"), subtitle: xLoc("下次启动时再次展示欢迎引导")) {
+            Button(xLoc("重置")) {
                 UserDefaults.standard.set(false, forKey: "xico.onboarded")
                 UserDefaults.standard.set(false, forKey: "xico.fdaDismissed")
             }.buttonStyle(.bordered)
