@@ -8,6 +8,7 @@ public struct OptimizationView: View {
     @State private var runningApps: [RunningAppItem] = []
     @State private var agents: [LaunchAgentItem] = []
     @State private var tab = 0
+    @State private var toggleWarning: String?
 
     public init(env: XicoEnvironment) { self.env = env }
 
@@ -29,6 +30,11 @@ public struct OptimizationView: View {
         }
         .onAppear(perform: reload)
         .onChange(of: tab) { _ in reload() }
+        .alert("启动项状态", isPresented: Binding(get: { toggleWarning != nil }, set: { if !$0 { toggleWarning = nil } })) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(toggleWarning ?? "")
+        }
     }
 
     @ViewBuilder private var runningSection: some View {
@@ -80,8 +86,11 @@ public struct OptimizationView: View {
                         Toggle("", isOn: Binding(
                             get: { agent.isEnabled },
                             set: { newVal in
-                                _ = env.optimization.setEnabled(agent, enabled: newVal)
-                                reload()
+                                Task {
+                                    let result = await env.optimization.setEnabled(agent, enabled: newVal)
+                                    if let w = result.warning { toggleWarning = w }
+                                    reload()
+                                }
                             }))
                             .toggleStyle(.switch).labelsHidden()
                     }

@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import os
 
 public struct LaunchAgentItem: Identifiable, Sendable, Hashable {
     public let id: String
@@ -48,29 +49,71 @@ public struct OptimizationService: Sendable {
         return items.sorted { $0.label.lowercased() < $1.label.lowercased() }
     }
 
-    /// 启用/停用用户级启动代理（系统级需管理员，UI 已禁用）。返回新文件 URL。
-    @MainActor public func setEnabled(_ agent: LaunchAgentItem, enabled: Bool) -> URL? {
-        guard !agent.isSystem else { return nil }
+    /// 启停结果：新文件 URL + 可选警告（launchctl 未能立即生效时告知用户，但持久开关已改）。
+    public struct ToggleResult: Sendable {
+        public let url: URL?
+        public let warning: String?
+    }
+
+    private static let log = Logger(subsystem: "com.xico.app", category: "app")
+
+    /// 启用/停用用户级启动代理（系统级需管理员，UI 已禁用）。
+    /// 用现代 `launchctl bootstrap/bootout gui/$UID`（旧 load/unload 在新系统上常静默失败）；
+    /// 在后台执行、检查退出码；文件改名失败会回滚，launchctl 失败作为软警告如实上报。
+    public func setEnabled(_ agent: LaunchAgentItem, enabled: Bool) async -> ToggleResult {
+        guard !agent.isSystem else { return ToggleResult(url: nil, warning: "系统级项目需要管理员权限") }
         let fm = FileManager.default
+        let uid = getuid()
+        let domain = "gui/\(uid)"
+
         if enabled {
-            let target = agent.url.deletingPathExtension() // 去掉 .disabled
-            try? fm.moveItem(at: agent.url, to: target)
-            runLaunchctl(["load", target.path])
-            return target
+            let target = agent.url.deletingPathExtension()   // 去掉 .disabled
+            do {
+                try fm.moveItem(at: agent.url, to: target)
+            } catch {
+                Self.log.error("启用启动项改名失败 \(agent.label, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                return ToggleResult(url: nil, warning: "启用失败：\(error.localizedDescription)")
+            }
+            let (ok, out) = await Self.runLaunchctl(["bootstrap", domain, target.path])
+            // bootstrap 失败通常是"已加载"或需登录会话——文件已启用，将于下次登录生效，作软警告
+            let warn = ok ? nil : "已启用（将在下次登录完全生效）。launchctl：\(out)"
+            return ToggleResult(url: target, warning: warn)
         } else {
-            runLaunchctl(["unload", agent.url.path])
+            // 先尝试停用已加载服务，再改名为 .disabled（持久停用）
+            let (ok, out) = await Self.runLaunchctl(["bootout", "\(domain)/\(agent.label)"])
             let target = agent.url.appendingPathExtension("disabled")
-            try? fm.moveItem(at: agent.url, to: target)
-            return target
+            do {
+                try fm.moveItem(at: agent.url, to: target)
+            } catch {
+                Self.log.error("停用启动项改名失败 \(agent.label, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                return ToggleResult(url: nil, warning: "停用失败：\(error.localizedDescription)")
+            }
+            let warn = ok ? nil : "已停用（下次登录不再启动）。当前会话可能仍在运行：\(out)"
+            return ToggleResult(url: target, warning: warn)
         }
     }
 
-    private func runLaunchctl(_ args: [String]) {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        proc.arguments = args
-        try? proc.run()
-        proc.waitUntilExit()
+    /// 后台执行 launchctl，返回 (成功, 输出)。不阻塞主线程。
+    private static func runLaunchctl(_ args: [String]) async -> (Bool, String) {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                proc.arguments = args
+                let pipe = Pipe()
+                proc.standardOutput = pipe
+                proc.standardError = pipe
+                do {
+                    try proc.run()
+                    proc.waitUntilExit()
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    let out = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    continuation.resume(returning: (proc.terminationStatus == 0, out.isEmpty ? "退出码 \(proc.terminationStatus)" : out))
+                } catch {
+                    continuation.resume(returning: (false, error.localizedDescription))
+                }
+            }
+        }
     }
 
     @MainActor public func runningApps() -> [RunningAppItem] {
