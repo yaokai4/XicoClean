@@ -364,12 +364,15 @@ public struct LargeFilesScanner: ScannerModule {
                     var local: [CleanableItem] = []
                     for await entry in fs.deepEnumerate(root, includeFiles: true) {
                         if Task.isCancelled { break }
+                        // 用逻辑大小做廉价阈值过滤，命中后再取分配大小（只对 ≥阈值 的少量文件多一次 stat），
+                        // 让"可释放"按磁盘实际占用报告，消除稀疏/克隆文件的口径虚报。
                         guard !entry.isDirectory, entry.size >= threshold else { continue }
                         guard safety.verify(entry.url, intent: .trash).isAllowed else { continue }
+                        let allocated = fs.entry(for: entry.url)?.size ?? entry.size
                         local.append(CleanableItem(url: entry.url, displayName: entry.url.lastPathComponent,
-                                                   detail: entry.url.path, size: entry.size,
+                                                   detail: entry.url.path, size: allocated,
                                                    safety: .caution, isSelected: false))
-                        let running = counter.add(entry.size)
+                        let running = counter.add(allocated)
                         progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: running))
                     }
                     return local

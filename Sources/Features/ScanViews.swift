@@ -330,13 +330,20 @@ public struct ModuleScanView: View {
         let meta = ModuleCatalog.all.first { $0.id == moduleID }
         self.meta = meta
         self.intent = intent
-        _vm = StateObject(wrappedValue: ModuleSessionViewModel(
+        let model = ModuleSessionViewModel(
             env: env, title: meta?.title ?? "", intent: intent,
             scanProvider: { handler in
                 guard let scanner = env.scanner(for: moduleID) else { return [] }
                 // 不再吞掉错误：失败会上抛到 ViewModel 呈现为失败态，而非伪装成「很干净」
                 return [try await scanner.scan(progress: handler)]
-            }))
+            })
+        // 威胁模块：删除 plist 前先 bootout，停用已加载的恶意 agent
+        if moduleID == .malware {
+            model.beforeClean = { items in
+                await ThreatRemediation.bootoutUserAgents(items.map(\.url))
+            }
+        }
+        _vm = StateObject(wrappedValue: model)
     }
 
     public var body: some View {

@@ -52,6 +52,8 @@ public final class ModuleSessionViewModel: ObservableObject {
     private let throttle = ProgressThrottle()
     /// 本次清理写入历史的记录 id（撤销时据此回滚，避免累计释放虚高）
     private var lastHistoryID: UUID?
+    /// 清理前的处置钩子（如威胁模块删 plist 前先 bootout 停用已加载 agent）
+    public var beforeClean: (@Sendable ([CleanableItem]) async -> Void)?
 
     public init(env: XicoEnvironment,
                 title: String,
@@ -168,6 +170,7 @@ public final class ModuleSessionViewModel: ObservableObject {
         let handler = makeHandler()
         cleanTask = Task {
             defer { self.isCleaning = false }
+            await self.beforeClean?(items)   // 例：威胁模块先 bootout 停用已加载 agent
             let normalItems = items.filter { !$0.requiresHelper }
             let privilegedItems = items.filter(\.requiresHelper)
             var reports: [CleaningReport] = []
