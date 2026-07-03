@@ -19,6 +19,10 @@ public struct RootView: View {
                 DetailView()
                     .environmentObject(model)
             }
+            // 主题切换时，品牌色来自 XColor 的静态读取（读 XThemeStore.current），SwiftUI 无法追踪。
+            // 用 .id(themeID) 强制在换主题时重建整棵内容树，让所有 XColor 读数重新求值 → 全局即时换色。
+            .id(model.themeID)
+            .transition(.opacity)
 
             if model.showOnboarding {
                 OnboardingView(model: model)
@@ -27,6 +31,7 @@ public struct RootView: View {
             }
         }
         .frame(minWidth: 1080, minHeight: 720)
+        .animation(.easeInOut(duration: 0.3), value: model.themeID)   // 换主题时整树平滑淡入
         .preferredColorScheme(model.appearance.colorScheme)
         .sheet(isPresented: $model.showPricing) { PricingView(model: model) }
         .onAppear { model.startMetricsTimer() }
