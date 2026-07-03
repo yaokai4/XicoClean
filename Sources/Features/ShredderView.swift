@@ -68,7 +68,7 @@ public struct ShredderView: View {
                 XActionBar(title: "已选 \(model.files.count) 项", subtitle: xLoc("粉碎不可恢复，请谨慎")) {
                     if model.working { ProgressView().controlSize(.small) }
                     else {
-                        Button("粉碎 · \(model.totalSize.formattedBytes)") { confirm = true }
+                        Button(xLocF("粉碎 · %@", model.totalSize.formattedBytes)) { confirm = true }
                             .buttonStyle(XPrimaryButtonStyle(enabled: true))
                     }
                 }

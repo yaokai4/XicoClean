@@ -76,6 +76,10 @@ public final class AppModel: ObservableObject {
             UserDefaults.standard.set(themeID, forKey: "xico.themeID")
         }
     }
+    /// 界面语言（跟随系统 / 简体中文 / English / 日本語）。切换即时全局生效。
+    @Published public var language: XLang = .system {
+        didSet { XLocale.current = language }
+    }
     @Published public var showOnboarding: Bool = false
     /// 是否展示会员/定价页（sheet）。
     @Published public var showPricing: Bool = false
@@ -131,6 +135,8 @@ public final class AppModel: ObservableObject {
             themeID = tid
         }
         XThemeStore.current = XTheme.byID(themeID)   // 启动即应用已保存主题
+        XLocale.load()                               // 载入已保存语言
+        language = XLocale.current
         alertRules = env.alertRuleStore.load()
         permissionBannerDismissed = UserDefaults.standard.bool(forKey: "xico.fdaDismissed")
         showOnboarding = !UserDefaults.standard.bool(forKey: "xico.onboarded")

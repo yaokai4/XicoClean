@@ -22,7 +22,7 @@ public struct XScanOrb: View {
             if reduceMotion { staticOrb } else { animatedOrb }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("正在扫描")
+        .accessibilityLabel(xLoc("正在扫描"))
         .accessibilityValue("\(label) \(value)")
     }
 
@@ -144,7 +144,7 @@ public struct XCheckbox: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("勾选")
+        .accessibilityLabel(xLoc("勾选"))
         .accessibilityValue(isOn ? "已选中" : "未选中")
         .accessibilityAddTraits(.isButton)
     }

@@ -19,9 +19,9 @@ public struct RootView: View {
                 DetailView()
                     .environmentObject(model)
             }
-            // 主题切换时，品牌色来自 XColor 的静态读取（读 XThemeStore.current），SwiftUI 无法追踪。
-            // 用 .id(themeID) 强制在换主题时重建整棵内容树，让所有 XColor 读数重新求值 → 全局即时换色。
-            .id(model.themeID)
+            // 主题/语言切换时，色值与文案都来自静态查表（XThemeStore / XLocale），SwiftUI 无法追踪。
+            // 用 .id 绑定 themeID+语言，切换时重建整棵内容树 → 全局即时换色、换语言。
+            .id("\(model.themeID)-\(model.language.rawValue)")
             .transition(.opacity)
 
             if model.showOnboarding {

@@ -56,6 +56,7 @@ public struct SettingsView: View {
                     ignoreListCard
                     historyCard
                     appearanceCard
+                    languageCard
                     ThemePickerCard(selectedID: Binding(
                         get: { model.themeID },
                         set: { model.themeID = $0 }))
@@ -391,6 +392,16 @@ public struct SettingsView: View {
         settingRow(icon: "circle.lefthalf.filled", colors: [XColor.auroraViolet, XColor.auroraBlue],
                    title: xLoc("外观"), subtitle: xLoc("浅色 / 深色 / 跟随系统")) {
             AppearanceToggle(appearance: $model.appearance)
+        }
+    }
+
+    private var languageCard: some View {
+        settingRow(icon: "globe", colors: [XColor.accentTeal, XColor.auroraBlue],
+                   title: xLoc("语言"), subtitle: xLoc("简体中文 / English / 日本語 · 即时切换")) {
+            Picker("", selection: $model.language) {
+                ForEach(XLang.allCases) { lang in Text(lang.nativeName).tag(lang) }
+            }
+            .labelsHidden().pickerStyle(.menu).frame(width: 160)
         }
     }
 

@@ -2,12 +2,18 @@ import SwiftUI
 import AppKit
 import Features
 import Infrastructure
+import DesignSystem
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MenuBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        // 截图/调试用：--lang=ja|en|zh-Hans 强制界面语言（离屏验证多语言）
+        if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--lang=") }),
+           let lang = XLang(rawValue: String(arg.dropFirst("--lang=".count))) {
+            XLocale.current = lang
+        }
         if CommandLine.arguments.contains("--shots") {
             renderShots()
             NSApp.terminate(nil)
@@ -72,7 +78,7 @@ struct XicoMain: App {
             CommandGroup(replacing: .newItem) {}
             // ⌘, 路由到应用内设置页（无独立 Settings 场景）
             CommandGroup(replacing: .appSettings) {
-                Button("设置…") {
+                Button(xLoc("设置…")) {
                     model.selection = .settings
                     NSApp.activate(ignoringOtherApps: true)
                 }

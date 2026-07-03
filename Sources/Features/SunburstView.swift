@@ -188,7 +188,7 @@ public struct SunburstView: View {
         .buttonStyle(.plain)
         .onHover { if $0 { hovered = child } else if hovered?.id == child.id { hovered = nil } }
         .contextMenu {
-            Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([child.url]) }
+            Button(xLoc("在 Finder 中显示")) { NSWorkspace.shared.activateFileViewerSelecting([child.url]) }
         }
     }
 

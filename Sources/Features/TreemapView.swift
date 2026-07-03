@@ -49,8 +49,8 @@ struct TreemapView: View {
         .onHover { hovered = $0 ? child.id : nil }
         .help("\(child.name) — \(child.size.formattedBytes)")
         .contextMenu {
-            Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([child.url]) }
-            Button("快速查看") { quickLook(child.url) }
+            Button(xLoc("在 Finder 中显示")) { NSWorkspace.shared.activateFileViewerSelecting([child.url]) }
+            Button(xLoc("快速查看")) { quickLook(child.url) }
         }
         .accessibilityLabel("\(child.name)，\(child.size.formattedBytes)")
         .accessibilityAddTraits(.isButton)
