@@ -96,7 +96,7 @@ cat <<PLIST
     <key>CFBundleIconFile</key><string>Xico</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
-    <key>CFBundleLocalizations</key><array><string>zh-Hans</string><string>en</string><string>ja</string></array>
+    <key>CFBundleLocalizations</key><array><string>zh-Hans</string><string>zh-Hant</string><string>en</string><string>ja</string><string>ko</string><string>de</string><string>fr</string><string>es</string><string>ru</string><string>pt-BR</string><string>it</string></array>
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
     <key>NSHumanReadableCopyright</key><string>© 2026 Xico. 保留所有权利。</string>
     <key>NSSupportsSuddenTermination</key><true/>

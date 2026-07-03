@@ -382,3 +382,25 @@
 "风扇" = "Fan";
 "风扇 %d" = "Fan %d";
 "高风险：可能涉及重要或不可逆的数据。请逐项确认，默认不勾选。" = "High risk: may involve important or irreversible data. Review each item—unchecked by default.";
+
+/* --- appended: newly-wrapped dynamic strings --- */
+"%d 个应用" = "%d apps";
+"%d 个应用支持自更新" = "%d apps support self-update";
+"%d 项已排除，永不扫描/清理" = "%d items excluded — never scanned or cleaned";
+"仅数值" = "Value only";
+"发现新版本 %@，点击前往下载。" = "New version %@ available. Click to download.";
+"可视化 + 数值" = "Visualization + value";
+"图标 + 数值" = "Icon + value";
+"安装助手失败：%@" = "Couldn't install the helper: %@";
+"已下载并验证规则库 v%@。重新启动 Xico 后生效。" = "Downloaded and verified rule set v%@. Restart Xico to apply.";
+"已是最新版本（%@）。" = "Already up to date (%@).";
+"已检查 %d 个可自更新的应用，没有发现新版本。" = "Checked %d self-updatable apps; no new versions found.";
+"扫描「%@」" = "Scan “%@”";
+"扫描时出错：%@" = "Scan error: %@";
+"未获完全磁盘访问权限，部分位置无法扫描。授权后可发现更多可清理项。" = "Without Full Disk Access some locations can't be scanned. Grant it to find more to clean.";
+"检查中 %d/%d" = "Checking %d/%d";
+"检查更新失败：%@" = "Update check failed: %@";
+"正在清理…" = "Cleaning…";
+"确认卸载 %@？" = "Uninstall %@?";
+"试用已结束或许可证无效。%@" = "Trial ended or license invalid. %@";
+"迷你图 + 数值" = "Mini graph + value";

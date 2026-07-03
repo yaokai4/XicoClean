@@ -44,7 +44,7 @@ public struct DuplicatesView: View {
                     icon: "doc.on.doc", colors: [XColor.accentTeal, XColor.brand],
                     title: xLoc("重复文件"),
                     subtitle: xLoc("在所选文件夹中按内容（大小 + 头尾哈希）查找重复文件，每组智能保留一份、勾选其余。已自动忽略硬链接。"),
-                    buttonTitle: "扫描「\(rootLabel)」",
+                    buttonTitle: xLocF("扫描「%@」", rootLabel),
                     action: { vm.start() })
             }
         }

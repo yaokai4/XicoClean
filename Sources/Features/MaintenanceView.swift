@@ -76,7 +76,7 @@ public struct MaintenanceView: View {
             if status == .requiresApproval { env.helper.openLoginItemsSettings() }
         } catch {
             // 不再静默吞掉：把失败原因显示给用户（此前 try? 让"装不上"毫无反馈）
-            installError = "安装助手失败：\(error.localizedDescription)"
+            installError = xLocF("安装助手失败：%@", error.localizedDescription)
         }
     }
 

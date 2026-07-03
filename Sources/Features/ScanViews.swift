@@ -213,8 +213,8 @@ struct ModuleIdleHero: View {
         VStack(spacing: XSpacing.l) {
             XIconTile(systemImage: icon, colors: colors, size: 88)
                 .xGlow(colors.first ?? XColor.brand, radius: 30)
-            Text(title).xLargeTitle().foregroundStyle(XColor.textPrimary)
-            Text(subtitle).font(XFont.body).foregroundStyle(XColor.textSecondary)
+            Text(xLoc(title)).xLargeTitle().foregroundStyle(XColor.textPrimary)
+            Text(xLoc(subtitle)).font(XFont.body).foregroundStyle(XColor.textSecondary)
                 .multilineTextAlignment(.center).frame(maxWidth: 460).lineSpacing(2)
             Button(buttonTitle, action: action)
                 .buttonStyle(XPrimaryButtonStyle(large: true))

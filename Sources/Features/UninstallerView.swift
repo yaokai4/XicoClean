@@ -67,12 +67,12 @@ final class UninstallerModel: ObservableObject {
         guard env.license.status().state.allowsCommercialUse else { licenseBlocked = true; return }
         working = true
         let env = self.env
-        let appName = selected?.name ?? "应用"
+        let appName = selected?.name ?? xLoc("应用")
         Task {
             let report = await env.cleaningEngine.execute(CleaningPlan(items: items, intent: .trash))
             self.lastFreed = report.reclaimedBytes
             // 计入清理历史并广播刷新（此前卸载释放的空间被系统性少计）
-            env.history.record(module: "卸载 · \(appName)",
+            env.history.record(module: xLocF("卸载 · %@", appName),
                                reclaimedBytes: report.reclaimedBytes, removedCount: report.removedCount)
             NotificationCenter.default.post(name: .xicoDidClean, object: nil)
             self.working = false
@@ -97,7 +97,7 @@ public struct UninstallerView: View {
             detail
         }
         .onAppear { if model.apps.isEmpty { model.load() } }
-        .confirmationDialog("确认卸载 \(model.selected?.name ?? "应用")？",
+        .confirmationDialog(xLocF("确认卸载 %@？", model.selected?.name ?? xLoc("应用")),
                             isPresented: $confirmUninstall, titleVisibility: .visible) {
             Button(xLocF("卸载并移入废纸篓（%d 项）", model.selectedCount), role: .destructive) { model.uninstall() }
             Button(xLoc("取消"), role: .cancel) {}
@@ -114,7 +114,7 @@ public struct UninstallerView: View {
 
     private var appList: some View {
         VStack(spacing: 0) {
-            XHeaderBar(title: xLoc("卸载器"), subtitle: "\(model.apps.count) 个应用") {
+            XHeaderBar(title: xLoc("卸载器"), subtitle: xLocF("%d 个应用", model.apps.count)) {
                 if model.loading { ProgressView().controlSize(.small) }
             }
             searchField
@@ -177,7 +177,7 @@ public struct UninstallerView: View {
                     .padding(XSpacing.l)
                 }
 
-                XActionBar(title: "已选 \(model.selectedCount) 项",
+                XActionBar(title: xLocF("已选 %d 项", model.selectedCount),
                            subtitle: xLoc("将移入废纸篓，可在访达中恢复")) {
                     if model.working {
                         ProgressView().controlSize(.small)

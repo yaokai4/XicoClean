@@ -165,7 +165,7 @@ public struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(xLoc("忽略清单")).xHeadline().foregroundStyle(XColor.textPrimary)
                         Text(ignored.isEmpty ? xLoc("在扫描结果中右键「永不清理此项」可加入这里")
-                             : "\(ignored.count) 项已排除，永不扫描/清理")
+                             : xLocF("%d 项已排除，永不扫描/清理", ignored.count))
                             .font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     Spacer()
@@ -232,12 +232,12 @@ public struct SettingsView: View {
             checkingUpdate = false
             switch result {
             case .upToDate:
-                updateMessage = "已是最新版本（\(version)）。"
+                updateMessage = xLocF("已是最新版本（%@）。", version)
             case let .available(info):
-                updateMessage = "发现新版本 \(info.version)，点击前往下载。"
+                updateMessage = xLocF("发现新版本 %@，点击前往下载。", info.version)
                 NSWorkspace.shared.open(info.downloadURL)
             case let .failed(reason):
-                updateMessage = "检查更新失败：\(reason)"
+                updateMessage = xLocF("检查更新失败：%@", reason)
             }
         }
     }
@@ -385,7 +385,7 @@ public struct SettingsView: View {
             do {
                 let library = try await model.env.definitionsUpdater.refresh()
                 definitionsStatus = model.env.definitionsUpdater.status()
-                definitionsMessage = "已下载并验证规则库 v\(library.version)。重新启动 Xico 后生效。"
+                definitionsMessage = xLocF("已下载并验证规则库 v%@。重新启动 Xico 后生效。", "\(library.version)")
             } catch {
                 definitionsStatus = model.env.definitionsUpdater.status()
                 definitionsMessage = error.localizedDescription
@@ -575,7 +575,7 @@ public struct SettingsView: View {
                         helperStatus = model.env.helper.status()
                         if helperStatus == .requiresApproval { model.env.helper.openLoginItemsSettings() }
                     } catch {
-                        helperError = "安装助手失败：\(error.localizedDescription)"
+                        helperError = xLocF("安装助手失败：%@", error.localizedDescription)
                     }
                 }.buttonStyle(.bordered)
             }

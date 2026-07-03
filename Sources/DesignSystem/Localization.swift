@@ -9,8 +9,16 @@ import SwiftUI
 public enum XLang: String, CaseIterable, Sendable, Identifiable {
     case system
     case zhHans = "zh-Hans"
+    case zhHant = "zh-Hant"
     case en
     case ja
+    case ko
+    case de
+    case fr
+    case es
+    case ru
+    case ptBR = "pt-BR"
+    case it
 
     public var id: String { rawValue }
 
@@ -19,8 +27,16 @@ public enum XLang: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .system: return xLoc("跟随系统")
         case .zhHans: return "简体中文"
+        case .zhHant: return "繁體中文"
         case .en:     return "English"
         case .ja:     return "日本語"
+        case .ko:     return "한국어"
+        case .de:     return "Deutsch"
+        case .fr:     return "Français"
+        case .es:     return "Español"
+        case .ru:     return "Русский"
+        case .ptBR:   return "Português (Brasil)"
+        case .it:     return "Italiano"
         }
     }
 }
@@ -44,8 +60,16 @@ public enum XLocale {
         switch current {
         case .system: return Locale.autoupdatingCurrent
         case .zhHans: return Locale(identifier: "zh_Hans")
+        case .zhHant: return Locale(identifier: "zh_Hant")
         case .en:     return Locale(identifier: "en")
         case .ja:     return Locale(identifier: "ja")
+        case .ko:     return Locale(identifier: "ko")
+        case .de:     return Locale(identifier: "de")
+        case .fr:     return Locale(identifier: "fr")
+        case .es:     return Locale(identifier: "es")
+        case .ru:     return Locale(identifier: "ru")
+        case .ptBR:   return Locale(identifier: "pt_BR")
+        case .it:     return Locale(identifier: "it")
         }
     }
 

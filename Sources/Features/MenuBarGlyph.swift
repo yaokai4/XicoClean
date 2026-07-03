@@ -13,10 +13,10 @@ public enum MenuBarStyle: String, CaseIterable, Sendable {
 
     public var title: String {
         switch self {
-        case .iconValue: return "图标 + 数值"
-        case .valueOnly: return "仅数值"
-        case .graph:     return "迷你图 + 数值"
-        case .rich:      return "可视化 + 数值"
+        case .iconValue: return xLoc("图标 + 数值")
+        case .valueOnly: return xLoc("仅数值")
+        case .graph:     return xLoc("迷你图 + 数值")
+        case .rich:      return xLoc("可视化 + 数值")
         }
     }
 }

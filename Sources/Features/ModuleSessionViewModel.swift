@@ -1,6 +1,7 @@
 import SwiftUI
 import Domain
 import Infrastructure
+import DesignSystem
 
 /// 进度节流：限制 UI 更新频率，避免海量文件时主线程被刷爆。
 final class ProgressThrottle: @unchecked Sendable {
@@ -88,7 +89,7 @@ public final class ModuleSessionViewModel: ObservableObject {
         phase = .scanning
         progress = 0
         progressBytes = 0
-        statusMessage = "正在扫描…"
+        statusMessage = xLoc("正在扫描…")
         groups = []
         lastReport = nil
         permissionIssue = false
@@ -112,7 +113,7 @@ public final class ModuleSessionViewModel: ObservableObject {
                 } else if !self.env.permissions.hasFullDiskAccess() {
                     // 空结果可能只是没权限——绝不伪装成「很干净」
                     self.permissionIssue = true
-                    self.phase = .failed("未获完全磁盘访问权限，部分位置无法扫描。授权后可发现更多可清理项。")
+                    self.phase = .failed(xLoc("未获完全磁盘访问权限，部分位置无法扫描。授权后可发现更多可清理项。"))
                 } else {
                     self.phase = .empty
                 }
@@ -121,7 +122,7 @@ public final class ModuleSessionViewModel: ObservableObject {
             } catch {
                 if Task.isCancelled { return }
                 XicoLog.scan.error("扫描失败 [\(self.title, privacy: .public)]: \(error.localizedDescription, privacy: .public)")
-                self.phase = .failed("扫描时出错：\(error.localizedDescription)")
+                self.phase = .failed(xLocF("扫描时出错：%@", error.localizedDescription))
             }
         }
     }
@@ -171,7 +172,7 @@ public final class ModuleSessionViewModel: ObservableObject {
         isCleaning = true
         phase = .cleaning
         progress = 0
-        statusMessage = "正在清理…"
+        statusMessage = xLoc("正在清理…")
 
         let handler = makeHandler()
         cleanTask = Task {
@@ -276,7 +277,7 @@ public final class ModuleSessionViewModel: ObservableObject {
             licenseIssue = true
             // 不再自动跳转设置页（会让失败提示一闪而过看不到）。停在失败态，
             // 由失败态视图提供「购买 / 导入许可证」入口（见 ScanViews 许可证失败态）。
-            phase = .failed("试用已结束或许可证无效。\(status.summary)")
+            phase = .failed(xLocF("试用已结束或许可证无效。%@", status.summary))
             return false
         }
         licenseIssue = false

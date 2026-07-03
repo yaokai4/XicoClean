@@ -31,7 +31,7 @@ final class AppUpdaterModel: ObservableObject {
         let list = candidates
         Task { @MainActor in
             let found = await service.checkForUpdates(list) { done, total in
-                Task { @MainActor in self.progress = "检查中 \(done)/\(total)" }
+                Task { @MainActor in self.progress = xLocF("检查中 %d/%d", done, total) }
             }
             self.updates = found
             self.checking = false
@@ -46,7 +46,7 @@ public struct AppUpdaterView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            XHeaderBar(title: xLoc("应用更新"), subtitle: "\(model.candidates.count) 个应用支持自更新") {
+            XHeaderBar(title: xLoc("应用更新"), subtitle: xLocF("%d 个应用支持自更新", model.candidates.count)) {
                 if model.checking { ProgressView().controlSize(.small) }
                 else { Button(xLoc("检查更新")) { model.check() }.buttonStyle(.borderedProminent) }
             }
@@ -67,7 +67,7 @@ public struct AppUpdaterView: View {
             }
         } else if model.checked {
             XEmptyState(systemImage: "checkmark.seal.fill", title: xLoc("全部为最新"),
-                        subtitle: "已检查 \(model.candidates.count) 个可自更新的应用，没有发现新版本。")
+                        subtitle: xLocF("已检查 %d 个可自更新的应用，没有发现新版本。", model.candidates.count))
         } else {
             XEmptyState(systemImage: "arrow.triangle.2.circlepath", title: xLoc("检查应用更新"),
                         subtitle: xLoc("Xico 会读取带 Sparkle 自更新源的应用，比对各自最新版本。App Store 应用请在 App Store 更新。"))
