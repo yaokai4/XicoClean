@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 
 /// 可告警的指标。
 public enum AlertMetric: String, Codable, Sendable, CaseIterable {
@@ -113,7 +114,7 @@ public final class AlertEvaluator {
             ? String(format: "%.0f°C", value)
             : "\(Int(value * 100))%"
         notify("Xico 监控告警",
-               "\(rule.metric.title) \(current)（阈值 \(rule.thresholdText)）",
+               xLocF("%@ %@（阈值 %@）", xLoc(rule.metric.title), current, rule.thresholdText),
                "xico.alert.\(rule.id)")
     }
 }

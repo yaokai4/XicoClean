@@ -238,7 +238,7 @@ public struct HardwareView: View {
                         Text(s.name).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                         Spacer()
                         if s.isInternal {
-                            XBadge(xLocF("SMART %@", s.smartStatus),
+                            XBadge(xLocF("SMART %@", xLoc(s.smartStatus)),
                                    color: s.smartStatus == "正常" ? XColor.success : XColor.warning)
                             if let trim = s.trimEnabled, trim {
                                 XBadge("TRIM", color: XColor.accentTeal)
@@ -374,7 +374,7 @@ public struct HardwareView: View {
                     metricRow(xLoc("原生分辨率"), d.resolutionText)
                     metricRow(xLoc("缩放"), d.scaledText)
                     if let inch = d.diagonalInches {
-                        metricRow(xLoc("尺寸"), String(format: "%.1f 英寸", inch))
+                        metricRow(xLoc("尺寸"), xLocF("%.1f 英寸", inch))
                     }
                 }
                 .padding(.vertical, 2)
@@ -393,12 +393,12 @@ public struct HardwareView: View {
             }
             ForEach(grouped, id: \.0) { name, temps in
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(name).font(.system(size: 10, weight: .semibold)).foregroundStyle(XColor.textTertiary)
+                    Text(xLoc(name)).font(.system(size: 10, weight: .semibold)).foregroundStyle(XColor.textTertiary)
                         .textCase(.uppercase).tracking(0.5)
                     // 用下标做 id：传感器名可能重复（如多个 "gas gauge battery"），\.id 会冲突
                     ForEach(Array(temps.enumerated()), id: \.offset) { _, t in
                         HStack {
-                            Text(t.name).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                            Text(xLoc(t.name)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                                 .lineLimit(1).truncationMode(.tail)
                             Spacer()
                             Text(String(format: "%.0f°C", t.celsius)).font(XFont.mono).foregroundStyle(tempColor(t.celsius))

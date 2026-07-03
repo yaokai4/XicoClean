@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 import Features
 import Infrastructure
+import DesignSystem
 
 /// 用 AppKit 接管菜单栏：NSStatusItem + 单个瞬态 NSPopover。
 /// 解决 MenuBarExtra(.window) 面板「点开后不会自动消失/多个堆叠」的问题，
@@ -74,10 +75,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     private func contextMenu() -> NSMenu {
         let menu = NSMenu()
-        menu.addItem(withTitle: "打开 Xico", action: #selector(openMainWindow), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",").target = self
+        menu.addItem(withTitle: xLoc("打开 Xico"), action: #selector(openMainWindow), keyEquivalent: "").target = self
+        menu.addItem(withTitle: xLoc("设置…"), action: #selector(openSettings), keyEquivalent: ",").target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: "退出 Xico", action: #selector(quit), keyEquivalent: "q").target = self
+        menu.addItem(withTitle: xLoc("退出 Xico"), action: #selector(quit), keyEquivalent: "q").target = self
         return menu
     }
 

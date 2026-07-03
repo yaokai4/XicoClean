@@ -109,7 +109,7 @@ struct SessionScaffold<Idle: View>: View {
                 .padding(XSpacing.xl)
             }
             XActionBar(
-                title: "已选 \(vm.selectedCount) 项",
+                title: xLocF("已选 %d 项", vm.selectedCount),
                 subtitle: actionSubtitle
             ) {
                 if vm.phase == .cleaning {
@@ -142,8 +142,8 @@ struct SessionScaffold<Idle: View>: View {
     }
 
     private var confirmButtonTitle: String {
-        if vm.selectedRequiresHelper { return "确认清理 \(vm.selectedCount) 项" }
-        return "彻底删除 \(vm.selectedCount) 项（不可恢复）"
+        if vm.selectedRequiresHelper { return xLocF("确认清理 %d 项", vm.selectedCount) }
+        return xLocF("彻底删除 %d 项（不可恢复）", vm.selectedCount)
     }
 
     private var confirmMessage: String {
@@ -402,7 +402,7 @@ final class FailureBox: @unchecked Sendable {
     func summary() -> String? {
         lock.lock(); defer { lock.unlock() }
         guard !names.isEmpty else { return nil }
-        return "部分模块扫描失败：\(names.joined(separator: "、"))。结果可能不完整。"
+        return xLocF("部分模块扫描失败：%@。结果可能不完整。", names.joined(separator: "、"))
     }
 }
 

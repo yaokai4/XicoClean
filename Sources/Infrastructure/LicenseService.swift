@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 import CryptoKit
 
 public struct LicensePayload: Codable, Sendable, Equatable {
@@ -71,11 +72,11 @@ public struct LicenseStatus: Sendable, Equatable {
         switch state {
         case let .licensed(customerName, expiresAt):
             if let expiresAt {
-                return "\(customerName) · 有效期至 \(Self.formatDate(expiresAt))"
+                return xLocF("%@ · 有效期至 %@", customerName, Self.formatDate(expiresAt))
             }
-            return "\(customerName) · 永久授权"
+            return xLocF("%@ · 永久授权", customerName)
         case let .trial(daysRemaining):
-            return "剩余 \(daysRemaining) 天"
+            return xLocF("剩余 %d 天", daysRemaining)
         case .expired:
             return "请输入有效许可证继续使用商业功能"
         case let .invalid(reason):
@@ -100,9 +101,9 @@ public enum LicenseError: Error, LocalizedError, Sendable, Equatable {
     public var errorDescription: String? {
         switch self {
         case .malformedEnvelope: return "许可证文件格式无效"
-        case let .untrustedKey(keyID): return "许可证签名密钥不受信任：\(keyID)"
+        case let .untrustedKey(keyID): return xLocF("许可证签名密钥不受信任：%@", keyID)
         case .invalidSignature: return "许可证签名校验失败"
-        case let .invalidPayload(reason): return "许可证内容无效：\(reason)"
+        case let .invalidPayload(reason): return xLocF("许可证内容无效：%@", reason)
         case .expired: return "许可证已过期"
         }
     }

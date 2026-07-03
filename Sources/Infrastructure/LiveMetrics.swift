@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 import Darwin
 import Domain
 import IOKit.ps
@@ -347,9 +348,9 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         let d = Int(seconds) / 86400
         let h = (Int(seconds) % 86400) / 3600
         let m = (Int(seconds) % 3600) / 60
-        if d > 0 { return "\(d) 天 \(h) 小时" }
-        if h > 0 { return "\(h) 小时 \(m) 分" }
-        return "\(m) 分"
+        if d > 0 { return xLocF("%d 天 %d 小时", d, h) }
+        if h > 0 { return xLocF("%d 小时 %d 分", h, m) }
+        return xLocF("%d 分", m)
     }
 }
 

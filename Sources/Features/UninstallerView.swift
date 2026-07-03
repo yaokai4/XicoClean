@@ -189,7 +189,7 @@ public struct UninstallerView: View {
                 }
             }
         } else if let freed = model.lastFreed {
-            XEmptyState(systemImage: "checkmark.seal.fill", title: "已卸载，释放 \(freed.formattedBytes)",
+            XEmptyState(systemImage: "checkmark.seal.fill", title: xLocF("已卸载，释放 %@", freed.formattedBytes),
                         subtitle: xLoc("从左侧选择另一个应用继续。"))
         } else {
             XEmptyState(systemImage: "xmark.bin", title: xLoc("选择要卸载的应用"),

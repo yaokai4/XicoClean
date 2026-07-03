@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 import CryptoKit
 import Domain
 
@@ -35,11 +36,11 @@ public enum DefinitionsUpdateError: Error, LocalizedError, Sendable, Equatable {
         switch self {
         case .endpointNotConfigured: return "未配置规则库更新地址"
         case .insecureRemoteURL: return "规则库更新地址必须使用 HTTPS"
-        case let .untrustedKey(keyID): return "规则库签名密钥不受信任：\(keyID)"
+        case let .untrustedKey(keyID): return xLocF("规则库签名密钥不受信任：%@", keyID)
         case .malformedEnvelope: return "规则库更新包格式无效"
         case .invalidSignature: return "规则库签名校验失败"
-        case let .invalidLibrary(reason): return "规则库内容无效：\(reason)"
-        case let .staleVersion(remote, current): return "远端规则库版本 \(remote) 不高于当前版本 \(current)"
+        case let .invalidLibrary(reason): return xLocF("规则库内容无效：%@", reason)
+        case let .staleVersion(remote, current): return xLocF("远端规则库版本 %@ 不高于当前版本 %@", remote, current)
         }
     }
 }
@@ -154,10 +155,10 @@ public final class DefinitionsUpdateService: @unchecked Sendable {
                 throw DefinitionsUpdateError.invalidLibrary("定义 id 不能为空")
             }
             guard seen.insert(definition.id).inserted else {
-                throw DefinitionsUpdateError.invalidLibrary("重复定义 id：\(definition.id)")
+                throw DefinitionsUpdateError.invalidLibrary(xLocF("重复定义 id：%@", definition.id))
             }
             guard !definition.paths.isEmpty else {
-                throw DefinitionsUpdateError.invalidLibrary("\(definition.id) 缺少 paths")
+                throw DefinitionsUpdateError.invalidLibrary(xLocF("%@ 缺少 paths", definition.id))
             }
         }
     }

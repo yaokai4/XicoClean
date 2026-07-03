@@ -35,7 +35,7 @@ struct TreemapView: View {
                 .overlay(alignment: .topLeading) {
                     if showLabel {
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(child.name).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                            Text(xLoc(child.name)).font(.system(size: 11, weight: .semibold)).lineLimit(1)
                             Text(child.size.formattedBytes).font(.system(size: 10)).opacity(0.85)
                         }
                         .foregroundStyle(.white)

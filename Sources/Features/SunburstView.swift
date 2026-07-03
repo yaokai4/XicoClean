@@ -115,7 +115,7 @@ public struct SunburstView: View {
                 .font(.system(size: max(15, hole * 0.34), weight: .bold, design: .rounded))
                 .foregroundStyle(XColor.textPrimary)
                 .monospacedDigit()
-            Text(shown.name)
+            Text(xLoc(shown.name))
                 .font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 .lineLimit(1).truncationMode(.middle)
                 .frame(maxWidth: hole * 1.7)
@@ -130,7 +130,7 @@ public struct SunburstView: View {
         let total = max(node.size, 1)
         return VStack(alignment: .leading, spacing: XSpacing.s) {
             HStack {
-                Text(node.name).font(XFont.headline).foregroundStyle(XColor.textPrimary)
+                Text(xLoc(node.name)).font(XFont.headline).foregroundStyle(XColor.textPrimary)
                     .lineLimit(1).truncationMode(.middle)
                 Spacer()
                 Text(node.size.formattedBytes).font(XFont.mono).foregroundStyle(XColor.textSecondary)
@@ -165,7 +165,7 @@ public struct SunburstView: View {
                     HStack {
                         Image(systemName: child.isDirectory ? "folder.fill" : "doc")
                             .font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
-                        Text(child.name).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                        Text(xLoc(child.name)).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                             .lineLimit(1).truncationMode(.middle)
                         Spacer()
                         Text(child.size.formattedBytes).font(XFont.caption).foregroundStyle(XColor.textSecondary).monospacedDigit()

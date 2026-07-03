@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 import IOKit
 import Metal
 import AppKit
@@ -123,10 +124,10 @@ public final class HardwareProfileService: @unchecked Sendable {
         let marketing = ioRegMarketingName() ?? friendlyModel(from: modelID)
         // 内存容量按二进制 GB 取整显示（如 16GiB → "16 GB"，对齐 Apple 关于本机）
         let memGB = Int((Double(memBytes) / 1_073_741_824.0).rounded())
-        let memDesc = isAS ? "\(memGB) GB 统一内存" : "\(memGB) GB"
+        let memDesc = isAS ? xLocF("%d GB 统一内存", memGB) : "\(memGB) GB"
         let coreDesc = isAS && pCores > 0 && eCores > 0
-            ? "\(total) 核（\(pCores) 性能 + \(eCores) 能效）"
-            : "\(total) 核"
+            ? xLocF("%d 核（%d 性能 + %d 能效）", total, pCores, eCores)
+            : xLocF("%d 核", total)
 
         let profile = HardwareProfile(
             marketingName: marketing,
@@ -378,7 +379,7 @@ public final class HardwareProfileService: @unchecked Sendable {
             let builtin = num != 0 ? (CGDisplayIsBuiltin(CGDirectDisplayID(num)) != 0) : false
             let hdr = screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1.0
             let name = screen.localizedName
-            out.append(DisplayInfo(id: i, name: name.isEmpty ? "显示器 \(i+1)" : name,
+            out.append(DisplayInfo(id: i, name: name.isEmpty ? xLocF("显示器 %d", i+1) : name,
                                    pixelWidth: w, pixelHeight: h, pointWidth: pointW, pointHeight: pointH,
                                    refreshHz: refresh, scale: Double(scale), isBuiltin: builtin,
                                    diagonalInches: diagonal, isHDR: hdr))

@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 
 /// 更新检查结果
 public struct UpdateInfo: Sendable, Equatable {
@@ -42,7 +43,7 @@ public final class UpdateChecker: NSObject, @unchecked Sendable {
         do {
             let (data, response) = try await session.data(from: feedURL)
             if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                return .failed("更新源返回 HTTP \(http.statusCode)")
+                return .failed(xLocF("更新源返回 HTTP %d", http.statusCode))
             }
             guard let latest = Self.parseLatest(data) else {
                 return .failed("无法解析更新信息")

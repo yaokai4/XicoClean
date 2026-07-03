@@ -44,7 +44,7 @@ public struct MonitorView: View {
                 }
             }
             Picker("", selection: $tab) {
-                ForEach(MonitorTab.allCases, id: \.self) { Text($0.title).tag($0) }
+                ForEach(MonitorTab.allCases, id: \.self) { Text(xLoc($0.title)).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden()
             .padding(.horizontal, XSpacing.xl).padding(.bottom, XSpacing.s)
@@ -131,7 +131,7 @@ public struct MonitorView: View {
                     cardHeader("waveform.path.ecg", xLoc("历史曲线"))
                     Spacer()
                     Picker("", selection: $historyRange) {
-                        ForEach(MetricsHistoryStore.Range.allCases, id: \.self) { Text($0.title).tag($0) }
+                        ForEach(MetricsHistoryStore.Range.allCases, id: \.self) { Text(xLoc($0.title)).tag($0) }
                     }
                     .pickerStyle(.segmented).labelsHidden().frame(width: 280)
                 }
@@ -276,7 +276,7 @@ public struct MonitorView: View {
                 XRingGauge(progress: snap?.memoryPressureFraction ?? 0.25,
                            colors: pressureColors, lineWidth: 11, size: 120) {
                     VStack(spacing: 0) {
-                        Text(snap?.memoryPressureLabel ?? "—").xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(xLoc(snap?.memoryPressureLabel ?? "—")).xHeadline().foregroundStyle(XColor.textPrimary)
                         Text(xLoc("压力")).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
                     }
                 }
@@ -401,7 +401,7 @@ public struct MonitorView: View {
             HStack {
                 Text(xLoc("热压力")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 Spacer()
-                XBadge(snap?.thermal.rawValue ?? "—", color: thermalColor)
+                XBadge(xLoc(snap?.thermal.rawValue ?? "—"), color: thermalColor)
             }
             if let rpm = snap?.fanRPM {
                 HStack {

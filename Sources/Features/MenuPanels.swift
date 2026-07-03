@@ -38,7 +38,7 @@ public struct MenuMetricPanel: View {
         VStack(alignment: .leading, spacing: XSpacing.m) {
             HStack(spacing: XSpacing.s) {
                 XIconTile(systemImage: metric.icon, colors: metric.colors, size: 28)
-                Text(metric.title).font(XFont.headline).foregroundStyle(XColor.textPrimary)
+                Text(xLoc(metric.title)).font(XFont.headline).foregroundStyle(XColor.textPrimary)
                 Spacer()
                 if let chip = model.macInfo?.chip {
                     Text(chip).font(XFont.caption).foregroundStyle(XColor.textTertiary)

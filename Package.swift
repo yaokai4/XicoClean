@@ -35,7 +35,7 @@ let package = Package(
         // 与系统交互的具体实现：文件系统、权限、扫描模块、指标采样
         .target(
             name: "Infrastructure",
-            dependencies: ["Domain", "Shared", "CSensors"]
+            dependencies: ["Domain", "Shared", "CSensors", "DesignSystem"]
         ),
         // 特权助手守护进程（root；需正式签名 + SMAppService 注册）
         .executableTarget(

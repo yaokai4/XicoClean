@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 import Darwin
 import Network
 import CoreWLAN
@@ -180,9 +181,9 @@ public final class NetworkInfoService: @unchecked Sendable {
     private func friendlyName(_ name: String, kind: NetworkInterfaceInfo.Kind) -> String {
         switch kind {
         case .wifi: return "Wi-Fi (\(name))"
-        case .ethernet: return "以太网 (\(name))"
+        case .ethernet: return xLocF("以太网 (%@)", name)
         case .vpn: return "VPN (\(name))"
-        case .cellular: return "蜂窝 (\(name))"
+        case .cellular: return xLocF("蜂窝 (%@)", name)
         default: return name
         }
     }

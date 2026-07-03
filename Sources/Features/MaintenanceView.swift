@@ -96,8 +96,8 @@ public struct MaintenanceView: View {
                 HStack(spacing: XSpacing.m) {
                     XIconTile(systemImage: task.systemImage, colors: XColor.brandGradientColors, size: 34)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(task.title).xHeadline().foregroundStyle(XColor.textPrimary)
-                        Text(task.detail).font(XFont.caption).foregroundStyle(XColor.textSecondary).lineLimit(2)
+                        Text(xLoc(task.title)).xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(xLoc(task.detail)).font(XFont.caption).foregroundStyle(XColor.textSecondary).lineLimit(2)
                     }
                     Spacer()
                     if running == "u-" + task.rawValue {
@@ -117,8 +117,8 @@ public struct MaintenanceView: View {
                 HStack(spacing: XSpacing.m) {
                     XIconTile(systemImage: task.systemImage, colors: [XColor.warning, XColor.accentPink], size: 34)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(task.title).xHeadline().foregroundStyle(XColor.textPrimary)
-                        Text(task.detail).font(XFont.caption).foregroundStyle(XColor.textSecondary).lineLimit(2)
+                        Text(xLoc(task.title)).xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(xLoc(task.detail)).font(XFont.caption).foregroundStyle(XColor.textSecondary).lineLimit(2)
                     }
                     Spacer()
                     if running == "r-" + task.rawValue {

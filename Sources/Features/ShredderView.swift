@@ -46,8 +46,8 @@ final class ShredderModel: ObservableObject {
             self.working = false
             self.files = result.failed   // 只保留失败的
             self.resultText = result.failed.isEmpty
-                ? "已粉碎 \(result.shredded) 项，释放 \(result.freedBytes.formattedBytes)。"
-                : "已粉碎 \(result.shredded) 项；\(result.failed.count) 项失败（可能受保护或无权限）。"
+                ? xLocF("已粉碎 %d 项，释放 %@。", result.shredded, result.freedBytes.formattedBytes)
+                : xLocF("已粉碎 %d 项；%d 项失败（可能受保护或无权限）。", result.shredded, result.failed.count)
         }
     }
 }
@@ -65,7 +65,7 @@ public struct ShredderView: View {
             noticeBar
             content
             if !model.files.isEmpty {
-                XActionBar(title: "已选 \(model.files.count) 项", subtitle: xLoc("粉碎不可恢复，请谨慎")) {
+                XActionBar(title: xLocF("已选 %d 项", model.files.count), subtitle: xLoc("粉碎不可恢复，请谨慎")) {
                     if model.working { ProgressView().controlSize(.small) }
                     else {
                         Button(xLocF("粉碎 · %@", model.totalSize.formattedBytes)) { confirm = true }
@@ -74,7 +74,7 @@ public struct ShredderView: View {
                 }
             }
         }
-        .confirmationDialog("确认粉碎 \(model.files.count) 项？", isPresented: $confirm, titleVisibility: .visible) {
+        .confirmationDialog(xLocF("确认粉碎 %d 项？", model.files.count), isPresented: $confirm, titleVisibility: .visible) {
             Button(xLoc("彻底粉碎（不可恢复）"), role: .destructive) { model.shred() }
             Button(xLoc("取消"), role: .cancel) {}
         } message: {

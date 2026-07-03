@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 import AppKit
 import os
 
@@ -72,11 +73,11 @@ public struct OptimizationService: Sendable {
                 try fm.moveItem(at: agent.url, to: target)
             } catch {
                 Self.log.error("启用启动项改名失败 \(agent.label, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                return ToggleResult(url: nil, warning: "启用失败：\(error.localizedDescription)")
+                return ToggleResult(url: nil, warning: xLocF("启用失败：%@", error.localizedDescription))
             }
             let (ok, out) = await Self.runLaunchctl(["bootstrap", domain, target.path])
             // bootstrap 失败通常是"已加载"或需登录会话——文件已启用，将于下次登录生效，作软警告
-            let warn = ok ? nil : "已启用（将在下次登录完全生效）。launchctl：\(out)"
+            let warn = ok ? nil : xLocF("已启用（将在下次登录完全生效）。launchctl：%@", out)
             return ToggleResult(url: target, warning: warn)
         } else {
             // 先尝试停用已加载服务，再改名为 .disabled（持久停用）。
@@ -88,9 +89,9 @@ public struct OptimizationService: Sendable {
                 try fm.moveItem(at: agent.url, to: target)
             } catch {
                 Self.log.error("停用启动项改名失败 \(agent.label, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                return ToggleResult(url: nil, warning: "停用失败：\(error.localizedDescription)")
+                return ToggleResult(url: nil, warning: xLocF("停用失败：%@", error.localizedDescription))
             }
-            let warn = ok ? nil : "已停用（下次登录不再启动）。当前会话可能仍在运行：\(out)"
+            let warn = ok ? nil : xLocF("已停用（下次登录不再启动）。当前会话可能仍在运行：%@", out)
             return ToggleResult(url: target, warning: warn)
         }
     }
@@ -110,7 +111,7 @@ public struct OptimizationService: Sendable {
                     proc.waitUntilExit()
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
                     let out = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    continuation.resume(returning: (proc.terminationStatus == 0, out.isEmpty ? "退出码 \(proc.terminationStatus)" : out))
+                    continuation.resume(returning: (proc.terminationStatus == 0, out.isEmpty ? xLocF("退出码 %d", Int(proc.terminationStatus)) : out))
                 } catch {
                     continuation.resume(returning: (false, error.localizedDescription))
                 }

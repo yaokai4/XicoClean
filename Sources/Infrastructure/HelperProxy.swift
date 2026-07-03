@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 import ServiceManagement
 import Domain
 import Shared
@@ -53,9 +54,9 @@ public final class HelperProxy: @unchecked Sendable {
             connection.resume()
 
             let resumeOnce = ResumeGuard<(Bool, String?)>(continuation)
-            Self.scheduleTimeout(resumeOnce, connection, value: (false, "助手响应超时（\(Int(Self.callTimeout)) 秒）"))
+            Self.scheduleTimeout(resumeOnce, connection, value: (false, xLocF("助手响应超时（%d 秒）", Int(Self.callTimeout))))
             let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                resumeOnce.finish((false, "无法连接助手：\(error.localizedDescription)"))
+                resumeOnce.finish((false, xLocF("无法连接助手：%@", error.localizedDescription)))
                 connection.invalidate()
             } as? XicoHelperProtocol
 

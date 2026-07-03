@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 import Domain
 
 /// 基于 FileManager 的文件系统实现
@@ -77,7 +78,7 @@ public struct LocalFileSystemService: FileSystemService {
             let ext = item.originalURL.pathExtension
             var i = 1
             repeat {
-                let name = ext.isEmpty ? "\(base) (恢复 \(i))" : "\(base) (恢复 \(i)).\(ext)"
+                let name = ext.isEmpty ? xLocF("%@ (恢复 %d)", base, i) : xLocF("%@ (恢复 %d).%@", base, i, ext)
                 dest = parent.appendingPathComponent(name)
                 i += 1
             } while fm.fileExists(atPath: dest.path)

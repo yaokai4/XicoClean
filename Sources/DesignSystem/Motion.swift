@@ -145,7 +145,7 @@ public struct XCheckbox: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(xLoc("勾选"))
-        .accessibilityValue(isOn ? "已选中" : "未选中")
+        .accessibilityValue(isOn ? xLoc("已选中") : xLoc("未选中"))
         .accessibilityAddTraits(.isButton)
     }
 }

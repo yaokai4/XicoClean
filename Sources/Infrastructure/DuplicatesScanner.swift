@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 import CryptoKit
 import Domain
 
@@ -70,7 +71,7 @@ public struct DuplicatesScanner: Sendable {
             for await (url, size, hash) in group {
                 done += 1
                 progress(ScanProgress(fraction: total > 0 ? Double(done) / Double(total) : nil,
-                                      message: "校验 \(url.lastPathComponent)", bytesFound: scanned))
+                                      message: xLocF("校验 %@", url.lastPathComponent), bytesFound: scanned))
                 if let hash { out.append((url, size, hash)) }
                 addNext()
             }
@@ -99,11 +100,11 @@ public struct DuplicatesScanner: Sendable {
                                                isSelected: idx != 0))
                 }
                 let wasted = Int64(dupURLs.count - 1) * size
-                let cloneNote = anyAreClones(dupURLs) ? " · 含 APFS 克隆，删除可能不释放空间" : ""
+                let cloneNote = anyAreClones(dupURLs) ? xLoc(" · 含 APFS 克隆，删除可能不释放空间") : ""
                 groups.append(ScanResultGroup(
                     id: hash,
-                    title: "\(sorted[0].lastPathComponent) · \(dupURLs.count) 份",
-                    description: "可释放约 \(wasted.formattedBytes)（保留 1 份）\(cloneNote)",
+                    title: xLocF("%@ · %d 份", sorted[0].lastPathComponent, dupURLs.count),
+                    description: xLocF("可释放约 %@（保留 1 份）%@", wasted.formattedBytes, cloneNote),
                     systemImage: "doc.on.doc", safety: .caution, items: items))
             }
         }

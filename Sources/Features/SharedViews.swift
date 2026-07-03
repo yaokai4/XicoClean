@@ -58,7 +58,7 @@ struct ItemRowView: View {
                             .lineLimit(1).fixedSize()
                     }
                 }
-                Text(item.detail)
+                Text(xLoc(item.detail))
                     .font(XFont.caption).foregroundStyle(XColor.textTertiary)
                     .lineLimit(1).truncationMode(.middle)
             }
@@ -128,9 +128,9 @@ struct ResultGroupCard: View {
                     XCheckbox(isOn: allSelected) { onToggleGroup(!allSelected) }
                     XIconTile(systemImage: group.systemImage, colors: group.safety.gradient, size: 36)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(group.title).xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(xLoc(group.title)).xHeadline().foregroundStyle(XColor.textPrimary)
                         if !group.description.isEmpty {
-                            Text(group.description).font(XFont.caption)
+                            Text(xLoc(group.description)).font(XFont.caption)
                                 .foregroundStyle(XColor.textSecondary).lineLimit(2)
                         }
                     }
@@ -145,16 +145,16 @@ struct ResultGroupCard: View {
                     .help(xLoc("这是什么 / 删除后会怎样"))
                     .popover(isPresented: $showInfo, arrowEdge: .bottom) {
                         VStack(alignment: .leading, spacing: XSpacing.s) {
-                            Text(group.title).xHeadline().foregroundStyle(XColor.textPrimary)
+                            Text(xLoc(group.title)).xHeadline().foregroundStyle(XColor.textPrimary)
                             if !group.description.isEmpty {
-                                Text(group.description).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                                Text(xLoc(group.description)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                             }
                             Divider()
                             HStack(spacing: 6) {
                                 Image(systemName: "checkmark.shield").foregroundStyle(group.safety.tint)
-                                Text(group.safety.label).font(XFont.caption).foregroundStyle(group.safety.tint)
+                                Text(xLoc(group.safety.label)).font(XFont.caption).foregroundStyle(group.safety.tint)
                             }
-                            Text(group.safety.explanation).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                            Text(xLoc(group.safety.explanation)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                         }
                         .padding(XSpacing.m).frame(width: 320)
                     }

@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 import Domain
 #if canImport(Vision)
 import Vision
@@ -97,8 +98,8 @@ public struct SimilarImagesScanner: Sendable {
             let wasted = sorted.dropFirst().reduce(Int64(0)) { $0 + $1.size }
             groups.append(ScanResultGroup(
                 id: "sim-\(sorted[0].url.path)",
-                title: "\(sorted[0].url.lastPathComponent) · \(cluster.count) 张相似",
-                description: "可释放约 \(wasted.formattedBytes)（保留最大的一张）",
+                title: xLocF("%@ · %d 张相似", sorted[0].url.lastPathComponent, cluster.count),
+                description: xLocF("可释放约 %@（保留最大的一张）", wasted.formattedBytes),
                 systemImage: "photo.on.rectangle.angled", safety: .caution, items: items))
         }
         groups.sort { $0.selectedSize > $1.selectedSize }

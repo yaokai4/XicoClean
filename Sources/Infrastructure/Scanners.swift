@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 import AppKit
 import Darwin
 import Domain
@@ -399,7 +400,7 @@ public struct LargeFilesScanner: ScannerModule {
 
         items.sort { $0.size > $1.size }
         if items.count > maxItems { items = Array(items.prefix(maxItems)) }
-        let group = ScanResultGroup(id: "large-files", title: "大文件（≥ \(threshold.formattedBytes)）",
+        let group = ScanResultGroup(id: "large-files", title: xLocF("大文件（≥ %@）", threshold.formattedBytes),
                                     description: "扫描下载、文稿、影片等用户目录；删除前请确认，全部移入废纸篓可恢复。",
                                     systemImage: "doc.viewfinder", safety: .caution, items: items)
         return ScanResult(moduleID: .largeFiles, groups: items.isEmpty ? [] : [group])

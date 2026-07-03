@@ -510,7 +510,7 @@ public struct SettingsView: View {
     private func alertRuleRow(idx: Int, rule: AlertRule) -> some View {
         HStack(spacing: XSpacing.m) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(rule.metric.title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                Text(xLoc(rule.metric.title)).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                 Text(rule.durationSeconds > 0
                      ? xLocF("%@ 持续 %d 秒", rule.thresholdText, rule.durationSeconds)
                      : rule.thresholdText)
