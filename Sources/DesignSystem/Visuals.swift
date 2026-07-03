@@ -61,13 +61,16 @@ public struct XRingGauge<Center: View>: View {
                                      center: .center, startRadius: 0, endRadius: size / 2))
                 .padding(lineWidth)
 
-            Circle()
-                .trim(from: 0, to: max(0.001, min(progress, 1)))
-                .stroke(AngularGradient(colors: colors + [colors.first!], center: .center),
-                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-                .xGlow(colors.first!, radius: 18)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.5), value: progress)
+            // 进度弧：接近 0 时完全不画（否则 0% 也留一颗「浮尘」孤点）。
+            if progress > 0.004 {
+                Circle()
+                    .trim(from: 0, to: min(progress, 1))
+                    .stroke(AngularGradient(colors: colors + [colors.first!], center: .center),
+                            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .xGlow(colors.first!, radius: 14)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.5), value: progress)
+            }
 
             if spinning {
                 Circle()

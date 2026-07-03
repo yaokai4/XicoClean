@@ -54,10 +54,12 @@ public enum XColor {
     /// 主题强调色（图标、分段标题）。
     public static var themeAccent: Color { XThemeStore.current.accent }
 
-    /// 健康分 / 占用率 → 颜色。占用率高是常态（编译/渲染/跑分），不该一到高位就告警红。
-    /// 仅贴顶（>0.97）才用「暖橙→粉」提示偏高，纯红留给温度/内存压力这类真正危险量。
+    /// 健康分 / 占用率 → 颜色（三段语义：让仪表说真话）。
+    /// <78% 健康：品牌通透色；78–90% 偏高：暖橙；≥90% 危险：红粉。
+    /// 这样「88% 满盘」读作偏高提示而非满屏假告警，纯红只留给真正贴顶。
     public static func gauge(_ fraction: Double) -> [Color] {
-        if fraction > 0.97 { return [warning, accentPink] }
+        if fraction >= 0.90 { return [danger, accentPink] }
+        if fraction >= 0.78 { return [warning, accentPink] }
         return ringColors
     }
 
@@ -90,6 +92,7 @@ public extension NSColor {
 // MARK: - 间距（4pt 基准网格）
 
 public enum XSpacing {
+    public static let xxs: CGFloat = 2   // 组内极紧（title↔subtitle、图标↔文字）
     public static let xs: CGFloat = 4
     public static let s: CGFloat = 8
     public static let m: CGFloat = 12
@@ -111,19 +114,25 @@ public enum XRadius {
 
 // MARK: - 字体
 
+// 严格阶梯（约 1.25 模数），相邻两级一眼可分；大数字/标识符各有专属 token，
+// 消灭散落的 size:46/34/23/22/10 一次性字号。
 public enum XFont {
     public static let hero = Font.system(size: 54, weight: .bold, design: .rounded).monospacedDigit()
-    public static let largeTitle = Font.system(size: 27, weight: .bold, design: .rounded)
-    public static let title = Font.system(size: 19, weight: .semibold)
-    public static let title2 = Font.system(size: 16, weight: .semibold)
-    public static let headline = Font.system(size: 14.5, weight: .semibold)
+    public static let heroCompact = Font.system(size: 46, weight: .bold, design: .rounded).monospacedDigit()  // 仪表盘/详情大数字
+    public static let largeTitle = Font.system(size: 28, weight: .bold, design: .rounded)                     // 页面主标题
+    public static let title = Font.system(size: 22, weight: .semibold)                                        // 补 largeTitle↔headline 断层
+    public static let title2 = Font.system(size: 17, weight: .semibold)                                       // 卡片/区块标题
+    public static let headline = Font.system(size: 15, weight: .semibold)                                     // 行标题
     public static let body = Font.system(size: 13, weight: .regular)
     public static let bodyEmphasis = Font.system(size: 13, weight: .medium)
     public static let callout = Font.system(size: 12, weight: .regular)
     public static let caption = Font.system(size: 11, weight: .regular)
     public static let captionEmphasis = Font.system(size: 11, weight: .semibold)
+    public static let micro = Font.system(size: 10, weight: .medium)                                          // 唯一合法 10pt（收编所有魔法数字）
     public static let mono = Font.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit()
     public static let monoLarge = Font.system(size: 19, weight: .bold, design: .rounded).monospacedDigit()
+    public static let monoHero = Font.system(size: 34, weight: .bold, design: .rounded).monospacedDigit()     // 价格/详情锚点数字
+    public static let captionMono = Font.system(size: 11, weight: .regular, design: .monospaced)              // bundleID/IPv6/MAC 等标识符
 }
 
 // MARK: - 排版样式（字体 + 字距）
@@ -133,6 +142,8 @@ public extension View {
     func xLargeTitle() -> some View { font(XFont.largeTitle).tracking(-0.4) }
     func xTitle() -> some View { font(XFont.title).tracking(-0.2) }
     func xHeadline() -> some View { font(XFont.headline).tracking(-0.1) }
+    func xSubtitle() -> some View { font(XFont.headline).fontWeight(.regular).tracking(0.2) }   // hero 副标题（15pt regular）
+    func xHeroCompactNumber() -> some View { font(XFont.heroCompact).tracking(-0.5) }
     func xSectionLabel() -> some View { font(.system(size: 10, weight: .bold)).tracking(1.0).textCase(.uppercase) }
     func xNumber() -> some View { font(XFont.mono).tracking(-0.2) }
 }
@@ -155,7 +166,8 @@ public struct XShadow: ViewModifier {
 public extension View {
     func xCardShadow() -> some View { modifier(XShadow(radius: 18, y: 8, opacity: 0.10)) }
     func xSoftShadow() -> some View { modifier(XShadow(radius: 8, y: 3, opacity: 0.08)) }
-    func xGlow(_ color: Color, radius: CGFloat = 24) -> some View {
-        shadow(color: color.opacity(0.45), radius: radius, x: 0, y: 0)
+    /// 辉光收敛：贴边一圈、几乎察觉不到——去掉「半屏紫雾/概念稿」感。
+    func xGlow(_ color: Color, radius: CGFloat = 16, opacity: Double = 0.28) -> some View {
+        shadow(color: color.opacity(opacity), radius: radius, x: 0, y: 0)
     }
 }

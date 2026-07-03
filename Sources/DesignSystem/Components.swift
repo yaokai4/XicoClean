@@ -121,8 +121,8 @@ public struct XPrimaryButtonStyle: ButtonStyle {
             .overlay(Capsule().strokeBorder(.white.opacity(enabled ? 0.14 : 0), lineWidth: 1))
             .opacity(configuration.isPressed ? 0.85 : 1)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .shadow(color: enabled ? XColor.brand.opacity(0.22) : .clear,
-                    radius: configuration.isPressed ? 5 : 11, y: 5)
+            .shadow(color: enabled ? XColor.brand.opacity(0.16) : .clear,
+                    radius: configuration.isPressed ? 4 : 8, y: 4)
             .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }

@@ -1,0 +1,1045 @@
+{
+  "summary": "Multi-agent premium-design audit of every Xico surface → one coherent elevation spec",
+  "agentCount": 14,
+  "logs": [],
+  "result": {
+    "critiques": [
+      {
+        "surface": "Xico — Smart Scan Dashboard (SmartScanView), light + dark",
+        "premiumScore": 6.5,
+        "summary": "This is a genuinely handsome idle dashboard — the hero ring, aurora gradient, dual-shadow cards and the \"Undo last cleanup\" card all read as a real product, not a concept. Dark mode is especially strong. But it stops one clear tier short of Apple-Design-Award because the data visualization lies: the three metric mini-rings render a tiny ~15% arc while their labels say 88% / 75% / 70, and the hero ring is filled to 88% (disk USED) while its center number is \"57.16 GB Available\" — a used-ring wrapping an available-number. For a monitoring/cleaner app, a gauge that contradicts its own number is the fastest way to lose trust, and it's the difference between \"beautiful\" and \"premium.\" Secondary gaps: the three metric cards restate the hero (Disk Used 88% duplicates the hero ring), the type scale skips its own tokens with three ad-hoc font sizes, and vertical rhythm is loose (everything is XSpacing.l=16, no hierarchy). Fixes below are all token/structure level and land the remaining 3 points.",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "XMetricCard mini-rings (XMiniRing, size 46) — dashboard three-up row, ScanViews.swift:314-321 + Visuals.swift:113-127",
+            "issue": "The three mini-rings visibly render a tiny arc (~15% sweep, roughly one o'clock worth) in BOTH light and dark shots, while their labels read 88% / 75% / 70. A progress ring that contradicts its own number is the single most credibility-damaging thing on a monitoring dashboard — it reads as broken. The values are passed correctly (fraction: disk = 0.88 etc.), so the arc SHOULD be nearly full for 'Disk Used 88%'. Whatever is clamping/mis-trimming the trim, the rendered result does not match the datum.",
+            "fix": "Verify XMiniRing draws trim(from:0, to: fraction) with fraction actually 0.88 at render — the shots show ~0.15, so the bound values are almost certainly stale/zero at first paint (capacity/metrics are nil on first frame, defaulting to 0, and the mini-ring's .animation(value: fraction) never re-fires because XMetricCard is re-init'd rather than updated). Fix: (a) drive the ring off an @State that animates on .onAppear/onChange so the arc fills to the real fraction, and (b) as a floor make min bound 0.02 only for the *track*, not the value. The rendered arc MUST visually match the % label — this is non-negotiable for the category."
+          },
+          {
+            "severity": "P1",
+            "element": "Hero XRingGauge — progress vs. center number semantics, ScanViews.swift:304-312",
+            "issue": "The hero ring is filled to progress: disk (0.88 = disk USED), so the arc wraps ~88% of the circle. But the center reads '57.16 GB / Available / 494.35 GB total'. A near-full ring around the word 'Available' tells two opposite stories: the ring says 'almost full,' the number says 'space free.' Users read ring-fill and big-number as the same metric; here they're inverses. iStat/CleanMyMac never let a gauge fill disagree with its centered value.",
+            "fix": "Make the ring and the center agree on ONE metric. Best: keep the big number as Available but fill the ring to the AVAILABLE fraction (progress: 1 - disk) with a cool/teal color, so a fuller ring = more free = good. OR keep progress: disk but change the center to lead with used ('434 GB used / of 494 GB') and move Available to the caption. Either way, ring direction and center number must encode the same quantity in the same direction (more fill = more of the thing the number names)."
+          },
+          {
+            "severity": "P2",
+            "element": "Three metric cards vs. hero — information duplication, ScanViews.swift:314-321",
+            "issue": "The 'Disk Used 88%' card exactly restates the hero ring (which already IS disk usage at 88%). So the eye reads 88% disk twice in 400px of vertical space. Health Score 70 also just re-derives disk+mem, which the other two cards already show. The row feels like filler rather than three distinct facts, which reads as 'dashboard template' not 'considered product.'",
+            "fix": "Replace 'Disk Used' with a non-redundant metric so the three cards are orthogonal to the hero: e.g. CPU load, or 'Reclaimable' (the scan estimate), or Temperature. Keep Memory + Health, drop the disk duplicate. Alternatively demote the three cards to a single slim inline stat strip (icon · value · label separated by XColor.hairline dividers) under the hero, ~44pt tall, so it supports the hero instead of competing with it."
+          },
+          {
+            "severity": "P2",
+            "element": "Type scale — three off-token font sizes on one screen, ScanViews.swift:346-348, 363, 307/366",
+            "issue": "The dashboard hardcodes .system(size: 46) for heroBytes, size: 23 for the unit, and size: 22 for the health title — none of these are XFont tokens. XFont.hero is 54 and XFont.largeTitle is 27; the screen invents 46/23/22 instead. Result: the hero number (46) and the section title (22) are closer in size than they should be, so the visual jump from title→hero is muted, and the scale has no documented rhythm. Top-tier apps have a strict, few-step scale.",
+            "fix": "Route every size through XFont. Add XFont.heroCompact = 46 (rounded, bold, monospacedDigit) and use it for heroBytes value; use XFont.title2 (16) or a new heroUnit token for the unit rather than 23; use XFont.largeTitle (27) OR a new XFont.title (already 19) for the health headline instead of ad-hoc 22. Target a clear ratio ladder (e.g. 46 / 27 / 19 / 13 / 11) with no in-between one-offs. This is the 'has a real type system' signal."
+          },
+          {
+            "severity": "P2",
+            "element": "Vertical rhythm — single-value spacing, ScanViews.swift:301 (VStack spacing: XSpacing.l) + 331-332",
+            "issue": "The whole dashboard stack uses one spacing value (XSpacing.l = 16) between every group: header→ring, ring→cards, cards→button, button→undo card. With equal gaps everywhere there's no grouping — the header floats the same distance from the ring as the ring floats from the metric cards, so nothing reads as 'belonging together.' Premium layouts use tight intra-group / loose inter-group spacing to create breathing zones.",
+            "fix": "Introduce hierarchy: header→ring should be tighter (XSpacing.m=12, they're one unit), ring→metric cards looser (XSpacing.xl=24), button→undo card looser still (XSpacing.xl or xxl=32) since Undo is a separate concern. Also the outer .padding(.vertical, XSpacing.l) is thin for a hero screen — bump to XSpacing.xxl (32) top so the health header isn't crowding the window chrome. Use 2–3 distinct spacing values, not one."
+          },
+          {
+            "severity": "P3",
+            "element": "Metric-card ring color mapping — Memory hardcoded to rose/violet, ScanViews.swift:317-318",
+            "issue": "Disk card uses XColor.gauge(disk) (semantic: turns warm only >0.97) and Health uses healthColors (semantic: teal/ring/warning by score), but Memory is hardcoded to [auroraViolet, auroraRose] regardless of pressure. So at 75% and at 99% memory the ring is the identical pink-violet — the color carries no information for the one metric (memory pressure) where it should. Inconsistent with the other two cards' semantic coloring.",
+            "fix": "Give memory the same semantic treatment: colors: XColor.gauge(mem) (or a memory-specific threshold, e.g. warn >0.90 since memory pressure bites earlier than disk). Then all three cards share one rule: color = health of that metric. Keeps the palette honest and the row internally consistent."
+          },
+          {
+            "severity": "P3",
+            "element": "'Start Smart Scan' primary CTA — weight vs. the hero, ScanViews.swift:324-327",
+            "issue": "The pill CTA is the primary action of the whole screen but sits visually below the metric cards at the same emphasis as a secondary control — in the light shot it competes with the hero ring for the eye rather than being the obvious next step. Its gradient also exactly matches the hero ring gradient, so the two most important elements share a color identity and flatten into each other.",
+            "fix": "Either raise the CTA (place it directly under the ring, above the metric cards, so the flow is ring→CTA→details) or increase its presence: it already supports large:true — confirm it's using XSpacing.xxl horizontal padding and add a touch more xGlow(XColor.brand, radius: 20). If keeping it at the bottom, add ~XSpacing.xl above it to separate it from the metric row so it reads as the terminal action, not a fourth card."
+          },
+          {
+            "severity": "P3",
+            "element": "Hero unit alignment / baseline — heroBytes, ScanViews.swift:344-350",
+            "issue": "The 'GB' unit uses firstTextBaseline alignment against a 46pt value, so on the rounded-design font the small unit sits noticeably high relative to the numeral's visual center, giving a slightly superscript, off-balance look (visible in both shots — 'GB' rides high next to 57.16). Minor, but it's exactly the kind of optical detail that separates 9 from 7.",
+            "fix": "Nudge the unit down optically: give the unit Text a .baselineOffset of about +2 to +3, or switch the HStack to .lastTextBaseline and adjust, so 'GB' optically centers against the numeral's x-height rather than its cap-line. Also consider tracking(-0.5) on the value (matching xHeroNumber()) so the big digits tighten like the token intends."
+          }
+        ]
+      },
+      {
+        "surface": "ModuleScanView — idle Hero state (ModuleIdleHero), cross-referenced against results/scanning/SummaryHeader/ResultGroupCard/XActionBar",
+        "premiumScore": 7,
+        "summary": "扎实的一套设计语言：双层阴影、动态深浅色、AngularGradient 环、连续圆角，明显高于模板级别，深浅两色都成立。离顶级（Things 3 / Linear / CleanMyMac X）还差三步：一是「辉光」用力过猛——idle 的图标砖 xGlow(radius:30, 0.45) 叠上按钮自带 brand 光晕，暗色下两团大而糊的紫雾直接拉回「概念稿/糖果」观感，这是最伤格调的一处；二是字号阶梯在 11–16pt 段太挤（14.5/13/12/11 只差 1–1.5pt），信息层级不够脆；三是 idle 英雄区节奏是「一根 16pt 均匀间距」把 icon/标题/副标题/按钮平摊，缺少「标题咬副标题、再和按钮分组」的呼吸。另有中英混排（中文标题配英文 Start Scan 按钮）的一致性硬伤。以下按可直接落地的 token/结构改法给出。",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "ModuleIdleHero 图标砖 xGlow + XPrimaryButtonStyle 阴影（ScanViews.swift:215 的 .xGlow(colors.first, radius: 30)；Components.swift:124-125 shadow radius 11）",
+            "issue": "idle 屏两处大范围彩色辉光叠加：88pt 图标砖套 radius:30 / opacity 0.45 的 xGlow，正下方按钮又有 brand.opacity(0.22) radius:11 光晕。暗色实拍图里图标和按钮各拖一团直径超过自身的紫色雾，是整屏最像『AI 概念渲染 / 糖果塑料』、最不像 Things 3/Linear 的地方。顶级 app 的发光是『贴边一圈、几乎察觉不到』，不是『晕开半屏』。",
+            "fix": "1) 把 XShadow/xGlow 里 idle 图标的 glow 从 radius:30、内部 0.45 降到 radius:16、opacity 0.28（可给 xGlow 增开 opacity 参数，默认 0.45→0.30）。2) XPrimaryButtonStyle 的彩色投影 shadow(color: XColor.brand.opacity(0.22), radius:11) 收到 radius:8、opacity 0.16，并把 y 从 5 降到 4，让它更像接触阴影而非光环。3) idle 专用可再压：ModuleIdleHero 里给 XIconTile 只保留 XIconTile 自带的 shadow(radius:6,y:3)（Visuals.swift:149），去掉外层 .xGlow 整句，暗色下立刻从『概念稿』变『成品』。"
+          },
+          {
+            "severity": "P1",
+            "element": "ModuleIdleHero body 的统一 VStack(spacing: XSpacing.l=16)（ScanViews.swift:213-223）",
+            "issue": "icon→title→subtitle→button 全部 16pt 等距（按钮仅多 8pt top）。副标题『缓存 / 日志 / 开发者残余』离 27pt 粗标题 16pt，视觉上飘、不成组；按钮又和文字块贴得几乎一样近。缺『标题与副标题咬合成一个语义块、该块再与 CTA 拉开』的层级节奏，这是 idle 屏显松散的根因。",
+            "fix": "改成分组间距而非均匀：VStack(spacing: XSpacing.xl=24) 外层；把 title+subtitle 包一个 VStack(spacing: XSpacing.xs=4~6) 使其成组；icon 与该文字块之间用 XSpacing.l=16；文字块与按钮之间用 XSpacing.xl=24（删掉按钮上的 .padding(.top, XSpacing.s)，改由外层 spacing 统一控制）。即 icon —16— [title —5— subtitle] —24— button。"
+          },
+          {
+            "severity": "P1",
+            "element": "ModuleIdleHero 标题=中文、buttonTitle=英文『Start Scan』；同页 SummaryHeader/XActionBar/CompletionView 全中文（ScanViews.swift:427 传入 xLoc(\"开始扫描\") 却渲染出英文）",
+            "issue": "实拍图标题『系统垃圾』+ 副标题中文，主 CTA 却是英文 Start Scan。结果页、动作条、完成页均为中文。中英混排在同一视线动线内是顶级 app 绝不会有的一致性硬伤，直接掉档。",
+            "fix": "定位 xLoc(\"开始扫描\") 为何渲染成英文：多半是 Localization.swift 的 xLoc 命中了英文 .strings 或缺中文键回退到英文。修到中文环境下 CTA 显示『开始扫描』，与 ModuleScanView.swift:427 的意图一致；顺带核对 XActionBar 主按钮『清理 · 1.2 GB』这类拼接串在英文环境也不会中英混拼。"
+          },
+          {
+            "severity": "P2",
+            "element": "XFont 字号阶梯（Tokens.swift:114-127），11–16pt 段：title2=16 / headline=14.5 / body=13 / bodyEmphasis=13 / callout=12 / caption=11",
+            "issue": "正文段五个层级挤在 16→14.5→13→12→11，相邻差仅 1–1.5pt，肉眼几乎分不出 headline 与 body、callout 与 caption。ResultGroupCard 里 xHeadline(14.5) 标题 + caption(11) 描述 + xNumber(13) 大小三者对比不脆；SummaryHeader 的 caption(11) 说明与 largeTitle(27) 数字之间又是断崖。层级『不是靠字号拉开，是靠颜色勉强撑』。",
+            "fix": "把正文段改成更有节奏的模数（约 1.2 比例）：headline 15、body 13、callout 12→保留、caption 11→保留，但删掉几乎没用的 title2=16 与 headline=14.5 的并存——二选一。并给 largeTitle(27) 与 body(13) 之间补一个 20pt 的 subtitle 级（title=19 已有，idle 副标题可从 body 13 升到 callout 之上、或直接用 15pt headline 减重），让 idle 的『标题—副标题』落差从 27→13 收敛到 27→15。数字统一走 mono/monoLarge（已 monospacedDigit，✓保持）。"
+          },
+          {
+            "severity": "P2",
+            "element": "idle 副标题排印：Text(subtitle).font(XFont.body=13, regular)（ScanViews.swift:217）",
+            "issue": "『缓存 / 日志 / 开发者残余』用 13pt regular + textSecondary，字重字距都没处理，在 27pt 粗圆体标题下显得又小又灰、像占位说明而非精心排印。顶级 app 这类 hero 副标题会给到统一小字距 + 略提字重或全大写间隔感。",
+            "fix": "副标题升级为一个有性格的样式：font 提到 callout(12) 或 headline 减重、weight .medium、.tracking(0.3)，foregroundStyle 用 textSecondary 但可 .opacity 微调；或做成 xSectionLabel()（Tokens.swift:136 已有：10pt bold / tracking 1.0 / 大写）的中文变体做『标签感』。当前的 xLargeTitle 标题 .tracking(-0.4)（Tokens.swift:133）已 ✓，副标题也应显式给 tracking 而非留默认 0。"
+          },
+          {
+            "severity": "P2",
+            "element": "XPrimaryButtonStyle(large:true) 的 CTA 尺寸与字重（Components.swift:105-109，font=XFont.title 19pt，padding .xxl=32 / .l=16）",
+            "issue": "实拍图 idle CTA 相对整屏偏大偏胖：19pt 文字 + 32/16 内边距做成一颗很宽的胶囊，再叠前述光晕，重心过强，像 landing page 按钮而非 Mac app 工具按钮。Things 3/Linear 的主按钮更收敛克制。",
+            "fix": "large 态字号从 title(19) 降到 title2(16)，纵向 padding 从 XSpacing.l(16) 降到 14（可新增 token 或用 .m+2）；宽度靠内容自适应即可，不必额外拉宽。配合 P1 的光晕收敛，CTA 会从『促销大按钮』回到『精致工具按钮』。"
+          },
+          {
+            "severity": "P2",
+            "element": "SummaryHeader 与 XActionBar 的分隔/纵深（ScanViews.swift:177-201；Components.swift:188-201）",
+            "issue": "结果页顶部 SummaryHeader 直接坐在滚动列表上方，代码里没有任何底部 hairline 或材质分隔——滚动时卡片会与 header 数字粘连；而底部 XActionBar 有 .ultraThinMaterial + 顶部 hairline（✓做对了）。上下不对称：底栏有纵深、顶栏没有，视线动线在顶部缺一道『锚』。",
+            "fix": "给 SummaryHeader 补与 XActionBar 对称的处理：.background(.ultraThinMaterial) + 底部 overlay(Rectangle().fill(XColor.hairline).frame(height:1), alignment:.bottom)，或至少加一条 XColor.hairline 底边。这样顶/底两条 bar 成对，中间滚动区被清晰框住，信息密度立刻有秩序。"
+          },
+          {
+            "severity": "P3",
+            "element": "ResultGroupCard 行内元素间距与右侧信息簇（SharedViews.swift:127-173）",
+            "issue": "标题簇后紧跟 info.circle(13pt textTertiary) → 大小数字 xNumber(13) → chevron 圆钮，三者用默认 HStack 间距贴在一起，右侧信息簇拥挤且对齐轴不明确；大小数字是全行最该被扫到的量，却和 info 按钮、chevron 混在一堆。",
+            "fix": "在 group 大小 Text 前加 Spacer 已有（✓），但给『大小数字』单独留出对齐区：把 info.circle 移到标题右侧或用固定宽度列，让大小数字右对齐到卡片内缘固定 x；info 与 chevron 之间给 XSpacing.s。大小数字可升到 xHeadline(15) 或加 .monospacedDigit(已 mono ✓) 并右对齐固定列宽，使多张卡片的数字纵向成栅格。"
+          },
+          {
+            "severity": "P3",
+            "element": "XCard 顶部高光在深/浅色的表现（Components.swift:22-26，white.opacity(0.06) 线性高光）",
+            "issue": "卡片顶部固定叠 white.opacity(0.06) 高光，浅色模式（surface=#FFFFFF）下这层白对白几乎不可见、纯浪费；暗色下 0.06 也偏弱，边缘立体感不足。属于『两头都没吃到』的通用值。",
+            "fix": "把顶部高光做成随主题的动态量：浅色用极淡的顶部内阴影/描边增强代替白高光（如把 strokeBorder 从 border.opacity(0.6) 在浅色下提到 0.9 做清晰 1px 描边），暗色用 white.opacity(0.08~0.10) 的顶部高光。可用 XColor.dynamic 包一个 hairlineHighlight token，避免硬编码 0.06 在两个主题下都平庸。"
+          }
+        ]
+      },
+      {
+        "surface": "spaceLens (SunburstView 放射环形图 + 右侧图例)",
+        "premiumScore": 6.5,
+        "summary": "扎实的原创信息图，色相分层清晰、浅色下像克制的珠宝色花瓣，中心数字有分量。离顶级还差三步：(1) 深色下环缝是死黑裂纹而非分隔——最扎眼的败笔，浅/深两套观感不一致；(2) 右侧图例是页面最弱环节——数字字号/字重比标题还小、无 tabular 对齐、占比条细到 4pt 几乎看不见、且面板下方留出大片空洞；(3) 视线动线上\"总量\"被展示了三次（中心大数字 + 图例标题右侧 + 隐含），信息层级发散。以下按可落地程度排序，全部对应到具体 token 与行号。",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "环扇段分隔（SunburstView.swift:92,94,97-98）",
+            "issue": "环间缝隙靠 outer 减 1.5pt 露出底色实现。浅色下露出的是近白 canvasTop(0xF6F7FC)，读作干净的花瓣分隔；深色下露出的是 canvasBottom/canvasTop(0x10121E)，同色相邻扇段之间变成一条条死黑裂纹（见深色图 Library 内环的黑色径向条），像图形碎裂而非分层。默认 stroke 是 Color.white.opacity(0.0) 完全不参与。这是深浅两套观感割裂、深色掉档的首要原因。",
+            "fix": "用描边而非露底来做分隔，且随主题走：把 outer 的 -1.5 减小到 -0.5（几乎贴合），再对每个 RingSector 常驻一圈 1pt 的分隔描边 .stroke(XColor.canvasTop.opacity(0.9), lineWidth: 1)（浅色近白、深色近墨，均与扇段自身拉开而非露出突兀底色）。hover 高亮描边保留现有 white.opacity(0.9)。这样深色下缝隙由「墨色描边」而非「纯黑空隙」构成，与浅色的白描边对称。"
+          },
+          {
+            "severity": "P1",
+            "element": "图例数字字号与对齐（SunburstView.swift:171 vs 136）",
+            "issue": "图例每行的大小用 XFont.caption（11/regular）+ monospacedDigit，而顶部总量用 XFont.mono（13/semibold rounded）。结果是「每一行的实际数值」比「一个总量标题」还要小、还要轻，主视觉里最该被扫读的 8 个数字反而是最弱的排版层级；且 caption 不是 rounded mono 面，与中心数字、总量数字三种数字风格并存。此外右列数字虽 monospacedDigit 但未显式 tabular——GB/MB 单位混排时右缘对不齐（见 587.2 MB 与上方 GB 行右缘）。",
+            "fix": "行内数值改用 XFont.mono（13/semibold rounded，与顶部总量同族），并 .foregroundStyle(XColor.textPrimary) 提到与名称同权；名称从 bodyEmphasis 保持不变即可形成「名称 medium + 数值 semibold-mono」的清晰主次。给数值列 .font(XFont.mono) 后再加 .monospacedDigit() 已够，但需右对齐容器固定宽度：把数值包进 .frame(minWidth: 68, alignment: .trailing) 让 GB/MB 行右缘成栅格。"
+          },
+          {
+            "severity": "P2",
+            "element": "占比条视觉存在感（SunburstView.swift:174-180）",
+            "issue": "每行占比条 height 4pt、底轨 surfaceAlt、填充为该行色。4pt 在 Retina 上是一条发丝，Library 的满条尚可读，但 Documents 以下已难分辨长度差，Desktop(587MB) 的条几乎为零宽（代码有 max(3,…) 兜底但仍是 3pt 点状）。这条 mini-bar 本该是图例的第二编码维度（长度=占比），现在几乎不承载信息，右侧面板因此显得「有色块列表但没有数据可视化密度」。",
+            "fix": "条高 4→6pt，底轨改用 XColor.hairline（比 surfaceAlt 更含蓄不抢戏），填充色加 0.9 不透明保持克制；给填充 Capsule 加 .frame(minWidth: 6) 让最小项也有可辨认的圆头起点。或更高级：把百分比数值（如 51%）以 XFont.caption + textTertiary 放在条右端，让长度与数字互为印证——对标 CleanMyMac X 的空间列表。"
+          },
+          {
+            "severity": "P2",
+            "element": "右侧图例面板的空洞（SunburstView.swift:76-79,127-153）",
+            "issue": "legend .frame(width:320) 且 alignment:.top，8 个项目排完后面板下半部（约占面板高度 55%）完全空白（见两图右下大片留白）。同时 legend 内 Spacer(minLength:0) 把内容顶到上方，视觉重心极度偏上，与左侧居中的大环形在垂直方向不平衡，页面右侧读作「未完成」。",
+            "fix": "两选一：(A) 在图例底部空白处补一块信息卡——用 XCard 承载「最大文件」或「本次扫描：X 个文件夹 / 用时」这类 iStat 式脚注，把空洞变成有意义的信息层；(B) 若坚持极简，则去掉撑满：legend 外层 .frame(width:320) 后用 .fixedSize(horizontal:false, vertical:true) 让面板高度包裹内容，再与环形一起 .frame(maxHeight:.infinity) 垂直居中对齐（HStack alignment 从 .center 保留），让左右两块视觉重心水平。"
+          },
+          {
+            "severity": "P2",
+            "element": "总量信息重复三处（SunburstView.swift:114,118,133,136）",
+            "issue": "同一个「140.87 GB / yaokai」在中心大数字(114) + 中心副标题(118) 与右侧图例标题(133) + 右侧总量(136) 之间完整重复了两遍（名称各两次、总量各两次）。中心的 yaokai 副标题与图例标题 node.name 逐字相同，属于冗余；视线在左右两个「总量」间来回，没有单一焦点。",
+            "fix": "让中心与图例分工：中心保留大数字为唯一「总量焦点」，其副标题(118) 改为动态上下文——非 hover 时显示 xLocF(\"%d 项\", node.children.count) 或路径尾段，hover 时才显示 shown.name（现在已是 shown.name，但顶层与图例标题撞车）。图例标题行的 node.size.formattedBytes(136) 可弱化为「占全盘 x%」或直接删除，把「绝对总量」这一角色独占给中心数字，消除左右竞争。"
+          },
+          {
+            "severity": "P3",
+            "element": "碎片扇段的视觉噪声（SunburstView.swift:206 + 深色图右下）",
+            "issue": "buildArcs 跳过 <0.5° 的碎片，但 0.5°~2° 的窄扇段仍大量保留（见两图 Library 外环右下密集的细窄条与 Music/Documents 外圈的发丝条）。这些窄条既读不出名字也点不准，在外环形成一圈「毛刺」，削弱了内层大扇段的高级感——顶级信息图（DaisyDisk/GrandPerspective）会把这些聚成一个「其他」灰段。",
+            "fix": "把阈值从 0.5° 提到约 1.5°（childSpan < 1.5 continue），并在每个父节点的剩余角度里累积被跳过的部分，补一个中性灰扇段（fill XColor.textTertiary.opacity(0.25)）代表「其他小项」，help 显示合计大小。既去毛刺又不丢总量守恒。"
+          },
+          {
+            "severity": "P3",
+            "element": "外环缺少与画布的分界（SunburstView.swift:85-109）",
+            "issue": "最外圈扇段直接压在 canvas 渐变上，没有任何外缘描边或投影。浅色下 mint/teal 外环与浅底对比尚可，但深色下深色扇段外缘与 0x10121E 底几乎糊在一起（见深色图左上 Documents 青绿外环边缘发闷），整个环形缺一层「浮在画布上」的纵深，读作平贴。",
+            "fix": "给整个 ring 的 ZStack 加一层极淡的落地投影 .xSoftShadow()（已有 token，radius 8/y3/opacity .08），让环形整体与画布分层；或仅对最外层 depth 扇段追加一圈 0.5pt 的 XColor.border 描边。深色下这一步能立刻把环形「托」起来，纵深接近 iStat 的仪表盘质感。"
+          },
+          {
+            "severity": "P3",
+            "element": "图例色块与文件夹图标的层级冗余（SunburstView.swift:163,166-167）",
+            "issue": "每行左侧已有 11×11 的实色色块（对应环色相），紧接着又放一个 9pt 的灰色 folder.fill 图标，两个「前导标记」并列（见图例每行 ● 📁 名称）。灰色小文件夹图标信息量低、又与彩色色块争夺行首视觉，令行首略显拥挤零碎，不如 Things 3 / Linear 图例的干净。",
+            "fix": "二选一去冗余：(A) 删除 folder.fill 图标（166-167），仅保留彩色色块作行首标记，文件/文件夹的区分交给右侧或 hover；(B) 若需区分文件与文件夹，则把色块本身做成载体——文件夹用实色圆角块、文件用同色描边空心块，用一个标记同时编码「色相 + 类型」，行首只留一个元素。"
+          }
+        ]
+      },
+      {
+        "surface": "Xico — Duplicates module, idle/empty state (light + dark)",
+        "premiumScore": 6.5,
+        "summary": "The idle hero has a genuinely nice bones: cohesive aurora gradient, rounded hero title, double-layer shadow discipline, and clean dark-mode canvas. But three concrete things hold it back from a paid-tier feel. (1) The single most damaging flaw is a mixed-language screen — English title/subtitle sit above a hardcoded Chinese scan button (`\"扫描「Downloads」\"`), which instantly reads as unfinished. (2) The composition drifts: the hero is centered in the full content height but the folder bar steals the top, so the block sits low with a large dead void above and cramped bottom — it lacks the deliberate optical centering of Things 3 / Craft empty states. (3) Surfaces are underbuilt for the top tier: the folder bar is a borderless ultraThinMaterial strip with no hairline separator (floats in light mode), and it mixes a stock AppKit `.bordered` button in among an otherwise fully-custom capsule language. The typography ladder also has a hole (27pt → 13pt with nothing between) and the subtitle color is a touch weak. None of these are structural rewrites; each maps to a specific token or a few lines in DuplicatesView.swift / ScanViews.swift.",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "Scan button label — DuplicatesView.swift:47",
+            "issue": "The whole screen is English (title \"Duplicates\", English subtitle) but the primary CTA renders \"扫描「Downloads」\" in Chinese. The string is hardcoded — `buttonTitle: \"扫描「\\(rootLabel)」\"` — bypassing xLoc, so it never localizes. A mixed-language hero is the fastest possible signal of an unfinished app and single-handedly caps the premium read. This is the #1 fix.",
+            "fix": "Route it through localization with an interpolation key, e.g. `buttonTitle: xLocF(\"扫描「%@」\", rootLabel)` and add the EN entry `Scan \"%@\"` (mirror how xLocF is used at ScanViews.swift:281). Same applies to the title/subtitle which already pass through xLoc but resolve to English in the shot — make sure the whole hero resolves to ONE language per locale."
+          },
+          {
+            "severity": "P1",
+            "element": "Hero vertical composition — ModuleIdleHero, ScanViews.swift:224 + DuplicatesView.swift:40",
+            "issue": "ModuleIdleHero centers via `.frame(maxWidth:.infinity, maxHeight:.infinity)`, but it lives inside a VStack under the folderBar. The folder bar consumes ~54pt of the top, so the visual block is centered in the REMAINING space and ends up sitting low: a large empty void above the icon, tight margin below the button. Top-tier empty states (Things 3, Craft) optically center slightly ABOVE geometric center so the eye lands right.",
+            "fix": "Nudge the hero group up: wrap the VStack content so it centers on the full window, or add `.offset(y: -XSpacing.xxl)` / bias with a top+bottom Spacer pair at ~0.85:1 ratio. Simplest: in ModuleIdleHero give the outer VStack `.padding(.bottom, XSpacing.xxxl)` so the centroid rises. Verify the icon tile lands near 42–45% of window height, not 50% of the sub-bar region."
+          },
+          {
+            "severity": "P2",
+            "element": "Folder bar surface & divider — DuplicatesView.swift:53-65",
+            "issue": "The folder bar is `.ultraThinMaterial` with NO bottom hairline. In light mode it's nearly the same value as the canvas, so it floats with no defined edge — the app looks like it forgot a toolbar separator. Real Mac apps (Linear, iStat) always terminate a top bar with a 1px hairline for crisp depth.",
+            "fix": "Add `.overlay(alignment:.bottom){ Rectangle().fill(XColor.hairline).frame(height:1) }` to the folderBar. Keep the material but let the hairline do the separation. Consider `XColor.border` in dark and `XColor.hairline` in light — both tokens already exist (Tokens.swift:43-44)."
+          },
+          {
+            "severity": "P2",
+            "element": "Choose Folder button — DuplicatesView.swift:60",
+            "issue": "`.buttonStyle(.bordered)` is stock AppKit — its gray fill, corner radius, and font don't match the custom capsule system (XPrimaryButtonStyle/XSecondaryButtonStyle). It's the only non-designed control on screen and reads as a placeholder next to the polished CTA.",
+            "fix": "Swap to `.buttonStyle(XSecondaryButtonStyle())` (Components.swift:130) — it already gives a surfaceAlt capsule with XColor.border stroke that matches the language. If it feels too heavy for a toolbar, make a compact variant (reduce vertical padding to XSpacing.s, font XFont.caption) but keep the capsule + border tokens."
+          },
+          {
+            "severity": "P2",
+            "element": "Type ladder gap — ModuleIdleHero title vs subtitle, ScanViews.swift:216-217",
+            "issue": "Title uses XFont.largeTitle (27pt bold) and subtitle jumps straight to XFont.body (13pt regular). That's a 2x drop with no intermediate step, so the block reads as \"big header + fine print\" rather than a graded hierarchy. Craft/Linear heroes keep a ~1.4–1.5 ratio between adjacent levels.",
+            "fix": "Either bump the subtitle to XFont.callout (12pt) is wrong direction — instead insert breathing room and lift subtitle weight: keep 13pt but use XFont.bodyEmphasis-adjacent tracking, OR reduce hero title to a tighter pairing. Cleanest: set subtitle to 13.5–14pt via a new XFont.subheadline token and keep lineSpacing(2). Also widen the maxWidth from 460 to ~420 so the subtitle breaks into 3 balanced lines instead of the current ragged wrap."
+          },
+          {
+            "severity": "P3",
+            "element": "Subtitle color contrast — XColor.textSecondary, Tokens.swift:41",
+            "issue": "Subtitle uses textSecondary (light 0x666C80). Against the light canvas (0xF6F7FC) it's a mid-gray that reads slightly washed for body copy the user is meant to actually read (it explains the whole scan heuristic). Dark mode (0xA4ABC2) is fine.",
+            "fix": "For hero explanatory copy specifically, use a step darker in light mode — either textPrimary at reduced opacity `.foregroundStyle(XColor.textPrimary.opacity(0.72))` or introduce a `textBody` token ~0x50566A for light. Keep textSecondary for genuinely secondary chrome (the folderBar label at line 56 is correctly secondary)."
+          },
+          {
+            "severity": "P3",
+            "element": "Icon tile glow intensity — ModuleIdleHero.xGlow, ScanViews.swift:215 + XIconTile shadow, Visuals.swift:149",
+            "issue": "The hero tile carries TWO glows: xGlow at radius 30 (0.45 opacity) plus the tile's own colored shadow (0.35 opacity, radius 6). The stacked teal halo is visible in both shots and edges toward the \"candy/plastic\" look the design comments elsewhere explicitly try to avoid (Tokens.swift:19, Components.swift:115).",
+            "fix": "Dial the hero glow to radius 22 and drop opacity: pass a softer value, e.g. `.xGlow(colors.first ?? XColor.brand, radius: 20)` and reduce xGlow's internal 0.45 to ~0.30 (Tokens.swift:159). Let the tile's built-in shadow carry contact depth; the ambient glow should be a whisper, not a ring. This aligns the hero with the restraint already applied to the CTA."
+          },
+          {
+            "severity": "P3",
+            "element": "Folder path density — DuplicatesView.swift:56-58",
+            "issue": "\"Scan location: /Users/yaokai/Downloads\" — label and path are both caption (11pt), same weight family, so the path (the actual data) doesn't stand out from the label (chrome). The full absolute path is also more than needed; it competes with the hero for attention up top.",
+            "fix": "Differentiate: keep the label at XFont.caption/textSecondary but render the path with XFont.captionEmphasis (11pt semibold, Tokens.swift:124) and textPrimary — the value should out-weight its label. Optionally show only `~/Downloads` (abbreviate home) via `(box.url.path as NSString).abbreviatingWithTildeInPath` to cut visual length while keeping full path in a tooltip."
+          }
+        ]
+      },
+      {
+        "surface": "Xico — Uninstaller (卸载器)",
+        "premiumScore": 6.5,
+        "summary": "卸载器的骨架是对的（左列表 + 右详情 + 底部 XActionBar 的经典 master–detail），空态排版克制，与其它页共用同一套 token。但离 Craft/CleanMyMac X 那种「一眼高级」还差三步：(1) 侧栏头部与列表之间缺少统一栅格——header 用 XSpacing.xl(24) 水平内边距，而列表行/搜索框各自用 XSpacing.s/m，边缘不对齐，视觉上「歪」；(2) 关键动线（选中态、体积数字、安全徽标）层级不够，选中行用满色 brandGradient 砖块+纯白字太重、像被「刷蓝」而非高级高亮；(3) 空态右面板是纯渐变画布、没有任何卡片或分隔承托，270pt 宽的副标题在超宽窗里孤零零，信息密度过低显空洞。字体阶梯本身设计良好（19/16/14.5/13/11 有节奏、数字全 monospaced），主要问题在应用层的间距一致性、选中态材质、以及右面板的纵深。注：实拍图头部与搜索框上的黄条与禁止图标是截图渲染 artifact，非真实 UI，未计入评分。",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "侧栏栅格对齐 — appList 中 XHeaderBar / searchField / AppRow 的水平边距三者不一致",
+            "issue": "XHeaderBar 固定用 .padding(.horizontal, XSpacing.xl)=24（Visuals.swift:202），searchField 外层用 .padding(.horizontal, XSpacing.m)=12（UninstallerView.swift:148），列表 ScrollView 用 .padding(.horizontal, XSpacing.s)=8（:127）加行内 XSpacing.s=8。于是标题左缘=24，搜索胶囊左缘=12，应用行左缘≈16——三条左基线各不相同，在 330pt 窄栏里非常显眼，是「业余感」最大来源。顶级 app（Things/Linear 侧栏）所有元素共享一条左安全边距。",
+            "fix": "统一侧栏水平安全边距为一个常量。方案：把 XHeaderBar 内部 .horizontal 改成可传入（或在卸载器里不用 XHeaderBar，手写与列表同源的 padding）。最简做法——searchField 外层 padding 从 XSpacing.m 改为 XSpacing.l(16)，列表 ScrollView 的 .padding(.horizontal) 从 XSpacing.s 改为 XSpacing.m(12) 并把 AppRow 内层 .horizontal 从 XSpacing.s 减到 XSpacing.xs(4)，使行文字左缘=16；同时给 XHeaderBar 增加 horizontalPadding 参数并在此传 16。目标：标题/搜索/行三者左缘全部=16。"
+          },
+          {
+            "severity": "P1",
+            "element": "AppRow 选中态 — background 用 XColor.brandGradient 满色填充 + 纯白文字（UninstallerView.swift:223, 213-215）",
+            "issue": "选中行整块刷成三段彩虹渐变、文字转纯白，视觉重量过大，像 iOS 早期的「高亮蓝条」而非 Mac 原生精致选中。在一个以「删除」为语义的破坏性面板里，满屏彩色选中砖也稀释了品牌色应有的『点睛』属性；且渐变色块紧贴上下行只有 2pt 间距，选中时几乎顶到相邻行。对标 Finder/Things，选中态应是低饱和填充+主色文字，而非反白。",
+            "fix": "把选中填充从 XColor.brandGradient 改为 XColor.brand.opacity(0.12)（浅色）/ 0.18（深色），文字保持 XColor.textPrimary、体积用 XColor.brand，并在左侧加一条 3pt 宽、XRadius.tile 的 XColor.brand accent 竖条作为选中指示。若要保留彩色，则改为极淡的 brandGradient.opacity(0.14) 描边+填充而非满色。同时把 LazyVStack spacing 从 2 提到 XSpacing.xs(4)，让选中砖块四周有呼吸。"
+          },
+          {
+            "severity": "P1",
+            "element": "空态右面板缺纵深 — detail 的 else 分支直接把 XEmptyState 放在裸画布上（UninstallerView.swift:194-197）",
+            "issue": "右侧详情区在未选择时只有一个居中的 XEmptyState（96pt 圆 + 标题 + 420pt 副标题），背景是 canvasTop→canvasBottom 渐变，没有任何卡片、内描边或内容分区。在宽窗（截图里右面板≈1400pt 宽）里，一小团居中文字漂浮在大片空白上，密度过低、显空洞，也和左栏的 .ultraThinMaterial 材质形成断层——左边有材质有 hairline，右边什么都没有。CleanMyMac X 的空态会用一张承托卡或分区背景给出『这里将出现内容』的骨架预期。",
+            "fix": "两选一：(a) 把 XEmptyState 包进一张 XCard(elevated:false) 或加 .frame(maxWidth: 520) 的半透明面板，给它 XColor.surface.opacity(0.5) 背景 + XColor.border.opacity(0.6) 内描边 + XRadius.card 圆角，让空态『落地』；(b) 更好——空态里预置一张灰态骨架卡（应用图标占位方块 + 3 行占位文件行），暗示选择后会出现的关联文件列表结构。副标题 frame 从 420 收到 340 并让整组垂直略微上移（.offset(y: -40)）避开视觉正中偏下。"
+          },
+          {
+            "severity": "P2",
+            "element": "详情头图标 54pt 无容器，与 XIconTile 体系脱节（UninstallerView.swift:156-157）",
+            "issue": "选中应用后，详情头用 NSWorkspace 原始应用图标 54×54 裸放，没有圆角容器/内描边/阴影。这与全 app 统一的 XIconTile（圆角 size*0.3、渐变、投影）语言不一致；macOS 应用图标本身自带的方形留白在这里会显得『贴上去的』，尤其深色模式下图标边缘与深背景对比生硬。",
+            "fix": "给应用图标加 .clipShape(RoundedRectangle(cornerRadius: 54*0.2237, style: .continuous))（macOS 图标 squircle 比例约 0.2237）+ .overlay(描边 XColor.border.opacity(0.5)) + .xSoftShadow()。或统一降到 48pt 与 XIconTile 的常见尺寸阶梯（30/36/46）呼应。头部下方建议加一条 Divider() / XColor.hairline 把『应用信息区』和『关联文件列表』在视觉上分层。"
+          },
+          {
+            "severity": "P2",
+            "element": "详情区缺少总量/汇总的视觉锚点，动线在 header 与底部 XActionBar 之间断裂",
+            "issue": "详情从上到下是：应用头 → 一行灰色 caption『将一并移入废纸篓』（:166）→ 文件列表 → 底部 XActionBar。用户最关心的『这个 app 一共占多大 / 将释放多大』只在底部按钮里以 selectedSize 出现，头部没有任何醒目的体积数字。视线从 54pt 图标直接掉到小灰字，再到密集列表，缺一个中量级的『汇总』层级承接，信息节奏是『大—很小—密』，不顺。",
+            "fix": "在应用头右侧（Spacer 之后）放一个右对齐的总量数字：Text(app.size.formattedBytes).font(XFont.monoLarge)（19pt mono）+ 下方 caption『可清理关联文件』。这样头部形成『图标 | 名称/bundleID | 大数字』的三段式，与仪表盘 XMetricCard 的语言一致，也给了破坏性操作一个明确的『代价/收益』锚点。"
+          },
+          {
+            "severity": "P2",
+            "element": "搜索框描边/填充在深色下偏弱，与列表选中砖对比不足（UninstallerView.swift:146-147）",
+            "issue": "搜索胶囊用 XColor.surfaceAlt.opacity(0.7) 填充 + XColor.border.opacity(0.6) 描边，叠在 .ultraThinMaterial 侧栏上。深色模式 surfaceAlt=0x232739、border=0x2A2F44，opacity 再打折后描边几乎与材质背景糊在一起，胶囊边界不清晰；且 magnifyingglass 用 textTertiary（深色 0x666D84）偏灰，识别度低。对标 Linear 的搜索框有明确 1px 边界与足够对比的占位图标。",
+            "fix": "深色下把描边提到 XColor.border（去掉 .opacity(0.6)）或改用 XColor.hairline 反其道加内高光；填充 opacity 从 0.7 提到 0.9。放大镜图标从 textTertiary 提到 textSecondary。可选：聚焦态给胶囊加 .overlay(Capsule().strokeBorder(XColor.brand.opacity(0.5), lineWidth: 1)) 的 focus ring，与全 app 的品牌色呼应。"
+          },
+          {
+            "severity": "P3",
+            "element": "列表行内容间距 spacing:2 过紧，密度偏『名单』而非『可点卡片』（UninstallerView.swift:122, 219-220）",
+            "issue": "LazyVStack(spacing: 2) 且行 .padding(.vertical, 6)，28pt 图标 + 两行文字，行高约 40pt、行距仅 2pt。对一个『点选目标』的列表偏密，hover/选中的圆角砖块之间几乎无缝，呼吸感不足；副文字（体积/计算中…）用 XFont.caption(11) 也偏小。",
+            "fix": "行 .padding(.vertical) 从 6 提到 XSpacing.s(8)，LazyVStack spacing 从 2 提到 XSpacing.xs(4)。体积副文字保留 caption 但改用 XFont.mono 的 11pt 变体使数字对齐（或至少 .monospacedDigit()），让『2.3 GB / 156 MB』右侧数字位对齐更整齐。"
+          },
+          {
+            "severity": "P3",
+            "element": "底部 XActionBar 破坏性操作缺色彩语义（UninstallerView.swift:180-188）",
+            "issue": "卸载是破坏性操作，但底部主按钮用通用 XPrimaryButtonStyle（品牌彩虹渐变），与『清理/扫描』等非破坏性主操作视觉完全相同，用户无法从按钮颜色区分『这一步会删东西』。confirmationDialog 里 role:.destructive 有红色语义，但主界面按钮没有。",
+            "fix": "为破坏性主操作加一个 XDangerButtonStyle 变体：背景用 LinearGradient([XColor.danger, XColor.accentPink])，或至少在按钮标题前加 trash SFSymbol。保守方案——保留品牌渐变但按钮左侧加 Image(systemName:\"trash\") 图标，并把 XActionBar 顶部 hairline 在此页换成 XColor.danger.opacity(0.15) 的极淡分隔，暗示下方是危险区。"
+          }
+        ]
+      },
+      {
+        "surface": "Optimization (运行中的应用 / 启动项)",
+        "premiumScore": 3,
+        "summary": "The two captures show the Optimization page as an essentially empty shell: only the shared XHeaderBar renders, and the segmented control in the trailing slot has collapsed into a solid yellow bar with a red circle-slash glyph — AppKit's missing-image / broken-render placeholder. No cards, no login items, no running apps appear, even though a live Mac always has running apps to list. So the page a reviewer actually sees is a title, a one-line subtitle, and a broken toggle floating in a vast empty gradient. Against Craft / Things 3 / Linear / CleanMyMac X, three things separate this from top-tier: (1) it is visually broken and unfinished, not merely under-polished; (2) even at its intended full state, the row design (30px icon + name + bundleID/status + trailing control inside a full XCard each) has no grouping, no section headers, no counts, and no empty-state art — it is a flat list of heavy cards with no hierarchy or rhythm; (3) the header type ramp is shared and consistent with sibling pages (good), but the body contributes nothing to the visual language. The design tokens themselves (XColor/XSpacing/XFont/XRadius, monospaced numerics, aurora gradient, restrained semantic colors) are genuinely premium-grade; the problem is entirely in how this screen assembles them. Score is low because the primary artifact under review is non-functional on screen; the underlying system would score ~7 if the page rendered and were restructured.",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "Segmented Picker in XHeaderBar trailing slot (OptimizationView.swift:18-22)",
+            "issue": "The '运行中的应用 / 启动项' segmented control renders as a solid warning-yellow bar with a red circle-slash (nosign) glyph — AppKit's broken-image / missing-glyph fallback. The segment titles are not drawn at all. Root cause is the empty Picker title Text(\"\") combined with .labelsHidden() plus segment content that resolves to a missing symbol at capture time; the control is the ONLY interactive affordance on the page and it looks broken. This alone reads as an unshipped build.",
+            "fix": "Replace the empty-label Picker with an explicit labeled segmented control and drop .labelsHidden(): Picker(selection:$tab){ Text(xLoc(\"运行中的应用\")).tag(0); Text(xLoc(\"启动项\")).tag(1) } label:{ EmptyView() }.pickerStyle(.segmented).frame(width:260). Verify both xcstrings keys '运行中的应用' and '启动项' exist in DesignSystem/Localizable.xcstrings (missing keys fall back to the raw Chinese, which is fine, but a nil/failed lookup can yield an empty segment that AppKit renders as nosign). If the yellow tint persists, it is inheriting XColor.warning from an accent/tint modifier up the tree — force .tint(XColor.brand) on the Picker."
+          },
+          {
+            "severity": "P1",
+            "element": "Content region — both tabs render empty (runningSection / startupSection, lines 40-100)",
+            "issue": "On a live Mac the '运行中的应用' tab can never be legitimately empty, yet the capture shows zero cards. The whole LazyVStack body failed to populate, so reload() either returned nothing or the section never laid out. A premium cleaner's flagship promise ('Manage running apps') showing a blank canvas is the single biggest gap from CleanMyMac X.",
+            "fix": "Confirm env.optimization.runningApps() returns non-empty and that reload() runs onAppear (it does at line 31) — the blank capture suggests the data source is empty in this build/sandbox. Regardless of data, ship a real empty state instead of the current bare centered Text at line 42/66: a centered VStack(spacing: XSpacing.m) with a 44px XIconTile (systemImage 'bolt.slash' for agents, 'macwindow' for apps, colors: [XColor.textTertiary, XColor.textTertiary]), a Text in XFont.headline textPrimary, and the current explanatory line in XFont.callout textSecondary, wrapped so it never looks like a load failure."
+          },
+          {
+            "severity": "P2",
+            "element": "List structure — flat stack of full-width XCards (runningSection/startupSection ForEach)",
+            "issue": "Every row is its own elevated XCard (radius 18, xCardShadow radius 18/y8) at XSpacing.s (8px) gaps. A list of 15-30 running apps becomes 15-30 shadowed islands — heavy, no grouping, no scannable rhythm. Things 3 / Linear render list rows as hairline-separated rows inside ONE container, reserving card elevation for distinct objects. This is the top structural reason the page won't read as top-tier even when populated.",
+            "fix": "Wrap each section's ForEach in a single XCard(padding: 0) and render rows as plain HStacks with .padding(.horizontal, XSpacing.m).padding(.vertical, XSpacing.s+2), separated by Divider().overlay(XColor.hairline) inset to the text baseline (leading padding ~54 so the divider starts after the icon). Drop the per-row elevation entirely. Reduce inter-row spacing to 0 and let the hairlines carry separation. Keep the outer card's xCardShadow for one clean elevation layer."
+          },
+          {
+            "severity": "P2",
+            "element": "Missing list header / count row above the ForEach (both sections)",
+            "issue": "There is no count or section label between the page header and the first row, so the eye drops straight from the 19pt title into content with no intermediate tier. Sibling pages set the pattern (UninstallerView passes count into the subtitle; AppUpdaterView too), but Optimization hardcodes a static subtitle and never surfaces '23 running apps' / '8 launch agents'. The type ramp has a hole between XFont.title (header) and XFont.bodyEmphasis (row name).",
+            "fix": "Add a row above the LazyVStack: HStack { Text(xLocF(\"%d 个运行中的应用\", runningApps.count)).xSectionLabel().foregroundStyle(XColor.textSecondary); Spacer() }.padding(.horizontal, XSpacing.xl).padding(.top, XSpacing.s). xSectionLabel() already exists (10pt bold, tracking 1.0, uppercase) and is the correct token for this tier. Alternatively feed the live count into the XHeaderBar subtitle the way UninstallerView does for full consistency."
+          },
+          {
+            "severity": "P2",
+            "element": "Trailing controls in rows — mixed Button(.bordered) and Toggle(.switch) (lines 57, 84, 86-95)",
+            "issue": "Running-apps rows use a bordered '退出' button; startup rows mix a bordered '显示' button, a '需管理员' XBadge, AND a raw .switch Toggle. The stock .bordered button style and stock switch are the only two elements on the page NOT drawn from the design system, so they look generic against the custom XCard/XIconTile/XBadge language. Destructive '退出' in neutral gray also under-signals its consequence.",
+            "fix": "Route '退出' through a small destructive style — either .tint(XColor.danger) on .bordered, or a dedicated XSecondaryButtonStyle sized to XFont.caption + XSpacing.s padding so it matches XBadge's scale. Keep the .switch toggle but constrain its scale with .scaleEffect(0.85) and right-align a fixed-width trailing zone (frame(width: 72, alignment: .trailing)) so buttons, badges, and switches all terminate on one vertical grid line across every row — right now they float to different x positions depending on control width."
+          },
+          {
+            "severity": "P3",
+            "element": "Row icon sizing — 30px app icons vs 30px XIconTile (lines 50, 75)",
+            "issue": "Running-app rows use a raw 30x30 NSWorkspace icon with no container, while startup rows use a 30px XIconTile (rounded-rect gradient chip). Two different icon idioms at the same 30px in the same list family break the 'one icon system' consistency that Linear/CleanMyMac maintain. The bare app icon also has no corner treatment, so it collides visually with the gradient tiles on the adjacent tab.",
+            "fix": "Standardize the leading icon slot to 32px and give the app icon the same container: wrap it in RoundedRectangle(cornerRadius: 32*0.3, style:.continuous) with a 1px XColor.border.opacity(0.5) stroke and .frame(width:32,height:32), matching XIconTile's corner ratio (0.3) and the icon-tile shadow (color .black.opacity(0.12), radius 4, y2). That way both tabs share one 32px chip grid."
+          },
+          {
+            "severity": "P3",
+            "element": "bundleID / status subtext uses XFont.caption non-mono (lines 54, 78)",
+            "issue": "bundleID strings (com.apple.Safari) are quasi-technical identifiers rendered in the proportional XFont.caption; monospacing would align dots and read as 'system data' the way iStat/Activity Monitor present identifiers. Minor, but it is exactly the kind of numeric/identifier-monospacing detail the brief flags and that the design system already supports.",
+            "fix": "For the bundleID line only, use .font(.system(size: 11, design: .monospaced)) (or add an XFont.captionMono token = Font.system(size: 11, weight: .regular, design: .monospaced)). Keep the '用户级 · 已启用' status line in proportional XFont.caption since it is prose, not an identifier."
+          }
+        ]
+      },
+      {
+        "surface": "Maintenance (维护) — Xico",
+        "premiumScore": 6,
+        "summary": "Solid, safe, and consistent with the app's token system, but it reads as a flat wall of identical elevated cards rather than a crafted list. The gap to Things 3 / CleanMyMac X tier is four things: (1) no card grouping — 8 full-width shadowed XCards stacked with equal spacing gives no scannable structure; (2) stock .bordered buttons instead of the app's own XPrimary/XSecondary styles, breaking design-language consistency; (3) a full column of saturated orange->pink icon tiles on every root task violates \"color as accent, not fill\"; (4) weak section-header hierarchy (10pt tertiary, 8pt top gap) fails to separate the two task groups. Note: both captured screenshots show only the header — task content did not paint in the shot, so visual verification of the cards is from source, not pixels. Fixes below are all token/structure-level and directly landable in MaintenanceView.swift. Every finding cites exact line numbers and token names.",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "Card list structure — MaintenanceView.swift:21-28 (LazyVStack spacing: XSpacing.m) + userCard/rootCard using XCard (elevated:true default)",
+            "issue": "Every task is a full-width elevated XCard (Components.swift:9 defaults elevated:true -> xCardShadow radius 18/y 8) stacked in a flat LazyVStack with equal 12pt gaps. ~8 identical shadow boxes in a column = a heavy, undifferentiated wall with no scannable grouping. Top Mac apps (Things 3, macOS System Settings, Linear) group related rows into a SINGLE inset container with hairline dividers, not N separate floating cards. The repeated drop-shadows also read as 'plastic stickers' at this density.",
+            "fix": "Group each section's tasks into one container instead of per-row cards. Concretely: wrap the ForEach rows of each section in a single XCard(padding: 0) and render each task as a plain HStack row separated by Divider().overlay(XColor.hairline) with .padding(.horizontal, XSpacing.l).padding(.vertical, XSpacing.m). Drop the per-row XCard entirely (or pass elevated:false). Keep exactly one card elevation per group. This converts 8 shadows into 2 grouped surfaces — the single biggest premium-tier lift here."
+          },
+          {
+            "severity": "P1",
+            "element": "Action buttons — MaintenanceView.swift:106 (.buttonStyle(.bordered)), :127 (.buttonStyle(.bordered)), :63 & :65 (.borderedProminent)",
+            "issue": "The row action buttons use stock AppKit .bordered / .borderedProminent, but the design system ships bespoke XSecondaryButtonStyle and XPrimaryButtonStyle (Components.swift:96-144) used everywhere else in the app. This is a direct consistency break: the maintenance page's controls look like a different app than the rest of Xico. Stock .bordered is grey and generic; XSecondaryButtonStyle is a capsule with XColor.surfaceAlt + border that matches the app language.",
+            "fix": "Replace .buttonStyle(.bordered) at lines 106 and 127 with .buttonStyle(XSecondaryButtonStyle()). Replace .borderedProminent at lines 63 and 65 with .buttonStyle(XPrimaryButtonStyle()). Since these row buttons are small, consider a compact variant of XSecondaryButtonStyle (reduce padding to .horizontal XSpacing.m / .vertical XSpacing.s) so the capsule doesn't dominate the 34pt-tall row."
+          },
+          {
+            "severity": "P2",
+            "element": "Root-task icon tiles — MaintenanceView.swift:118 XIconTile(colors: [XColor.warning, XColor.accentPink])",
+            "issue": "Every root maintenance task gets a saturated orange->pink (0xF59E0B -> 0xE070AC) icon tile. A whole column of these is loud candy color used as fill, the exact opposite of restrained 'color as accent' (CleanMyMac X / iStat use one neutral-ish tile treatment and reserve saturated color for status/alerts). It also miscommunicates: warning-orange on a resting, non-error task reads as 'danger' when nothing is wrong.",
+            "fix": "Make root-task tiles a calm neutral by default: XIconTile(colors: [XColor.textTertiary, XColor.textSecondary]) or a desaturated single-hue like [XColor.ringPeri, XColor.ringLav]. Reserve XColor.warning strictly for the 'requires admin' state — e.g. tint only the tile of tasks that are currently blocked/unavailable, or show warning color only in the helperBanner (which already uses it at line 59). Keep user-task tiles on brandGradientColors so the two groups differ by hue family, not by 'safe vs alarming'."
+          },
+          {
+            "severity": "P2",
+            "element": "Section header hierarchy — MaintenanceView.swift:52-55 sectionLabel: xSectionLabel() (10pt bold, tracking 1.0, uppercase) + foregroundStyle(XColor.textTertiary) + .padding(.top, XSpacing.s)",
+            "issue": "The two group headers are 10pt uppercase in XColor.textTertiary (light 0x9AA0B4) — this is the lowest-contrast text token, sitting directly on the canvas gradient. Combined with only 8pt (XSpacing.s) top padding, the two task groups ('立即可用' vs '需要管理员权限') barely separate. In a premium list the group header must clearly own the block below it.",
+            "fix": "Two changes: (1) raise contrast — use XColor.textSecondary instead of textTertiary for the label (the current tertiary is meant for de-emphasized metadata, not a group title). (2) increase the top gap from XSpacing.s (8) to XSpacing.l (16) or XSpacing.xl (24) so each header clearly precedes its group; remove the top padding on the FIRST label since XHeaderBar already provides breathing room. If you adopt the grouped-container fix (P1), place this label directly above its single card with 6-8pt gap to the card so label and card read as one unit."
+          },
+          {
+            "severity": "P2",
+            "element": "Result line typography — MaintenanceView.swift:136-144 resultLine + :141 Text(msg).font(XFont.caption)",
+            "issue": "Result messages (which frequently contain sizes like '清理 1.2 GB', counts, or shell output) render in XFont.caption (11pt regular, proportional digits). Numbers in status output are the payload the user cares about, but they're set in the smallest, non-monospaced style with no emphasis — no number-forward hierarchy. XFont.mono (monospacedDigit) exists precisely for this and is unused here.",
+            "fix": "For the result line, keep the status glyph but set the message in XFont.callout (12pt) and, if the message is primarily a metric, render the numeric portion in XFont.mono / .xNumber(). At minimum bump success/failure messages from caption to bodyEmphasis (13pt medium) so a completed task's outcome isn't the tiniest text in the row. Add .padding(.top, XSpacing.xs) to visually attach the result to its row after it appears."
+          },
+          {
+            "severity": "P3",
+            "element": "Card internal rhythm — MaintenanceView.swift:98 & :119 VStack(spacing: 1) for title+detail; :95 & :116 VStack(spacing: XSpacing.s)",
+            "issue": "Title and detail are separated by a hardcoded literal spacing of 1pt (not a token), which is tighter than the design system's smallest step (XSpacing.xs = 4). It reads cramped and bypasses the grid. Elsewhere the app uses 2-3pt for tight title/subtitle pairs (XHeaderBar:193 uses 3, XStatCard:170 uses 3).",
+            "fix": "Replace the literal 1 at lines 98 and 119 with 2 (matching XHeaderBar/XStatCard's title-subtitle rhythm) for a consistent tight-pair spacing. Better: add a token XSpacing.xxs = 2 and use it, so no magic numbers remain in feature code."
+          },
+          {
+            "severity": "P3",
+            "element": "Page content width — MaintenanceView.swift:20-30 ScrollView + LazyVStack .padding(XSpacing.xl) with no maxWidth cap",
+            "issue": "Task cards stretch to the full window width. On a wide window each row becomes a very long bar with the action button floating far right (Spacer at :102/:123), forcing a long eye-travel from title (left) to Execute button (right). Premium list UIs cap content width (~640-720pt) and center it, or the row becomes uncomfortably wide.",
+            "fix": "Wrap the LazyVStack in a .frame(maxWidth: 680, alignment: .leading) then center with .frame(maxWidth: .infinity) on the outer container, so rows stay a comfortable measure and the Execute button sits a readable distance from the title. Matches the reading-width discipline of Settings-style pages."
+          },
+          {
+            "severity": "P3",
+            "element": "Empty/initial state — MaintenanceView.swift:17-46 body has no XEmptyState usage; captured screenshots render header-only",
+            "issue": "Both provided screenshots show ONLY the 'Maintenance / Keep your Mac running smoothly' header on a vast empty canvas — the entire task list is absent from the capture. Whether this is a render-timing artifact or a real empty state, the page currently has no designed empty/loading treatment; a first-time user (or a slow env.helper.status()) sees a near-blank page. The design system already ships XEmptyState (Components.swift:206) and it's unused here.",
+            "fix": "Confirm the cards actually render at runtime (re-capture after content paints). If there is any async gate before rows appear, show XEmptyState(systemImage: \"wrench.and.screwdriver\", title: ..., subtitle: ...) or skeleton rows during load so the page is never a blank canvas with a lone header. This is the difference between the screenshots reading as 'unfinished' vs 'intentional'."
+          }
+        ]
+      },
+      {
+        "surface": "Xico — Hardware (硬件) screen, light + dark",
+        "premiumScore": 7,
+        "summary": "Strong bones: the XCard chrome, XIconTile gradient tiles, monospaced-digit temps, and hero row are genuinely iStat/CleanMyMac-grade, and both light and dark modes hold up. What keeps it off the top shelf is three concrete problems, in priority order: (1) the disk/usage bars render a rose→blue gradient at 88% full that reads as an alarm when nothing is wrong — XColor.gauge only switches to warning above 0.97, so \"healthy but full\" looks \"critical\"; (2) the THERMALS card is a strict, and inconsistent, subset of the 传感器/Sensors card right below it — the same four readings shown twice, with THERMALS' aggregated 53° contradicting Sensors' tdie7=55°/tdie5=54° on the same screen; (3) the LazyVGrid + tall battery card produces a ragged masonry that leaves a large dead void bottom-right (glaring in dark mode) and breaks the eye's vertical rhythm. Also two visualization nits: the GPU ring at 0% draws an orphaned floating start-cap dot on an empty track (looks like a render bug), and the label language is mixed mid-card (Cycle Count / 温度 / Charge / 状态 in one list). Fix these five and it's a 9.",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "Storage/Memory usage bar — XDiskBar via XColor.gauge() (Tokens.swift) rendered in storageCard, HardwareView.swift:249",
+            "issue": "At 57GB free / 494GB (~88% used) the bar fills with the rose→blue ringColors gradient, which reads as a hot 'alert' red-pink. XColor.gauge only swaps to the [warning, accentPink] treatment above fraction 0.97, so every disk from 0–97% full looks equally alarming. Color is being spent on decoration, not meaning — the exact opposite of the 'color as point of emphasis' discipline in CleanMyMac/iStat. It's the single most eye-grabbing element on the screen and it's grabbing the eye for no semantic reason.",
+            "fix": "Make the bar semantic and quiet by default. In XColor.gauge(_:) return a calm single-hue fill for the healthy band (e.g. `[auroraBlue, accentTeal]`, i.e. ringMint-ish) for fraction < 0.75; `[warning, warning]` for 0.75–0.90; `[danger, accentPink]` only above 0.90. Drop the always-on multi-stop rose gradient. Keep the track at XColor.surfaceAlt. This makes 88% read as 'getting full, not urgent' and reserves red-pink for genuinely low free space."
+          },
+          {
+            "severity": "P1",
+            "element": "thermalCard (HardwareView.swift:286-312) vs sensorsCard (HardwareView.swift:387-411)",
+            "issue": "THERMALS shows Processor/GPU/SSD/Battery, and the 传感器 card below shows the exact same categories expanded per-sensor — the same data twice on one screen. Worse, they disagree: THERMALS' Processor is the category *mean* (53°) via vm.temperature(.cpu), while Sensors lists tdie7=55°, tdie5=54°… The user sees two different 'CPU temperatures' at once, which erodes trust in a monitoring app. This is the top information-density problem: a whole redundant card.",
+            "fix": "Collapse to one thermal story. Option A (preferred): delete thermalCard; give sensorsCard a compact summary header per group (category name + max + mean) with the per-sensor rows revealed on a disclosure/hover, so THERMALS becomes the top-line of the Sensors card. Option B: keep THERMALS as the only thermal card and make sensorsCard opt-in behind a 'All sensors' expander. Either way, pick ONE representative value (recommend max, not mean — thermals care about the hottest die) and use it everywhere so the numbers reconcile."
+          },
+          {
+            "severity": "P1",
+            "element": "LazyVGrid layout — columns = GridItem(.adaptive(minimum: 320)), HardwareView.swift:95 & :108-116",
+            "issue": "The adaptive grid packs cards left-to-right by intrinsic height, and the tall batteryCard (ring + divider + mini-stats) forces a ragged masonry: left column runs Battery→GPU→Sensors while the right column (Thermals, Displays) ends early, leaving a large empty void bottom-right. In the dark shot that dead space is ~40% of the lower canvas — the layout looks unfinished, not airy. Top apps (Things 3, Linear) never leave a hole that size below live content.",
+            "fix": "Move to a deterministic 3-column grid with equal-height rows in each visual band. Use `Array(repeating: GridItem(.flexible(), spacing: XSpacing.m), count: 3)` and give the peer cards in a row a shared min height via `.frame(minHeight:)` or a matched-geometry height, so Storage/Thermals and GPU/Memory/Displays bottoms align. Place the tall batteryCard as a full-height left rail spanning two rows (its own column), and let the 6 smaller cards fill a clean 2×N block to the right. Kills the void and restores vertical rhythm."
+          },
+          {
+            "severity": "P2",
+            "element": "XRingGauge at progress 0 — trim(from:0,to:max(0.001,…)) with lineCap:.round, Visuals.swift; used in gpuCard, HardwareView.swift:333",
+            "issue": "When GPU util is 0%, the progress arc is clamped to 0.001 and drawn with a round cap, so a single filled dot floats at the 12-o'clock start of an otherwise empty track. On both shots this reads as a stray rendering artifact / dust speck rather than 'zero'. A premium gauge shows a clean, uniform track at zero.",
+            "fix": "In XRingGauge, when the effective progress is ≤ a small epsilon, skip the progress stroke entirely (and its xGlow) rather than forcing 0.001 — render only the base track. e.g. `let p = min(progress,1); if p > 0.004 { …progress circle… }`. Keeps the sub-pixel-safe minimum for genuine small values but removes the orphan dot at true zero."
+          },
+          {
+            "severity": "P2",
+            "element": "Battery card metric list labels — HardwareView.swift:200-206 (循环次数/温度/电量/状态) rendered as 'Cycle Count / 温度 / Charge / 状态'",
+            "issue": "Within a single card the labels mix English and Chinese (Cycle Count, 温度, Charge, 状态). This is a localization-fallthrough tell — some strings resolve via xLoc and some don't in the current build. On a screen judged for craft it reads as a bug and breaks the typographic consistency of the label column. Visible in both shots.",
+            "fix": "Audit the xLoc keys used in batteryCard (and hero 'Cores/System/Serial Number' which are English while battery is partly Chinese) so a single locale renders one language end-to-end. Ensure '循环次数','电量','满充容量','设计容量','功率' all have entries in the active .strings/Localization table; the presence of 温度/状态 in Chinese means the table exists, so the English ones are missing keys, not a design choice."
+          },
+          {
+            "severity": "P2",
+            "element": "Card header label typography — HardwareCard title, HardwareView.swift:471 (XFont.captionEmphasis 11/semibold, uppercased, tracking 0.6) at textSecondary",
+            "issue": "Card titles (BATTERY HEALTH, STORAGE HEALTH, THERMALS…) sit at 11pt semibold uppercase in textSecondary — the same visual weight as body metric labels, so the header doesn't clearly out-rank the rows beneath it. The type ladder has a gap between 27pt hero/19pt title and 11pt everything-else; mid-level structure (card titles, hero column values) all crowd around 11–13pt. Hierarchy reads flat inside each card.",
+            "fix": "Introduce one rung between title and caption for card headers: bump HardwareCard title to XFont.title2 caliber but small — e.g. Font.system(size:12, weight:.bold) with tracking 0.8 in textSecondary, OR keep 11pt but raise contrast to textPrimary at 0.85 opacity. Keep metric-row labels at caption/textSecondary. The added weight/contrast delta gives each card a clear 3-tier internal hierarchy (header → metric label → value)."
+          },
+          {
+            "severity": "P3",
+            "element": "THERMALS / metric value color coding — tempColor(), HardwareView.swift:447-452 and value column across thermal, sensors, storage",
+            "issue": "tempColor paints 53° as accentTeal and 30° as success (green), so a normal-idle machine shows a column of green + teal numbers that competes with the LIVE dot and the battery ring for 'this is the important color'. With ~everything colored, nothing is emphasized — the palette stops being restraint-driven. iStat keeps idle temps neutral and only colors the value once it crosses a threshold.",
+            "fix": "Make idle temps neutral: return XColor.textPrimary for c < 60, warning for 60–79, danger for ≥80 (drop the accentTeal 55–70 band). Reserve chroma for out-of-range readings only. This immediately de-noises both THERMALS and 传感器 and lets the one genuinely-colored element (LIVE, or a hot sensor) actually pop."
+          },
+          {
+            "severity": "P3",
+            "element": "Hero card right cluster — heroCol / serialCol, HardwareView.swift:137-141, values at XFont.bodyEmphasis 13/medium",
+            "issue": "Cores '8 核 (4 性能 + 4 能效)', System, Serial Number are label(caption/tertiary)+value(13 medium) columns, but the values are the same 13pt weight as ordinary metric rows and are not monospaced, so the serial and core string don't feel like 'spec chips'. The hero has room to make these read as a premium spec strip. Also heroCol minWidth:60 lets the long Cores string overflow its intended column width, crowding System.",
+            "fix": "Render hero spec values in XFont.mono (13 semibold, monospaced-digit rounded) to match the numeric identity used elsewhere, and let the Cores column size to content (give it its own larger minWidth ~150 or use fixedSize) so it doesn't visually collide with System. Add a subtle 1px XColor.hairline vertical divider between the three hero columns to read them as discrete spec cells (Craft/iStat pattern)."
+          }
+        ]
+      },
+      {
+        "surface": "Monitor / System Monitor — Overview tab (light + dark)",
+        "premiumScore": 7,
+        "summary": "The Monitor overview reads as a competent, near-premium dashboard: the ring-gauge row, the aurora gradient language, and the smooth history sparklines are genuinely attractive and the dark theme in particular has real depth. But it is held back from Apple-Design-Award tier by three concrete, fixable classes of problem. (1) A hard consistency defect: the screenshots run in English locale, yet the two segmented pickers are stuck in Chinese (\"总览\" and \"1 分钟 / 1 小时 / 24 小时 / 7 天\") because MetricsHistoryStore.Range.title hardcodes Chinese literals with no xLoc() and the \"总览\" key has no English catalog entry — so one screen shows three languages of chrome. (2) Numeric values in the Mac info row (1.76 GHz, 4.94, 8, uptime) use XFont.bodyEmphasis, not the monospaced XFont.mono, so figures jitter and don't align like iStat/CleanMyMac. (3) Typographic hierarchy is flat — the page title, the Mac chip name, and card headers all sit in a narrow 14.5–19pt band, and the history card's flat Memory/GPU rows plus heavy line-glow read slightly \"neon-concept\" rather than restrained. Fixing localization, switching numeric text to mono, and widening the type ramp would move this from a 7 to a 9.",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "History range segmented picker (总览 tab) — MetricsHistoryStore.swift:34-37, rendered via MonitorView.swift:133-136",
+            "issue": "In both screenshots the app chrome is English (subtitle 'Live Refresh · Every Second', 'Load/Cores/Uptime', 'HISTORY') but this picker is Chinese ('1 分钟 / 1 小时 / 24 小时 / 7 天'). Root cause: MetricsHistoryStore.Range.title returns hardcoded Chinese string literals ('1 分钟' etc.) with NO xLoc() wrapper, so it can never localize. Three languages of chrome on one screen is a top-tier-app disqualifier.",
+            "fix": "Wrap each case in xLoc: `case .minute: return xLoc(\"1 分钟\")` … and add English entries ('1 min','1 hr','24 hr','7 d') to Localizable.xcstrings. If MetricsHistoryStore (Infrastructure) can't import DesignSystem's xLoc, move the display-title mapping into MonitorView (a private func rangeTitle(_:) that returns xLoc(...)) and keep Range.title as raw keys."
+          },
+          {
+            "severity": "P1",
+            "element": "Main tab segmented picker — MonitorView.swift:20 (MonitorTab.overview title) + Localizable.xcstrings",
+            "issue": "The tab bar shows '总览' in Chinese while the other four tabs render in English ('Processor / Memory / Network / GPU'). The code does call xLoc(\"总览\"), so the string IS wired for localization — it falls back to the Chinese key because there is no English entry for '总览' in the String Catalog. Same class of defect as the history picker, visible in both light and dark shots.",
+            "fix": "Add an English translation for key '总览' → 'Overview' in Sources/DesignSystem/…/Localizable.xcstrings. Audit the whole Monitor screen's keys for missing en entries (总览 is the obvious gap; verify 主频 vs the already-English Load/Cores/Uptime to confirm they resolve consistently)."
+          },
+          {
+            "severity": "P2",
+            "element": "Mac info row values (主频 1.76 GHz / Load 4.94 / Cores 8 / Uptime) — MonitorView.swift:452 infoCol()",
+            "issue": "These are numeric metrics but the value uses `XFont.bodyEmphasis` (13pt medium, proportional digits), not monospaced. In a live-refreshing panel the digits change every second, so proportional figures shift horizontally and the four columns don't hold a stable grid — exactly what iStat/CleanMyMac avoid with tabular figures. The gauge numbers and stat rows already use XFont.mono, so this row is inconsistent with the rest of the same screen.",
+            "fix": "In infoCol (line 452) change the value Text to `.font(XFont.mono)` (13pt semibold rounded monospacedDigit) instead of XFont.bodyEmphasis. Keep the label at XFont.caption. This aligns it with statRow (line 460) which already uses XFont.mono."
+          },
+          {
+            "severity": "P2",
+            "element": "Page header 'System Monitor' — MonitorView.swift:40 via XHeaderBar → xTitle() (Visuals.swift)",
+            "issue": "The top-level page title renders at XFont.title = 19pt semibold. Against this wide canvas and the large gauge row below, 19pt reads undersized and the hierarchy is flat: page title (19), Mac chip name (xHeadline 14.5), and card headers (captionEmphasis 11 uppercase) all cluster in a narrow band, so nothing clearly dominates. Craft/Things/Linear page titles sit ~24–28pt.",
+            "fix": "Give XHeaderBar an option to use XFont.largeTitle (27pt bold rounded, already defined) for primary page titles, or add a `prominent` flag; apply it here so 'System Monitor' becomes the clear anchor. Bump the Mac chip name (MonitorView.swift:88) from xHeadline to XFont.title2 (16pt) to open a step between it and the caption model line."
+          },
+          {
+            "severity": "P2",
+            "element": "History card sparklines — MonitorView.swift:162 chartRow + XLineChart (XLineChart.swift)",
+            "issue": "Every line carries a shadow glow (stroke .shadow radius 4, opacity 0.5) plus a glowing white end-dot (radius 4, opacity 0.9). Across four stacked rows this reads as 'neon concept render' rather than the restrained instrumentation of iStat/Linear. It's most obvious on the flat Memory row (82%), where the filled gradient area becomes a solid pink band carrying almost no information, and the GPU row (flat 0%) which is a glowing dead-flat line.",
+            "fix": "Halve the line glow: in XLineChart change stroke shadow to radius 2, opacity ~0.25, and the end-dot glow to radius 2. For near-flat series, suppress the fill (showFill:false when max-min < ~0.05) so the Memory band doesn't dominate. Consider baseline gridlines/min-max labels on the right instead of only the current value, to add information density to the flat rows."
+          },
+          {
+            "severity": "P2",
+            "element": "Mini gauge track ring — MonitorView.swift:116 XRingGauge lineWidth 9 + track XColor.surfaceAlt (Visuals.swift)",
+            "issue": "The unfilled gauge track uses XColor.surfaceAlt, which in dark mode (0x232739) is a fairly light grey against the card (0x181B2A) — so the empty portion of each ring reads as a heavy solid grey band competing with the colored progress arc. On the GPU 0% gauge this leaves a full grey circle with only a tiny colored dot, which looks broken/empty rather than intentional. Premium gauges keep the track quiet.",
+            "fix": "Use a quieter track: `Circle().stroke(XColor.surfaceAlt.opacity(0.55))` (or a dedicated XColor.gaugeTrack token ~= border) so the track recedes. For the 0% state, render a subtle full-ring ghost in the metric color at ~0.1 opacity (the ghost gradient ring already exists at opacity 0.12 — lean on it) instead of a lone dot, so an idle GPU reads as 'idle' not 'no data'."
+          },
+          {
+            "severity": "P3",
+            "element": "Mini gauge card internal spacing — MonitorView.swift:114-124 miniGauge()",
+            "issue": "Each gauge card is XCard(padding 16) wrapping a 96pt ring + label with only XSpacing.s (8) between them, then .frame(maxWidth:.infinity). The result (visible in shots) is a large ring floating high with generous empty side padding and the title hugging the ring — the vertical rhythm inside the card isn't centered/balanced, and the four cards have more air than they need.",
+            "fix": "Add top/bottom breathing symmetry: wrap the VStack content with .padding(.vertical, XSpacing.xs) and increase ring-to-label gap to XSpacing.m (12) so the label sits on the 4pt grid one step down. Optionally reduce ring size to 88 to leave a consistent margin, tightening the row without crowding."
+          },
+          {
+            "severity": "P3",
+            "element": "History card header 'HISTORY' + 280pt range picker — MonitorView.swift:130-137",
+            "issue": "The uppercase-tracked 'HISTORY' caption (11pt) on the left is visually much lighter than the full-width native segmented control (frame width 280) on the right, so the header row is unbalanced — a small quiet label paired with a heavy 4-segment control. The segmented control's native chrome also clashes slightly with the custom card aesthetic.",
+            "fix": "Either promote the header (icon tile is already 28pt; add a XFont.title2 title beside it) to balance the picker, or shrink the picker: use a more compact control (fixed ~220 width, or a custom pill-segment matching XBadge/XSecondaryButtonStyle language) so the two sides feel like peers. Keep the two pickers on this screen (tab bar + range) visually consistent in weight."
+          }
+        ]
+      },
+      {
+        "surface": "Xico — Network view (network)",
+        "premiumScore": 6,
+        "summary": "卡片材质、图标砖、语义色都已达到接近顶级付费 app 的水准，深浅色都干净。但这一屏离顶级差三个具体的坎：(1) 顶部 throughput 大卡里的 XLineChart 没渲染出来，导致整张卡是约 230pt 的死白空洞——这是第一眼命中的最大败笔，直接把「专业监控面板」拉成「未完成稿」；(2) 同一屏出现两套卡片头语言与两套头样式(英文 Download/Upload 裸箭头 vs 中文 MonitorCard 渐变图标砖)，一致性破功;(3) 网络接口列表 5 行无分隔线、无栅格，读成一坨。修掉这三点 + 数字排版细节，可上到 8.5。评分维度里字体/语义色强，材质纵深中上，信息密度与一致性是主要失分项。以下按严重度给可直接落地的 token/结构改法。",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "throughputCard (NetworkView.swift:85-97) 的 XLineChart",
+            "issue": "顶部 throughput 卡渲染 XLineChart(values: history).frame(height: 60)，但两张实拍图里图表完全不可见——history 为空或全 0。XLineChart.points() 在 values.count <= 1 时返回 []，什么都不画；即便有 1-2 个点也只是贴底的平线。结果整张 hero 卡只有左上角两个数字 + 约 230pt 全白/全黑空洞，是进入本屏第一眼命中的最大视觉塌陷，把专业监控面板拉成半成品。这是本屏离顶级最远的一步。",
+            "fix": "三处一起修：(a) 保证喂进来的 history 至少有 N 个点(建议固定 60 点滚动窗口)且启动即预填 0，让曲线一开始就铺满卡宽而非空白；(b) 给 XLineChart 加空/单点态兜底——values.count<2 时画一条居中的 hairline 基线(XColor.hairline)+ 端点微光，而不是返回空 Path；(c) 曲线应叠加下载(accentTeal)与上传(accentPink)两条线以呼应上方两个数字，当前只传了一条 [accentTeal, auroraBlue] 渐变，数据与图脱节。顺带把卡片高度绑定内容：无图时不要硬留 60pt。"
+          },
+          {
+            "severity": "P1",
+            "element": "卡片头一致性：rateBig (99-107) vs MonitorCard (202-220)",
+            "issue": "同一屏两套头语言 + 两套头样式并存。throughput 卡用 rateBig：裸 SF Symbol 箭头 + 英文 'Download'/'Upload' + XFont.caption；其余三张卡用 MonitorCard：渐变 XIconTile(28) + 中文标题 + captionEmphasis + uppercase + tracking(0.6)。既有中英文混排(Download/Upload vs 信号/信道/连通性)，又有两种截然不同的标题视觉规格，一致性直接破功，这是顶级 app 绝不会出现的。",
+            "fix": "把 throughput 卡也套进 MonitorCard 规范：标题用 xLoc('吞吐') 或 xLoc('实时流量')，配 XIconTile(systemImage: \"speedometer\"/\"waveform.path\", colors:[accentTeal, auroraBlue], size:28)。下载/上传本地化为中文并保留在卡内作为两个 metric，箭头保留但统一到 caption 规格。全屏根除英文裸标签，让 8 个维度里的『一致性』和『信息层级』一次拉齐。"
+          },
+          {
+            "severity": "P2",
+            "element": "interfacesCard 列表行 (NetworkView.swift:170-187)",
+            "issue": "网络接口卡里 en0…en4 五行之间没有任何分隔线，行距仅靠 padding(.vertical, 2)，五行糊成一坨，扫视时找不到行边界；活动行(en0，两行 IP)与未连接行(单行)高度差很大，节奏更乱。对标 iStat/CleanMyMac 的接口列表都有 hairline 分隔或交替底色。",
+            "fix": "ForEach 每行之间插 Divider().overlay(XColor.hairline) 或在行底加 1px XColor.hairline(最后一行不加)；行内容包一层 .padding(.vertical, XSpacing.s) 统一行高节奏；未连接的 en1-en4 可考虑折叠进一个『4 个未连接接口』的可展开小节，减少空洞与视觉重复。"
+          },
+          {
+            "severity": "P2",
+            "element": "connectivityCard 卡宽与 LazyVGrid 布局 (74-83, 141-158)",
+            "issue": "LazyVGrid(.adaptive(minimum:300)) 让 Wi-Fi 卡与连通性卡并排，但连通性卡内容少(3 行)、右侧留了大片空白，且两卡底部不对齐(Wi-Fi 卡多一行定位提示，比连通性卡高一截)，右侧到接口大卡之间形成大块不规则空白，栅格看着没对齐。",
+            "fix": "两卡等高：给并排卡加 .frame(maxHeight: .infinity) 或用 fixedSize 对齐底边；或让连通性卡补一条有价值信息(网关 IP / DNS / 丢包率)填满，避免右侧空洞。整屏统一到一个栅格宽度——目前 throughput 卡和接口卡是通栏，中段是双列，视觉宽度跳变，建议三段都对齐同一左右边距。"
+          },
+          {
+            "severity": "P2",
+            "element": "数字排版：rateBig 数值 vs row 数值字体不统一 (105, 117, 121, 151, 195)",
+            "issue": "同屏数字用了多种字体规格：throughput 大数用 XFont.monoLarge(19, mono)，Wi-Fi 的 -38 dBm / 14 ms 用 XFont.mono(13)，但『1200 Mbps』『36』『WPA3』走的是 row() 的 XFont.bodyEmphasis(13, 非等宽)。数值在非等宽字体下对齐和专业感都差；顶级监控面板所有测量值都应 monospacedDigit。",
+            "fix": "row() 的 value 分两类:纯数值/带单位测量值(1200 Mbps、36、-38 dBm、14 ms、IP)统一走 XFont.mono(已 monospacedDigit)；纯文本枚举值(WPA3、SSID)保留 bodyEmphasis。可给 row 加一个 mono: Bool 参数或拆出 metricRow()。这样右栏数字整列右对齐且等宽跳动，专业度立刻上一档。"
+          },
+          {
+            "severity": "P3",
+            "element": "signalBars 未连接色 & IPv6 行 (130-139, 184)",
+            "issue": "signalBars 熄灭档用 XColor.surfaceAlt，在浅色下几乎与卡片背景同色，看不出『满格中熄了几格』的对比；IPv6 行用 .system(size:10) 硬编码字号、truncationMode(.middle)，10pt 是全屏最小字号且脱离 XFont 阶梯，深色下 textTertiary 对比也偏弱。",
+            "fix": "signalBars 熄灭档改 XColor.border 或 textTertiary.opacity(0.35) 提高对比；IPv6 行字号纳入 token(新增 XFont.micro=10 或直接用 caption 11)，避免散落的魔法数字；IPv6/MAC 这类长串给 .textSelection(.enabled) 便于复制，符合监控工具的实用预期。"
+          },
+          {
+            "severity": "P3",
+            "element": "Wi-Fi 卡定位提示文案 (124-125)",
+            "issue": "『提示：显示 Wi-Fi 名称需在系统设置授予定位权限』用 .system(size:10)/textTertiary，是纯被动死文案，且 10pt 又一处脱离字体阶梯的魔法数字；在一张信号满格(-38 dBm)的卡里却缺最重要的 SSID，信息层级头重脚轻。",
+            "fix": "提示做成可点行动:小 info 图标 + 『授予定位权限以显示网络名称 ›』，点击 openSystemSettings，用 XColor.brand 作链接色而非灰死文本；字号统一到 XFont.caption。把 SSID 缺失从『默默降级』变成『一键可解决』，符合顶级 app 的引导规范。"
+          }
+        ]
+      },
+      {
+        "surface": "Settings 界面（SettingsView.swift）— 浅色 + 深色",
+        "premiumScore": 6.5,
+        "summary": "底子扎实：XCard 双层阴影、XIconTile、语义色系统都到位，卡片本身的材质这一版已经不塑料了。但离 Things 3 / Linear 级还差一个'信息架构层'——现在是 12 张同权重卡片从上到下一字排开，没有分组、没有区段标题，视线找不到锚点；加上中英文案混排（'试用中 · 剩余 12 天' vs 'Using built-in offline rules'）严重削弱专业感；About 卡三个按钮宽度不齐、右列动线散；Menu Bar 卡内部字号/留白自成一套，打破整页节奏。这些都是结构与一致性问题，不是画得不够好看——改法是加 token 和重排，不是重画。",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "整页信息架构 / body VStack(spacing: XSpacing.m) 第 52 行",
+            "issue": "12 张卡片（about/license/definitions/ignore/history/appearance/theme/menuBar/alerts/permission/helper/reset）以完全相同的视觉权重、相同 12pt 间距一路平铺，没有任何分组或区段标题。顶级 App（Things 3、Linear、System Settings）都会把设置分成 3-4 个语义组。现在视线从上到下没有落点，'重新显示引导页'和'商业授权'看起来一样重要。",
+            "fix": "引入区段分组：把 12 张卡按 4 组重排——[关于]about+license+definitions；[个性化]appearance+theme+menuBar+alerts；[数据]ignore+history；[系统]permission+helper+reset。每组前加一个 xSectionLabel()（Tokens.swift 已有：10pt/bold/tracking 1.0/uppercase，用 XColor.textTertiary），左对齐、上间距 XSpacing.xl、下间距 XSpacing.s。组内卡片间距收到 XSpacing.s(8)，组间保持 XSpacing.xl(24)——用间距疏密而非同一个 12pt 表达层级。"
+          },
+          {
+            "severity": "P1",
+            "element": "全页文案 — 中英混排（第 124、371、404、409 行等 + subtitle/msg 拼接字符串）",
+            "issue": "同一屏出现 '试用中 · 剩余 12 天'、'当前 v3 · Using built-in offline rules'、'累计释放 26.21 GB · 共 2 次清理'、'智能扫描/废纸篓'、'…像 iStat 一样自定义' 与 'Import License'、'Check for Updates'、'Clear History' 混在一起。标题走了 xLoc() 本地化，但大量副文案和拼接字符串是硬编码中文，英文环境截图里就是中英夹杂。这是最伤'付费质感'的单点——顶级 App 绝不在一屏混两种语言。",
+            "fix": "把第 124、166-167、303、371、381、404、409、422、570-573 行等所有硬编码中文副标题/消息全部走 xLoc()/xLocF() 并补 en.lproj 译文。规则：界面语言统一由系统 locale 决定，一屏内不允许两种语言共存。英文环境应显示 'Trial · 12 days left'、'v3 · Using built-in offline rules'、'Freed 26.21 GB · 2 cleanups'。"
+          },
+          {
+            "severity": "P1",
+            "element": "About 卡右列三按钮 — 第 207-214 行 VStack(spacing: XSpacing.xs)",
+            "issue": "'Check for Updates'、'Upgrade Pro'、'Export Diagnostic Log' 三个 .bordered 按钮宽度由文案各自撑开，右边缘参差（Export 最宽、Upgrade Pro 最窄），三个灰底胶囊堆在右上角显得杂乱；且 'Upgrade Pro'（付费转化，最高价值动作）与两个工具按钮同一视觉权重，主次不分。",
+            "fix": "三点：(1) 给 VStack 内每个 Button 加 .frame(maxWidth: .infinity, alignment: .trailing) 或统一 .frame(width: 168) 让右缘对齐成栅格；(2) 'Upgrade Pro' 升为 XPrimaryButtonStyle（品牌渐变胶囊，Components.swift 已有），做成唯一彩色 CTA，其余保持 .bordered——用色彩点睛区分主次；(3) 'Export Diagnostic Log' 这类低频动作降级到卡底部或收进溢出菜单，右上只留 Check for Updates + Upgrade Pro 两个。"
+          },
+          {
+            "severity": "P2",
+            "element": "区段标题缺失 → 图标砖被迫承担分类职责（各卡 XIconTile size:36）",
+            "issue": "因为没有 xSectionLabel 区段标题，每张卡左侧 36pt 彩色渐变图标砖成了唯一的视觉分类信号。结果 8+ 个彩色渐变砖（青绿/橙/紫/蓝各色）垂直排开，彩色不再是'点睛'而是'满屏'——违背克制配色原则。深色图里尤其明显，一列发光的彩块。",
+            "fix": "配合 P1 的分组：区段标题建立后图标砖可降饱和。方案 A（推荐）——同一区段内图标砖用统一的单一主题色（XColor.themeAccent 渐变），只有需状态语义的卡（license 警告、permission 未授权、helper）才用 warning/success 渐变，让彩色回到'表达状态'而非'装饰'。方案 B——把纯功能卡（ignore/history/reset）的砖改为 textTertiary→textSecondary 灰阶渐变（reset 第 578 行已是），只有个性化区（theme/appearance）保留品牌彩。"
+          },
+          {
+            "severity": "P2",
+            "element": "Menu Bar 卡内部排版自成一套 — 第 397-437、440-462 行",
+            "issue": "这张卡的信息密度和字号阶梯跟全页其它卡不一致：指标行标题用 XFont.bodyEmphasis(13pt/medium)，而所有其它卡主标题用 xHeadline(14.5pt/semibold)；行内又塞 6 个 metric row + 每行展开一个 slider.horizontal.3 图标 + 160pt Picker + Toggle，加两条 Divider 和三段说明，密度远高于相邻 appearance/alerts 卡。视觉上像被塞进卡片的表单，打断整页'一卡一件事'的呼吸节奏。",
+            "fix": "(1) 6 个 metric row 之间用 XColor.hairline（1px 极淡线，Tokens 已有）分隔，形成 iStat 式规整列表行；(2) 每个 row 统一固定行高（约 32pt 收起 / 展开 +28pt），Picker 统一 .frame(width:160) 右对齐成一条竖直栅格线；(3) 第 449 行 slider.horizontal.3 icon 缩进对齐到标题文字左缘（当前 padding(.leading, XSpacing.l)=16，应对齐图标砖右缘留白约 XSpacing.xxl+m）；(4) 把'更新频率'和'彩色图标'两个全局设置从 metric 列表分出，用一条 hairline 上分隔，归为'该卡全局选项'区。"
+          },
+          {
+            "severity": "P2",
+            "element": "History 卡数字列对齐 + monospaced 一致性 — 第 146-149 行",
+            "issue": "History 行里 '787 items'/'1 items' 用 XFont.caption(11pt 比例字体) 非等宽，右侧 '26.21 GB'/'8 KB' 用 XFont.mono 等宽——同一行两组数字一个跳一个稳；且 items 数没右对齐，位数差导致视觉不齐。另外 'Undo' 链接只在第一行出现、悬在 items 左侧，位置游离。",
+            "fix": "(1) items 计数改用 XFont.mono 或至少 .monospacedDigit()，并 .frame(minWidth:64, alignment:.trailing) 让数字右缘对齐（GB 列第 149 行已有 minWidth:72 trailing，照抄）；(2) 把 date/Undo/items/size 定义成固定宽度列（date 弹性、items 64pt、size 72pt），形成真表格栅格而非 HStack+Spacer 挤出的伪对齐；(3) 'Undo' 移到行尾或统一每行 hover 才现的 .link，避免单行特例。"
+          },
+          {
+            "severity": "P2",
+            "element": "页面标题层级倒挂 — XHeaderBar 'Settings' 用 xTitle(19pt) vs About 卡内 'Xico' 用 xLargeTitle(27pt)",
+            "issue": "页面级标题 'Settings'（第 50 行走 xTitle=19pt/semibold）比卡片内的 'Xico'（第 195 行 xLargeTitle=27pt/bold）小 8pt。层级倒挂：页面主标题本应是全页最大字，现在一张卡里的品牌名反而比页面标题大 40%，视觉重心被 About 卡抢走。",
+            "fix": "两选一保持层级单调递减：(A 推荐) 页面标题 'Settings' 升到 xLargeTitle 或新增一档 pageTitle(24pt/bold) 稳居顶端最大字号；About 卡内 'Xico' 降到 xTitle(19pt)——版本信息卡不需要 27pt。(B) 若保留 About 品牌感，至少让 'Settings' ≥ 'Xico' 字号。符合 Things/Linear 的'页面标题最大、卡内标题次之'惯例。"
+          },
+          {
+            "severity": "P3",
+            "element": "Appearance / Theme 两卡功能语义重叠 — 第 58-61 行相邻",
+            "issue": "'Appearance: Light/Dark/Follow System' 和 'Theme: Switch palette' 是两张独立全宽卡紧挨着，但用户认知里'外观'和'主题'高度接近，拆成两张同权重卡增加扫描成本，也各占一整行浪费垂直空间（Appearance 卡右侧一个小分段控件占了整行）。",
+            "fix": "合并为一张 'Appearance' 卡：顶部 header（图标砖+标题）下放两个子区——第一子区 Light/Dark/System 分段控件，第二子区（hairline 分隔）横向主题色板轮播。省一张卡、少一个视觉分节，语义更聚合。若不合并，至少把两卡归入 P1 的同一个'个性化'区段。"
+          },
+          {
+            "severity": "P3",
+            "element": "Cleaning Rules 卡禁用态哑按钮 — 第 340-342 行 'Check for Updates' disabled",
+            "issue": "离线规则场景下 'Check for Updates' 按钮置灰禁用（截图里浅灰不可点），但按钮仍占位且文案不变，用户不知道为什么灰、也不知道怎么启用在线更新。一个永远灰着的按钮是信息噪音。",
+            "fix": "禁用时不要留哑按钮：改为在副标题区用 XBadge('离线'/'Offline', color: XColor.textTertiary) 表达当前是内置离线规则状态，把按钮整个隐藏；只有当 endpointConfigured && trustConfigured 为真（可在线更新）时才渲染可点的 'Check for Updates'。既去掉灰按钮噪音，也让'离线'成为清晰的状态标签。"
+          },
+          {
+            "severity": "P3",
+            "element": "深色下卡片描边偏重 — XCard 第 30 行 strokeBorder(XColor.border.opacity(0.6))",
+            "issue": "深色截图里每张卡都有一圈可见浅色描边（border dark=0x2A2F44 @0.6），在 0x10121E 深底上 8+ 张卡边框叠加让画面显得'框很多'，削弱卡片靠阴影浮起的高级感。顶级深色 UI（Linear、Raycast）多用极淡描边或纯靠阴影+微亮表面区分。",
+            "fix": "深色下把卡描边降到 opacity 0.35，或改用顶部 1px 内高光（.white.opacity(0.04) inner top）+ 底部无描边，让层次靠 surface(0x181B2A) 与 canvas(0x10121E) 的亮度差 + xCardShadow 表达，而非四周描边。浅色下 0.6 可保留。可用 XColor.dynamic 给 border 深浅两态不同 alpha。"
+          }
+        ]
+      },
+      {
+        "surface": "Xico Pricing / Upgrade sheet (PricingView.swift)",
+        "premiumScore": 6.5,
+        "summary": "这是一张结构正确、克制、深浅色都能用的 paywall——渐变按钮、卡片阴影、推荐边框都在位，已经比大多数 indie Mac app 好。但离 Craft/Things 3/CleanMyMac X 那一档还差在四件事上：(1) 价格数字不是 monospaced 且 ¥ 与数字同粗，价格作为全页视觉锚点却\"发不出声\";(2) 两张卡功能条数不等(6 vs 4)+ HStack .top 对齐，家庭版按钮上方留出一大块空洞,右卡显得没写完;(3) 功能清单全用 textSecondary + caption(11pt),勾(13pt)比字还大,信息层级塌成一片灰;(4) 一张卡上\"推荐\"用 brand 紫、设备徽章用 accentTeal 青,两个强调色打架,违背了自家\"彩色作点睛\"的克制原则。这些都是 token 级、数值级可直接落地的改动,不涉及重构。修完可到 8.5。",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "价格数字 planCard() line 117 — Text(plan.price).font(.system(size: 30, weight: .bold, design: .rounded))",
+            "issue": "价格是全页最该抢眼的数字，却没用 monospacedDigit，且 ¥ 符号与数字同字号同字重，读起来是扁平的一坨『¥ 128』，缺乏顶级 app 价格锚点那种量感与精度感。design system 里 XFont.hero / XFont.monoLarge 都已带 .monospacedDigit()，此处却手写了一个非 mono 的 size:30，等于绕过了 token。周期文字 period 用 XFont.caption(11) 也偏小偏弱。",
+            "fix": "价格拆成货币符号 + 数字两段：¥ 用 .system(size: 17, weight: .semibold) + XColor.textSecondary 顶端基线对齐；数字用 XFont.hero 的缩小版——.system(size: 34, weight: .bold, design: .rounded).monospacedDigit() 并 .tracking(-0.5)（对齐已有的 xHeroNumber 处理）。period『一次买断』改用 XFont.captionEmphasis + textTertiary，并放到数字后面同一基线。这样两张卡的 128/218 数字宽度对齐，价格立刻有『标价牌』的分量。"
+          },
+          {
+            "severity": "P1",
+            "element": "卡片等高 / 功能列表底部对齐 — body line 53 HStack(alignment: .top) + planCard line 131 Spacer(minLength: XSpacing.s)",
+            "issue": "个人版 6 条功能、家庭版 4 条功能，HStack 用 .top 对齐 + 每卡内部 Spacer 顶开按钮，导致家庭版（恰恰是 highlighted 推荐卡）功能区上方/下方留出大片空洞，两张卡的 Buy Now 按钮不在同一水平线，右卡看起来像『没写完』。这是全图最伤高级感的结构问题，两张实拍里都很明显。",
+            "fix": "两选一。A（推荐）：给 HStack 加 .fixedSize(horizontal:false, vertical:true) 或让两卡 .frame(maxHeight: .infinity) 等高，并把功能区外层包一个 minHeight（按 6 条算 ≈ 6*(13+XSpacing.s)），家庭版不足处用 textTertiary 的占位说明补齐，如『含个人版全部 6 项 →』把 Everything in Personal 展开成可视清单。B：把 Spacer(minLength: XSpacing.s) 换成固定 Spacer() 前先加一条 minHeight 约束，让按钮永远贴卡片底且两卡按钮 y 对齐。目标：两张卡等高、两个 CTA 同一水平线。"
+          },
+          {
+            "severity": "P1",
+            "element": "功能清单层级 — planCard line 122-129，Text(f).font(XFont.caption).foregroundStyle(XColor.textSecondary) + checkmark size:13",
+            "issue": "全部 feature 用 caption(11pt) + textSecondary，勾 checkmark.circle.fill 是 13pt，图标比它标注的文字还大，视觉重心错位；整段功能区塌成均匀的一片灰，没有任何一条被强调，扫读时抓不到重点（如 iStat 级监控 / Sensei 级硬件健康 是差异化卖点却和别的等重）。对比 Things3/Linear：正文清单通常是 13pt body + textPrimary，勾更小更含蓄。",
+            "fix": "功能文字从 XFont.caption(11)/textSecondary 提到 XFont.body(13)/XColor.textPrimary；勾从 size:13 降到 size:12 并 weight .semibold，颜色保留 success 但对『继承类』条目（Everything in Personal / 个人版全部功能）可改用 textTertiary 的『↳』或 minus 图标以示层级。行距把 VStack spacing 从 XSpacing.s(8) 提到 10。让 1-2 个招牌功能（iStat 级、Sensei 级）用 bodyEmphasis 微微加重。"
+          },
+          {
+            "severity": "P2",
+            "element": "一卡双强调色 — planCard line 114 XBadge(推荐, color: XColor.brand) 紫 vs line 120 XBadge(plan.devices, color: XColor.accentTeal) 青",
+            "issue": "家庭版卡片上同时出现 brand 紫（推荐徽章 + 卡描边 + 按钮渐变）和 accentTeal 青（设备徽章），一张卡两个强调色相互竞争。你自己 CLAUDE.md 的设计原则是『彩色作点睛而非满屏』，这里点睛点了两处不同色相，反而稀释了紫色主线。青色设备胶囊在紫色推荐卡上尤其突兀。",
+            "fix": "设备徽章（1 Mac / 最多 5 台）改成中性信息态：用 XColor.surfaceAlt 底 + XColor.textSecondary 字，去掉 accentTeal，或直接把它并进价格行做成『¥128 · 1 台 Mac』的副标（XFont.callout/textSecondary），不再用彩色 Capsule。全卡只保留 brand 紫一个强调色。accentTeal 留给别的页面做区分即可。"
+          },
+          {
+            "severity": "P2",
+            "element": "试用 pill 空旷 — trialPill line 84-96，HStack(...) + Spacer() 撑满 720 宽",
+            "issue": "『试用中 · 剩余 12 天』左对齐后一个 Spacer() 把 pill 撑到全宽（≈720），右侧一大片空白，reads 像一条没填满的横幅而非一枚状态标签。顶级 app 的试用状态要么是紧凑 inline pill，要么右侧带进度/CTA 把宽度用起来。两张实拍里这条都是最松散的元素。",
+            "fix": "两选一。A：pill 收窄成 .fixedSize()，不铺满，左对齐成一枚真正的胶囊（配 XRadius.tile 已有）。B（信息更足）：保持全宽但右侧补一个 12 天剩余的细进度条（XColor.brand 填充 / surfaceAlt 轨道，高 4pt）或一颗『立即升级』的 .link 按钮，把空白利用起来。同时把 icon+文字整体的 padding 从 XSpacing.m 收一点，让状态更像 iStat 的顶栏 chip。"
+          },
+          {
+            "severity": "P2",
+            "element": "两个 CTA 无主次 — planCard line 132-137 两卡都用 XPrimaryButtonStyle() 满血渐变",
+            "issue": "个人版和家庭版的 Buy Now 是完全相同的满血 brand 渐变按钮。既然家庭版是 highlighted『推荐』，两颗 CTA 权重却一模一样，推荐卡的行动号召没有比非推荐卡更强，削弱了引导。顶级 paywall 会让推荐档 CTA 实心、次档 CTA 描边/次要。",
+            "fix": "非推荐卡（个人版）的按钮改用 XSecondaryButtonStyle()（已存在：surfaceAlt 底 + border 描边 + textPrimary 字），推荐卡（家庭版）保留 XPrimaryButtonStyle() 满血渐变。这样视线自然落到家庭版。按 plan.highlighted 三元切换 buttonStyle 即可，零新组件。"
+          },
+          {
+            "severity": "P3",
+            "element": "标题层级偏弱 — header line 71 Text(\"Xico Pro\").xTitle()（19pt semibold）",
+            "issue": "作为一张付费墙 sheet 的主标题，『Xico Pro』用 xTitle(19pt) 偏小，和下面 30pt 的价格数字比头轻脚重，hero 感不足。CleanMyMac / Setapp 的升级页主标题通常 24-28pt。",
+            "fix": "把 header 标题从 xTitle() 提到 xLargeTitle()（XFont.largeTitle 27pt bold rounded，已带 tracking -0.4），副标『一次买断，永久使用 · 数据全程本地』保持 XFont.callout/textSecondary。icon tile 从 size:42 同步提到 44-46 保持比例。这样顶部有明确的视觉起点。"
+          },
+          {
+            "severity": "P3",
+            "element": "价格与功能间的分隔线过弱 — planCard line 121 Divider().overlay(XColor.hairline)",
+            "issue": "Divider 叠 hairline（浅 0xEDEFF6 / 暗 0x1D2131）几乎不可见，价格块与功能块之间缺一道清晰的呼吸分界，两块内容黏在一起。两张实拍里这条线基本看不出。",
+            "fix": "分隔线换用 XColor.border（略深）而非 hairline，或干脆去掉线、改用间距分隔：把 Divider 换成一个 XSpacing.s 的纯留白，让价格区(名称+价格+设备)成为一组、功能清单成为另一组，用 gap 而非线来分层——更接近 Things3 的做法。若保留线，给它 .padding(.vertical, XSpacing.xs) 增加上下呼吸。"
+          },
+          {
+            "severity": "P3",
+            "element": "底部信任行图标偏灰 — trustLine line 167-179，trustItem 用 XColor.textTertiary（icon 11pt + caption）",
+            "issue": "『数据本地 / 永久买断 / 30 天退款』这三点是买断制对抗订阅制的核心信任卖点，却用 textTertiary（最弱色）+ 11pt 图标，几乎隐形，等于把最有说服力的差异化埋掉了。三项之间只有 XSpacing.l 的 gap 也稍显随意。",
+            "fix": "把 trustItem 的图标色从 textTertiary 提到 XColor.textSecondary，图标用各自语义色的低饱和版做点睛（lock.shield 用 success 淡、infinity 用 brand 淡、arrow.uturn 用 accentTeal 淡，opacity 0.7），文字保持 textSecondary。三项之间加细竖分隔（1×12 的 border 色 Rectangle）或居中包一层 surfaceAlt 的浅底 pill，让它成为一条有分量的『保障条』而非脚注。"
+          }
+        ]
+      },
+      {
+        "surface": "menuPanels — MenuMetricPanel (CPU 详情面板，Sources/Features/MenuPanels.swift)",
+        "premiumScore": 6.5,
+        "summary": "底子不错：极光配色克制、双层阴影、平滑折线图、mono 数字都到位，暗色尤其耐看。但离 iStat / CleanMyMac X 级还差三步——(1) 硬伤:「温度」中英文混排(本地化漏翻),破坏专业感;(2) per-core 柱状图在低负载下渲染成一排空白灰盒子,反成视觉噪点;(3) 排版栅格没对齐——环 60pt 但 4 个 chip 用 Spacer 自由排布、进程列表与 chip 左缘不共线、字号阶梯在 11pt 挤了太多层级(caption/captionEmphasis/进程 11pt 三者几乎同大)。修掉这三类问题即可上 8.5。",
+        "findings": [
+          {
+            "severity": "P1",
+            "element": "metricChip 温度标签 (MenuPanels.swift:81)",
+            "issue": "英文运行时「温度」未翻译、直接回退中文键,与同排 User/System/GPU 混排。两张实拍图都可见「温度 56°C / 52°C」夹在英文中间——顶级 app 绝不出现的本地化漏网,专业感当场破功。根因:Features bundle 的 Localizable.xcstrings 缺 温度/用户/系统/下载/上传/应用/联动/压缩/交换区/打开监视器 等键的 en 翻译(DesignSystem bundle 里 xLoc 各 target 独立查表)。",
+            "fix": "在 Sources/Features 对应的 Localizable.xcstrings 补全所有 xLoc 键的 en 值:温度→Temp、用户→User、系统→System、打开监视器→Open Monitor、下载→Down、上传→Up、应用→App、联动→Wired、压缩→Compressed、交换区→Swap。构建后加断言/单测扫描:xLoc(key)==key 且当前语言≠zh 即视为漏翻。"
+          },
+          {
+            "severity": "P1",
+            "element": "perCoreBars 空盒问题 (MenuPanels.swift:124-140)",
+            "issue": "低负载下(实拍 CPU 18-29%)8 根柱子几乎全空,渲染成一排 EFF1F8 大灰盒(surfaceAlt 底 cornerRadius:2),彩色数据只剩底部 2-4px 细条,读起来像未加载的占位骨架而非数据可视化。且第 5 根被填满整高、色相突变(蓝紫),与其他柱不一致,像 bug。cornerRadius:2 也和全局 XRadius(control 8 / tile 12)脱节,太方太硬。",
+            "fix": "三步:(1)底槽不用实心 surfaceAlt,改 surfaceAlt.opacity(0.5) 或 XColor.hairline,让空槽退成背景、彩条成主角;(2)cornerRadius 2→3、柱间距 spacing 3→2,并给填充条设最小可见高度 max(3, h*v) 之外再叠一层 v==0 时的 1px 基线暗示;(3)排查第 5 根异常——perCore 传入值或 gauge(v) 阈值导致的突兀满格,统一用 XColor.ringColors 而非 gauge(v)(gauge 在 v>0.97 才转暖,单核瞬时 100% 会突然变粉,制造闪烁噪点)。"
+          },
+          {
+            "severity": "P2",
+            "element": "字号层级在 11pt 拥挤 (MenuPanels.swift:175,178 / Tokens caption=11 captionEmphasis=11)",
+            "issue": "面板里 chip 标签(caption 11)、chip 值(captionEmphasis 11 semibold)、进程名(system 11)、进程占比(system 11 semibold)四类信息全挤在 11pt,仅靠字重区分,层级几乎拍平——视线找不到重点。对标 iStat:标签应比数据小一档(9-10pt)且降饱和,数据留 11-12pt。legendDot 里已经用了 9pt/10pt 的合理阶梯,但主面板没沿用。",
+            "fix": "拉开阶梯:chip/进程标签统一降到 XFont 新增的 micro=Font.system(size:10,weight:.medium) + textTertiary;数据值保持 11-12pt semibold textPrimary。给 processList 的占比数字加 tracking(-0.2) 收紧 mono 宽度。理想是把散落的 .system(size:11) 收敛进 XFont token(如 XFont.listLabel / XFont.listValue),消除面板内魔法数字。"
+          },
+          {
+            "severity": "P2",
+            "element": "chip 栅格未对齐 (MenuPanels.swift:73-86)",
+            "issue": "环(60pt)+右侧 2x2 chip 用 HStack(spacing:l) 内嵌 Spacer(minLength:0) 自由排布,User/System 两列靠 HStack(spacing:l=16) 硬顶,不是等宽两列——实拍图里 System 列比 GPU 列右移不齐,「6%」和「0%」左缘没对齐成栅格。且这块 2x2 与下方 perCoreBars、折线图、进程列表的左缘各自为政(环占了左侧一截,下面元素却全宽起步),整体像两套坐标系。",
+            "fix": "2x2 chip 改用 Grid(alignment:.leading, horizontalSpacing: XSpacing.l, verticalSpacing: XSpacing.s) 两列 GridRow,列宽用 .gridColumnAlignment(.leading) 锁定等宽;或整块 chip 用 LazyVGrid(columns: [GridItem(.flexible()),GridItem(.flexible())])。让 chip 区左缘与 perCoreBars/进程列表共线(都从环右侧同一 x 起,或环下方全宽区统一 leading inset)。"
+          },
+          {
+            "severity": "P2",
+            "element": "折线图辉光过强 + 无基线参考 (XLineChart.swift:35,39 用于 MenuPanels:88)",
+            "issue": "实拍图 CPU history 折线周围一圈明显绿/蓝辉光(shadow opacity 0.5 radius 4 + 端点 opacity 0.9),在 40pt 矮图里辉光占比过大,显糊、显廉价光效,不如 iStat 的干脆细线。且图无 0%/100% 基线或网格,读者无法判断当前折线的绝对高度(全是相对归一)。端点白点 lineWidth*3=6pt 在小图里偏大抢眼。",
+            "fix": "菜单面板这种小图给 XLineChart 传更克制参数:lineWidth 2、把描边 shadow opacity 0.5→0.25 radius 4→3;端点 Circle 直径由 lineWidth*3 改 lineWidth*2.2 并去掉 opacity 0.9 光晕改 0.5。加一条极淡基线:底部 1px XColor.hairline 横线 + 可选峰值虚线(dash),给绝对刻度锚点。"
+          },
+          {
+            "severity": "P3",
+            "element": "ringGauge 中心字号偏小 + 轨道过重 (MenuPanels.swift:188-191, Visuals XMiniRing:115)",
+            "issue": "环 60pt / lineWidth 7,中心「29%」用 size:15——数字相对环偏小,环空心区留白偏多,重心不稳。轨道用 surfaceAlt 实色(浅色 0xEFF1F8),在白卡上偏重,和「幽灵渐变环」那种通透感(XRingGauge 有、XMiniRing 没有)不一致。",
+            "fix": "中心数字 15→16-17 且 tracking(-0.3);XMiniRing 轨道由 surfaceAlt 改 surfaceAlt.opacity(0.7) 或叠一层 0.10 透明度的 AngularGradient 幽灵环(复用 XRingGauge 第 55-57 行做法),让迷你环和大环同语言。"
+          },
+          {
+            "severity": "P3",
+            "element": "Divider + 底部按钮条留白 (MenuPanels.swift:54,62)",
+            "issue": "Divider().padding(.vertical,2) 上下才 2pt,分隔线离进程列表太近、离按钮区呼吸不足,分区感弱。电源按钮(bordered, Image power)是系统默认 bordered 样式,和左侧 borderedProminent「打开监视器」不是一套 XButtonStyle 语言,圆角/高度/描边都跟设计系统的 XPrimary/XSecondaryButtonStyle 脱节。",
+            "fix": "Divider 上留白用 XSpacing.s(8)、下 XSpacing.s;或去掉 Divider 改上方留 XSpacing.m 的负空间分区(更高级)。两个按钮统一走设计系统:主按钮 .buttonStyle(XPrimaryButtonStyle()) 、电源按钮用等高的 XSecondaryButtonStyle 包一个 44x 高的方形变体(圆角 XRadius.button=11),二者视觉重量一致。"
+          },
+          {
+            "severity": "P3",
+            "element": "面板宽度与内边距 (MenuPanels.swift:65-66)",
+            "issue": "frame(width:288) + padding(XSpacing.m=12) 内容宽仅 264pt,进程名「WeChatAppEx Helper (Renderer)」在两图都逼近右侧占比数字,靠 truncationMode(.middle) 但仍显挤。菜单面板整体信息密度偏高、边距偏紧,相比 288 宽度可再宽 12-16pt 或内边距升到 XSpacing.l=16 给数据呼吸。",
+            "fix": "宽度 288→300-312,内边距 XSpacing.m→XSpacing.l(16)。进程行给名字与占比间加 minLength 的 Spacer(minLength: XSpacing.m) 保证至少 12pt 间隙;占比列固定宽度(如 .frame(width:52, alignment:.trailing))让 4 行右缘成列对齐(实拍里 1.7%/0.1%/0.0% 右缘已基本齐,固定宽度可保证)。"
+          }
+        ]
+      }
+    ],
+    "spec": "I now have the full picture of the actual token system. The reviews are accurate against the real code. Let me synthesize the unified upgrade spec, grounded in the exact current values I've just read.\n\n---\n\n# Xico 统一设计语言升级规范 v4\n\n> 依据：13 份评审 + 已核对的真实 token 源码（`Tokens.swift` / `Components.swift` / `Visuals.swift` / `XLineChart.swift`）。\n> 贯穿主线：**「彩色作点睛、辉光贴边一圈、数字全等宽、间距讲疏密、一屏一种语言」**。所有数值已相互对齐，A 层的新 token 就是 C/D 层引用的那一个。\n\n---\n\n## A) 设计系统层（改一处，全局生效）\n\n### A1. 字体阶梯 — 拉开中段、补齐断层、消灭一次性字号\n\n现状病灶：11–16pt 段挤了 `title2(16)/headline(14.5)/body(13)/bodyEmphasis(13)/callout(12)/caption(11)/captionEmphasis(11)` 七档，肉眼分不出；同时 `largeTitle(27)→body(13)` 之间无过渡；各页还散落 `size:46/23/22/10` 硬编码。\n\n改 `Tokens.swift:114-127`，采用约 1.25 模数的 8 档主阶梯 + 语义别名：\n\n```swift\npublic enum XFont {\n    static let hero        = Font.system(size: 54, weight: .bold,     design: .rounded).monospacedDigit()\n    static let heroCompact = Font.system(size: 46, weight: .bold,     design: .rounded).monospacedDigit() // 新增：仪表盘/详情大数字，取代散落的 size:46\n    static let largeTitle  = Font.system(size: 28, weight: .bold,     design: .rounded)  // 27→28，页面主标题\n    static let title       = Font.system(size: 22, weight: .semibold)                    // 19→22，补 largeTitle↔headline 的断层\n    static let title2      = Font.system(size: 17, weight: .semibold)                    // 16→17，卡片/区块标题\n    static let headline    = Font.system(size: 15, weight: .semibold)                    // 14.5→15，行标题\n    static let body        = Font.system(size: 13, weight: .regular)                     // 保留\n    static let bodyEmphasis = Font.system(size: 13, weight: .medium)                     // 保留\n    static let callout     = Font.system(size: 12, weight: .regular)                     // 保留\n    static let caption     = Font.system(size: 11, weight: .regular)                     // 保留\n    static let captionEmphasis = Font.system(size: 11, weight: .semibold)               // 保留\n    static let micro       = Font.system(size: 10, weight: .medium)                      // 新增：唯一合法的 10pt，收编所有 size:10 魔法数字（IPv6、提示、per-core 标签）\n    static let mono        = Font.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit()\n    static let monoLarge   = Font.system(size: 19, weight: .bold,     design: .rounded).monospacedDigit()\n    static let monoHero    = Font.system(size: 34, weight: .bold,     design: .rounded).monospacedDigit() // 新增：价格/详情锚点数字\n    static let captionMono = Font.system(size: 11, weight: .regular,  design: .monospaced)                 // 新增：bundleID/IPv6/MAC 等标识符\n}\n```\n\n**理由**：删掉 `headline=14.5` 与 `title2=16` 的「1pt 并存」，把 `title` 从 19→22 一步补上页面标题断层。最终得到干净的比率梯 `54/46/34/28/22/17/15/13/12/11/10`，任意相邻两级都能一眼分清。`monoHero`/`heroCompact` 让「大数字有量感」这条一次性 `size:46/30` 全部归位到 token。\n\n新增排版样式（`Tokens.swift:131-138` 追加），让副标题/大数字有性格：\n\n```swift\nfunc xSubtitle() -> some View { font(XFont.headline).fontWeight(.regular).tracking(0.2) } // hero 副标题：15pt regular，收敛 27→13 的断崖\nfunc xHeroCompactNumber() -> some View { font(XFont.heroCompact).tracking(-0.5) }\n```\n\n### A2. 间距栅格 — 补 2pt 档，页面统一读宽，杜绝魔法间距\n\n`XSpacing` 保留 4pt 基准，只补一档（消灭 `spacing:1`/`spacing:2` 硬编码，评审多处点名）：\n\n```swift\npublic enum XSpacing {\n    static let xxs: CGFloat = 2   // 新增：紧密 title/subtitle 对\n    static let xs: CGFloat = 4\n    static let s:  CGFloat = 8\n    static let m:  CGFloat = 12\n    static let l:  CGFloat = 16\n    static let xl: CGFloat = 24\n    static let xxl: CGFloat = 32\n    static let xxxl: CGFloat = 48\n}\npublic enum XLayout { static let readWidth: CGFloat = 680 }  // 新增：列表/设置类页面统一读宽上限\n```\n\n**间距语义约定（全 app 强制）**：\n- **组内（title↔subtitle、icon↔文字）** = `xxs(2)`~`xs(4)`\n- **元素间（行↔行、卡↔卡同组）** = `s(8)`\n- **组间（hero↔内容、区段↔区段）** = `xl(24)`\n- **大分区（内容↔独立关注点如 Undo/危险区）** = `xxl(32)`\n\n这直接修掉「全 app 一根 16pt 均匀间距」的松散感 —— 见 SmartScan / ModuleIdleHero。\n\n### A3. 圆角 — 基本不动，只补一个 macOS 图标 squircle 比例\n\n`XRadius`（control 8 / button 11 / tile 12 / card 18 / large 26）已自洽，保留。新增一个常量给「裸 NSWorkspace 应用图标」统一包壳（Uninstaller/Optimization 都点名裸图标脱节）：\n\n```swift\npublic extension XRadius {\n    static let appIcon: CGFloat = 0.2237 // macOS 应用图标 squircle 比例（乘以边长使用）\n}\n```\n配套：所有 app 图标一律 `RoundedRectangle(cornerRadius: side * XRadius.appIcon, style: .continuous)` + `XColor.border.opacity(0.5)` 描边 + `.xSoftShadow()`。\n\n### A4. 阴影 / 材质 / 辉光 — 这是「概念稿 vs 成品」的分水岭\n\n评审最高频、最伤格调的一条：**辉光用力过猛**（`xGlow` 内部 0.45 + radius 30 叠按钮光晕 = 半屏紫雾）。全局收敛：\n\n**1. `xGlow` 增开 opacity 参数并降默认强度**（`Tokens.swift:158-160`）：\n```swift\nfunc xGlow(_ color: Color, radius: CGFloat = 16, opacity: Double = 0.28) -> some View {\n    shadow(color: color.opacity(opacity), radius: radius, x: 0, y: 0)\n}\n```\n默认从 `radius:24/op:0.45` → `radius:16/op:0.28`。「发光是贴边一圈、几乎察觉不到」。\n\n**2. 主按钮彩色投影收敛**（`Components.swift:124-125`）：`radius 11→8`、`opacity 0.22→0.16`、`y 5→4` —— 从「光环」变「接触阴影」。\n\n**3. 双层卡片阴影保留**（`XShadow` 已是环境光+接触影的正确做法，不动），但**深色描边减重**：`XCard` strokeBorder 在深色 `0.6→0.35`（8+ 张卡叠边框显「框很多」，Settings 点名）。做法——`XColor.border` 拆动态 alpha：\n```swift\npublic static var cardStroke: Color { dynamic(light: 0xE5E8F1, dark: 0x2A2F44) } // 深色配 0.35 使用\n```\n\n**4. `XCard` 顶部高光动态化**（`Components.swift:24`）：浅色 `white.opacity(0.06)` 对白几乎不可见（纯浪费），深色又偏弱。改：浅色靠描边（`border.opacity(0.9)`）立体、深色用 `white.opacity(0.09)` 高光。\n\n**5. `XLineChart` 全局降辉光**（`XLineChart.swift:35,39`）：描边 shadow `opacity 0.5→0.25`、`radius 4→3`；端点光点 `opacity 0.9→0.5`、直径 `lineWidth*3→lineWidth*2.2`。并加空/单点兜底 + near-flat 抑制填充（见 C 层）。\n\n### A5. 配色 — 让 gauge 说真话，把彩色还给「状态」\n\n**1. `XColor.gauge` 三段语义化**（`Tokens.swift:59-62`）—— 这是评审跨 3 个界面（SmartScan / Hardware / Menu）点名的「88% 满盘染成告警粉」根因：\n```swift\npublic static func gauge(_ fraction: Double) -> [Color] {\n    switch fraction {\n    case ..<0.75:  return [accentTeal, auroraBlue]   // 健康：冷静单相\n    case ..<0.90:  return [warning, warning]         // 偏高：橙\n    default:       return [danger, accentPink]       // 危险：红粉\n    }\n}\n```\n**理由**：88% 现在读作「偏满不紧急」，红粉只留给真危险。track 保持 `surfaceAlt`。\n\n**2. 温度色也去噪**（Hardware `tempColor`）：`<60 = textPrimary`（中性）、`60–79 = warning`、`≥80 = danger`，删掉 55–70 的 accentTeal band —— 空闲机不再满屏绿+青抢戏。\n\n**3. 图标砖去饱和策略**（配合 B/区段分组）：纯功能卡（ignore/history/reset/维护 root 任务）用 `[textTertiary, textSecondary]` 灰阶渐变；彩色渐变只留给个性化/品牌卡与**状态**卡（warning/success/danger）。让「一列发光彩块」回到「彩色=状态」。\n\n### A6. 图标砖 & 环 — 统一「一套图标系统 + 幽灵轨道」\n\n- **裸应用图标全部包壳**（见 A3），消灭 Uninstaller/Optimization/Network 的裸 NSWorkspace 图标。\n- **`XMiniRing` 对齐大环语言**（`Visuals.swift:115-117`）：轨道 `surfaceAlt → surfaceAlt.opacity(0.7)` + 叠 0.10 的幽灵 AngularGradient（复用 `XRingGauge:54-57`）；把 `max(0.02, …)` 的 0.02 floor **只用于 track 提示、不用于 value**（否则 0% 也画一段，或 88% 却只画 15% —— SmartScan 的 P1 就是首帧 fraction=0 未随真实值动画）。value 侧改为 `@State` 在 `.onAppear/.onChange` 动画到真实 fraction。\n- **`XRingGauge` 0% 去孤儿点**（`Visuals.swift:64-70`）：`let p = min(progress,1); if p > 0.004 { 画进度弧+glow }`，否则只画 track。修 GPU/Memory 0% 的「浮尘点」。\n\n---\n\n## B) 跨页一致性规则（全 app 契约）\n\n**B1. 卡片头统一走 `MonitorCard` 规范**：`XIconTile(size:28, 渐变按 A5 策略)` + 标题 `title2(17)` + `uppercase + tracking(0.6)`。禁止「裸 SF Symbol + 英文 Download/Upload」这类第二套头（Network 点名）。\n\n**B2. Hero 统一结构**：`icon —16(l)— [title —2~4(xxs/xs)— subtitle] —24(xl)— CTA`。title+subtitle 必须包成一个 `VStack` 语义组；副标题走 `xSubtitle()`（15pt regular/tracking 0.2）而非 13pt 灰占位。光晕按 A4：`XIconTile` 只留自带 `shadow(r:6,y:3)`，去掉外层 `.xGlow` 整句。\n\n**B3. 顶/底 bar 成对**：凡有底部 `XActionBar`（已含 `.ultraThinMaterial`+顶 hairline）的页，顶部 header/folderBar 必须补对称的**底部 1px hairline**（`overlay(alignment:.bottom){ Rectangle().fill(XColor.hairline).frame(height:1) }`）。滚动区被清晰框住。\n\n**B4. 列表 = 一容器 + hairline 分隔，不是 N 张浮卡**：≥4 行的同类列表（Optimization/Maintenance/Network 接口/Menu 进程）一律 `XCard(padding:0)` 包 `ForEach`，行用 `HStack` + `Divider().overlay(XColor.hairline)`（leading inset ≈54 让分隔线从图标后起）。**卡片抬升只留给独立对象，不留给列表行**。\n\n**B5. 数字全等宽 + 右对齐成列**：所有测量值（GB/MB/%/GHz/dBm/ms/价格/占比/items 数）走 `XFont.mono` 或至少 `.monospacedDigit()`，并 `.frame(minWidth:_, alignment:.trailing)` 让多行右缘成栅格。纯枚举文本（WPA3/SSID）保留 `bodyEmphasis`。标识符（bundleID/IPv6/MAC）走 `captionMono`。\n\n**B6. 一屏一种语言**：所有硬编码中文副标题/拼接串（`\"扫描「\\(x)」\"`、per-core 标签、Range.title、\"总览\"、Settings 大量副文案）全部走 `xLoc()/xLocF()` 并补 en 条目。加构建期断言：非 zh 环境下 `xLoc(key)==key` 视为漏翻。**这是所有界面里 ROI 最高的一类修复**。\n\n**B7. 选中态 = 低饱和填充 + accent 竖条，不反白**：`brand.opacity(0.12 浅 / 0.18 深)` 填充 + 左侧 3pt `brand` accent 竖条 + 文字保持 `textPrimary`、数字用 `brand`。禁止满色 `brandGradient` 刷蓝条（Uninstaller 点名）。\n\n**B8. 破坏性操作有色彩语义**：新增 `XDangerButtonStyle`（`LinearGradient([danger, accentPink])`），卸载/删除类主按钮用它，或至少前置 `trash` 图标。区别于「清理/扫描」的品牌渐变。\n\n**B9. 动效克制**：hover lift `1.02` / spring(0.3,0.7) 保留；辉光按 A4；`XLineChart` 端点光晕减半。Reduce Motion 已处理（保持）。\n\n**B10. 读宽约束**：Settings / Maintenance / 长列表类页面 `.frame(maxWidth: XLayout.readWidth=680)` 居中，避免「标题在左、按钮飘到最右」的长眼动。\n\n---\n\n## C) 按影响力排序的可执行清单（Top 15）\n\n| # | 改哪里 | 具体改动 | 预期效果 |\n|---|---|---|---|\n| **1** | **全 app 本地化** `xLoc/xLocF` + Features/DesignSystem 的 `Localizable.xcstrings` | 补齐所有漏翻 en 键：`扫描「%@」`/`开始扫描`/`温度→Temp`/`用户→User`/`总览→Overview`/Range.title `1分钟→1 min` 等；DuplicatesView.swift:47、MetricsHistoryStore.swift:34-37、MenuPanels.swift:81、Settings 全页 | 消灭中英混排——**单点最提「付费质感」**，一次拉高 6+ 个界面 |\n| **2** | `Tokens.swift:59-62` `XColor.gauge` | 三段语义化（<0.75 teal/blue，<0.90 warn，≥0.90 danger） | 88% 满盘不再假告警；红只留给真危险；SmartScan/Hardware/Menu 同时受益 |\n| **3** | `Tokens.swift:158-160` `xGlow` 默认 `r:16/op:0.28` + 参数化；`Components.swift:124-125` 按钮阴影 `r:8/op:0.16/y:4` | 全局辉光收敛 | 暗色从「AI 概念稿紫雾」→「成品」，最伤格调项一次解决 |\n| **4** | `Visuals.swift:113-127` `XMiniRing` + `ScanViews.swift:314` `XMetricCard` | value 用 `@State` 在 onAppear/onChange 动画到真实 fraction；0.02 floor 只给 track | 迷你环弧长匹配 % 标签——**修掉「仪表自相矛盾」的信任崩塌** |\n| **5** | `Tokens.swift:114-127` `XFont` | 落地 A1 全阶梯（title 19→22、headline 14.5→15、title2 16→17、largeTitle 27→28、新增 heroCompact/monoHero/micro/captionMono） | 类型系统一眼分层；消灭 size:46/30/23/22/10 一次性字号 |\n| **6** | 各页 `VStack(spacing:)` | 按 B2 疏密约定重排 hero 与 dashboard（组内 xxs/xs、组间 xl、大分区 xxl），删掉「一根 16 平摊」 | 元素成组、有呼吸，SmartScan/所有 ModuleIdleHero 立刻「考究」 |\n| **7** | Optimization/Maintenance/Network/Menu 列表 | 按 B4 改 `XCard(padding:0)` + hairline 行，去掉 per-row 抬升 | N 张浮卡→2 个规整分组面，最大结构性升级 |\n| **8** | `OptimizationView.swift:18-22` Picker | 显式 label 分段控件、去 `.labelsHidden()`、`.tint(XColor.brand)`；补空态 `XEmptyState` | 修掉「黄条+禁止符」破损渲染（该页评分 3 的主因） |\n| **9** | `Visuals.swift:64-70` `XRingGauge` 0% 分支 | `if p>0.004` 才画进度弧+glow，否则只画 track | GPU/Memory 0% 去「浮尘孤儿点」 |\n| **10** | 各页顶部 header/folderBar | 按 B3 补底部 1px hairline，与 `XActionBar` 成对 | 滚动区被框住，顶/底纵深对称 |\n| **11** | 全 app 数字文本 | 按 B5 统一 `mono`/`monospacedDigit` + 右对齐固定列宽（Network row、Monitor infoCol:452、Settings history、Menu 进程占比） | 数字跳动不横移、成栅格，专业监控质感 |\n| **12** | 全 app 选中态 | 按 B7 改低饱和填充+accent 竖条（UninstallerView.swift:223 等） | 选中从「刷蓝条」→ Mac 原生精致高亮 |\n| **13** | `SunburstView.swift:92-98` 环缝 | 露底(-1.5)改描边分隔：outer -0.5 + 每扇段 1pt `canvasTop.opacity(0.9)` 描边 | 深色「死黑裂纹」→墨色描边，深浅观感对齐 |\n| **14** | `XLineChart.swift:35,39,25` | 辉光减半 + `values.count<2` 画居中 hairline 基线兜底 + near-flat（max-min<0.05）`showFill:false` | Network/Monitor 折线不再空洞/霓虹；平线不再一坨粉 |\n| **15** | 新增 `XDangerButtonStyle` + `XCard` 深色描边 `0.6→0.35` | Components.swift 追加危险按钮；strokeBorder 动态 alpha | 破坏性操作有色彩预警；深色卡「框太多」减重 |\n\n---\n\n## D) 各界面专属精修（每屏 1–2 条，不与 A 冲突）\n\n- **SmartScan Dashboard**：① 环与中心数字同向——环填「可用率 `1-disk`」用 teal（满环=更空=好），或中心改「已用 434/494 GB」；② 三卡去重——把「Disk Used」换成 CPU/Reclaimable/温度，与 hero 正交。\n- **ModuleIdleHero（系统垃圾/各模块）**：① CTA `large` 字号 `title(22)→title2(17)`、纵向 padding `16→14`，配 A4 光晕收敛，从「landing 大按钮」回「工具按钮」；② SummaryHeader 补 `.ultraThinMaterial`+底 hairline，与底栏对称。\n- **spaceLens Sunburst**：① 图例数值 `caption(11)→mono(13)` + `textPrimary` + `minWidth:68 trailing` 成栅格；② 右图例底部空洞放一张 `XCard` 脚注（最大文件/扫描用时），或面板 `fixedSize` 垂直居中。\n- **Duplicates**：① Choose Folder 从 `.bordered`→`XSecondaryButtonStyle` 紧凑变体；② hero 光学上移（`.offset(y:-XSpacing.xxl)` 或底部 `xxxl` padding），落在窗口 ~43% 高而非子区正中。\n- **Uninstaller**：① 侧栏三条左基线统一到 16pt（header/搜索/行同源 padding）；② 详情头右侧加 `monoLarge` 总量数字 + caption「可清理关联文件」，给破坏性操作「代价锚点」。\n- **Optimization**：① 行尾控件固定 `frame(width:72, alignment:.trailing)` 让 button/badge/switch 终止在一条竖线；② `退出` 走危险语义（`.tint(danger)` 或 `XDangerButtonStyle` 紧凑版）。\n- **Maintenance**：① root 任务图标砖去橙→中性 `[textTertiary,textSecondary]`，warning 只留给「需管理员/受阻」态；② 页面 `.frame(maxWidth:680)` 居中，缩短 title→Execute 眼动。\n- **Hardware**：① 删 `thermalCard`，把汇总并进 `sensorsCard` 头行（取 max 而非 mean，数字自洽）；② LazyVGrid 改确定性 3 列等高，battery 卡做整列 left-rail 跨两行，消灭右下大洞。\n- **Monitor Overview**：① `infoCol:452` 值改 `XFont.mono` 与 statRow 一致；② mini gauge track `surfaceAlt.opacity(0.55)`，0% 用 0.1 幽灵环而非孤点。\n- **Network**：① throughput 卡预填 60 点滚动窗口，下载(teal)/上传(pink)双线，卡高绑内容不硬留 60pt；② throughput 卡套 `MonitorCard` 规范（图标砖+中文标题），根除英文裸标签。\n- **Settings**：① 12 卡按 4 组重排，每组前 `xSectionLabel()`（`textTertiary→textSecondary` 提对比）+ 组间 `xl`/组内 `s`；② 页面标题 `Settings` 升 `largeTitle(28)`、About 卡内 `Xico` 降 `title(22)`，修层级倒挂。\n- **Pricing**：① 价格拆 `¥(17 semibold)` + 数字 `monoHero(34).monospacedDigit()`；两卡 `.frame(maxHeight:.infinity)` 等高、两 CTA 同一水平线；② 非推荐卡 CTA 用 `XSecondaryButtonStyle`、推荐卡用 `XPrimaryButtonStyle`，引导落到家庭版。\n- **MenuMetricPanel**：① `perCoreBars` 空槽 `surfaceAlt→hairline`、填充色统一 `ringColors`（弃 `gauge(v)` 避免单核瞬时变粉闪烁）、`cornerRadius 2→3`；② chip 用 `Grid` 两列等宽对齐，与 perCore/进程列表共 leading 基线。\n\n---\n\n**自洽校验**：D 层所有数值均引用 A 层新 token（`title=22`、`title2=17`、`heroCompact=46`、`monoHero=34`、`micro=10`、`gauge` 三段、`xGlow r:16/op:0.28`、`XDangerButtonStyle`、`XLayout.readWidth=680`、`XRadius.appIcon`）——无一处与 A 打架。\n\n相关文件（绝对路径）：\n- `/Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem/Tokens.swift`（A1/A2/A4/A5 核心）\n- `/Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem/Components.swift`（A4 按钮/卡片、B8 新增 XDangerButtonStyle）\n- `/Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem/Visuals.swift`（A6 环/图标砖、XRingGauge/XMiniRing）\n- `/Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem/XLineChart.swift`（A4/C14 折线降辉光+兜底）\n- `/Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem/Localization.swift`（C1 本地化补键，为跨 target xLoc 查表根因）"
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "逐面设计评审"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "统一升级规范"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "crit:dashboard",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "a3027bee6aa1b24cf",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079203081,
+      "queuedAt": 1783079203067,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Xico — Smart Scan Dashboard (SmartScanView), light + dark",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「dashboard」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/20-dashboard-light.png 和 /tmp/xico-shots/20-dashboard-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/ScanViews.swift（SmartScanView 仪表盘） 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/Components/Vis…",
+      "lastProgressAt": 1783079294062,
+      "tokens": 73112,
+      "toolCalls": 9,
+      "durationMs": 90980,
+      "resultPreview": "{\"surface\":\"Xico — Smart Scan Dashboard (SmartScanView), light + dark\",\"premiumScore\":6.5,\"summary\":\"This is a genuinely handsome idle dashboard — the hero ring, aurora gradient, dual-shadow cards and the \\\"Undo last cleanup\\\" card all read as a real product, not a concept. Dark mode is especially strong. But it stops one clear tier short of Apple-Design-Award because the data visualization lies: …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "crit:moduleScan",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "abe7339d4a4655ca6",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079203082,
+      "queuedAt": 1783079203067,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "ModuleScanView — idle Hero state (ModuleIdleHero), cross-re…",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「moduleScan」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/01-systemjunk-idle-light.png 和 /tmp/xico-shots/01-systemjunk-idle-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/ScanViews.swift（ModuleScanView 扫描/结果/SummaryHeader/ResultGroupCard/XActionBar） 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpa…",
+      "lastProgressAt": 1783079329694,
+      "tokens": 76372,
+      "toolCalls": 11,
+      "durationMs": 126612,
+      "resultPreview": "{\"surface\":\"ModuleScanView — idle Hero state (ModuleIdleHero), cross-referenced against results/scanning/SummaryHeader/ResultGroupCard/XActionBar\",\"premiumScore\":7,\"summary\":\"扎实的一套设计语言：双层阴影、动态深浅色、AngularGradient 环、连续圆角，明显高于模板级别，深浅两色都成立。离顶级（Things 3 / Linear / CleanMyMac X）还差三步：一是「辉光」用力过猛——idle 的图标砖 xGlow(radius:30, 0.45) 叠上按钮自带 brand 光晕，暗色下两团大而糊的紫雾直接拉回「概念稿/糖果」观感，这是最伤格调的一处；二是字号阶梯在 11–16pt 段太挤（14.5/…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "crit:spaceLens",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "ab3c72b6f19fecec5",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079203083,
+      "queuedAt": 1783079203068,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "spaceLens (SunburstView 放射环形图 + 右侧图例)",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「spaceLens」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/07-spacelens-light.png 和 /tmp/xico-shots/07-spacelens-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/SunburstView.swift + SpaceLensView.swift（放射环形图） 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/C…",
+      "lastProgressAt": 1783079322099,
+      "tokens": 71711,
+      "toolCalls": 10,
+      "durationMs": 119016,
+      "resultPreview": "{\"surface\":\"spaceLens (SunburstView 放射环形图 + 右侧图例)\",\"premiumScore\":6.5,\"summary\":\"扎实的原创信息图，色相分层清晰、浅色下像克制的珠宝色花瓣，中心数字有分量。离顶级还差三步：(1) 深色下环缝是死黑裂纹而非分隔——最扎眼的败笔，浅/深两套观感不一致；(2) 右侧图例是页面最弱环节——数字字号/字重比标题还小、无 tabular 对齐、占比条细到 4pt 几乎看不见、且面板下方留出大片空洞；(3) 视线动线上\\\"总量\\\"被展示了三次（中心大数字 + 图例标题右侧 + 隐含），信息层级发散。以下按可落地程度排序，全部对应到具体 token 与行号。\",\"findings\":[{\"severity\":\"P1\",\"element\":\"环扇段分隔（SunburstView.swift:92,94,97-98）\",\"issu…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "crit:duplicates",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "a3169b39fd1df59b1",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079203083,
+      "queuedAt": 1783079203068,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Xico — Duplicates module, idle/empty state (light + dark)",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「duplicates」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/02-duplicates-idle-light.png 和 /tmp/xico-shots/02-duplicates-idle-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/DuplicatesView.swift 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/Components/Visu…",
+      "lastProgressAt": 1783079297141,
+      "tokens": 64246,
+      "toolCalls": 12,
+      "durationMs": 94058,
+      "resultPreview": "{\"surface\":\"Xico — Duplicates module, idle/empty state (light + dark)\",\"premiumScore\":6.5,\"summary\":\"The idle hero has a genuinely nice bones: cohesive aurora gradient, rounded hero title, double-layer shadow discipline, and clean dark-mode canvas. But three concrete things hold it back from a paid-tier feel. (1) The single most damaging flaw is a mixed-language screen — English title/subtitle sit…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "crit:uninstaller",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "adcf6f83d6ef9a843",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079203083,
+      "queuedAt": 1783079203068,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Xico — Uninstaller (卸载器)",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「uninstaller」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/03-uninstaller-light.png 和 /tmp/xico-shots/03-uninstaller-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/UninstallerView.swift 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/Components/Visuals）。\n…",
+      "lastProgressAt": 1783079321896,
+      "tokens": 75722,
+      "toolCalls": 11,
+      "durationMs": 118813,
+      "resultPreview": "{\"surface\":\"Xico — Uninstaller (卸载器)\",\"premiumScore\":6.5,\"summary\":\"卸载器的骨架是对的（左列表 + 右详情 + 底部 XActionBar 的经典 master–detail），空态排版克制，与其它页共用同一套 token。但离 Craft/CleanMyMac X 那种「一眼高级」还差三步：(1) 侧栏头部与列表之间缺少统一栅格——header 用 XSpacing.xl(24) 水平内边距，而列表行/搜索框各自用 XSpacing.s/m，边缘不对齐，视觉上「歪」；(2) 关键动线（选中态、体积数字、安全徽标）层级不够，选中行用满色 brandGradient 砖块+纯白字太重、像被「刷蓝」而非高级高亮；(3) 空态右面板是纯渐变画布、没有任何卡片或分隔承托，270pt 宽的副标题在超宽窗里孤零零，信息密度过低显空洞。…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "crit:optimization",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "a5e1151ce84e7db9e",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079203084,
+      "queuedAt": 1783079203068,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Optimization (运行中的应用 / 启动项)",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「optimization」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/04-optimization-light.png 和 /tmp/xico-shots/04-optimization-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/OptimizationView.swift 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/Components/Visual…",
+      "lastProgressAt": 1783079305314,
+      "tokens": 60794,
+      "toolCalls": 12,
+      "durationMs": 102230,
+      "resultPreview": "{\"surface\":\"Optimization (运行中的应用 / 启动项)\",\"premiumScore\":3,\"summary\":\"The two captures show the Optimization page as an essentially empty shell: only the shared XHeaderBar renders, and the segmented control in the trailing slot has collapsed into a solid yellow bar with a red circle-slash glyph — AppKit's missing-image / broken-render placeholder. No cards, no login items, no running apps appear, e…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 7,
+      "label": "crit:maintenance",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "a5486e133fa9e92ae",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079294063,
+      "queuedAt": 1783079203068,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Maintenance (维护) — Xico",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「maintenance」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/05-maintenance-light.png 和 /tmp/xico-shots/05-maintenance-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/MaintenanceView.swift 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/Components/Visuals）。\n…",
+      "lastProgressAt": 1783079388105,
+      "tokens": 61784,
+      "toolCalls": 9,
+      "durationMs": 94042,
+      "resultPreview": "{\"surface\":\"Maintenance (维护) — Xico\",\"premiumScore\":6,\"summary\":\"Solid, safe, and consistent with the app's token system, but it reads as a flat wall of identical elevated cards rather than a crafted list. The gap to Things 3 / CleanMyMac X tier is four things: (1) no card grouping — 8 full-width shadowed XCards stacked with equal spacing gives no scannable structure; (2) stock .bordered buttons i…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 8,
+      "label": "crit:hardware",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "add2fd503f60c9257",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079297142,
+      "queuedAt": 1783079203068,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Xico — Hardware (硬件) screen, light + dark",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「hardware」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/10-hardware-light.png 和 /tmp/xico-shots/10-hardware-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/HardwareView.swift 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/Components/Visuals）。\n\n评审维度（对标 Cra…",
+      "lastProgressAt": 1783079417269,
+      "tokens": 65463,
+      "toolCalls": 15,
+      "durationMs": 120127,
+      "resultPreview": "{\"surface\":\"Xico — Hardware (硬件) screen, light + dark\",\"premiumScore\":7,\"summary\":\"Strong bones: the XCard chrome, XIconTile gradient tiles, monospaced-digit temps, and hero row are genuinely iStat/CleanMyMac-grade, and both light and dark modes hold up. What keeps it off the top shelf is three concrete problems, in priority order: (1) the disk/usage bars render a rose→blue gradient at 88% full th…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 9,
+      "label": "crit:monitor",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "a50b71815ea0ba3e5",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079305318,
+      "queuedAt": 1783079203068,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Monitor / System Monitor — Overview tab (light + dark)",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「monitor」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/11-monitor-light.png 和 /tmp/xico-shots/11-monitor-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/MonitorView.swift 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/Components/Visuals）。\n\n评审维度（对标 Craft /…",
+      "lastProgressAt": 1783079434448,
+      "tokens": 77714,
+      "toolCalls": 15,
+      "durationMs": 129130,
+      "resultPreview": "{\"surface\":\"Monitor / System Monitor — Overview tab (light + dark)\",\"premiumScore\":7,\"summary\":\"The Monitor overview reads as a competent, near-premium dashboard: the ring-gauge row, the aurora gradient language, and the smooth history sparklines are genuinely attractive and the dark theme in particular has real depth. But it is held back from Apple-Design-Award tier by three concrete, fixable cla…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 10,
+      "label": "crit:network",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "aab87979eafd81580",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079321897,
+      "queuedAt": 1783079203068,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Xico — Network view (network)",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「network」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/19-network-light.png 和 /tmp/xico-shots/19-network-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/NetworkView.swift 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/Components/Visuals）。\n\n评审维度（对标 Craft /…",
+      "lastProgressAt": 1783079422095,
+      "tokens": 77823,
+      "toolCalls": 11,
+      "durationMs": 100197,
+      "resultPreview": "{\"surface\":\"Xico — Network view (network)\",\"premiumScore\":6,\"summary\":\"卡片材质、图标砖、语义色都已达到接近顶级付费 app 的水准，深浅色都干净。但这一屏离顶级差三个具体的坎：(1) 顶部 throughput 大卡里的 XLineChart 没渲染出来，导致整张卡是约 230pt 的死白空洞——这是第一眼命中的最大败笔，直接把「专业监控面板」拉成「未完成稿」；(2) 同一屏出现两套卡片头语言与两套头样式(英文 Download/Upload 裸箭头 vs 中文 MonitorCard 渐变图标砖)，一致性破功;(3) 网络接口列表 5 行无分隔线、无栅格，读成一坨。修掉这三点 + 数字排版细节，可上到 8.5。评分维度里字体/语义色强，材质纵深中上，信息密度与一致性是主要失分项。以下按严重度给可直接落地的 token…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 11,
+      "label": "crit:settings",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "a58ead722b8f4cd80",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079322100,
+      "queuedAt": 1783079203068,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Settings 界面（SettingsView.swift）— 浅色 + 深色",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「settings」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/15-settings-light.png 和 /tmp/xico-shots/15-settings-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/SettingsView.swift 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/Components/Visuals）。\n\n评审维度（对标 Cra…",
+      "lastProgressAt": 1783079525657,
+      "tokens": 76883,
+      "toolCalls": 12,
+      "durationMs": 203557,
+      "resultPreview": "{\"surface\":\"Settings 界面（SettingsView.swift）— 浅色 + 深色\",\"premiumScore\":6.5,\"summary\":\"底子扎实：XCard 双层阴影、XIconTile、语义色系统都到位，卡片本身的材质这一版已经不塑料了。但离 Things 3 / Linear 级还差一个'信息架构层'——现在是 12 张同权重卡片从上到下一字排开，没有分组、没有区段标题，视线找不到锚点；加上中英文案混排（'试用中 · 剩余 12 天' vs 'Using built-in offline rules'）严重削弱专业感；About 卡三个按钮宽度不齐、右列动线散；Menu Bar 卡内部字号/留白自成一套，打破整页节奏。这些都是结构与一致性问题，不是画得不够好看——改法是加 token 和重排，不是重画。\",\"findings\":[{\"severity\":…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 12,
+      "label": "crit:pricing",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "a511851bb6b0b74e6",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079329697,
+      "queuedAt": 1783079203068,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Xico Pricing / Upgrade sheet (PricingView.swift)",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「pricing」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/18-pricing-light.png 和 /tmp/xico-shots/18-pricing-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/PricingView.swift 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/Components/Visuals）。\n\n评审维度（对标 Craft /…",
+      "lastProgressAt": 1783079451052,
+      "tokens": 68299,
+      "toolCalls": 10,
+      "durationMs": 121355,
+      "resultPreview": "{\"surface\":\"Xico Pricing / Upgrade sheet (PricingView.swift)\",\"premiumScore\":6.5,\"summary\":\"这是一张结构正确、克制、深浅色都能用的 paywall——渐变按钮、卡片阴影、推荐边框都在位，已经比大多数 indie Mac app 好。但离 Craft/Things 3/CleanMyMac X 那一档还差在四件事上：(1) 价格数字不是 monospaced 且 ¥ 与数字同粗，价格作为全页视觉锚点却\\\"发不出声\\\";(2) 两张卡功能条数不等(6 vs 4)+ HStack .top 对齐，家庭版按钮上方留出一大块空洞,右卡显得没写完;(3) 功能清单全用 textSecondary + caption(11pt),勾(13pt)比字还大,信息层级塌成一片灰;(4) 一张卡上\\\"推荐\\\"用 bran…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 13,
+      "label": "crit:menuPanels",
+      "phaseIndex": 1,
+      "phaseTitle": "逐面设计评审",
+      "agentId": "aa12bbdf1af28f749",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079388106,
+      "queuedAt": 1783079203068,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "menuPanels — MenuMetricPanel (CPU 详情面板，Sources/Feature…",
+      "promptPreview": "你是苹果设计奖级别的 Mac app UI/UX 设计总监。评审 Xico 的「menuPanels」界面。\n请用 Read 打开这两张实拍渲染图：/tmp/xico-shots/12-menu-cpu-light.png 和 /tmp/xico-shots/12-menu-cpu-dark.png，再读源码 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/Features/MenuPanels.swift（菜单栏详情面板） 了解可改的 token/结构。\n设计系统在 /Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSystem（XColor/XSpacing/XFont/XRadius/XShadow/XCard/XIconTile/Components/Visuals）。\n\n评审…",
+      "lastProgressAt": 1783079503238,
+      "tokens": 65707,
+      "toolCalls": 11,
+      "durationMs": 115132,
+      "resultPreview": "{\"surface\":\"menuPanels — MenuMetricPanel (CPU 详情面板，Sources/Features/MenuPanels.swift)\",\"premiumScore\":6.5,\"summary\":\"底子不错：极光配色克制、双层阴影、平滑折线图、mono 数字都到位，暗色尤其耐看。但离 iStat / CleanMyMac X 级还差三步——(1) 硬伤:「温度」中英文混排(本地化漏翻),破坏专业感;(2) per-core 柱状图在低负载下渲染成一排空白灰盒子,反成视觉噪点;(3) 排版栅格没对齐——环 60pt 但 4 个 chip 用 Spacer 自由排布、进程列表与 chip 左缘不共线、字号阶梯在 11pt 挤了太多层级(caption/captionEmphasis/进程 11pt 三者几乎同大)。修掉这三类问题即可上 8.5。\",\"find…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 14,
+      "label": "design-director",
+      "phaseIndex": 2,
+      "phaseTitle": "统一升级规范",
+      "agentId": "a549417cf047e2570",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783079525661,
+      "queuedAt": 1783079525659,
+      "attempt": 1,
+      "lastToolName": "Read",
+      "lastToolSummary": "/Users/yaokai/Desktop/IT/MacApp/XicoApp/Sources/DesignSyste…",
+      "promptPreview": "你是 Xico 的首席设计师。下面是 13 个界面的设计评审结果（JSON）。请综合成一份【统一的整体升级规范】，核心要求：不是零散补丁，而是一套连贯的设计语言升级，让全 app 精致感/高级感拉满、UX 极佳。\n\n评审结果：\n[{\"surface\":\"Xico — Smart Scan Dashboard (SmartScanView), light + dark\",\"premiumScore\":6.5,\"summary\":\"This is a genuinely handsome idle dashboard — the hero ring, aurora gradient, dual-shadow cards and the \\\"Undo last cleanup\\\" card all read as a real product, not a concept. Dark mode …",
+      "lastProgressAt": 1783079702025,
+      "tokens": 102921,
+      "toolCalls": 6,
+      "durationMs": 176364,
+      "resultPreview": "I now have the full picture of the actual token system. The reviews are accurate against the real code. Let me synthesize the unified upgrade spec, grounded in the exact current values I've just read.\n\n---\n\n# Xico 统一设计语言升级规范 v4\n\n> 依据：13 份评审 + 已核对的真实 token 源码（`Tokens.swift` / `Components.swift` / `Visuals.swift` / `XLineChart.swift`）。\n> 贯穿主线：**「彩色作点睛、辉光贴边一圈、数字全等宽、间距讲疏密、一屏一种语言」**。所有数值已相互对齐，A 层的新 tok…"
+    }
+  ],
+  "totalTokens": 1018551,
+  "totalToolCalls": 154
+}

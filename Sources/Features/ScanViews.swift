@@ -296,26 +296,30 @@ public struct SmartScanView: View {
 
     private var dashboard: some View {
         let disk = capacity?.usedFraction ?? 0
+        let free = max(0, 1 - disk)
         let mem = metrics?.memoryUsedFraction ?? 0
         let health = healthScore(disk: disk, mem: mem)
-        return VStack(spacing: XSpacing.l) {
+        return VStack(spacing: XSpacing.xl) {
             healthHeader(score: health, disk: disk)
 
-            XRingGauge(progress: disk, colors: XColor.gauge(disk), lineWidth: 16, size: 296) {
-                VStack(spacing: 6) {
+            // 环填「可用率」并用清凉青蓝：环越满 = 越空 = 越好，与中心「可用空间」同向同义。
+            XRingGauge(progress: free, colors: [XColor.accentTeal, XColor.auroraBlue], lineWidth: 16, size: 296) {
+                VStack(spacing: XSpacing.xxs) {
                     heroBytes(capacity?.available ?? 0)
                     Text(xLoc("可用空间")).font(XFont.body).foregroundStyle(XColor.textSecondary)
                     if let cap = capacity {
-                        Text(xLocF("共 %@", cap.total.formattedBytes)).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                        Text(xLocF("共 %@ · 已用 %d%%", cap.total.formattedBytes, Int(disk * 100)))
+                            .font(XFont.caption).foregroundStyle(XColor.textTertiary)
                     }
                 }
             }
 
+            // 三卡配色统一走语义 gauge（内存不再恒定紫红，与磁盘一致按占用着色）。
             HStack(spacing: XSpacing.m) {
                 XMetricCard(value: "\(Int(disk * 100))%", label: xLoc("磁盘已用"),
                             fraction: disk, colors: XColor.gauge(disk))
                 XMetricCard(value: "\(Int(mem * 100))%", label: xLoc("内存占用"),
-                            fraction: mem, colors: [XColor.auroraViolet, XColor.auroraRose])
+                            fraction: mem, colors: XColor.gauge(mem))
                 XMetricCard(value: "\(health)", label: xLoc("健康评分"),
                             fraction: Double(health) / 100, colors: healthColors(health))
             }
