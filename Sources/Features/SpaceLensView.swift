@@ -129,26 +129,18 @@ public struct SpaceLensView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let node = model.current {
-            VStack(spacing: 0) {
-                HStack {
-                    Text(node.name).font(XFont.headline)
-                    Spacer()
-                    Text(node.size.formattedBytes).font(XFont.mono).foregroundStyle(XColor.textSecondary)
-                }
-                .padding(.horizontal, XSpacing.xl)
-                .padding(.vertical, XSpacing.s)
-                TreemapView(node: node) { child in model.drill(into: child) }
-                    .padding(XSpacing.l)
-            }
+            SunburstView(node: node) { child in model.drill(into: child) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
+            // 空态：整组垂直+水平居中，按钮紧跟说明文字（不再被撑到下方）
             VStack(spacing: XSpacing.l) {
                 XEmptyState(systemImage: "circle.hexagongrid.fill",
                             title: xLoc("空间透镜"),
-                            subtitle: xLoc("可视化某个文件夹（或整个磁盘）的空间占用，点击方块可逐层钻取。"))
-                    .frame(maxHeight: 320)
+                            subtitle: xLoc("把文件夹（或整个磁盘）的空间占用画成放射环形图，一眼看清谁在占地方，点击可逐层钻取。"))
                 Button(xLoc("扫描主目录")) { model.scan() }
-                    .buttonStyle(XPrimaryButtonStyle())
+                    .buttonStyle(XPrimaryButtonStyle(large: true))
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
