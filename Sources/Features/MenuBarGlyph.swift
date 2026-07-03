@@ -121,21 +121,39 @@ public enum MenuBarGlyph {
 
 private struct MiniSparkline: View {
     let values: [Double]   // 0…1
+
+    private func points(in size: CGSize) -> [CGPoint] {
+        let v = Array(values.suffix(18))
+        guard v.count > 1 else { return [] }
+        return v.enumerated().map { i, val in
+            CGPoint(x: size.width * CGFloat(i) / CGFloat(v.count - 1),
+                    y: size.height * (1 - CGFloat(min(max(val, 0), 1)) * 0.9) - 0.5)
+        }
+    }
+
     var body: some View {
         GeometryReader { geo in
-            let v = Array(values.suffix(16))
+            let pts = points(in: geo.size)
+            let h = geo.size.height, w = geo.size.width
+            // 折线下方的面积填充（低透明度）——单色模板下也有层次，像 iStat 的迷你走势
             Path { p in
-                guard v.count > 1 else { return }
-                let w = geo.size.width, h = geo.size.height
-                for (i, val) in v.enumerated() {
-                    let x = w * CGFloat(i) / CGFloat(v.count - 1)
-                    let y = h * (1 - CGFloat(min(max(val, 0), 1)))
-                    if i == 0 { p.move(to: CGPoint(x: x, y: y)) } else { p.addLine(to: CGPoint(x: x, y: y)) }
-                }
+                guard let first = pts.first else { return }
+                p.move(to: CGPoint(x: 0, y: h))
+                p.addLine(to: first)
+                for pt in pts.dropFirst() { p.addLine(to: pt) }
+                p.addLine(to: CGPoint(x: w, y: h))
+                p.closeSubpath()
             }
-            .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            .fill(.opacity(0.22))
+            // 折线本身
+            Path { p in
+                guard let first = pts.first else { return }
+                p.move(to: first)
+                for pt in pts.dropFirst() { p.addLine(to: pt) }
+            }
+            .stroke(style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
         }
-        .frame(width: 22, height: 12)
+        .frame(width: 24, height: 13)
     }
 }
 
