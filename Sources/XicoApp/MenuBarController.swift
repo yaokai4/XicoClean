@@ -103,19 +103,31 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
     }
 
-    private var style: MenuBarStyle {
-        // 默认 .iconValue（图标+数值，最克制，开箱即像 Sensei/iStat 默认）。
-        // .rich 迷你可视化留给用户在设置里主动开启。
-        MenuBarStyle(rawValue: UserDefaults.standard.string(forKey: "xico.mb.style") ?? "") ?? .iconValue
+    /// 每项独立的显示样式（像 iStat：CPU 用直方图、网络用折线…各自不同）。
+    /// 优先读 `xico.mb.<id>.style`；未设置时用该项的默认样式（须与设置页 @AppStorage 默认一致）。
+    private func defaultStyle(for id: String) -> MenuBarStyle {
+        switch id {
+        case "cpu", "memory", "gpu": return .rich
+        case "network":              return .graph
+        default:                     return .iconValue   // temp / disk / combined
+        }
     }
-    private var colored: Bool {
-        // 默认单色（false）：菜单栏保持克制，随深浅自适应黑/白，不刺眼。彩色为用户可选项。
-        UserDefaults.standard.object(forKey: "xico.mb.colored") == nil ? false : UserDefaults.standard.bool(forKey: "xico.mb.colored")
+    private func style(for id: String) -> MenuBarStyle {
+        if let s = UserDefaults.standard.string(forKey: "xico.mb.\(id).style"),
+           let st = MenuBarStyle(rawValue: s) { return st }
+        return defaultStyle(for: id)
+    }
+    /// 每项独立的彩色开关。优先 `xico.mb.<id>.colored`，回退全局 `xico.mb.colored`，再回退单色。
+    private func colored(for id: String) -> Bool {
+        if UserDefaults.standard.object(forKey: "xico.mb.\(id).colored") != nil {
+            return UserDefaults.standard.bool(forKey: "xico.mb.\(id).colored")
+        }
+        return UserDefaults.standard.object(forKey: "xico.mb.colored") == nil ? false : UserDefaults.standard.bool(forKey: "xico.mb.colored")
     }
 
     private func image(for id: String, snapshot s: SystemSnapshot?) -> NSImage? {
-        let style = self.style
-        let colored = self.colored
+        let style = style(for: id)
+        let colored = colored(for: id)
         switch id {
         case "cpu":      return MenuBarGlyph.cpu(fraction: s?.cpuUsage ?? 0,
                                                  history: model.cpuHistory, style: style, colored: colored)

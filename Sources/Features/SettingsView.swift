@@ -28,6 +28,14 @@ public struct SettingsView: View {
     // 默认单色（模板图，随菜单栏深浅自动黑/白）——克制、像 Sensei/iStat 默认那样不刺眼。
     // 彩虹极光留给点开后的详情面板与 App 内部。想要彩色菜单栏的用户可自行打开。
     @AppStorage("xico.mb.colored") private var mbColored = false
+    // 每项独立的显示样式（像 iStat：各指标可各自切换 图标+数值 / 仅数值 / 迷你图 / 可视化）。
+    // 默认给一套克制但有信息量的组合：CPU/GPU 用可视化、网络用迷你折线、其余用图标+数值。
+    @AppStorage("xico.mb.cpu.style")     private var cpuStyle    = MenuBarStyle.rich.rawValue
+    @AppStorage("xico.mb.memory.style")  private var memStyle    = MenuBarStyle.rich.rawValue
+    @AppStorage("xico.mb.network.style") private var netStyle    = MenuBarStyle.graph.rawValue
+    @AppStorage("xico.mb.temp.style")    private var tempStyle   = MenuBarStyle.iconValue.rawValue
+    @AppStorage("xico.mb.gpu.style")     private var gpuStyle    = MenuBarStyle.rich.rawValue
+    @AppStorage("xico.mb.disk.style")    private var diskStyle   = MenuBarStyle.iconValue.rawValue
 
     public init(model: AppModel) { self.model = model }
 
@@ -398,28 +406,20 @@ public struct SettingsView: View {
                     Spacer()
                 }
                 Divider().padding(.vertical, 2)
-                toggleRow(xLoc("处理器 CPU"), $mbCPU)
-                toggleRow(xLoc("内存"), $mbMemory)
-                toggleRow(xLoc("网络速度"), $mbNetwork)
-                toggleRow(xLoc("处理器温度"), $mbTemp)
-                toggleRow(xLoc("GPU 占用"), $mbGPU)
-                toggleRow(xLoc("磁盘占用"), $mbDisk)
-                toggleRow(xLoc("合并总览面板"), $mbCombined)
+                Text(xLoc("每项都能单独切换显示方式（图标+数值 / 仅数值 / 迷你折线 / 可视化），像 iStat 一样自定义"))
+                    .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                mbMetricRow(xLoc("处理器 CPU"), $mbCPU, $cpuStyle)
+                mbMetricRow(xLoc("内存"), $mbMemory, $memStyle)
+                mbMetricRow(xLoc("网络速度"), $mbNetwork, $netStyle)
+                mbMetricRow(xLoc("处理器温度"), $mbTemp, $tempStyle)
+                mbMetricRow(xLoc("GPU 占用"), $mbGPU, $gpuStyle)
+                mbMetricRow(xLoc("磁盘占用"), $mbDisk, $diskStyle)
+                mbMetricRow(xLoc("合并总览面板"), $mbCombined, nil)
                 Divider().padding(.vertical, 2)
                 VStack(alignment: .leading, spacing: 3) {
                     toggleRow(xLoc("彩色图标"), $mbColored)
-                    Text(xLoc("关：随菜单栏深浅自动黑白（推荐，克制）；开：每指标单色着色"))
+                    Text(xLoc("关：随菜单栏深浅自动黑白（推荐，克制）；开：每指标按代表色着色"))
                         .font(XFont.caption).foregroundStyle(XColor.textTertiary)
-                }
-                HStack {
-                    Text(xLoc("显示样式")).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
-                    Spacer()
-                    Picker("", selection: $mbStyle) {
-                        ForEach(MenuBarStyle.allCases, id: \.rawValue) { st in
-                            Text(st.title).tag(st.rawValue)
-                        }
-                    }
-                    .labelsHidden().pickerStyle(.menu).frame(width: 150)
                 }
                 HStack {
                     Text(xLoc("更新频率")).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
@@ -432,6 +432,31 @@ public struct SettingsView: View {
                     .labelsHidden().pickerStyle(.menu).frame(width: 150)
                     .onChange(of: mbInterval) { model.applyRefreshInterval($0) }
                 }
+            }
+        }
+    }
+
+    /// 单个菜单栏指标行：开关 +（开启时）该项独立的显示样式选择器。
+    private func mbMetricRow(_ title: String, _ enabled: Binding<Bool>, _ style: Binding<String>?) -> some View {
+        VStack(spacing: 6) {
+            HStack {
+                Text(title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                Spacer()
+                Toggle("", isOn: enabled).toggleStyle(.switch).labelsHidden()
+            }
+            if enabled.wrappedValue, let style = style {
+                HStack(spacing: XSpacing.s) {
+                    Image(systemName: "slider.horizontal.3").font(.system(size: 10)).foregroundStyle(XColor.textTertiary)
+                    Picker("", selection: style) {
+                        ForEach(MenuBarStyle.allCases, id: \.rawValue) { st in
+                            Text(st.title).tag(st.rawValue)
+                        }
+                    }
+                    .labelsHidden().pickerStyle(.menu).frame(width: 160)
+                    Spacer()
+                }
+                .padding(.leading, XSpacing.l)
+                .padding(.bottom, 2)
             }
         }
     }
