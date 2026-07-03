@@ -94,13 +94,13 @@ public struct XScanOrb: View {
                     .shadow(color: c2.opacity(0.9), radius: 10)
                     .offset(x: CGFloat(cos(headRad)) * r, y: CGFloat(sin(headRad)) * r)
 
-                // 中心
+                // 中心：等宽数字直接刷新（不做逐位滚动）。扫描计数每秒更新多次，
+                // 一旦叠加 numericText 滚动动画就会永远处于「过渡中」→ 数字发虚模糊。
+                // 等宽字形保证位宽稳定，裸刷新看起来是平滑攀升，干净、高级、不糊。
                 VStack(spacing: 6) {
                     Text(value).xHeroNumber().foregroundStyle(XColor.textPrimary)
-                        .contentTransition(.numericText())
                     Text(label).font(XFont.body).foregroundStyle(XColor.textSecondary).tracking(0.3)
                 }
-                .animation(.snappy, value: value)
             }
             .frame(width: size, height: size)
         }

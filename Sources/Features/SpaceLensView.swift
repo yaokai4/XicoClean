@@ -9,6 +9,7 @@ final class SpaceLensModel: ObservableObject {
     @Published var stack: [DiskNode] = []
     @Published var isScanning = false
     @Published var scannedBytes: Int64 = 0
+    @Published var scanMessage: String = ""
     @Published var scanRoot: URL = FileManager.default.homeDirectoryForCurrentUser
 
     private let env: XicoEnvironment
@@ -27,11 +28,15 @@ final class SpaceLensModel: ObservableObject {
         task?.cancel()
         isScanning = true
         scannedBytes = 0
+        scanMessage = ""
         root = nil
         stack = []
         let target = scanRoot
         let handler: ProgressHandler = { [weak self] p in
-            Task { @MainActor in self?.scannedBytes = p.bytesFound }
+            Task { @MainActor in
+                self?.scannedBytes = p.bytesFound
+                if !p.message.isEmpty { self?.scanMessage = p.message }
+            }
         }
         task = Task {
             let tree = await env.diskTreeScanner.scan(target, progress: handler)
@@ -123,9 +128,18 @@ public struct SpaceLensView: View {
 
     @ViewBuilder private var content: some View {
         if model.isScanning {
-            VStack(spacing: XSpacing.xl) {
-                XScanOrb(value: model.scannedBytes.formattedBytes, label: xLoc("正在分析空间"), size: 280)
-                Button(xLoc("取消")) { model.cancel() }.buttonStyle(XSecondaryButtonStyle())
+            VStack(spacing: XSpacing.l) {
+                XScanOrb(value: model.scannedBytes.formattedBytes, label: xLoc("正在分析空间"), size: 260)
+                // 正在读取的目录——给扫描一个真实的进行感与上下文
+                Text(model.scanMessage.isEmpty ? " " : model.scanMessage)
+                    .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                    .lineLimit(1).truncationMode(.middle).frame(maxWidth: 360)
+                    .id(model.scanMessage)
+                    .transition(.opacity)
+                    .animation(.easeOut(duration: 0.2), value: model.scanMessage)
+                Button(xLoc("取消")) { model.cancel() }
+                    .buttonStyle(XSecondaryButtonStyle())
+                    .padding(.top, XSpacing.xs)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let node = model.current {
