@@ -122,7 +122,7 @@ public struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(xLoc("清理历史")).xHeadline().foregroundStyle(XColor.textPrimary)
                         Text(totalCleanups == 0 ? xLoc("完成一次清理后会在这里看到记录")
-                             : "累计释放 \(totalReclaimed.formattedBytes) · 共 \(totalCleanups) 次清理")
+                             : xLocF("累计释放 %@ · 共 %d 次清理", totalReclaimed.formattedBytes, totalCleanups))
                             .font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     Spacer()
@@ -135,7 +135,7 @@ public struct SettingsView: View {
                     Divider().padding(.vertical, 2)
                     ForEach(history) { rec in
                         HStack(spacing: XSpacing.m) {
-                            Text(rec.module).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                            Text(xLoc(rec.module)).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                             Text(rec.date, format: .relative(presentation: .named))
                                 .font(XFont.caption).foregroundStyle(XColor.textTertiary)
                             Spacer()
@@ -300,8 +300,12 @@ public struct SettingsView: View {
     }
 
     private var licenseSubtitle: String {
-        let status = licenseStatus ?? model.env.license.status()
-        return "\(status.state.title) · \(status.summary)"
+        switch (licenseStatus ?? model.env.license.status()).state {
+        case let .licensed(name, _): return xLocF("已激活 · %@", name)
+        case let .trial(days):       return xLocF("试用中 · 剩余 %d 天", days)
+        case .expired:               return xLoc("试用已结束 · 升级后继续使用清理与优化")
+        case .invalid:               return xLoc("许可证无效 · 请重新导入")
+        }
     }
 
     private func importLicense() {
@@ -360,7 +364,6 @@ public struct SettingsView: View {
 
     private var definitionsSubtitle: String {
         let status = definitionsStatus ?? model.env.definitionsUpdater.status()
-        let cached = status.cachedVersion.map { " · 已缓存 v\($0)" } ?? ""
         let config: String
         if status.endpointConfigured && status.trustConfigured {
             config = xLoc("在线更新已启用")
@@ -369,7 +372,10 @@ public struct SettingsView: View {
         } else {
             config = xLoc("缺少可信公钥配置")
         }
-        return "当前 v\(status.activeVersion)\(cached) · \(config)"
+        var parts = [xLocF("当前 v%@", "\(status.activeVersion)")]
+        if let c = status.cachedVersion { parts.append(xLocF("已缓存 v%@", "\(c)")) }
+        parts.append(config)
+        return parts.joined(separator: " · ")
     }
 
     private func refreshDefinitions() {

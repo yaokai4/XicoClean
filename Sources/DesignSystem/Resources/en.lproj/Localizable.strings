@@ -1,4 +1,4 @@
-/* Xico localization — auto-generated (en). Source language: zh-Hans. */
+/* Xico localization — auto-generated (en). Source: zh-Hans. */
 
 " · %d 项被跳过" = " · %d skipped";
 "%@ · 进程榜" = "%@ · Top Processes";
@@ -161,6 +161,7 @@
 "已激活 · %@" = "Activated · %@";
 "已用 / %@" = "Used / %@";
 "已移除本机许可证。" = "License removed from this Mac.";
+"已缓存 v%@" = "Cached v%@";
 "已购买？" = "Already bought it?";
 "已运行" = "Uptime";
 "已选 %d 项" = "%d selected";
@@ -181,6 +182,7 @@
 "开始使用" = "Get Started";
 "开始扫描" = "Start Scan";
 "开始智能扫描" = "Start Smart Scan";
+"当前 v%@" = "Current v%@";
 "当前为开发签名版本，正式签名后可安装一次性助手执行以下任务。" = "This is a development build. A signed release can install a one-time helper to perform the tasks below.";
 "彩色图标" = "Color Icon";
 "彻底粉碎（不可恢复）" = "Shred Permanently (unrecoverable)";
@@ -228,7 +230,7 @@
 "普通项目移入废纸篓；管理员项目将彻底删除" = "Regular items go to the Trash; admin items are deleted permanently";
 "智能扫描" = "Smart Scan";
 "智能清理" = "Smart Clean";
-"暖阳" = "Warm Sun";
+"暖阳" = "Sunset";
 "更新频率" = "Refresh Rate";
 "最多 5 台 Mac" = "Up to 5 Macs";
 "最大容量" = "Max Capacity";
@@ -259,7 +261,7 @@
 "没有正在运行的前台应用。" = "No foreground apps running.";
 "活跃" = "Active";
 "浅色 / 深色 / 跟随系统" = "Light / Dark / System";
-"深海" = "Deep Sea";
+"深海" = "Ocean";
 "添加文件" = "Add Files";
 "清理" = "Clean up";
 "清理中…" = "Cleaning up…";
@@ -315,6 +317,7 @@
 "系统状态" = "System Status";
 "系统监视" = "System Monitor";
 "系统级" = "System level";
+"累计释放 %@ · 共 %d 次清理" = "Freed %@ total · %d cleanups";
 "终端" = "Terminal";
 "绝对安全" = "Completely safe";
 "维护" = "Maintenance";

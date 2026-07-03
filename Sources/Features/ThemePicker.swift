@@ -88,7 +88,7 @@ private struct ThemeSwatch: View {
             .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hover)
             .onHover { hover = $0 }
 
-            Text(theme.name)
+            Text(xLoc(theme.name))
                 .font(selected ? XFont.captionEmphasis : XFont.caption)
                 .foregroundStyle(selected ? XColor.textPrimary : XColor.textSecondary)
         }

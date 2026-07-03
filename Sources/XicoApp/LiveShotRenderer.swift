@@ -55,6 +55,7 @@ func renderLiveShots() {
             let root = ZStack { AppBackground(); view }
                 .frame(width: size.width, height: size.height)
                 .environment(\.colorScheme, scheme)
+                .environment(\.locale, XLocale.swiftUILocale)
 
             let hosting = NSHostingView(rootView: root)
             hosting.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)

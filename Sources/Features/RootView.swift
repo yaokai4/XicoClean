@@ -22,6 +22,7 @@ public struct RootView: View {
             // 主题/语言切换时，色值与文案都来自静态查表（XThemeStore / XLocale），SwiftUI 无法追踪。
             // 用 .id 绑定 themeID+语言，切换时重建整棵内容树 → 全局即时换色、换语言。
             .id("\(model.themeID)-\(model.language.rawValue)")
+            .environment(\.locale, XLocale.swiftUILocale)   // .relative 日期/数字等跟随 App 语言
             .transition(.opacity)
 
             if model.showOnboarding {

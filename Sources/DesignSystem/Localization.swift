@@ -39,6 +39,16 @@ public enum XLocale {
 
     nonisolated(unsafe) private static var cache: [String: Bundle] = [:]
 
+    /// 当前语言对应的 SwiftUI Locale——让 .relative 日期、数字等系统格式化也跟随 App 语言。
+    public static var swiftUILocale: Locale {
+        switch current {
+        case .system: return Locale.autoupdatingCurrent
+        case .zhHans: return Locale(identifier: "zh_Hans")
+        case .en:     return Locale(identifier: "en")
+        case .ja:     return Locale(identifier: "ja")
+        }
+    }
+
     /// 当前语言对应的资源包（system → 默认按系统解析）。
     static func activeBundle() -> Bundle {
         let lang = current
