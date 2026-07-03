@@ -8,10 +8,10 @@ public struct AppBackground: View {
         ZStack {
             LinearGradient(colors: [XColor.canvasTop, XColor.canvasBottom],
                            startPoint: .top, endPoint: .bottom)
-            glow(XColor.ringPeri, center: UnitPoint(x: 0.88, y: 0.05), r: 780, o: 0.20)
-            glow(XColor.ringRose, center: UnitPoint(x: 0.06, y: 0.95), r: 720, o: 0.18)
-            glow(XColor.ringLav, center: UnitPoint(x: 0.12, y: 0.16), r: 580, o: 0.16)
-            glow(XColor.ringMint, center: UnitPoint(x: 0.94, y: 0.88), r: 500, o: 0.11)
+            // 背景以中性画布为主，仅留一丝色彩做纵深——克制、高级、真实，
+            // 而非四角满屏彩虹「概念稿」水洗感。彩色留给数据本身（环、图、图标）。
+            glow(XColor.ringPeri, center: UnitPoint(x: 0.90, y: 0.02), r: 720, o: 0.07)
+            glow(XColor.ringRose, center: UnitPoint(x: 0.04, y: 0.98), r: 680, o: 0.06)
         }
         .ignoresSafeArea()
     }

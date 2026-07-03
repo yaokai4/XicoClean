@@ -16,11 +16,12 @@ public enum XColor {
     public static let accentPink   = dynamic(light: 0xE070AC, dark: 0xF0A8CE)
     public static let accentViolet = auroraViolet
 
-    // 光环/光晕：Apple 智能式淡彩虹（玫 → 薰衣草 → 长春花 → 薄荷，暗底更通透梦幻）
-    public static let ringRose   = dynamic(light: 0xE889BE, dark: 0xFFB3D6)
-    public static let ringLav    = dynamic(light: 0xAE8AEC, dark: 0xCBB0FF)
-    public static let ringPeri   = dynamic(light: 0x7E9BF2, dark: 0xAEC2FF)
-    public static let ringMint   = dynamic(light: 0x5BC9C2, dark: 0xAFEDE4)
+    // 光环/光晕：Apple 智能式淡彩虹，但用更沉的珠宝色相（去「糖果塑料感」，
+    // 保留彩色识别度的同时更高级）。暗底略提亮以保通透。
+    public static let ringRose   = dynamic(light: 0xD772A2, dark: 0xEC9EC2)
+    public static let ringLav    = dynamic(light: 0x9A78D8, dark: 0xBBA2ED)
+    public static let ringPeri   = dynamic(light: 0x6E86E0, dark: 0x9DB0EE)
+    public static let ringMint   = dynamic(light: 0x46B3AC, dark: 0x92DDD2)
     // 仪表/图表默认配色——随当前主题变化
     public static var ringColors: [Color] { XThemeStore.current.ring }
 
@@ -143,7 +144,11 @@ public struct XShadow: ViewModifier {
     let y: CGFloat
     let opacity: Double
     public func body(content: Content) -> some View {
-        content.shadow(color: .black.opacity(opacity), radius: radius, x: 0, y: y)
+        content
+            // 双层投影：大范围环境光柔影 + 近距离接触实影 —— 真实物体的层次感，
+            // 而非单层「塑料贴纸」阴影。这是去「塑料感」的关键之一。
+            .shadow(color: .black.opacity(opacity), radius: radius, x: 0, y: y)
+            .shadow(color: .black.opacity(opacity * 0.55), radius: radius * 0.28, x: 0, y: max(1, y * 0.3))
     }
 }
 
