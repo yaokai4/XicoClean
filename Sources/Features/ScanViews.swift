@@ -298,7 +298,7 @@ public struct SmartScanView: View {
         let disk = capacity?.usedFraction ?? 0
         let mem = metrics?.memoryUsedFraction ?? 0
         let health = healthScore(disk: disk, mem: mem)
-        return VStack(spacing: XSpacing.xl) {
+        return VStack(spacing: XSpacing.l) {
             healthHeader(score: health, disk: disk)
 
             XRingGauge(progress: disk, colors: XColor.gauge(disk), lineWidth: 16, size: 296) {

@@ -112,18 +112,17 @@ public struct XPrimaryButtonStyle: ButtonStyle {
                 in: Capsule()
             )
             .overlay(
-                // 顶部玻璃高光，增加光泽质感
+                // 顶部高光收敛：更哑光、少「塑料光泽」，像原生 macOS 按钮而非糖果
                 Capsule()
-                    .fill(LinearGradient(colors: [.white.opacity(enabled ? 0.28 : 0), .clear],
+                    .fill(LinearGradient(colors: [.white.opacity(enabled ? 0.13 : 0), .clear],
                                          startPoint: .top, endPoint: .center))
-                    .blendMode(.plusLighter)
                     .allowsHitTesting(false)
             )
-            .overlay(Capsule().strokeBorder(.white.opacity(enabled ? 0.22 : 0), lineWidth: 1))
+            .overlay(Capsule().strokeBorder(.white.opacity(enabled ? 0.14 : 0), lineWidth: 1))
             .opacity(configuration.isPressed ? 0.85 : 1)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .shadow(color: enabled ? XColor.brand.opacity(0.35) : .clear,
-                    radius: configuration.isPressed ? 6 : 14, y: 6)
+            .shadow(color: enabled ? XColor.brand.opacity(0.22) : .clear,
+                    radius: configuration.isPressed ? 5 : 11, y: 5)
             .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
