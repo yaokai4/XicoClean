@@ -29,7 +29,7 @@ final class AppUpdaterModel: ObservableObject {
         checked = false
         let service = env.appUpdateService()
         let list = candidates
-        Task {
+        Task { @MainActor in
             let found = await service.checkForUpdates(list) { done, total in
                 Task { @MainActor in self.progress = "检查中 \(done)/\(total)" }
             }

@@ -83,8 +83,9 @@ int xico_copy_thermal_sensors(XicoTempSensor *out, int maxCount) {
         double celsius = IOHIDEventGetFloatValue(event, XICO_HID_TEMPERATURE_FIELD);
         CFRelease(event);
 
-        // 过滤明显无效值（未连接的传感器常报 0 或极端值）
-        if (celsius <= 0.0 || celsius > 200.0) continue;
+        // 过滤明显无效值（未连接的传感器常报 0/极端值/NaN）。
+        // 正向区间判定：NaN 与任何比较均为 false → !(有效) 命中 → 过滤掉，杜绝 nan°C 泄漏到 UI。
+        if (!(celsius > 0.0 && celsius <= 200.0)) continue;
 
         // 读取传感器名（"Product" 属性）
         char nameBuf[96];

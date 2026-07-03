@@ -52,7 +52,6 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
         case .freeMemory:          (cmd, args) = ("/usr/sbin/purge", [])
         case .flushDNS:            (cmd, args) = ("/usr/bin/dscacheutil", ["-flushcache"])
         case .rebuildSpotlight:    (cmd, args) = ("/usr/bin/mdutil", ["-E", "/"])
-        case .runPeriodicScripts:  (cmd, args) = ("/usr/sbin/periodic", ["daily", "weekly", "monthly"])
         case .deleteLocalSnapshots:(cmd, args) = ("/usr/bin/tmutil", ["deletelocalsnapshots", "/"])
         }
         Self.log.notice("执行维护任务: \(task.rawValue, privacy: .public)")
