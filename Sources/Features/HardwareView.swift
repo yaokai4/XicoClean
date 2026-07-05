@@ -432,18 +432,29 @@ public struct HardwareView: View {
     private func fanRow(_ fan: FanInfo) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
-                Image(systemName: "fanblades.fill").font(.system(size: 11)).foregroundStyle(XColor.accentTeal)
+                Image(systemName: "fanblades.fill").font(.system(size: 11)).foregroundStyle(XColor.metricNetwork[0])
                 Text(xLocF("风扇 %d", fan.id + 1)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 Spacer()
+                // 目标转速（SMC 暴露则显）——超越 Sensei 的静态转速。读不到即不显，绝不编造。
+                if let tg = fan.target, tg > 0 {
+                    Text(xLocF("目标 %d", tg)).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                    Text("·").font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                }
                 Text("\(fan.rpm) RPM").font(XFont.mono).foregroundStyle(XColor.textPrimary)
             }
             if let mn = fan.minimum, let mx = fan.maximum, mx > mn {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule().fill(XColor.surfaceAlt)
-                        Capsule().fill(LinearGradient(colors: [XColor.accentTeal, XColor.warning],
+                        Capsule().fill(LinearGradient(colors: [XColor.metricNetwork[0], XColor.warning],
                                                       startPoint: .leading, endPoint: .trailing))
                             .frame(width: max(3, geo.size.width * fan.fraction))
+                        // 目标转速刻度：在区间条上标一根竖线（SMC 有目标键才画）。
+                        if let tf = fan.targetFraction {
+                            Rectangle().fill(XColor.textPrimary.opacity(0.7))
+                                .frame(width: 1.5, height: 8)
+                                .position(x: max(1, geo.size.width * tf), y: 2)
+                        }
                     }
                 }
                 .frame(height: 4)
@@ -567,6 +578,8 @@ public struct HardwareView: View {
                         Text(d.name).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                         if d.isBuiltin { XBadge(xLoc("内建"), color: XColor.accentTeal) }
                         if d.isHDR { XBadge("HDR", color: XColor.auroraViolet) }
+                        // ProMotion 徽标：仅在显示器真实支持 >60Hz 可变刷新时显示（读不到即无）。
+                        if d.proMotion { XBadge("ProMotion", color: XColor.metricGPU[0]) }
                         Spacer()
                         Text("\(d.refreshHz) Hz").font(XFont.mono).foregroundStyle(XColor.textSecondary)
                     }

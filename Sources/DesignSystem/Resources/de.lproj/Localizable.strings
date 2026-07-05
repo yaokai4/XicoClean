@@ -644,3 +644,8 @@
 "电池健康良好，正常使用即可" = "Akkuzustand ist gut – normale Nutzung möglich";
 "电池健康正常，随循环增加会逐步衰减" = "Akkuzustand ist normal – nimmt mit steigenden Ladezyklen allmählich ab";
 "固态硬盘剩余寿命偏低，建议及时备份重要数据" = "Verbleibende SSD-Lebensdauer ist niedrig – wichtige Daten zeitnah sichern";
+
+/* R1-R7: fan target, per-core heatmap */
+"目标 %d" = "Ziel %d";
+"每核心近 60 秒负载 · 越亮越忙" = "Last je Kern, letzte 60 s · heller = ausgelasteter";
+"每核心负载历史热力图" = "Verlaufs-Heatmap der Kernlast";

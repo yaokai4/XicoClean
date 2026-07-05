@@ -11,11 +11,14 @@ public struct MonitorView: View {
     @State private var procTab: ProcTab = .cpu
     @State private var tab: MonitorTab = .overview
     @State private var historyRange: MetricsHistoryStore.Range = .minute
-    /// 每核心可视化：热力条 / 迷你环，持久化记住偏好（对齐 Sensei 的可选每核心视图）。
+    /// 每核心可视化：当前条 / 迷你环 / 历史热力图，持久化记住偏好（对齐 Sensei 的可选每核心视图）。
     @AppStorage("xico.monitor.coreViz") private var coreViz = "bars"
+    /// 全部命名温度传感器（传感器中心）——独立于快照采样，进页面时读一次、每 3 秒刷新。
+    @State private var allTemps: [TempReading] = []
+    private let sensorTick = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
 
     enum ProcTab { case cpu, memory }
-    enum MonitorTab: String, CaseIterable {
+    public enum MonitorTab: String, CaseIterable, Sendable {
         case overview, cpu, memory, network, gpu
         var title: String {
             switch self {
@@ -28,10 +31,11 @@ public struct MonitorView: View {
         }
     }
 
-    public init(env: XicoEnvironment) {
+    public init(env: XicoEnvironment, initialTab: MonitorTab = .overview) {
         self.env = env
         self.engine = env.metricsEngine
         _netVM = StateObject(wrappedValue: NetworkViewModel(service: env.network))
+        _tab = State(initialValue: initialTab)
     }
 
     private var snap: SystemSnapshot? { engine.snapshot }
@@ -68,7 +72,9 @@ public struct MonitorView: View {
             info = env.liveMetrics.macInfo()
             engine.retain()
             netVM.start()
+            allTemps = env.sensors.temperatures()
         }
+        .onReceive(sensorTick) { _ in allTemps = env.sensors.temperatures() }
         .onDisappear { engine.release(); netVM.stop() }
     }
 
@@ -198,8 +204,64 @@ public struct MonitorView: View {
                 cpuStatCard
                 thermalCard
             }
+            sensorCenterCard
             processCard(kind: .cpu)
         }
+    }
+
+    // MARK: 传感器中心（复用硬件页 2 列网格：全部命名温度传感器，读不到即隐藏整卡）
+
+    @ViewBuilder private var sensorCenterCard: some View {
+        let grouped = sensorGroups()
+        if !grouped.isEmpty {
+            MonitorCard(icon: "sensor.tag.radiowaves.forward", title: xLoc("传感器"), colors: [XColor.warning, XColor.metricNetwork[0]]) {
+                ForEach(grouped, id: \.0) { name, temps in
+                    VStack(alignment: .leading, spacing: XSpacing.s) {
+                        Text(xLoc(name)).font(.system(size: 10, weight: .semibold)).foregroundStyle(XColor.textTertiary)
+                            .textCase(.uppercase).tracking(0.5)
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: XSpacing.l, alignment: .leading),
+                                            GridItem(.flexible(), alignment: .leading)],
+                                  alignment: .leading, spacing: XSpacing.s) {
+                            ForEach(Array(temps.enumerated()), id: \.offset) { _, t in sensorCell(t) }
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+        }
+    }
+
+    private func sensorCell(_ t: TempReading) -> some View {
+        VStack(spacing: 3) {
+            HStack(spacing: XSpacing.xs) {
+                Text(xLoc(t.name)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: XSpacing.xs)
+                Text(String(format: "%.0f°C", t.celsius)).font(XFont.mono).foregroundStyle(tempColor(t.celsius))
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(XColor.surfaceAlt)
+                    Capsule().fill(tempColor(t.celsius))
+                        .frame(width: max(2, geo.size.width * min(t.celsius / 100, 1)))
+                }
+            }
+            .frame(height: 4)
+        }
+    }
+
+    private func sensorGroups() -> [(String, [TempReading])] {
+        let order: [(TempReading.Category, String)] = [
+            (.cpu, xLoc("处理器")), (.gpu, "GPU"), (.ssd, xLoc("固态硬盘")),
+            (.battery, xLoc("电池")), (.ambient, xLoc("环境")), (.other, xLoc("其他"))
+        ]
+        var out: [(String, [TempReading])] = []
+        for (cat, name) in order {
+            let items = allTemps.filter { $0.category == cat }.sorted { $0.celsius > $1.celsius }
+            let capped = cat == .other ? Array(items.prefix(8)) : items
+            if !capped.isEmpty { out.append((name, capped)) }
+        }
+        return out
     }
 
     private var cpuCard: some View {
@@ -208,10 +270,11 @@ public struct MonitorView: View {
                 HStack {
                     cardHeader("cpu", xLoc("处理器 · 每核心"))
                     Spacer()
-                    // 热力条 / 迷你环 切换（记忆偏好）。
+                    // 当前条 / 迷你环 / 历史热力图 切换（记忆偏好）。
                     Picker("", selection: $coreViz) {
                         Image(systemName: "chart.bar.fill").tag("bars")
                         Image(systemName: "circle.grid.2x2").tag("rings")
+                        Image(systemName: "square.grid.3x3.fill").tag("heat")
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
                     if let s = snap {
@@ -225,6 +288,8 @@ public struct MonitorView: View {
                 } else {
                     if coreViz == "rings" {
                         coreRings(cores)
+                    } else if coreViz == "heat" {
+                        coreHeatmap(cores)
                     } else {
                         HStack(alignment: .bottom, spacing: 6) {
                             ForEach(Array(cores.enumerated()), id: \.offset) { idx, v in coreBar(index: idx, value: v) }
@@ -280,6 +345,47 @@ public struct MonitorView: View {
                     }
                     Text("\(pair.0)").font(.system(size: 8, weight: .medium)).foregroundStyle(XColor.textTertiary)
                 }
+            }
+        }
+    }
+
+    // MARK: 每核心历史热力图（iStat 式：每核心一行随时间的负载热力带）
+
+    /// 每核心随时间的负载热力带：行=核心（P/E 真实分组），列=时间样本，色随负载由暗到亮。
+    /// 数据取自 `engine.perCoreHistory`（`[时间][核心]`），逐核切片为时间序列；读不到则退回当前条。
+    @ViewBuilder private func coreHeatmap(_ cores: [Double]) -> some View {
+        let hist = engine.perCoreHistory
+        if hist.count < 2 {
+            // 历史尚未积累（刚进页面）：先显示当前条，避免空白。
+            HStack(alignment: .bottom, spacing: 6) {
+                ForEach(Array(cores.enumerated()), id: \.offset) { idx, v in coreBar(index: idx, value: v) }
+            }
+            .frame(height: 96)
+        } else {
+            let clusters = info?.coreClusters ?? []
+            let grouped = clusters.count == cores.count && clusters.contains(true) && clusters.contains(false)
+            VStack(alignment: .leading, spacing: XSpacing.s) {
+                if grouped {
+                    heatCluster(xLoc("性能核"), cores.indices.filter { clusters[$0] }, hist, hot: XColor.metricCPU[0])
+                    heatCluster(xLoc("能效核"), cores.indices.filter { !clusters[$0] }, hist, hot: XColor.metricCPU[1])
+                } else {
+                    ForEach(cores.indices, id: \.self) { c in
+                        CoreHeatRow(index: c, series: hist.map { $0.indices.contains(c) ? $0[c] : 0 }, hot: XColor.metricCPU[0])
+                    }
+                }
+                Text(xLoc("每核心近 60 秒负载 · 越亮越忙")).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(xLoc("每核心负载历史热力图"))
+        }
+    }
+
+    private func heatCluster(_ label: String, _ indices: [Int], _ hist: [[Double]], hot: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.system(size: 9, weight: .semibold)).foregroundStyle(XColor.textTertiary)
+                .textCase(.uppercase).tracking(0.5)
+            ForEach(indices, id: \.self) { c in
+                CoreHeatRow(index: c, series: hist.map { $0.indices.contains(c) ? $0[c] : 0 }, hot: hot)
             }
         }
     }
@@ -560,5 +666,42 @@ public struct MonitorView: View {
         if c >= 70 { return XColor.warning }
         if c >= 55 { return XColor.accentTeal }
         return XColor.success
+    }
+}
+
+// MARK: - 每核心历史热力带（一行=一核，随时间由暗到亮）
+
+/// 一核心的负载历史热力带：用 Canvas 逐列绘制，负载越高越亮（+高段偏暖）。
+/// 序号如实取自逻辑 CPU id；`series` 为该核 0…1 的时间序列（旧→新）。
+private struct CoreHeatRow: View {
+    let index: Int
+    let series: [Double]
+    let hot: Color
+
+    var body: some View {
+        HStack(spacing: XSpacing.s) {
+            Text("\(index)").font(.system(size: 9, weight: .medium, design: .rounded)).monospacedDigit()
+                .foregroundStyle(XColor.textTertiary).frame(width: 16, alignment: .trailing)
+            Canvas { ctx, size in
+                let n = series.count
+                guard n > 0 else { return }
+                let cw = size.width / CGFloat(n)
+                for (i, v) in series.enumerated() {
+                    let f = min(max(v, 0), 1)
+                    let rect = CGRect(x: CGFloat(i) * cw, y: 0, width: cw + 0.6, height: size.height)
+                    // 主色随负载提亮；高段（>0.8）叠一层暖色，形成「热」的顶端。
+                    ctx.fill(Path(rect), with: .color(hot.opacity(0.08 + 0.92 * f)))
+                    if f > 0.8 {
+                        ctx.fill(Path(rect), with: .color(XColor.warning.opacity((f - 0.8) * 5 * 0.5)))
+                    }
+                }
+            }
+            .frame(height: 12)
+            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 3, style: .continuous).strokeBorder(XColor.hairline, lineWidth: 0.5))
+            Text("\(Int((series.last ?? 0) * 100))%")
+                .font(.system(size: 9, weight: .semibold, design: .rounded)).monospacedDigit()
+                .foregroundStyle(XColor.textSecondary).frame(width: 30, alignment: .trailing)
+        }
     }
 }

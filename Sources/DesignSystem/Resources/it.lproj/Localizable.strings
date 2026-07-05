@@ -644,3 +644,8 @@
 "电池健康良好，正常使用即可" = "La batteria è in buono stato — usala normalmente";
 "电池健康正常，随循环增加会逐步衰减" = "Stato della batteria normale — diminuirà gradualmente con l’aumentare dei cicli";
 "固态硬盘剩余寿命偏低，建议及时备份重要数据" = "Vita residua dell’SSD bassa — esegui presto il backup dei dati importanti";
+
+/* R1-R7: fan target, per-core heatmap */
+"目标 %d" = "Target %d";
+"每核心近 60 秒负载 · 越亮越忙" = "Carico per core, ultimi 60 s · più chiaro = più occupato";
+"每核心负载历史热力图" = "Mappa di calore dello storico di carico per core";

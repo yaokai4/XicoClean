@@ -17,12 +17,18 @@ public struct TempReading: Sendable, Identifiable {
 public struct FanInfo: Sendable, Identifiable {
     public let id: Int
     public let rpm: Int
+    public let target: Int?
     public let minimum: Int?
     public let maximum: Int?
     /// 当前转速在 [min, max] 中的比例（用于仪表）。
     public var fraction: Double {
         guard let mn = minimum, let mx = maximum, mx > mn else { return 0 }
         return min(1, max(0, Double(rpm - mn) / Double(mx - mn)))
+    }
+    /// 目标转速在 [min, max] 中的比例（用于在区间条上标一根目标刻度）。
+    public var targetFraction: Double? {
+        guard let tg = target, let mn = minimum, let mx = maximum, mx > mn else { return nil }
+        return min(1, max(0, Double(tg - mn) / Double(mx - mn)))
     }
 }
 
@@ -59,7 +65,7 @@ public final class SensorReader: @unchecked Sendable {
     }
 
     public func fans() -> [FanInfo] {
-        smc.allFans().map { FanInfo(id: $0.index, rpm: $0.current, minimum: $0.minimum, maximum: $0.maximum) }
+        smc.allFans().map { FanInfo(id: $0.index, rpm: $0.current, target: $0.target, minimum: $0.minimum, maximum: $0.maximum) }
     }
 
     // MARK: Apple Silicon（IOHIDEventSystemClient）

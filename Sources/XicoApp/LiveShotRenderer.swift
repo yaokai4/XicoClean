@@ -49,6 +49,11 @@ func renderLiveShots() {
                size: CGSize(width: 1120, height: 820), dir: dir, scheme: .dark)
     XThemeStore.current = .aurora
 
+    // 监视页 · CPU 标签（每核心历史热力图 + 传感器中心）——验证 R1 / R5。
+    UserDefaults.standard.set("heat", forKey: "xico.monitor.coreViz")
+    renderPage(name: "21-monitor-cpu-heat", view: AnyView(MonitorView(env: env, initialTab: .cpu)),
+               size: CGSize(width: 1120, height: 1100), dir: dir, scheme: .dark)
+
     for scheme in [ColorScheme.dark, ColorScheme.light] {
         let suffix = scheme == .dark ? "dark" : "light"
         for (name, view, size) in pages {

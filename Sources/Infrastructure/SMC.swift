@@ -68,6 +68,7 @@ public final class SMCReader: @unchecked Sendable {
     public struct FanReading: Sendable {
         public let index: Int
         public let current: Int
+        public let target: Int?
         public let minimum: Int?
         public let maximum: Int?
     }
@@ -77,9 +78,10 @@ public final class SMCReader: @unchecked Sendable {
         var out: [FanReading] = []
         for i in 0..<Int(count) {
             guard let rpm = readFan(index: i) else { continue }
+            let tg = readFanValue(key: "F\(i)Tg")   // SMC 目标转速键（部分机型暴露；读不到即 nil）
             let mn = readFanValue(key: "F\(i)Mn")
             let mx = readFanValue(key: "F\(i)Mx")
-            out.append(FanReading(index: i, current: rpm, minimum: mn, maximum: mx))
+            out.append(FanReading(index: i, current: rpm, target: tg, minimum: mn, maximum: mx))
         }
         return out
     }

@@ -36,12 +36,13 @@ public struct SettingsView: View {
     @AppStorage("xico.mb.temp.style")    private var tempStyle   = MenuBarStyle.iconValue.rawValue
     @AppStorage("xico.mb.gpu.style")     private var gpuStyle    = MenuBarStyle.rich.rawValue
     @AppStorage("xico.mb.disk.style")    private var diskStyle   = MenuBarStyle.iconValue.rawValue
-    // 每项独立的「图形加框」开关（只圈动态图形，数值永远在框外；默认开）。
+    // 每项独立的「图形加框」开关（只圈动态图形，数值永远在框外）。
+    // 默认按图形类型校准：图表区图形（CPU 直方图 / 网络折线）加框；环/条裸露更干净（对齐 Sensei）。
     @AppStorage("xico.mb.cpu.border")     private var cpuBorder  = true
-    @AppStorage("xico.mb.memory.border")  private var memBorder  = true
+    @AppStorage("xico.mb.memory.border")  private var memBorder  = false
     @AppStorage("xico.mb.network.border") private var netBorder  = true
-    @AppStorage("xico.mb.gpu.border")     private var gpuBorder  = true
-    @AppStorage("xico.mb.disk.border")    private var diskBorder = true
+    @AppStorage("xico.mb.gpu.border")     private var gpuBorder  = false
+    @AppStorage("xico.mb.disk.border")    private var diskBorder = false
 
     public init(model: AppModel) { self.model = model }
 

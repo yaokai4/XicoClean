@@ -107,6 +107,7 @@ public struct DisplayInfo: Sendable, Identifiable {
     public let isBuiltin: Bool
     public let diagonalInches: Double? // 物理对角线（英寸）
     public let isHDR: Bool
+    public let proMotion: Bool         // 支持 >60Hz 可变刷新（由真实可用模式推导；读不到即 false）
     public var resolutionText: String { "\(pixelWidth) × \(pixelHeight)" }
     public var scaledText: String { "\(pointWidth) × \(pointHeight) @ \(String(format: "%.1f", scale))x" }
 }
@@ -427,11 +428,19 @@ public final class HardwareProfileService: @unchecked Sendable {
             var h = Int(screen.frame.height * scale)
             var refresh = 60
             var diagonal: Double? = nil
+            var proMotion = false
             if num != 0 {
                 let did = CGDirectDisplayID(num)
                 if let mode = CGDisplayCopyDisplayMode(did) {
                     w = mode.pixelWidth; h = mode.pixelHeight
                     if mode.refreshRate > 0 { refresh = Int(mode.refreshRate.rounded()) }
+                }
+                // ProMotion = 该显示器**真实支持** >60Hz 的可变刷新（枚举全部可用模式取最高）。
+                // 读不到模式表即 false，绝不臆测。
+                if let modes = CGDisplayCopyAllDisplayModes(did, nil) as? [CGDisplayMode] {
+                    let maxHz = modes.map { $0.refreshRate }.max() ?? 0
+                    proMotion = maxHz > 60.5
+                    if maxHz.rounded() > Double(refresh) { refresh = max(refresh, Int(maxHz.rounded())) }
                 }
                 let sizeMM = CGDisplayScreenSize(did)   // 毫米
                 if sizeMM.width > 0 && sizeMM.height > 0 {
@@ -445,7 +454,7 @@ public final class HardwareProfileService: @unchecked Sendable {
             out.append(DisplayInfo(id: i, name: name.isEmpty ? xLocF("显示器 %d", i+1) : name,
                                    pixelWidth: w, pixelHeight: h, pointWidth: pointW, pointHeight: pointH,
                                    refreshHz: refresh, scale: Double(scale), isBuiltin: builtin,
-                                   diagonalInches: diagonal, isHDR: hdr))
+                                   diagonalInches: diagonal, isHDR: hdr, proMotion: proMotion))
         }
         return out
     }
