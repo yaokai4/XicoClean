@@ -23,6 +23,7 @@ public struct PricingView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var importError: String?
     @State private var importedOK = false
+    @State private var activationKey = ""
 
     public init(model: AppModel) { self.model = model }
 
@@ -150,16 +151,40 @@ public struct PricingView: View {
 
     private var importRow: some View {
         VStack(spacing: XSpacing.s) {
+            Text(xLoc("已购买？输入激活码解锁")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             HStack(spacing: XSpacing.s) {
-                Text(xLoc("已购买？")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                Button(xLoc("导入许可证文件")) { importLicense() }
-                    .buttonStyle(.link)
+                TextField(xLoc("18 位激活码"), text: $activationKey)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 260)
+                    .disabled(model.activating)
+                    .onSubmit { activateKey() }
+                Button(model.activating ? xLoc("激活中…") : xLoc("激活")) { activateKey() }
+                    .buttonStyle(XPrimaryButtonStyle(compact: true))
+                    .disabled(model.activating || activationKey.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            Button(xLoc("或导入许可证文件")) { importLicense() }
+                .buttonStyle(.link).font(XFont.caption)
             if importedOK {
-                Text(xLoc("许可证已激活，感谢支持！")).font(XFont.caption).foregroundStyle(XColor.success)
+                Text(xLoc("激活成功，感谢支持！")).font(XFont.caption).foregroundStyle(XColor.success)
             }
             if let e = importError {
                 Text(e).font(XFont.caption).foregroundStyle(XColor.danger).multilineTextAlignment(.center)
+            }
+        }
+    }
+
+    private func activateKey() {
+        let key = activationKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !model.activating else { return }
+        importError = nil
+        Task {
+            let result = await model.activateLicense(key: key)
+            switch result {
+            case .success:
+                withAnimation { importedOK = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { dismiss() }
+            case let .failure(err):
+                importError = err.localizedDescription
             }
         }
     }

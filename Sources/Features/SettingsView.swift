@@ -16,6 +16,7 @@ public struct SettingsView: View {
     @State private var definitionsUpdating = false
     @State private var licenseStatus: LicenseStatus?
     @State private var licenseMessage: String?
+    @State private var activationKey = ""
     @AppStorage("xico.mb.cpu") private var mbCPU = true
     @AppStorage("xico.mb.memory") private var mbMemory = true
     @AppStorage("xico.mb.network") private var mbNetwork = true
@@ -293,6 +294,15 @@ public struct SettingsView: View {
                         .buttonStyle(XSecondaryButtonStyle(compact: true))
                     }
                 }
+                HStack(spacing: XSpacing.s) {
+                    TextField(xLoc("输入 18 位激活码"), text: $activationKey)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(model.activating)
+                        .onSubmit { activateKey() }
+                    Button(model.activating ? xLoc("激活中…") : xLoc("激活")) { activateKey() }
+                        .buttonStyle(XPrimaryButtonStyle(compact: true))
+                        .disabled(model.activating || activationKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
                 if let licenseMessage {
                     Divider().padding(.vertical, 2)
                     Text(licenseMessage)
@@ -322,6 +332,21 @@ public struct SettingsView: View {
         case let .trial(days):       return xLocF("试用中 · 剩余 %d 天", days)
         case .expired:               return xLoc("试用已结束 · 升级后继续使用清理与优化")
         case .invalid:               return xLoc("许可证无效 · 请重新导入")
+        }
+    }
+
+    private func activateKey() {
+        let key = activationKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !model.activating else { return }
+        Task {
+            let result = await model.activateLicense(key: key)
+            switch result {
+            case .success:
+                licenseStatus = model.env.license.status()
+                licenseMessage = xLoc("激活成功，感谢支持！")
+            case let .failure(err):
+                licenseMessage = err.localizedDescription
+            }
         }
     }
 

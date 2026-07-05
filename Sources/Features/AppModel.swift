@@ -51,6 +51,9 @@ public final class AppModel: ObservableObject {
     @Published public var macInfo: MacInfo?
     @Published public var licenseStatus: LicenseStatus?
     @Published public var licenseBannerDismissed: Bool = false
+    /// 在线激活进行中（供输入框/按钮显示「激活中…」并禁用重复点击）。
+    @Published public var activating: Bool = false
+    private let activationClient = LicenseActivationClient()
 
     // 滚动历史（用于菜单栏折线图）
     @Published public var cpuHistory: [Double] = []
@@ -254,6 +257,30 @@ public final class AppModel: ObservableObject {
         licenseStatus = env.license.status()
         if licenseStatus?.state.allowsCommercialUse == true {
             licenseBannerDismissed = false
+        }
+    }
+
+    /// 在线激活：把激活码 + 本机标识发往官网校验，成功则安装返回的签名许可并解锁。
+    /// 全流程走现有 Ed25519 信任根与门控，无需逐功能改动。
+    @discardableResult
+    public func activateLicense(key: String) async -> Result<Void, Error> {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return .failure(LicenseActivationError.invalidKey)
+        }
+        activating = true
+        defer { activating = false }
+        do {
+            let data = try await activationClient.activate(
+                key: trimmed,
+                deviceId: DeviceIdentity.current(),
+                deviceName: Host.current().localizedName,
+            )
+            _ = try env.license.installLicense(fromEnvelopeData: data)
+            refreshLicense()
+            return .success(())
+        } catch {
+            return .failure(error)
         }
     }
 

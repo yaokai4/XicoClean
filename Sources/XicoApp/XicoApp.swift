@@ -66,6 +66,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return true
     }
+
+    /// 处理 `xico://activate?key=…` 深链——官网购买成功页「打开 App 激活」按钮触发，
+    /// 免去用户手动复制粘贴激活码。需要 Info.plist 注册 CFBundleURLTypes（见 make_app.sh）。
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme?.lowercased() == "xico" {
+            handleActivationURL(url)
+        }
+    }
+
+    private func handleActivationURL(_ url: URL) {
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let isActivate = (url.host == "activate") || comps?.path.contains("activate") == true
+        guard isActivate,
+              let key = comps?.queryItems?.first(where: { $0.name == "key" })?.value,
+              !key.isEmpty else { return }
+        Task { @MainActor in
+            let model = AppModel.shared
+            model.selection = .settings
+            NSApp.activate(ignoringOtherApps: true)
+            _ = await model.activateLicense(key: key)
+        }
+    }
 }
 
 @main

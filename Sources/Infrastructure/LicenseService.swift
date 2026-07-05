@@ -165,7 +165,20 @@ public final class LicenseService: @unchecked Sendable {
     public static func purchaseURL() -> URL {
         if let s = Bundle.main.object(forInfoDictionaryKey: "XicoPurchaseURL") as? String,
            let u = URL(string: s) { return u }
-        return URL(string: "https://xico.app/buy")!
+        return URL(string: "https://mac.xicoai.com/buy")!
+    }
+
+    /// 在线激活服务地址：软件把激活码 POST 到 `<此地址>/api/license/activate`，
+    /// 服务端校验后返回一份用受信私钥签名的许可信封，本地离线验签后落盘解锁。
+    /// 优先取 Info.plist 的 XicoActivationURL（make_app.sh 注入），缺省回落官网。
+    public static func activationBaseURL() -> URL {
+        if let s = Bundle.main.object(forInfoDictionaryKey: "XicoActivationURL") as? String,
+           let u = URL(string: s) { return u }
+        #if DEBUG
+        if let s = ProcessInfo.processInfo.environment["XICO_ACTIVATION_URL"],
+           let u = URL(string: s) { return u }
+        #endif
+        return URL(string: "https://mac.xicoai.com")!
     }
 
     public func status(now wallClock: Date = Date()) -> LicenseStatus {

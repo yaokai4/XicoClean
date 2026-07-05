@@ -101,11 +101,20 @@ cat <<PLIST
     <key>NSHumanReadableCopyright</key><string>© 2026 Xico. 保留所有权利。</string>
     <key>NSSupportsSuddenTermination</key><true/>
     <key>NSSupportsAutomaticTermination</key><true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+      <dict>
+        <key>CFBundleURLName</key><string>${APP_BUNDLE_ID}.activate</string>
+        <key>CFBundleURLSchemes</key><array><string>xico</string></array>
+      </dict>
+    </array>
 PLIST
 append_info_string "XicoDefinitionsURL" "${XICO_DEFINITIONS_URL:-}"
 append_info_string "XicoDefinitionsPublicKeys" "${XICO_DEFINITIONS_PUBLIC_KEYS:-}"
 append_info_string "XicoLicensePublicKeys" "${XICO_LICENSE_PUBLIC_KEYS:-}"
-append_info_string "XicoPurchaseURL" "${XICO_PURCHASE_URL:-https://xico.app/buy}"
+append_info_string "XicoPurchaseURL" "${XICO_PURCHASE_URL:-https://mac.xicoai.com/buy}"
+# 在线激活服务地址（软件把激活码 POST 到 <此地址>/api/license/activate）
+append_info_string "XicoActivationURL" "${XICO_ACTIVATION_URL:-https://mac.xicoai.com}"
 # 更新源（Sparkle 兼容的 appcast 键；内置更新检查器也读它）
 append_info_string "SUFeedURL" "${XICO_FEED_URL:-https://xico.app/appcast.xml}"
 cat <<PLIST
