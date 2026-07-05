@@ -6,9 +6,12 @@ import DesignSystem
 
 @MainActor
 final class ShredderModel: ObservableObject {
+    struct Completion { let freed: Int64; let count: Int }
+
     @Published var files: [URL] = []
     @Published var working = false
     @Published var resultText: String?
+    @Published var completion: Completion?   // 全部成功时的计数庆祝数据
     @Published var licenseBlocked = false
 
     private let env: XicoEnvironment
@@ -29,7 +32,7 @@ final class ShredderModel: ObservableObject {
     }
 
     func remove(_ url: URL) { files.removeAll { $0 == url } }
-    func clear() { files = []; resultText = nil }
+    func clear() { files = []; resultText = nil; completion = nil }
 
     func shred() {
         guard !files.isEmpty, !working else { return }
@@ -37,6 +40,7 @@ final class ShredderModel: ObservableObject {
         guard env.license.status().state.allowsCommercialUse else { licenseBlocked = true; return }
         working = true
         resultText = nil
+        completion = nil
         let env = self.env
         let targets = files
         Task {
@@ -45,9 +49,13 @@ final class ShredderModel: ObservableObject {
             NotificationCenter.default.post(name: .xicoDidClean, object: nil)
             self.working = false
             self.files = result.failed   // 只保留失败的
-            self.resultText = result.failed.isEmpty
-                ? xLocF("已粉碎 %d 项，释放 %@。", result.shredded, result.freedBytes.formattedBytes)
-                : xLocF("已粉碎 %d 项；%d 项失败（可能受保护或无权限）。", result.shredded, result.failed.count)
+            if result.failed.isEmpty {
+                // 全部成功：走统一的计数庆祝完成页。
+                self.completion = Completion(freed: result.freedBytes, count: result.shredded)
+                self.resultText = nil
+            } else {
+                self.resultText = xLocF("已粉碎 %d 项；%d 项失败（可能受保护或无权限）。", result.shredded, result.failed.count)
+            }
         }
     }
 }
@@ -60,13 +68,13 @@ public struct ShredderView: View {
     public var body: some View {
         VStack(spacing: 0) {
             XHeaderBar(title: xLoc("文件粉碎"), subtitle: xLoc("多次覆写后彻底删除，难以恢复")) {
-                Button(xLoc("添加文件")) { model.pickFiles() }.buttonStyle(.bordered)
+                Button(xLoc("添加文件")) { model.pickFiles() }.buttonStyle(XSecondaryButtonStyle(compact: true))
             }
             noticeBar
             content
             if !model.files.isEmpty {
                 XActionBar(title: xLocF("已选 %d 项", model.files.count), subtitle: xLoc("粉碎不可恢复，请谨慎")) {
-                    if model.working { ProgressView().controlSize(.small) }
+                    if model.working { XSpinner() }
                     else {
                         Button(xLocF("粉碎 · %@", model.totalSize.formattedBytes)) { confirm = true }
                             .buttonStyle(XPrimaryButtonStyle(enabled: true))
@@ -101,8 +109,16 @@ public struct ShredderView: View {
 
     @ViewBuilder private var content: some View {
         if model.files.isEmpty {
-            VStack(spacing: XSpacing.m) {
-                if let r = model.resultText {
+            Group {
+                if let c = model.completion {
+                    // 全部成功：统一计数庆祝（粉碎不可恢复，故无「撤销」）。
+                    TaskCompletionView(
+                        animateTo: c.freed,
+                        metricText: { xLocF("已释放 %@", $0.formattedBytes) },
+                        detail: xLocF("已粉碎 %d 项", c.count),
+                        doneTitle: xLoc("完成"),
+                        onDone: { model.clear() })
+                } else if let r = model.resultText {
                     XEmptyState(systemImage: "checkmark.seal.fill", title: xLoc("完成"), subtitle: r)
                 } else {
                     XEmptyState(systemImage: "flame", title: xLoc("拖入或添加要粉碎的文件"),

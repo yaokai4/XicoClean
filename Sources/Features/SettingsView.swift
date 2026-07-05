@@ -36,6 +36,12 @@ public struct SettingsView: View {
     @AppStorage("xico.mb.temp.style")    private var tempStyle   = MenuBarStyle.iconValue.rawValue
     @AppStorage("xico.mb.gpu.style")     private var gpuStyle    = MenuBarStyle.rich.rawValue
     @AppStorage("xico.mb.disk.style")    private var diskStyle   = MenuBarStyle.iconValue.rawValue
+    // 每项独立的「图形加框」开关（只圈动态图形，数值永远在框外；默认开）。
+    @AppStorage("xico.mb.cpu.border")     private var cpuBorder  = true
+    @AppStorage("xico.mb.memory.border")  private var memBorder  = true
+    @AppStorage("xico.mb.network.border") private var netBorder  = true
+    @AppStorage("xico.mb.gpu.border")     private var gpuBorder  = true
+    @AppStorage("xico.mb.disk.border")    private var diskBorder = true
 
     public init(model: AppModel) { self.model = model }
 
@@ -51,17 +57,27 @@ public struct SettingsView: View {
             ScrollView {
                 VStack(spacing: XSpacing.m) {
                     aboutCard
+
+                    sectionLabel("授权与更新")
                     licenseCard
                     definitionsCard
-                    ignoreListCard
+
+                    sectionLabel("清理")
                     historyCard
+                    ignoreListCard
+
+                    sectionLabel("外观")
                     appearanceCard
                     languageCard
                     ThemePickerCard(selectedID: Binding(
                         get: { model.themeID },
                         set: { model.themeID = $0 }))
+
+                    sectionLabel("监控与告警")
                     menuBarCard
                     alertsCard
+
+                    sectionLabel("权限与系统")
                     permissionCard
                     helperCard
                     resetCard
@@ -128,7 +144,7 @@ public struct SettingsView: View {
                     Spacer()
                     if totalCleanups > 0 {
                         Button(xLoc("清空记录")) { model.env.history.clear(); reloadHistory() }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(XSecondaryButtonStyle(compact: true))
                     }
                 }
                 if !history.isEmpty {
@@ -207,11 +223,11 @@ public struct SettingsView: View {
                 Spacer()
                 VStack(spacing: XSpacing.xs) {
                     Button(checkingUpdate ? xLoc("检查中…") : xLoc("检查更新")) { checkForUpdate() }
-                        .buttonStyle(.bordered).disabled(checkingUpdate)
+                        .buttonStyle(XSecondaryButtonStyle(compact: true)).disabled(checkingUpdate)
                     Button(xLoc("升级 Pro")) { model.showPricing = true }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(XPrimaryButtonStyle(compact: true))
                     Button(xLoc("导出诊断日志")) { exportDiagnostics() }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(XSecondaryButtonStyle(compact: true))
                 }
             }
             if let msg = updateMessage {
@@ -265,7 +281,7 @@ public struct SettingsView: View {
                         Text(licenseSubtitle).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     Spacer()
-                    Button(xLoc("导入许可证")) { importLicense() }.buttonStyle(.bordered)
+                    Button(xLoc("导入许可证")) { importLicense() }.buttonStyle(XSecondaryButtonStyle(compact: true))
                     if licenseStatus?.licenseID != nil {
                         Button(xLoc("移除")) {
                             model.env.license.clearLicense()
@@ -273,7 +289,7 @@ public struct SettingsView: View {
                             model.refreshLicense()
                             licenseMessage = xLoc("已移除本机许可证。")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(XSecondaryButtonStyle(compact: true))
                     }
                 }
                 if let licenseMessage {
@@ -340,10 +356,10 @@ public struct SettingsView: View {
                     }
                     Spacer()
                     if definitionsUpdating {
-                        ProgressView().controlSize(.small)
+                        XSpinner()
                     } else {
                         Button(xLoc("检查更新")) { refreshDefinitions() }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(XSecondaryButtonStyle(compact: true))
                             .disabled(!(definitionsStatus?.endpointConfigured ?? false) || !(definitionsStatus?.trustConfigured ?? false))
                     }
                 }
@@ -415,7 +431,7 @@ public struct SettingsView: View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.s) {
                 HStack(spacing: XSpacing.m) {
-                    XIconTile(systemImage: "menubar.rectangle", colors: [XColor.auroraBlue, XColor.auroraViolet], size: 36)
+                    XIconTile(systemImage: "menubar.rectangle", colors: XColor.metricCPU, size: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(xLoc("菜单栏状态项")).xHeadline().foregroundStyle(XColor.textPrimary)
                         Text(xLoc("选择常驻菜单栏显示哪些实时监控（可多选）")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
@@ -423,15 +439,15 @@ public struct SettingsView: View {
                     Spacer()
                 }
                 Divider().padding(.vertical, 2)
-                Text(xLoc("每项都能单独切换显示方式（图标+数值 / 仅数值 / 迷你折线 / 可视化），像 iStat 一样自定义"))
+                Text(xLoc("每项都能单独切换显示方式——直接点选下方图形（图标+数值 / 仅数值 / 迷你折线 / 可视化），像 iStat 一样可视化自定义"))
                     .font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                mbMetricRow(xLoc("处理器 CPU"), $mbCPU, $cpuStyle)
-                mbMetricRow(xLoc("内存"), $mbMemory, $memStyle)
-                mbMetricRow(xLoc("网络速度"), $mbNetwork, $netStyle)
-                mbMetricRow(xLoc("处理器温度"), $mbTemp, $tempStyle)
-                mbMetricRow(xLoc("GPU 占用"), $mbGPU, $gpuStyle)
-                mbMetricRow(xLoc("磁盘占用"), $mbDisk, $diskStyle)
-                mbMetricRow(xLoc("合并总览面板"), $mbCombined, nil)
+                mbMetricRow(xLoc("处理器 CPU"), icon: "cpu", tint: XColor.metricCPU[0], $mbCPU, $cpuStyle, $cpuBorder)
+                mbMetricRow(xLoc("内存"), icon: "memorychip", tint: XColor.metricMemory[0], $mbMemory, $memStyle, $memBorder)
+                mbMetricRow(xLoc("网络速度"), icon: "antenna.radiowaves.left.and.right", tint: XColor.metricNetwork[0], $mbNetwork, $netStyle, $netBorder)
+                mbMetricRow(xLoc("处理器温度"), icon: "thermometer.medium", tint: XColor.warning, $mbTemp, $tempStyle, nil)
+                mbMetricRow(xLoc("GPU 占用"), icon: "cpu.fill", tint: XColor.metricGPU[0], $mbGPU, $gpuStyle, $gpuBorder)
+                mbMetricRow(xLoc("磁盘占用"), icon: "internaldrive", tint: XColor.metricDisk[0], $mbDisk, $diskStyle, $diskBorder)
+                mbMetricRow(xLoc("合并总览面板"), icon: "gauge.with.dots.needle.50percent", tint: XColor.textSecondary, $mbCombined, nil, nil)
                 Divider().padding(.vertical, 2)
                 VStack(alignment: .leading, spacing: 3) {
                     toggleRow(xLoc("彩色图标"), $mbColored)
@@ -453,29 +469,40 @@ public struct SettingsView: View {
         }
     }
 
-    /// 单个菜单栏指标行：开关 +（开启时）该项独立的显示样式选择器。
-    private func mbMetricRow(_ title: String, _ enabled: Binding<Bool>, _ style: Binding<String>?) -> some View {
-        VStack(spacing: 6) {
-            HStack {
+    /// 单个菜单栏指标行：图标 + 开关 +（开启时）可视化样式选择器（点选图形，非文字下拉）+ 加框开关。
+    private func mbMetricRow(_ title: String, icon: String, tint: Color, _ enabled: Binding<Bool>, _ style: Binding<String>?, _ border: Binding<Bool>?) -> some View {
+        VStack(spacing: 8) {
+            HStack(spacing: XSpacing.s) {
+                Image(systemName: icon).font(.system(size: 12, weight: .semibold)).foregroundStyle(tint).frame(width: 18)
                 Text(title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                 Spacer()
                 Toggle("", isOn: enabled).toggleStyle(.switch).labelsHidden()
             }
             if enabled.wrappedValue, let style = style {
-                HStack(spacing: XSpacing.s) {
-                    Image(systemName: "slider.horizontal.3").font(.system(size: 10)).foregroundStyle(XColor.textTertiary)
-                    Picker("", selection: style) {
-                        ForEach(MenuBarStyle.allCases, id: \.rawValue) { st in
-                            Text(st.title).tag(st.rawValue)
+                let framed = border?.wrappedValue ?? false
+                HStack(spacing: 6) {
+                    ForEach(MenuBarStyle.allCases, id: \.rawValue) { st in
+                        MBStyleTile(style: st, tint: tint, icon: icon, framed: framed,
+                                    selected: style.wrappedValue == st.rawValue) {
+                            withAnimation(XMotion.snappy) { style.wrappedValue = st.rawValue }
                         }
                     }
-                    .labelsHidden().pickerStyle(.menu).frame(width: 160)
-                    Spacer()
                 }
-                .padding(.leading, XSpacing.l)
-                .padding(.bottom, 2)
+                .padding(.leading, XSpacing.l + 6)
+                // 「图形加框」开关：只在当前样式含动态图形（迷你折线 / 可视化）时才有意义。
+                if let border = border, style.wrappedValue == MenuBarStyle.graph.rawValue || style.wrappedValue == MenuBarStyle.rich.rawValue {
+                    HStack(spacing: XSpacing.s) {
+                        Image(systemName: "square.dashed").font(.system(size: 10, weight: .semibold)).foregroundStyle(XColor.textTertiary)
+                        Text(xLoc("图形加框")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        Spacer()
+                        Toggle("", isOn: border).toggleStyle(.switch).labelsHidden().scaleEffect(0.8)
+                    }
+                    .padding(.leading, XSpacing.l + 6)
+                    .padding(.bottom, 2)
+                }
             }
         }
+        .padding(.vertical, 1)
     }
 
     private func toggleRow(_ title: String, _ binding: Binding<Bool>) -> some View {
@@ -554,7 +581,7 @@ public struct SettingsView: View {
             if model.hasFullDiskAccess {
                 XBadge(xLoc("已开启"), color: XColor.success)
             } else {
-                Button(xLoc("去开启")) { model.openFullDiskAccessSettings() }.buttonStyle(.bordered)
+                Button(xLoc("去开启")) { model.openFullDiskAccessSettings() }.buttonStyle(XSecondaryButtonStyle(compact: true))
             }
         }
     }
@@ -567,7 +594,7 @@ public struct SettingsView: View {
             switch helperStatus {
             case .installed: XBadge(xLoc("已就绪"), color: XColor.success)
             case .requiresApproval:
-                Button(xLoc("去批准")) { model.env.helper.openLoginItemsSettings() }.buttonStyle(.bordered)
+                Button(xLoc("去批准")) { model.env.helper.openLoginItemsSettings() }.buttonStyle(XSecondaryButtonStyle(compact: true))
             default:
                 Button(xLoc("安装")) {
                     do {
@@ -577,7 +604,7 @@ public struct SettingsView: View {
                     } catch {
                         helperError = xLocF("安装助手失败：%@", error.localizedDescription)
                     }
-                }.buttonStyle(.bordered)
+                }.buttonStyle(XSecondaryButtonStyle(compact: true))
             }
         }
     }
@@ -597,8 +624,17 @@ public struct SettingsView: View {
             Button(xLoc("重置")) {
                 UserDefaults.standard.set(false, forKey: "xico.onboarded")
                 UserDefaults.standard.set(false, forKey: "xico.fdaDismissed")
-            }.buttonStyle(.bordered)
+            }.buttonStyle(XSecondaryButtonStyle(compact: true))
         }
+    }
+
+    /// 设置分区标题：把 14 张卡片按语义分组，扫读更轻松（授权/清理/外观/监控/权限）。
+    private func sectionLabel(_ title: String) -> some View {
+        Text(xLoc(title))
+            .font(.system(size: 11, weight: .semibold)).tracking(0.5).textCase(.uppercase)
+            .foregroundStyle(XColor.textTertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, XSpacing.m).padding(.leading, XSpacing.xs)
     }
 
     private func settingRow<Trailing: View>(icon: String, colors: [Color], title: String, subtitle: String,
@@ -614,5 +650,107 @@ public struct SettingsView: View {
                 trailing()
             }
         }
+    }
+}
+
+// MARK: - 菜单栏显示样式：可视化选择器磁贴（点图形选样式，像 iStat）
+
+/// 一枚样式磁贴：上方是该样式的真实缩影（图标+数值 / 纯数值 / 迷你折线 / 直方图），
+/// 下方短标签。选中态描品牌边、淡底。让用户「看着图形选」，而不是读文字下拉。
+private struct MBStyleTile: View {
+    let style: MenuBarStyle
+    let tint: Color
+    let icon: String
+    var framed: Bool = false
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                preview
+                    .foregroundStyle(selected ? tint : XColor.textSecondary)
+                    .frame(height: 15)
+                Text(style.shortTitle)
+                    .font(.system(size: 9, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? XColor.brand : XColor.textTertiary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
+                .fill(selected ? XColor.brand.opacity(0.12) : XColor.surfaceAlt.opacity(0.5)))
+            .overlay(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
+                .strokeBorder(selected ? XColor.brand : XColor.border, lineWidth: selected ? 1.5 : 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(style.title)
+    }
+
+    /// 图形加软框——与真实字形 1:1（graph/rich 才有动态图形可框；iconValue/valueOnly 无框）。
+    @ViewBuilder private func chipped<V: View>(_ content: V) -> some View {
+        if framed {
+            content
+                .padding(.horizontal, 2.5).padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: 3.5, style: .continuous).fill((selected ? tint : XColor.textSecondary).opacity(0.09)))
+                .overlay(RoundedRectangle(cornerRadius: 3.5, style: .continuous).strokeBorder((selected ? tint : XColor.textSecondary).opacity(0.3), lineWidth: 1))
+        } else {
+            content
+        }
+    }
+
+    @ViewBuilder private var preview: some View {
+        switch style {
+        case .iconValue:
+            HStack(spacing: 2) {
+                Image(systemName: icon).font(.system(size: 9.5, weight: .semibold))
+                Text("42%").font(.system(size: 9.5, weight: .semibold, design: .rounded)).monospacedDigit()
+            }
+        case .valueOnly:
+            Text("42%").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
+        case .graph:
+            HStack(spacing: 2) {
+                chipped(MBSparkPreview())
+                Text("42%").font(.system(size: 9, weight: .semibold, design: .rounded)).monospacedDigit()
+            }
+        case .rich:
+            HStack(spacing: 2) {
+                chipped(MBHistoPreview())
+                Text("42%").font(.system(size: 9, weight: .semibold, design: .rounded)).monospacedDigit()
+            }
+        }
+    }
+}
+
+private struct MBSparkPreview: View {
+    private let pts: [Double] = [0.30, 0.50, 0.34, 0.62, 0.42, 0.72, 0.5, 0.82]
+    var body: some View {
+        GeometryReader { g in
+            Path { p in
+                let w = g.size.width, h = g.size.height
+                for (i, v) in pts.enumerated() {
+                    let x = w * CGFloat(i) / CGFloat(pts.count - 1)
+                    let y = h * (1 - CGFloat(v))
+                    if i == 0 { p.move(to: CGPoint(x: x, y: y)) } else { p.addLine(to: CGPoint(x: x, y: y)) }
+                }
+            }
+            .stroke(style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
+        }
+        .frame(width: 22, height: 12)
+    }
+}
+
+private struct MBHistoPreview: View {
+    private let bars: [Double] = [0.4, 0.7, 0.45, 0.9, 0.55, 0.8, 0.5]
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 1.5) {
+            ForEach(Array(bars.enumerated()), id: \.offset) { _, v in
+                RoundedRectangle(cornerRadius: 0.5)
+                    .opacity(0.4 + 0.6 * v)
+                    .frame(width: 2, height: max(2, 12 * CGFloat(v)))
+            }
+        }
+        .frame(width: 22, height: 12, alignment: .bottom)
     }
 }

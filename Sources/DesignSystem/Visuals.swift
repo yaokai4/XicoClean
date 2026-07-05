@@ -10,8 +10,9 @@ public struct AppBackground: View {
                            startPoint: .top, endPoint: .bottom)
             // 背景以中性画布为主，仅留一丝色彩做纵深——克制、高级、真实，
             // 而非四角满屏彩虹「概念稿」水洗感。彩色留给数据本身（环、图、图标）。
-            glow(XColor.ringPeri, center: UnitPoint(x: 0.90, y: 0.02), r: 720, o: 0.07)
-            glow(XColor.ringRose, center: UnitPoint(x: 0.04, y: 0.98), r: 680, o: 0.06)
+            // 辉光取当前主题色阶（切主题→背景一起换色，G1 渐变背景统一）。
+            glow(XColor.ring(2), center: UnitPoint(x: 0.90, y: 0.02), r: 720, o: 0.07)
+            glow(XColor.ring(0), center: UnitPoint(x: 0.04, y: 0.98), r: 680, o: 0.06)
         }
         .ignoresSafeArea()
     }
@@ -29,19 +30,21 @@ public struct XRingGauge<Center: View>: View {
     let colors: [Color]
     let lineWidth: CGFloat
     let size: CGFloat
+    let a11yLabel: String?
     let center: Center
     @State private var spin = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(progress: Double, spinning: Bool = false,
                 colors: [Color] = XColor.brandGradientColors,
-                lineWidth: CGFloat = 22, size: CGFloat = 280,
+                lineWidth: CGFloat = 22, size: CGFloat = 280, a11yLabel: String? = nil,
                 @ViewBuilder center: () -> Center) {
         self.progress = progress
         self.spinning = spinning
         self.colors = colors.isEmpty ? XColor.brandGradientColors : colors
         self.lineWidth = lineWidth
         self.size = size
+        self.a11yLabel = a11yLabel
         self.center = center()
     }
 
@@ -85,6 +88,7 @@ public struct XRingGauge<Center: View>: View {
         }
         .frame(width: size, height: size)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(a11yLabel ?? "")
         .accessibilityValue("\(Int((max(0, min(progress, 1)) * 100).rounded()))%")
         .onAppear { restartSpin() }
         .onChange(of: spinning) { _ in restartSpin() }
@@ -129,27 +133,102 @@ public struct XMiniRing<Center: View>: View {
     }
 }
 
+// MARK: - 品牌加载转圈（统一「加载中」语言）
+
+/// 替代散落各处的系统 `ProgressView()` 灰色菊花——小号品牌渐变环，边扫描边旋转。
+/// Reduce Motion 由底层 XRingGauge 处理（不做无限旋转）。让每一处「检查中/加载中/处理中」
+/// 都说同一种话，去掉「系统原生控件嵌在高级卡片里」的拼接感。
+public struct XSpinner: View {
+    let size: CGFloat
+    let lineWidth: CGFloat
+    public init(size: CGFloat = 16, lineWidth: CGFloat = 2.5) {
+        self.size = size
+        self.lineWidth = lineWidth
+    }
+    public var body: some View {
+        XRingGauge(progress: 0, spinning: true, colors: XColor.brandGradientColors,
+                   lineWidth: lineWidth, size: size) { EmptyView() }
+            .accessibilityLabel(xLoc("加载中"))
+    }
+}
+
+// MARK: - 分段容量条（内存明细等）
+
+/// 连续分段的容量胶囊（活动监视器式内存条）：各段依次自左排布，余量为轨道底色（= 空闲）。
+/// 宽度随数据平滑过渡。用于内存明细（应用/联动/压缩/缓存）等需要「一条读懂构成」的场景。
+public struct XSegmentBar: View {
+    public struct Segment: Identifiable {
+        public let id: Int
+        public let fraction: Double
+        public let color: Color
+        public init(id: Int, fraction: Double, color: Color) {
+            self.id = id; self.fraction = fraction; self.color = color
+        }
+    }
+    let segments: [Segment]
+    let height: CGFloat
+    public init(segments: [Segment], height: CGFloat = 10) {
+        self.segments = segments
+        self.height = height
+    }
+    public var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            Capsule()
+                .fill(XColor.surfaceAlt)
+                .overlay(alignment: .leading) {
+                    HStack(spacing: 0) {
+                        ForEach(segments) { seg in
+                            Rectangle().fill(seg.color)
+                                .frame(width: max(0, w * min(max(seg.fraction, 0), 1)))
+                        }
+                    }
+                    .animation(.spring(response: 0.6, dampingFraction: 0.85), value: segments.map(\.fraction))
+                }
+                .clipShape(Capsule())
+        }
+        .frame(height: height)
+    }
+}
+
 // MARK: - 图标方块
 
 public struct XIconTile: View {
     let systemImage: String
     let colors: [Color]
     let size: CGFloat
-    public init(systemImage: String, colors: [Color] = XColor.brandGradientColors, size: CGFloat = 30) {
+    /// flat=true：扁平染色底 + 同色实心字形（克制，用于卡片头/列表——「渐变只留给主角」）。
+    /// flat=false：品牌渐变底 + 白字 + 投影（用于 hero / 主操作）。
+    let flat: Bool
+    public init(systemImage: String, colors: [Color] = XColor.brandGradientColors,
+                size: CGFloat = 30, flat: Bool = false) {
         self.systemImage = systemImage
         self.colors = colors.isEmpty ? XColor.brandGradientColors : colors
         self.size = size
+        self.flat = flat
     }
     public var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-            .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-            .frame(width: size, height: size)
-            .overlay(
-                Image(systemName: systemImage)
-                    .font(.system(size: size * 0.5, weight: .medium))
-                    .foregroundStyle(.white)
-            )
-            .shadow(color: colors.first!.opacity(0.35), radius: 6, y: 3)
+        let shape = RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+        return Group {
+            if flat {
+                shape.fill((colors.first ?? XColor.brand).opacity(0.14))
+                    .frame(width: size, height: size)
+                    .overlay(
+                        Image(systemName: systemImage)
+                            .font(.system(size: size * 0.5, weight: .semibold))
+                            .foregroundStyle(colors.first ?? XColor.brand)
+                    )
+            } else {
+                shape.fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: size, height: size)
+                    .overlay(
+                        Image(systemName: systemImage)
+                            .font(.system(size: size * 0.5, weight: .medium))
+                            .foregroundStyle(.white)
+                    )
+                    .shadow(color: colors.first!.opacity(0.35), radius: 6, y: 3)
+            }
+        }
     }
 }
 

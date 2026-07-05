@@ -12,6 +12,7 @@ final class UninstallerModel: ObservableObject {
     @Published var loading = false
     @Published var working = false
     @Published var lastFreed: Int64?
+    @Published var lastRemovedCount: Int = 0
     @Published var query = ""
 
     var filteredApps: [InstalledApp] {
@@ -55,6 +56,9 @@ final class UninstallerModel: ObservableObject {
         targets[i].isSelected.toggle()
     }
 
+    var allTargetsSelected: Bool { !targets.isEmpty && targets.allSatisfy(\.isSelected) }
+    func toggleAllTargets(_ on: Bool) { for i in targets.indices { targets[i].isSelected = on } }
+
     var selectedSize: Int64 { targets.filter(\.isSelected).reduce(0) { $0 + $1.size } }
     var selectedCount: Int { targets.filter(\.isSelected).count }
 
@@ -71,6 +75,7 @@ final class UninstallerModel: ObservableObject {
         Task {
             let report = await env.cleaningEngine.execute(CleaningPlan(items: items, intent: .trash))
             self.lastFreed = report.reclaimedBytes
+            self.lastRemovedCount = report.removedCount
             // 计入清理历史并广播刷新（此前卸载释放的空间被系统性少计）
             env.history.record(module: xLocF("卸载 · %@", appName),
                                reclaimedBytes: report.reclaimedBytes, removedCount: report.removedCount)
@@ -115,7 +120,7 @@ public struct UninstallerView: View {
     private var appList: some View {
         VStack(spacing: 0) {
             XHeaderBar(title: xLoc("卸载器"), subtitle: xLocF("%d 个应用", model.apps.count)) {
-                if model.loading { ProgressView().controlSize(.small) }
+                if model.loading { XSpinner() }
             }
             searchField
             ScrollView {
@@ -163,10 +168,15 @@ public struct UninstallerView: View {
                 }
                 .padding(XSpacing.xl)
 
-                Text(xLoc("将一并移入废纸篓（已自动勾选关联文件）"))
-                    .font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, XSpacing.xl)
+                // 全选/全不选关联文件 + 实时体积——批量卸载更顺手。
+                HStack(spacing: XSpacing.s) {
+                    XCheckbox(isOn: model.allTargetsSelected) { model.toggleAllTargets(!model.allTargetsSelected) }
+                    Text(xLoc("关联文件")).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
+                    Spacer()
+                    Text(xLocF("已选 %d 项 · %@", model.selectedCount, model.selectedSize.formattedBytes))
+                        .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                }
+                .padding(.horizontal, XSpacing.xl).padding(.top, XSpacing.xs)
 
                 ScrollView {
                     LazyVStack(spacing: 2) {
@@ -180,7 +190,7 @@ public struct UninstallerView: View {
                 XActionBar(title: xLocF("已选 %d 项", model.selectedCount),
                            subtitle: xLoc("将移入废纸篓，可在访达中恢复")) {
                     if model.working {
-                        ProgressView().controlSize(.small)
+                        XSpinner()
                     } else {
                         Button(xLocF("卸载 · %@", model.selectedSize.formattedBytes)) { confirmUninstall = true }
                             .buttonStyle(XPrimaryButtonStyle(enabled: model.selectedCount > 0))
@@ -189,8 +199,11 @@ public struct UninstallerView: View {
                 }
             }
         } else if let freed = model.lastFreed {
-            XEmptyState(systemImage: "checkmark.seal.fill", title: xLocF("已卸载，释放 %@", freed.formattedBytes),
-                        subtitle: xLoc("从左侧选择另一个应用继续。"))
+            // 统一计数庆祝：释放字节数从 0 数起 + 卸载项数（文件已入废纸篓，可在访达恢复）。
+            TaskCompletionView(
+                animateTo: freed,
+                metricText: { xLocF("已释放 %@", $0.formattedBytes) },
+                detail: xLocF("已卸载 %d 项 · 可在废纸篓恢复", model.lastRemovedCount))
         } else {
             XEmptyState(systemImage: "xmark.bin", title: xLoc("选择要卸载的应用"),
                         subtitle: xLoc("从左侧列表选择一个应用，Xico 会找出它的全部关联文件供你一并清除。"))

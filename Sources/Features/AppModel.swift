@@ -55,13 +55,30 @@ public final class AppModel: ObservableObject {
     // 滚动历史（用于菜单栏折线图）
     @Published public var cpuHistory: [Double] = []
     @Published public var memHistory: [Double] = []
+    @Published public var gpuHistory: [Double] = []
     @Published public var netDownHistory: [Double] = []
     @Published public var netUpHistory: [Double] = []
     // 菜单栏详情面板的进程榜
     @Published public var topByCPU: [ProcessUsage] = []
     @Published public var topByMemory: [ProcessUsage] = []
+    // CPU 频率（性能核 / 能效核，MHz）——阻塞 ~90ms，后台隔次采样。
+    @Published public var cpuFreqP: Double?
+    @Published public var cpuFreqE: Double?
+    // 本次会话网络统计（供 Sensei 式峰值 / 累计芯片）。累计 = 采样速率对时间的积分。
+    @Published public var netDownPeak: Double = 0
+    @Published public var netUpPeak: Double = 0
+    @Published public var sessionDownBytes: Int64 = 0
+    @Published public var sessionUpBytes: Int64 = 0
+    // 网络接口清单（名称 / 类型 / IP / 速率）——后台隔次采样。
+    @Published public var networkInterfaces: [NetworkInterfaceInfo] = []
     private let processes = ProcessSampler()
     private let historyCap = 60
+    /// 详情类采样（CPU 频率 / 网络接口）走后台队列，绝不阻塞菜单栏主线程。
+    private let detailQueue = DispatchQueue(label: "app.xico.mb.detail", qos: .utility)
+    /// 菜单栏专属网络采样器：与硬件页/监视页各自独立，避免共享实例互相污染接口速率基线。
+    private let mbNetwork = NetworkInfoService()
+    private var detailTick = 0
+    private var lastMetricsAt: Date?
     // 阈值告警与历史落盘（随菜单栏采样一直运行，与 iStat 一致）
     @Published public var alertRules: [AlertRule] = []
     private let alertEvaluator = AlertEvaluator()
@@ -177,11 +194,40 @@ public final class AppModel: ObservableObject {
         if macInfo == nil { macInfo = env.liveMetrics.macInfo() }
         push(&cpuHistory, s.cpuUsage)
         push(&memHistory, s.memoryUsedFraction)
+        push(&gpuHistory, s.gpuUsage ?? 0)
         push(&netDownHistory, s.netDownBytesPerSec)
         push(&netUpHistory, s.netUpBytesPerSec)
+        // 本次会话峰值 / 累计（累计 = 速率 × 实测时间间隔的积分，来自真实采样，非编造）。
+        let now0 = Date()
+        netDownPeak = max(netDownPeak, s.netDownBytesPerSec)
+        netUpPeak = max(netUpPeak, s.netUpBytesPerSec)
+        if let last = lastMetricsAt {
+            let dt = now0.timeIntervalSince(last)
+            if dt > 0, dt < 30 {   // 跳过首帧与长睡眠后的异常间隔
+                sessionDownBytes += Int64(s.netDownBytesPerSec * dt)
+                sessionUpBytes += Int64(s.netUpBytesPerSec * dt)
+            }
+        }
+        lastMetricsAt = now0
         let top = processes.sample(top: 4)
         topByCPU = top.byCPU
         topByMemory = top.byMemory
+
+        // CPU 频率（阻塞 ~90ms）与网络接口清单：后台隔次采样，回主线程发布。
+        detailTick &+= 1
+        if detailTick % 3 == 1 {
+            let sampler = env.liveMetrics
+            let netInfo = mbNetwork
+            detailQueue.async { [weak self] in
+                let freq = sampler.cpuFrequency()
+                let ifaces = netInfo.interfaces()
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if let f = freq { self.cpuFreqP = f.performance; self.cpuFreqE = f.efficiency }
+                    self.networkInterfaces = ifaces
+                }
+            }
+        }
 
         // 历史落盘（1 分钟粒度）+ 阈值告警评估——随菜单栏采样常驻运行
         let now = Date()

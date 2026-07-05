@@ -30,6 +30,20 @@ public struct NetworkInterfaceInfo: Sendable, Identifiable {
             }
         }
     }
+
+    public init(id: String, displayName: String, type: Kind, isActive: Bool,
+                ipv4: String?, ipv6: String?, macAddress: String?,
+                downBytesPerSec: Double, upBytesPerSec: Double) {
+        self.id = id
+        self.displayName = displayName
+        self.type = type
+        self.isActive = isActive
+        self.ipv4 = ipv4
+        self.ipv6 = ipv6
+        self.macAddress = macAddress
+        self.downBytesPerSec = downBytesPerSec
+        self.upBytesPerSec = upBytesPerSec
+    }
 }
 
 /// Wi-Fi 详情。
@@ -85,6 +99,7 @@ public final class NetworkInfoService: @unchecked Sendable {
         let dt = prevT.map { now.timeIntervalSince($0) } ?? 0
 
         let addrs = interfaceAddresses()
+        let macs = linkAddresses()
         // 隐藏系统自组网/桥接等噪声接口（除非它们真的携带 IP 在用）
         let noisePrefixes = ["anpi", "awdl", "llw", "gif", "stf", "pktap", "bridge", "ap", "XHC", "utun"]
         var out: [NetworkInterfaceInfo] = []
@@ -103,7 +118,7 @@ public final class NetworkInfoService: @unchecked Sendable {
             }
             out.append(NetworkInterfaceInfo(
                 id: name, displayName: friendlyName(name, kind: kind), type: kind,
-                isActive: hasAddr, ipv4: addr?.ipv4, ipv6: addr?.ipv6, macAddress: c.mac,
+                isActive: hasAddr, ipv4: addr?.ipv4, ipv6: addr?.ipv6, macAddress: c.mac ?? macs[name],
                 downBytesPerSec: down, upBytesPerSec: up))
         }
         // 活跃优先、物理接口优先
@@ -165,6 +180,33 @@ public final class NetworkInfoService: @unchecked Sendable {
             if family == UInt8(AF_INET) { if entry.ipv4 == nil { entry.ipv4 = ip } }
             else { if entry.ipv6 == nil, !ip.hasPrefix("fe80") { entry.ipv6 = ip } }
             out[name] = entry
+        }
+        return out
+    }
+
+    /// 每接口 MAC 地址（AF_LINK / sockaddr_dl）。用 sa_len 严格防越界；读不到留空。
+    private func linkAddresses() -> [String: String] {
+        var out: [String: String] = [:]
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0 else { return out }
+        defer { freeifaddrs(ifaddr) }
+        var ptr = ifaddr
+        while let p = ptr {
+            defer { ptr = p.pointee.ifa_next }
+            guard let sa = p.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_LINK) else { continue }
+            let name = String(cString: p.pointee.ifa_name)
+            let total = Int(sa.pointee.sa_len)
+            let mac: String? = sa.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { dl in
+                let nlen = Int(dl.pointee.sdl_nlen)
+                let alen = Int(dl.pointee.sdl_alen)
+                // MAC 6 字节，位于 sockaddr_dl 固定头(8B) + 名称长度 之后；sa_len 必须容纳。
+                guard alen == 6, total >= 8 + nlen + alen else { return nil }
+                let raw = UnsafeRawPointer(dl)
+                let bytes = (0..<6).map { raw.load(fromByteOffset: 8 + nlen + $0, as: UInt8.self) }
+                if bytes.allSatisfy({ $0 == 0 }) { return nil }
+                return bytes.map { String(format: "%02x", $0) }.joined(separator: ":")
+            }
+            if let mac { out[name] = mac }
         }
         return out
     }

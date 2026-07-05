@@ -57,7 +57,7 @@ public struct DuplicatesView: View {
             Text(box.url.path).font(XFont.caption).foregroundStyle(XColor.textPrimary)
                 .lineLimit(1).truncationMode(.middle)
             Spacer()
-            Button(xLoc("选择文件夹")) { pickFolder() }.buttonStyle(.bordered)
+            Button(xLoc("选择文件夹")) { pickFolder() }.buttonStyle(XSecondaryButtonStyle(compact: true))
         }
         .padding(.horizontal, XSpacing.xl)
         .padding(.vertical, XSpacing.s)

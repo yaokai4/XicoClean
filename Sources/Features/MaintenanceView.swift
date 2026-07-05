@@ -11,15 +11,33 @@ public struct MaintenanceView: View {
     @State private var status: HelperProxy.Status = .notInstalled
     @State private var confirmTask: MaintenanceTask?
     @State private var installError: String?
+    @State private var batchRunning = false
+    @State private var maintDone: Int?     // 批量执行完成的任务数（触发计数庆祝）
 
     public init(env: XicoEnvironment) { self.env = env }
 
     public var body: some View {
         VStack(spacing: 0) {
             XHeaderBar(title: xLoc("维护"), subtitle: xLoc("让 Mac 保持顺畅"))
+            if let n = maintDone {
+                TaskCompletionView(
+                    animateTo: Int64(n),
+                    metricText: { xLocF("完成 %d 项维护", Int($0)) },
+                    detail: xLoc("免管理员维护任务已全部执行。"),
+                    doneTitle: xLoc("完成"),
+                    onDone: { maintDone = nil })
+            } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: XSpacing.m) {
-                    sectionLabel(xLoc("立即可用 · 无需管理员"))
+                    HStack {
+                        sectionLabel(xLoc("立即可用 · 无需管理员"))
+                        Spacer()
+                        if batchRunning { XSpinner() }
+                        else {
+                            Button(xLoc("全部执行")) { runAllUser() }
+                                .buttonStyle(XSecondaryButtonStyle(compact: true))
+                        }
+                    }
                     ForEach(UserMaintenanceTask.allCases) { task in userCard(task) }
 
                     sectionLabel(xLoc("需要管理员权限"))
@@ -27,6 +45,7 @@ public struct MaintenanceView: View {
                     ForEach(MaintenanceTask.allCases, id: \.self) { task in rootCard(task) }
                 }
                 .padding(XSpacing.xl)
+            }
             }
         }
         .onAppear { status = env.helper.status() }
@@ -60,9 +79,9 @@ public struct MaintenanceView: View {
             Text(bannerText).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             Spacer()
             if status == .requiresApproval {
-                Button(xLoc("去系统设置批准")) { env.helper.openLoginItemsSettings() }.buttonStyle(.borderedProminent)
+                Button(xLoc("去系统设置批准")) { env.helper.openLoginItemsSettings() }.buttonStyle(XPrimaryButtonStyle(compact: true))
             } else {
-                Button(xLoc("安装助手")) { installHelper() }.buttonStyle(.borderedProminent)
+                Button(xLoc("安装助手")) { installHelper() }.buttonStyle(XPrimaryButtonStyle(compact: true))
             }
         }
         .padding(XSpacing.m)
@@ -101,9 +120,9 @@ public struct MaintenanceView: View {
                     }
                     Spacer()
                     if running == "u-" + task.rawValue {
-                        ProgressView().controlSize(.small)
+                        XSpinner()
                     } else {
-                        Button(xLoc("执行")) { runUser(task) }.buttonStyle(.bordered)
+                        Button(xLoc("执行")) { runUser(task) }.buttonStyle(XSecondaryButtonStyle(compact: true))
                     }
                 }
                 resultLine(userResults[task.rawValue])
@@ -122,9 +141,9 @@ public struct MaintenanceView: View {
                     }
                     Spacer()
                     if running == "r-" + task.rawValue {
-                        ProgressView().controlSize(.small)
+                        XSpinner()
                     } else {
-                        Button(xLoc("执行")) { runRoot(task) }.buttonStyle(.bordered)
+                        Button(xLoc("执行")) { runRoot(task) }.buttonStyle(XSecondaryButtonStyle(compact: true))
                             .disabled(status != .installed)
                     }
                 }
@@ -149,6 +168,22 @@ public struct MaintenanceView: View {
             let (ok, msg) = await env.maintenanceRunner.run(task)
             userResults[task.rawValue] = (ok, msg)
             running = nil
+        }
+    }
+
+    /// 批量执行全部「免管理员」维护任务，逐项写回结果，完成后计数庆祝。
+    private func runAllUser() {
+        guard !batchRunning else { return }
+        batchRunning = true
+        Task {
+            var done = 0
+            for task in UserMaintenanceTask.allCases {
+                let (ok, msg) = await env.maintenanceRunner.run(task)
+                userResults[task.rawValue] = (ok, msg)
+                done += 1
+            }
+            batchRunning = false
+            maintDone = done
         }
     }
 

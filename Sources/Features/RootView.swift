@@ -32,7 +32,7 @@ public struct RootView: View {
             }
         }
         .frame(minWidth: 1080, minHeight: 720)
-        .animation(.easeInOut(duration: 0.3), value: model.themeID)   // 换主题时整树平滑淡入
+        .animation(XMotion.crossfade, value: model.themeID)   // 换主题时整树平滑淡入（XMotion.crossfade）
         .preferredColorScheme(model.appearance.colorScheme)
         .sheet(isPresented: $model.showPricing) { PricingView(model: model) }
         .onAppear { model.startMetricsTimer() }
@@ -60,9 +60,11 @@ struct AppearanceToggle: View {
                     Image(systemName: a.icon)
                         .font(.system(size: 11, weight: .semibold))
                         .frame(width: 30, height: 22)
-                        .foregroundStyle(appearance == a ? .white : XColor.textSecondary)
+                        // 选中段用扁平品牌染色 + 品牌色图标（呼应侧栏选中态），不再是白字彩色渐变小胶囊。
+                        .foregroundStyle(appearance == a ? AnyShapeStyle(XColor.brand)
+                                                         : AnyShapeStyle(XColor.textSecondary))
                         .background(
-                            Capsule().fill(appearance == a ? AnyShapeStyle(XColor.brandGradient)
+                            Capsule().fill(appearance == a ? AnyShapeStyle(XColor.brand.opacity(0.15))
                                                            : AnyShapeStyle(Color.clear))
                         )
                         .contentShape(Capsule())
@@ -78,49 +80,54 @@ struct AppearanceToggle: View {
 
 // MARK: - 侧边栏（自定义高级样式）
 
-struct SidebarView: View {
+public struct SidebarView: View {
     @EnvironmentObject var model: AppModel
+    /// 离屏截图时置 false 跳过 ScrollView（ImageRenderer 不渲染滚动内容）；正常运行恒为 true。
+    var scrolls: Bool
+    public init(scrolls: Bool = true) { self.scrolls = scrolls }
 
-    var body: some View {
+    public var body: some View {
         VStack(spacing: 0) {
             brandHeader
-            ScrollView {
-                VStack(alignment: .leading, spacing: XSpacing.l) {
-                    ForEach(ModuleCatalog.grouped(), id: \.0) { category, modules in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(xLoc(category.title))
-                                .xSectionLabel()
-                                .foregroundStyle(XColor.textTertiary)
-                                .padding(.leading, XSpacing.m)
-                                .padding(.bottom, 3)
-                            ForEach(modules) { meta in
-                                SidebarTile(meta: meta, selected: model.selection == meta.id) {
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
-                                        model.selection = meta.id
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, XSpacing.s)
-                .padding(.top, XSpacing.s)
-                .padding(.bottom, XSpacing.l)
+            if scrolls {
+                ScrollView { navList }
+            } else {
+                navList
             }
             diskFooter
         }
         .background(
-            ZStack {
-                LinearGradient(colors: [XColor.sidebar, XColor.canvasBottom],
-                               startPoint: .top, endPoint: .bottom)
-                RadialGradient(colors: [XColor.auroraViolet.opacity(0.12), .clear],
-                               center: .top, startRadius: 0, endRadius: 300)
-                RadialGradient(colors: [XColor.auroraRose.opacity(0.08), .clear],
-                               center: .bottom, startRadius: 0, endRadius: 220)
-            }
-            .overlay(Rectangle().fill(XColor.hairline).frame(width: 1), alignment: .trailing)
-            .ignoresSafeArea()
+            // 近乎纯净的竖向渐变 + 右缘发丝线；移除原先两层极光雾（去「彩色网页仪表盘」感，
+            // 让侧栏安静下来，选中态成为唯一的品牌重音）。
+            LinearGradient(colors: [XColor.sidebar, XColor.canvasBottom],
+                           startPoint: .top, endPoint: .bottom)
+                .overlay(Rectangle().fill(XColor.hairline).frame(width: 1), alignment: .trailing)
+                .ignoresSafeArea()
         )
+    }
+
+    private var navList: some View {
+        VStack(alignment: .leading, spacing: XSpacing.l) {
+            ForEach(ModuleCatalog.grouped(), id: \.0) { category, modules in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(xLoc(category.title))
+                        .xSectionLabel()
+                        .foregroundStyle(XColor.textTertiary)
+                        .padding(.leading, XSpacing.m)
+                        .padding(.bottom, 3)
+                    ForEach(modules) { meta in
+                        SidebarTile(meta: meta, selected: model.selection == meta.id) {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+                                model.selection = meta.id
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, XSpacing.s)
+        .padding(.top, XSpacing.s)
+        .padding(.bottom, XSpacing.l)
     }
 
     private var brandHeader: some View {
@@ -169,36 +176,53 @@ struct SidebarTile: View {
     let selected: Bool
     let action: () -> Void
     @State private var hover = false
+    @FocusState private var focused: Bool
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: XSpacing.s + 2) {
                 Image(systemName: meta.systemImage)
-                    // 图标字号/字重恒定，仅颜色随选中变化——避免选中时行高跳动。
+                    // 字号/字重恒定，仅颜色随选中变化——避免选中时行高跳动。
+                    // 选中态图标用品牌渐变着色（而非白底彩块），克制而有识别度。
                     .font(.system(size: 14, weight: selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? .white : XColor.textSecondary)
+                    .foregroundStyle(selected ? AnyShapeStyle(XColor.brandGradient)
+                                             : AnyShapeStyle(XColor.textSecondary))
                     .frame(width: 20, height: 20)
                 Text(xLoc(meta.title))
-                    // 字号恒定 13.5pt，仅字重随选中变化（medium→semibold），杜绝选中放大导致的重排。
+                    // 字号恒定 13.5pt，仅字重随选中变化，杜绝选中放大导致的重排。
                     .font(.system(size: 13.5, weight: selected ? .semibold : .medium))
-                    .foregroundStyle(selected ? .white : XColor.textPrimary)
+                    .foregroundStyle(selected ? XColor.textPrimary : XColor.textSecondary)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, XSpacing.s + 2)
             .padding(.vertical, 8)
             .background(
+                // 选中：极淡品牌染色底 + 左侧品牌指示条（原生高级做法），
+                // 取代原「饱和渐变发光块」的 web-app 廉价感。
                 RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
-                    .fill(selected ? AnyShapeStyle(XColor.brandGradient)
+                    .fill(selected ? AnyShapeStyle(XColor.brand.opacity(0.13))
                                    : AnyShapeStyle(hover ? XColor.surfaceHover : Color.clear))
-                    // 更柔、更扩散的投影，收敛"发光块"的刺眼感。
-                    .shadow(color: selected ? XColor.brand.opacity(0.22) : .clear, radius: 9, y: 3)
+            )
+            .overlay(alignment: .leading) {
+                if selected {
+                    Capsule(style: .continuous)
+                        .fill(XColor.brandGradient)
+                        .frame(width: 3, height: 16)
+                        .padding(.leading, 3)
+                }
+            }
+            // 键盘焦点环（Tab 导航时可见），达成全键盘可达。
+            .overlay(
+                RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
+                    .strokeBorder(focused ? XColor.brand : .clear, lineWidth: 2)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .focused($focused)
         .onHover { hover = $0 }
-        .accessibilityLabel(meta.title)
-        .accessibilityHint(meta.subtitle)
+        .accessibilityLabel(xLoc(meta.title))
+        .accessibilityHint(xLoc(meta.subtitle))
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 }
@@ -222,7 +246,7 @@ struct DetailView: View {
                     .id(model.selection)
                     .transition(.opacity.combined(with: .offset(y: 8)))
             }
-            .animation(.easeInOut(duration: 0.28), value: model.selection)
+            .animation(XMotion.crossfade, value: model.selection)
         }
     }
 
@@ -298,7 +322,8 @@ struct PermissionBanner: View {
     @State private var hover = false
     var body: some View {
         HStack(spacing: XSpacing.m) {
-            XIconTile(systemImage: "lock.shield.fill", colors: [XColor.warning, XColor.accentPink], size: 32)
+            // 引导型提示（非告警）：用品牌/信息色，不用告警橙——橙色只留给真正的许可证失效。
+            XIconTile(systemImage: "lock.shield.fill", colors: [XColor.info, XColor.auroraBlue], size: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(xLoc("开启完全磁盘访问以扫描全部垃圾"))
                     .font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
@@ -307,7 +332,7 @@ struct PermissionBanner: View {
             }
             Spacer()
             Button(xLoc("开启")) { model.openFullDiskAccessSettings() }
-                .buttonStyle(XPrimaryButtonStyle())
+                .buttonStyle(XPrimaryButtonStyle(compact: true))
             Button { withAnimation(.spring(response: 0.3)) { model.permissionBannerDismissed = true } } label: {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
                     .foregroundStyle(XColor.textTertiary)
@@ -321,7 +346,7 @@ struct PermissionBanner: View {
             RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
                 .fill(XColor.surface)
                 .overlay(RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
-                    .strokeBorder(XColor.warning.opacity(0.35), lineWidth: 1))
+                    .strokeBorder(XColor.info.opacity(0.30), lineWidth: 1))
         )
         .xSoftShadow()
         .padding(.horizontal, XSpacing.xl)
@@ -332,15 +357,16 @@ struct PermissionBanner: View {
 
 // MARK: - 菜单栏内容
 
-/// 菜单栏常驻状态面板：实时 CPU / 内存 / 存储 / 网络 / 风扇 / 温度
+/// 菜单栏「合并总览」面板——对标 Sensei 图3 的 Combined：一叠卡片，每张卡片内用
+/// 「标签 · 横向进度条 · 数值」的条形行，一屏读懂整机 CPU / 内存 / GPU / 存储 / 网络 / 散热 / 电池。
 public struct MenuBarView: View {
     @ObservedObject var model: AppModel
     public init(model: AppModel) { self.model = model }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: XSpacing.m) {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
             HStack(spacing: XSpacing.s) {
-                XBrandMark(size: 22)
+                XBrandMark(size: 20)
                 Text(xLoc("系统状态")).font(XFont.headline).foregroundStyle(XColor.textPrimary)
                 Spacer()
                 if let chip = model.macInfo?.chip {
@@ -349,69 +375,153 @@ public struct MenuBarView: View {
             }
 
             if let s = model.liveSnapshot {
-                HStack(spacing: XSpacing.s) {
-                    ringStat(xLoc("处理器"), s.cpuUsage)
-                    ringStat(xLoc("内存"), s.memoryUsedFraction)
-                    ringStat(xLoc("存储"), s.diskUsedFraction)
-                }
-                .padding(.vertical, XSpacing.xs)
-
-                Divider().padding(.vertical, 2)
-
-                row("antenna.radiowaves.left.and.right", xLoc("网络"),
-                    "↓ \(s.netDownBytesPerSec.formattedRate)   ↑ \(s.netUpBytesPerSec.formattedRate)")
-                if let rpm = s.fanRPM {
-                    row("fanblades", xLoc("风扇"), "\(rpm) RPM")
-                }
-                HStack {
-                    Image(systemName: "thermometer.medium").font(.system(size: 12)).foregroundStyle(XColor.brand)
-                        .frame(width: 18)
-                    Text(xLoc("热状态")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                    Spacer()
-                    XBadge(s.thermal.rawValue, color: thermalColor(s.thermal))
-                }
+                cpuCard(s)
+                memoryCard(s)
+                if let g = s.gpuUsage { gpuCard(s, g) }
+                storageCard(s)
+                networkCard(s)
+                sensorsCard(s)
+                if let pct = s.batteryPercent { batteryCard(s, pct) }
             } else {
-                ProgressView().controlSize(.small).frame(maxWidth: .infinity)
+                XSpinner().frame(maxWidth: .infinity).padding(.vertical, XSpacing.l)
             }
 
-            Divider().padding(.vertical, 2)
             HStack(spacing: XSpacing.s) {
                 Button {
                     NSApp.activate(ignoringOtherApps: true)
                     model.selection = .monitor
                     for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
                 } label: { Text(xLoc("打开监视器")).frame(maxWidth: .infinity) }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(XPrimaryButtonStyle(compact: true))
                 Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(XSecondaryButtonStyle(compact: true))
             }
+            .padding(.top, 2)
         }
         .padding(XSpacing.m)
         .frame(width: 300)
     }
 
-    /// 彩虹极光环 + 中心百分数 + 标题（合并总览的三个指标）
-    private func ringStat(_ title: String, _ fraction: Double) -> some View {
-        VStack(spacing: 6) {
-            XMiniRing(fraction: fraction, colors: XColor.ringColors, size: 58, lineWidth: 6.5) {
-                Text("\(Int((fraction * 100).rounded()))%")
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .foregroundStyle(XColor.textPrimary)
+    // MARK: - 卡片
+
+    private func cpuCard(_ s: SystemSnapshot) -> some View {
+        card("cpu", xLoc("处理器"), "\(Int(s.cpuUsage * 100))%", XColor.metricCPU[0]) {
+            barRow(xLoc("用户"), "\(Int(s.cpuUser * 100))%", s.cpuUser, XColor.metricCPU[0])
+            barRow(xLoc("系统"), "\(Int(s.cpuSystem * 100))%", s.cpuSystem, XColor.metricCPU[1])
+        }
+    }
+    private func memoryCard(_ s: SystemSnapshot) -> some View {
+        card("memorychip", xLoc("内存"), "\(Int(s.memoryUsedFraction * 100))%", XColor.metricMemory[0]) {
+            barRow(xLoc("占用"), s.memoryUsed.formattedMemory, s.memoryUsedFraction, XColor.metricMemory[0])
+            barRow(xLoc("压力"), "", s.memoryPressureFraction, pressureColor(s.memoryPressure))
+            infoRowBadge(xLoc("内存压力"), xLoc(s.memoryPressureLabel), pressureColor(s.memoryPressure))
+        }
+    }
+    private func gpuCard(_ s: SystemSnapshot, _ g: Double) -> some View {
+        card("cpu.fill", "GPU", "\(Int(g * 100))%", XColor.metricGPU[0]) {
+            barRow(xLoc("占用"), "\(Int(g * 100))%", g, XColor.metricGPU[0])
+            if let t = s.gpuTemp, t > 0 { infoRow(xLoc("温度"), String(format: "%.0f°C", t)) }
+        }
+    }
+    private func storageCard(_ s: SystemSnapshot) -> some View {
+        card("internaldrive", xLoc("存储"), "\(Int(s.diskUsedFraction * 100))%", XColor.metricDisk[0]) {
+            barRow(xLoc("已用"), s.diskFree.formattedBytes, s.diskUsedFraction, XColor.metricDisk[0])
+        }
+    }
+    private func networkCard(_ s: SystemSnapshot) -> some View {
+        card("antenna.radiowaves.left.and.right", xLoc("网络"), "", XColor.metricNetwork[0]) {
+            infoRow("↓ " + xLoc("下载"), s.netDownBytesPerSec.formattedRate)
+            infoRow("↑ " + xLoc("上传"), s.netUpBytesPerSec.formattedRate)
+        }
+    }
+    private func sensorsCard(_ s: SystemSnapshot) -> some View {
+        card("thermometer.medium", xLoc("散热"), "", XColor.warning) {
+            if let t = s.cpuTemp, t > 0 { infoRow(xLoc("处理器温度"), String(format: "%.0f°C", t)) }
+            if let g = s.gpuTemp, g > 0 { infoRow(xLoc("GPU 温度"), String(format: "%.0f°C", g)) }
+            if let rpm = s.fanRPM { infoRow(xLoc("风扇"), "\(rpm) RPM") }
+            infoRowBadge(xLoc("热状态"), xLoc(s.thermal.rawValue), thermalColor(s.thermal))
+        }
+    }
+    private func batteryCard(_ s: SystemSnapshot, _ pct: Int) -> some View {
+        card(batteryIcon(pct, charging: s.batteryCharging), xLoc("电池"), "\(pct)%", batteryColor(pct)) {
+            barRow(xLoc("电量"), "\(pct)%", Double(pct) / 100, batteryColor(pct))
+            infoRowBadge(xLoc("状态"),
+                         s.batteryCharging ? xLoc("充电中") : xLoc("使用电池"),
+                         s.batteryCharging ? XColor.success : XColor.textSecondary)
+        }
+    }
+
+    // MARK: - 组件
+
+    private func card<C: View>(_ icon: String, _ title: String, _ headerValue: String, _ tint: Color,
+                               @ViewBuilder content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: XSpacing.xs) {
+                Image(systemName: icon).font(.system(size: 10, weight: .semibold)).foregroundStyle(tint).frame(width: 14)
+                Text(title).font(.system(size: 9, weight: .bold)).tracking(0.6).textCase(.uppercase)
+                    .foregroundStyle(XColor.textTertiary)
+                Spacer()
+                if !headerValue.isEmpty {
+                    Text(headerValue).font(XFont.microMono).foregroundStyle(XColor.textSecondary)
+                }
             }
-            Text(title).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+            content()
         }
-        .frame(maxWidth: .infinity)
+        .padding(.horizontal, XSpacing.s).padding(.vertical, XSpacing.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
+                .fill(XColor.surfaceAlt.opacity(0.55))
+                // 极淡主题色底（贴左上一丝 tint 辉光，像 Sensei 每卡不同色调）——用该卡指标色，克制不刺眼。
+                .overlay(
+                    RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
+                        .fill(LinearGradient(colors: [tint.opacity(0.10), .clear],
+                                             startPoint: .topLeading, endPoint: .center))
+                )
+        )
+        .overlay(RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous).strokeBorder(tint.opacity(0.18), lineWidth: 1))
     }
 
-    private func row(_ icon: String, _ title: String, _ detail: String) -> some View {
+    /// 「标签 · 横向进度条 · 数值」——Sensei 式条形行。进度条用定宽（ImageRenderer 与真机弹窗都稳定）。
+    /// 标签/数值单行、长语言自动缩放不换行。
+    private func barRow(_ label: String, _ value: String, _ fraction: Double, _ color: Color) -> some View {
+        let barW: CGFloat = 108
+        return HStack(spacing: XSpacing.s) {
+            Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                .lineLimit(1).minimumScaleFactor(0.6)
+                .frame(width: 58, alignment: .leading)
+            ZStack(alignment: .leading) {
+                Capsule().fill(XColor.textTertiary.opacity(0.16)).frame(width: barW, height: 5)
+                Capsule()
+                    .fill(LinearGradient(colors: [color.opacity(0.8), color], startPoint: .leading, endPoint: .trailing))
+                    .frame(width: max(3, barW * min(max(fraction, 0), 1)), height: 5)
+                    .animation(.easeOut(duration: 0.4), value: fraction)
+            }
+            Spacer(minLength: XSpacing.xs)
+            Text(value).font(XFont.microMono).foregroundStyle(XColor.textPrimary)
+                .lineLimit(1).minimumScaleFactor(0.6)
+                .frame(minWidth: 44, alignment: .trailing)
+        }
+    }
+
+    private func infoRow(_ label: String, _ value: String) -> some View {
         HStack {
-            Image(systemName: icon).font(.system(size: 12)).foregroundStyle(XColor.brand).frame(width: 18)
-            Text(title).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+            Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             Spacer()
-            Text(detail).font(XFont.mono).foregroundStyle(XColor.textPrimary)
+            Text(value).font(XFont.microMono).foregroundStyle(XColor.textPrimary)
+        }
+    }
+    private func infoRowBadge(_ label: String, _ badge: String, _ color: Color) -> some View {
+        HStack {
+            Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+            Spacer()
+            XBadge(badge, color: color)
         }
     }
 
+    private func pressureColor(_ level: Int) -> Color {
+        switch level { case 4: return XColor.danger; case 2: return XColor.warning; default: return XColor.success }
+    }
     private func thermalColor(_ t: ThermalLevel) -> Color {
         switch t {
         case .nominal: return XColor.success
@@ -419,5 +529,20 @@ public struct MenuBarView: View {
         case .serious: return XColor.warning
         case .critical: return XColor.danger
         }
+    }
+    private func batteryIcon(_ pct: Int, charging: Bool) -> String {
+        if charging { return "battery.100.bolt" }
+        switch pct {
+        case ..<13:  return "battery.0"
+        case ..<38:  return "battery.25"
+        case ..<63:  return "battery.50"
+        case ..<88:  return "battery.75"
+        default:     return "battery.100"
+        }
+    }
+    private func batteryColor(_ pct: Int) -> Color {
+        if pct <= 15 { return XColor.danger }
+        if pct <= 30 { return XColor.warning }
+        return XColor.success
     }
 }

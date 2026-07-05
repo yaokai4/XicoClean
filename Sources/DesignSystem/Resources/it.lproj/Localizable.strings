@@ -301,6 +301,7 @@
 "磁盘占用" = "Utilizzo disco";
 "磁盘已用" = "Disco usato";
 "磁盘已用 %d%% · 一键扫描，安全释放空间" = "Disco usato al %d%% · Scansiona con un tocco per liberare spazio in sicurezza";
+"一键扫描，安全释放空间" = "Scansiona con un tocco per liberare spazio in sicurezza";
 "移入废纸篓 · 可一键放回原位" = "Sposta nel Cestino · Rimetti a posto con un tocco";
 "移除" = "Rimuovi";
 "空间透镜" = "Space Lens";
@@ -575,3 +576,71 @@
 "部分模块扫描失败：%@。结果可能不完整。" = "Impossibile scansionare alcuni moduli: %@. I risultati potrebbero essere incompleti.";
 "重复定义 id：%@" = "Definizione di id duplicata: %@";
 "%.1f 英寸" = "%.1f pollici";
+"授权与更新" = "Licenza e aggiornamenti";
+"监控与告警" = "Monitoraggio e avvisi";
+"权限与系统" = "Autorizzazioni e sistema";
+"关联文件" = "File associati";
+"芯片" = "Chip";
+"型号编号" = "Numero modello";
+"加载中" = "Caricamento";
+"图标" = "Icona";
+"数值" = "Valore";
+"迷你图" = "Mini-grafico";
+"可视化" = "Visuale";
+
+/* Tier-1 monitor panels (menu-bar dropdowns) */
+"可用" = "Disponibile";
+"峰值" = "Picco";
+"本次累计" = "Totale";
+"GPU 温度" = "Temperatura GPU";
+"处理器占用历史曲线" = "Cronologia CPU";
+"每核心占用" = "Utilizzo per core";
+"平均 %d%%" = "Media %d%%";
+"/ %@" = "/ %@";
+"%@ / %@" = "%@ / %@";
+
+/* Tier-2 hardware page (memory specs, battery trend, fans, network) */
+"制造商" = "Produttore";
+"插槽" = "Slot";
+"板载" = "Integrata";
+"已用 %d / 共 %d" = "%d di %d usati";
+"功率趋势" = "Potenza";
+"电池功率趋势" = "Andamento potenza batteria";
+"最低 %d" = "Min %d";
+"最高 %d" = "Max %d";
+"无活动网络接口" = "Nessuna interfaccia attiva";
+"%d Mbps" = "%d Mbps";
+"网络名称" = "Rete";
+"%d 逻辑核心 · 每核实时" = "%d core logici · in tempo reale per core";
+
+/* Unified task-flow completion (shred/uninstall/update) */
+"已粉碎 %d 项" = "%d elementi distrutti";
+"已卸载 %d 项 · 可在废纸篓恢复" = "%d elementi disinstallati · recuperabili dal cestino";
+"已检查 %d 个应用" = "%d app verificate";
+"全部为最新版本，没有发现新版本。" = "Tutto aggiornato — nessuna nuova versione trovata.";
+
+/* Per-core P/E cluster labels */
+"性能核" = "Core prestazioni";
+"能效核" = "Core efficienza";
+
+/* Batch actions (optimization/maintenance) + battery hint */
+"全选" = "Seleziona tutto";
+"退出所选 · %@" = "Esci dai selezionati · %@";
+"已退出 %d 个应用" = "%d app chiuse";
+"全部执行" = "Esegui tutto";
+"完成 %d 项维护" = "%d attività di manutenzione completate";
+"免管理员维护任务已全部执行。" = "Tutte le attività di manutenzione senza admin sono state eseguite.";
+"充放电时显示功率趋势" = "Andamento potenza in carica/scarica";
+
+/* Combined panel bar labels */
+"占用" = "Utilizzo";
+"已用" = "Usato";
+
+/* Sensei-tier monitor upgrade: menu-bar frame toggle, chart hover time, battery/SSD advice */
+"图形加框" = "Incornicia grafico";
+"%@ · 刚刚" = "%@ · proprio ora";
+"%@ · %d 秒前" = "%@ · %d s fa";
+"容量已明显衰减，可考虑更换电池以恢复续航" = "Capacità ridotta in modo evidente — valuta la sostituzione della batteria per recuperare autonomia";
+"电池健康良好，正常使用即可" = "La batteria è in buono stato — usala normalmente";
+"电池健康正常，随循环增加会逐步衰减" = "Stato della batteria normale — diminuirà gradualmente con l’aumentare dei cicli";
+"固态硬盘剩余寿命偏低，建议及时备份重要数据" = "Vita residua dell’SSD bassa — esegui presto il backup dei dati importanti";

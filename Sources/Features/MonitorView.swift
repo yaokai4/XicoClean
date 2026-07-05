@@ -11,6 +11,8 @@ public struct MonitorView: View {
     @State private var procTab: ProcTab = .cpu
     @State private var tab: MonitorTab = .overview
     @State private var historyRange: MetricsHistoryStore.Range = .minute
+    /// 每核心可视化：热力条 / 迷你环，持久化记住偏好（对齐 Sensei 的可选每核心视图）。
+    @AppStorage("xico.monitor.coreViz") private var coreViz = "bars"
 
     enum ProcTab { case cpu, memory }
     enum MonitorTab: String, CaseIterable {
@@ -38,8 +40,8 @@ public struct MonitorView: View {
     public var body: some View {
         VStack(spacing: 0) {
             XHeaderBar(title: xLoc("系统监视"), subtitle: xLoc("实时刷新 · 每秒")) {
-                HStack(spacing: XSpacing.xs) {
-                    Circle().fill(XColor.success).frame(width: 7, height: 7)
+                HStack(spacing: XSpacing.s) {
+                    XLiveDot(size: 7)
                     Text("LIVE").font(.system(size: 10, weight: .bold)).tracking(1).foregroundStyle(XColor.success)
                 }
             }
@@ -133,33 +135,56 @@ public struct MonitorView: View {
                     Picker("", selection: $historyRange) {
                         ForEach(MetricsHistoryStore.Range.allCases, id: \.self) { Text(xLoc($0.title)).tag($0) }
                     }
-                    .pickerStyle(.segmented).labelsHidden().frame(width: 280)
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
                 let series = historySeries()
-                chartRow(xLoc("处理器"), series.cpu, XColor.brandGradientColors, "\(Int((snap?.cpuUsage ?? 0) * 100))%")
-                chartRow(xLoc("内存"), series.mem, [XColor.auroraViolet, XColor.auroraRose], "\(Int((snap?.memoryUsedFraction ?? 0) * 100))%")
-                chartRow("GPU", series.gpu, [XColor.auroraOrchid, XColor.auroraViolet], snap?.gpuUsage.map { "\(Int($0 * 100))%" } ?? "—")
-                chartRow(xLoc("网络"), series.net, [XColor.accentTeal, XColor.auroraBlue],
-                         "↓\((snap?.netDownBytesPerSec ?? 0).formattedRate)")
+                chartRow(xLoc("处理器"), series.cpu, XColor.brandGradientColors, "\(Int((snap?.cpuUsage ?? 0) * 100))%") { i in hoverStamp("\(Int(series.cpu[i] * 100))%", index: i, times: series.times) }
+                chartRow(xLoc("内存"), series.mem, XColor.metricMemory, "\(Int((snap?.memoryUsedFraction ?? 0) * 100))%") { i in hoverStamp("\(Int(series.mem[i] * 100))%", index: i, times: series.times) }
+                chartRow("GPU", series.gpu, XColor.metricGPU, snap?.gpuUsage.map { "\(Int($0 * 100))%" } ?? "—") { i in hoverStamp("\(Int(series.gpu[i] * 100))%", index: i, times: series.times) }
+                chartRow(xLoc("网络"), series.net, XColor.metricNetwork,
+                         "↓\((snap?.netDownBytesPerSec ?? 0).formattedRate)") { i in
+                    series.netRaw.indices.contains(i) ? hoverStamp("↓\(series.netRaw[i].formattedRate)", index: i, times: series.times) : ""
+                }
             }
         }
     }
 
-    private func historySeries() -> (cpu: [Double], mem: [Double], gpu: [Double], net: [Double]) {
+    private func historySeries() -> (cpu: [Double], mem: [Double], gpu: [Double], net: [Double], netRaw: [Double], times: [Date]) {
         if historyRange == .minute {
-            return (engine.cpuHistory, engine.memHistory, engine.gpuHistory, engine.netDownNormalized())
+            let cpu = engine.cpuHistory
+            // 分钟视图为内存中 ~1 秒粒度采样（页头即标注「每秒」）：末点为现在，向前每点 -1 秒。
+            let now = Date()
+            let times = cpu.indices.map { now.addingTimeInterval(-Double(cpu.count - 1 - $0)) }
+            return (cpu, engine.memHistory, engine.gpuHistory, engine.netDownNormalized(), engine.netDownHistory, times)
         }
         let pts = env.metricsHistory.points(in: historyRange, now: Date())
-        guard pts.count > 1 else { return ([], [], [], []) }
+        guard pts.count > 1 else { return ([], [], [], [], [], []) }
         let netMax = max(pts.map { max($0.netDown, $0.netUp) }.max() ?? 1, 1)
-        return (pts.map(\.cpu), pts.map(\.mem), pts.map(\.gpu), pts.map { $0.netDown / netMax })
+        return (pts.map(\.cpu), pts.map(\.mem), pts.map(\.gpu), pts.map { $0.netDown / netMax },
+                pts.map(\.netDown), pts.map { Date(timeIntervalSince1970: $0.t) })
     }
 
-    private func chartRow(_ title: String, _ values: [Double], _ colors: [Color], _ value: String) -> some View {
+    /// 悬停读数「值 · 时刻」（对齐 iStat 的可擦洗）。分钟视图显示「N 秒前 / 刚刚」，长范围显示真实时钟。
+    private func hoverStamp(_ value: String, index i: Int, times: [Date]) -> String {
+        guard times.indices.contains(i) else { return value }
+        if historyRange == .minute {
+            let ago = Int(Date().timeIntervalSince(times[i]).rounded())
+            return ago <= 0 ? xLocF("%@ · 刚刚", value) : xLocF("%@ · %d 秒前", value, ago)
+        }
+        let f = DateFormatter()
+        f.dateFormat = (historyRange == .day || historyRange == .week) ? "M/d HH:mm" : "HH:mm"
+        return "\(value) · \(f.string(from: times[i]))"
+    }
+
+    private func chartRow(_ title: String, _ values: [Double], _ colors: [Color], _ value: String,
+                          _ hoverFmt: ((Int) -> String)?) -> some View {
         HStack(spacing: XSpacing.m) {
             Text(title).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                .lineLimit(1).fixedSize().frame(width: 60, alignment: .leading)
-            XLineChart(values: values, colors: colors).frame(height: 38)
+                .lineLimit(1).truncationMode(.tail).frame(width: 72, alignment: .leading)  // 可截断，长语言不挤压图表
+            // 网格基线 + 悬停读数（对标 iStat 的可擦洗历史曲线）。
+            XLineChart(values: values, colors: colors, showGrid: true,
+                       hoverLabel: hoverFmt.map { fmt in { i in i < values.count ? fmt(i) : "" } })
+                .frame(height: 46)
             Text(value).font(XFont.mono).foregroundStyle(XColor.textPrimary).frame(width: 84, alignment: .trailing)
         }
     }
@@ -183,6 +208,12 @@ public struct MonitorView: View {
                 HStack {
                     cardHeader("cpu", xLoc("处理器 · 每核心"))
                     Spacer()
+                    // 热力条 / 迷你环 切换（记忆偏好）。
+                    Picker("", selection: $coreViz) {
+                        Image(systemName: "chart.bar.fill").tag("bars")
+                        Image(systemName: "circle.grid.2x2").tag("rings")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
                     if let s = snap {
                         Text(xLocF("用户 %d%%  系统 %d%%", Int(s.cpuUser * 100), Int(s.cpuSystem * 100)))
                             .font(XFont.caption).foregroundStyle(XColor.textSecondary)
@@ -190,17 +221,64 @@ public struct MonitorView: View {
                 }
                 let cores = snap?.perCore ?? []
                 if cores.isEmpty {
-                    Text(xLoc("正在采样…")).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                    XSkeletonRows(count: 3)
                 } else {
-                    HStack(alignment: .bottom, spacing: 6) {
-                        ForEach(Array(cores.enumerated()), id: \.offset) { idx, v in coreBar(index: idx, value: v) }
+                    if coreViz == "rings" {
+                        coreRings(cores)
+                    } else {
+                        HStack(alignment: .bottom, spacing: 6) {
+                            ForEach(Array(cores.enumerated()), id: \.offset) { idx, v in coreBar(index: idx, value: v) }
+                        }
+                        .frame(height: 96)
                     }
-                    .frame(height: 96)
                     HStack {
                         Text(coreSummary).font(XFont.caption).foregroundStyle(XColor.textTertiary)
                         Spacer()
                         Text(xLocF("平均负载 %@", loadTriple)).font(XFont.caption).foregroundStyle(XColor.textTertiary)
                     }
+                }
+            }
+        }
+    }
+
+    /// 每核心迷你环：逐核实时占用，颜色随三段语义。有权威簇信息（Apple Silicon）时按
+    /// 「性能核 / 能效核」真实分组标注（对齐 Sensei）；否则按内核顺序密排网格。
+    private func coreRings(_ cores: [Double]) -> some View {
+        let clusters = info?.coreClusters ?? []
+        let grouped = clusters.count == cores.count && clusters.contains(true) && clusters.contains(false)
+        return VStack(alignment: .leading, spacing: XSpacing.m) {
+            if grouped {
+                coreRingCluster(xLoc("性能核"), cores.indices.filter { clusters[$0] }.map { ($0, cores[$0]) })
+                coreRingCluster(xLoc("能效核"), cores.indices.filter { !clusters[$0] }.map { ($0, cores[$0]) })
+            } else {
+                coreRingGrid(Array(cores.enumerated()).map { ($0.offset, $0.element) })
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(xLoc("每核心占用"))
+        .accessibilityValue(xLocF("平均 %d%%", Int((cores.reduce(0, +) / Double(max(cores.count, 1))) * 100)))
+    }
+
+    private func coreRingCluster(_ label: String, _ pairs: [(Int, Double)]) -> some View {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
+            Text(label).font(.system(size: 10, weight: .semibold)).foregroundStyle(XColor.textTertiary)
+                .textCase(.uppercase).tracking(0.5)
+            coreRingGrid(pairs)
+        }
+    }
+
+    /// 一组「核心序号 + 占用」的迷你环网格。序号如实取自逻辑 CPU id。
+    private func coreRingGrid(_ pairs: [(Int, Double)]) -> some View {
+        let cols = Array(repeating: GridItem(.flexible(), spacing: XSpacing.s),
+                         count: min(max(pairs.count, 1), 8))
+        return LazyVGrid(columns: cols, spacing: XSpacing.m) {
+            ForEach(Array(pairs.enumerated()), id: \.offset) { _, pair in
+                VStack(spacing: 3) {
+                    XMiniRing(fraction: pair.1, colors: XColor.gauge(pair.1), size: 40, lineWidth: 5) {
+                        Text("\(Int((pair.1 * 100).rounded()))").font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundStyle(XColor.textPrimary)
+                    }
+                    Text("\(pair.0)").font(.system(size: 8, weight: .medium)).foregroundStyle(XColor.textTertiary)
                 }
             }
         }
@@ -309,12 +387,12 @@ public struct MonitorView: View {
     }
 
     private var memoryBreakdownCard: some View {
-        MonitorCard(icon: "memorychip.fill", title: xLoc("内存明细"), colors: [XColor.accentTeal, XColor.auroraBlue]) {
+        MonitorCard(icon: "memorychip.fill", title: xLoc("内存明细"), colors: XColor.metricMemory) {
             memBar
-            breakdownRow(xLoc("应用内存"), snap?.memoryApp, XColor.auroraBlue)
-            breakdownRow(xLoc("联动内存"), snap?.memoryWired, XColor.accentPink)
-            breakdownRow(xLoc("已压缩"), snap?.memoryCompressed, XColor.warning)
-            breakdownRow(xLoc("缓存文件"), snap?.memoryCached, XColor.accentTeal)
+            breakdownRow(xLoc("应用内存"), snap?.memoryApp, XColor.memApp)
+            breakdownRow(xLoc("联动内存"), snap?.memoryWired, XColor.memWired)
+            breakdownRow(xLoc("已压缩"), snap?.memoryCompressed, XColor.memCompressed)
+            breakdownRow(xLoc("缓存文件"), snap?.memoryCached, XColor.memCached)
         }
     }
 
@@ -323,10 +401,10 @@ public struct MonitorView: View {
             let s = snap
             let total = Double(s?.memoryTotal ?? 1)
             HStack(spacing: 1) {
-                seg(Double(s?.memoryApp ?? 0) / total, geo.size.width, XColor.auroraBlue)
-                seg(Double(s?.memoryWired ?? 0) / total, geo.size.width, XColor.accentPink)
-                seg(Double(s?.memoryCompressed ?? 0) / total, geo.size.width, XColor.warning)
-                seg(Double(s?.memoryCached ?? 0) / total, geo.size.width, XColor.accentTeal)
+                seg(Double(s?.memoryApp ?? 0) / total, geo.size.width, XColor.memApp)
+                seg(Double(s?.memoryWired ?? 0) / total, geo.size.width, XColor.memWired)
+                seg(Double(s?.memoryCompressed ?? 0) / total, geo.size.width, XColor.memCompressed)
+                seg(Double(s?.memoryCached ?? 0) / total, geo.size.width, XColor.memCached)
                 Spacer(minLength: 0)
             }
             .frame(height: 10).clipShape(Capsule()).background(Capsule().fill(XColor.surfaceAlt))
@@ -346,14 +424,14 @@ public struct MonitorView: View {
     }
 
     private var pagesCard: some View {
-        MonitorCard(icon: "arrow.up.arrow.down", title: xLoc("分页"), colors: [XColor.auroraViolet, XColor.auroraOrchid]) {
+        MonitorCard(icon: "arrow.up.arrow.down", title: xLoc("分页"), colors: XColor.metricMemory) {
             statRow(xLoc("换入分页"), (snap?.pageIns ?? 0).formattedBytes)
             statRow(xLoc("换出分页"), (snap?.pageOuts ?? 0).formattedBytes)
         }
     }
 
     private var swapCard: some View {
-        MonitorCard(icon: "internaldrive", title: xLoc("交换区"), colors: [XColor.accentPink, XColor.auroraRose]) {
+        MonitorCard(icon: "internaldrive", title: xLoc("交换区"), colors: XColor.metricMemory) {
             if let s = snap, s.swapTotal > 0 {
                 statRow(xLoc("已使用"), s.swapUsed.formattedMemory)
                 statRow(xLoc("总量"), s.swapTotal.formattedMemory)
@@ -370,7 +448,7 @@ public struct MonitorView: View {
         Group {
             XCard {
                 VStack(spacing: XSpacing.m) {
-                    XRingGauge(progress: snap?.gpuUsage ?? 0, colors: [XColor.auroraViolet, XColor.auroraOrchid], lineWidth: 12, size: 150) {
+                    XRingGauge(progress: snap?.gpuUsage ?? 0, colors: XColor.metricGPU, lineWidth: 12, size: 150) {
                         VStack(spacing: 0) {
                             Text(snap?.gpuUsage.map { "\(Int($0 * 100))%" } ?? "—").xLargeTitle().foregroundStyle(XColor.textPrimary)
                             Text(xLoc("占用率")).font(XFont.caption).foregroundStyle(XColor.textTertiary)
@@ -381,12 +459,12 @@ public struct MonitorView: View {
                 .frame(maxWidth: .infinity)
             }
             LazyVGrid(columns: cardColumns, spacing: XSpacing.m) {
-                MonitorCard(icon: "cpu.fill", title: "GPU", colors: [XColor.auroraViolet, XColor.auroraOrchid]) {
+                MonitorCard(icon: "cpu.fill", title: "GPU", colors: XColor.metricGPU) {
                     statRow(xLoc("占用率"), snap?.gpuUsage.map { "\(Int($0 * 100))%" } ?? "—")
                     if let t = snap?.gpuTemp { statRow(xLoc("温度"), String(format: "%.0f°C", t)) }
                 }
-                MonitorCard(icon: "waveform.path.ecg", title: xLoc("历史"), colors: [XColor.auroraOrchid, XColor.auroraViolet]) {
-                    XLineChart(values: engine.gpuHistory, colors: [XColor.auroraOrchid, XColor.auroraViolet]).frame(height: 44)
+                MonitorCard(icon: "waveform.path.ecg", title: xLoc("历史"), colors: XColor.metricGPU) {
+                    XLineChart(values: engine.gpuHistory, colors: XColor.metricGPU).frame(height: 44)
                 }
             }
         }
@@ -426,8 +504,7 @@ public struct MonitorView: View {
                 cardHeader("list.bullet.rectangle", xLocF("%@ · 进程榜", kind == .cpu ? xLoc("处理器") : xLoc("内存")))
                 let list = kind == .cpu ? engine.topByCPU : engine.topByMemory
                 if list.isEmpty {
-                    Text(xLoc("正在采样…")).font(XFont.caption).foregroundStyle(XColor.textTertiary)
-                        .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, XSpacing.m)
+                    XSkeletonRows(count: 4).padding(.vertical, XSpacing.xs)
                 } else {
                     ForEach(list) { proc in
                         HStack(spacing: XSpacing.m) {
@@ -463,7 +540,7 @@ public struct MonitorView: View {
     // 与 MonitorCard / HardwareCard 统一：渐变图标砖 size 28 + 大写字距标题，全 App 卡片头一致。
     private func cardHeader(_ icon: String, _ title: String, _ colors: [Color] = XColor.brandGradientColors) -> some View {
         HStack(spacing: XSpacing.s) {
-            XIconTile(systemImage: icon, colors: colors, size: 28)
+            XIconTile(systemImage: icon, colors: colors, size: 28, flat: true)
             Text(title).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
                 .textCase(.uppercase).tracking(0.6)
             Spacer()

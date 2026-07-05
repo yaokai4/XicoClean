@@ -1,0 +1,493 @@
+{
+  "summary": "Comprehensive premium-feel audit of the Xico macOS cleaner across 12 dimensions, benchmarked vs CleanMyMac + iStat Menus, synthesized into one ranked upgrade roadmap",
+  "agentCount": 13,
+  "logs": [],
+  "result": {
+    "tier1": [
+      {
+        "id": "T1-01",
+        "title": "Replace the generic sparkle with an ownable X mark, aurora-tuned and beveled",
+        "area": "Brand mark, logo and app icon",
+        "why": "The app is named Xico yet its mark contains no X - a stock 4-point sparkle that fails the recognizable-by-silhouette test, hardcodes a hot-candy magenta the palette was tuned away from, and reads flat-plastic at 1024px. First thing users see in Dock and sidebar; signals template.",
+        "implementation": "In Sources/DesignSystem/IconArt.swift: (1) Author XMarkShape from the letter X - 4 tapered blades (~14deg taper) at center, min stroke size*0.16 to hold at 16px, corner radius R*0.12; optionally cut via .evenOdd so the gradient shows through. (2) Replace the three literals in XBrandMark (0x3D8BFF/0x8E6CFF/0xE83C8C, ~line33) and XAppIcon with [XColor.auroraBlue, XColor.auroraViolet, XColor.auroraRose]. (3) On the 1024 icon add a two-part bevel: top-edge white(0.7)->clear stroke inset tile*0.006, bottom core-shadow copy offset y:+tile*0.008 black.opacity(0.22) blur tile*0.01. (4) Drop the trimmed Circle arc and secondary sparkle; keep at most one tiny spark, never below 128px.",
+        "effort": "M",
+        "wow": true
+      },
+      {
+        "id": "T1-02",
+        "title": "Calm the sidebar: flat selection tint, kill the aurora fog, per-category icon color",
+        "area": "Sidebar and navigation",
+        "why": "The rail is the surface users stare at most and reads as a colorful web dashboard: selected row is a full-saturation 3-stop brandGradient pill that also casts a colored glow (verified RootView.swift:189-196), the column sits behind two stacked aurora RadialGradients, and all 17 icons are identical grey. Flatten, de-fog, and one muted accent per category is the highest-leverage crafted-not-cheap move for least risk.",
+        "implementation": "In Sources/Features/RootView.swift: (1) SidebarTile - remove .shadow, replace brandGradient fill with flat XColor.brand.opacity(0.14), switch selected label/icon from .white to XColor.brand; animate hover with .animation(.easeOut(duration:0.12),value:hover) at surfaceHover.opacity(0.6). (2) Delete both RadialGradient layers (112-123); keep one near-flat LinearGradient(sidebar->canvasBottom)+hairline. (3) Tint per ModuleCategory (cleanup->auroraBlue, filesSpace->accentTeal, applications->auroraViolet, performance->auroraRose): .foregroundStyle(selected ? XColor.brand : meta.tint). Flatten the AppearanceToggle active segment to brand.opacity(0.14).",
+        "effort": "M",
+        "wow": true
+      },
+      {
+        "id": "T1-03",
+        "title": "Make in-app charts stream: value-driven animation, gridlines, hover scrubbing",
+        "area": "In-app Monitor / Hardware / Network pages",
+        "why": "The monitor is the marquee beat-iStat page, yet XLineChart re-renders every 1s tick with zero animation (verified: no .animation in body) while ring gauges glide - lines jump while rings breathe, the clearest not-live tell. No baseline/gridline/scale (cannot tell 20% from 60%) and no hover readout, which is iStat entire value proposition.",
+        "implementation": "In Sources/DesignSystem/XLineChart.swift: (1) add .animation(reduceMotion ? nil : .linear(duration:1.0),value:values) on the ZStack and animate the trailing dot .position; drive x from values.suffix(N). (2) add showGrid:Bool=true - 3 rules at 0.25/0.5/0.75 in hairline.opacity(0.6) plus baseline Rectangle in border; grid on for tall charts, off for 38px sparklines. (3) add .onContinuousHover crosshair mapping x->nearest sample with a floating value capsule (needs real values, not 0..1). Grid on in MonitorView historyCard (~127); chartRow height 38->48.",
+        "effort": "L",
+        "wow": true
+      },
+      {
+        "id": "T1-04",
+        "title": "Make the scan honest: determinate progress ring driven by vm.progress",
+        "area": "Motion and loading states",
+        "why": "The view model publishes a real progress:Double (ModuleSessionViewModel.swift:30/293) but the UI ignores it - XScanOrb arc is driven purely by sin(t), so a long scan is a decorative screensaver with zero sense of completion. The #1 is-this-app-in-control signal; CleanMyMac shows a filling ring, Xico shows a loop.",
+        "implementation": "In XScanOrb add progress:Double?; behind the comet draw Circle().trim(from:0,to:progress).stroke(...).rotationEffect(.degrees(-90)).animation(.easeInOut(duration:0.4),value:progress) - reusing XRingGauge pattern (Visuals.swift:65). Pass vm.progress from ScanningIndicator (ScanViews.swift). Nil falls back to comet-only; comet is the head, trim is the honest fill.",
+        "effort": "M",
+        "wow": true
+      },
+      {
+        "id": "T1-05",
+        "title": "De-redundant and theme-harmonize the Smart-Scan home dashboard",
+        "area": "Smart-Scan home dashboard (first impression)",
+        "why": "The first viewport states disk-used % three times (healthHeader subtitle, ring center, first metric card - verified ScanViews.swift:307-326,371) and the hero ring is hardcoded teal->blue ([accentTeal,auroraBlue] at 307), so on Sunset/Emerald/Orchid themes the centerpiece clashes with the themed button and cards.",
+        "implementation": "In Sources/Features/ScanViews.swift: (1) keep disk% only in the ring subtitle; healthHeader subtitle (371) becomes a value line with no %; repurpose the first card to reclaimable/memory/health. (2) Drive the ring from theme: colors:XColor.ringColors - never the raw teal at 307. (3) Replace uniform VStack(spacing:XSpacing.xl) with explicit gaps header->ring 16, ring->cards 32, cards->CTA 24, plus .padding(.top,XSpacing.xxl). (4) Swap literal size:46 for XFont.heroCompact.",
+        "effort": "M",
+        "wow": true
+      },
+      {
+        "id": "T1-06",
+        "title": "Turn Similar Images and Duplicates into visual thumbnail galleries",
+        "area": "Data-viz feature pages",
+        "why": "A feature literally called Similar Images renders similar photos as identical grey text rows via ItemRowView - no preview anywhere, and CleanableItem (Models.swift:88) has no thumbnail field, so the data layer cannot carry one. Unusable versus CleanMyMac/Gemini/Photos.",
+        "implementation": "Add public var thumbnail:NSImage? to CleanableItem (or lazy QLThumbnailGenerator by url at 2x, cached). Branch ResultGroupCard by group.id: for similar-images/duplicates/large-files render a LazyVGrid of ~96-120pt tiles - RoundedRectangle(XRadius.tile), surface fill, border hairline, corner XCheckbox, kept item badged success, size bottom-left in captionMono. Keep text rows for non-visual groups.",
+        "effort": "L",
+        "wow": true
+      },
+      {
+        "id": "T1-07",
+        "title": "Adopt the design-system button vocabulary across task-flow and settings pages",
+        "area": "Task-flow / Onboarding / Settings",
+        "why": "The flagship Cleanup flow uses bespoke gradient XPrimary/XSecondaryButtonStyle, but AppUpdater, Optimization, Maintenance, Shredder, Onboarding, and ~7 Settings cards fall back to raw .bordered/.borderedProminent - stock macOS pills inside premium cards. The single most repeated a-tier-below tell, and near-mechanical to fix.",
+        "implementation": "Blanket-replace .borderedProminent with XPrimaryButtonStyle() for the one true CTA per surface and .bordered with XSecondaryButtonStyle() across AppUpdaterView(51,89), OptimizationView(57,84,88), MaintenanceView(63,65,106,127), ShredderView(63), OnboardingView(41), SettingsView(209-214,268,276,345,131,557,570,580), MenuPanels footer(56). Add a compact size variant to XSecondaryButtonStyle (.vertical XSpacing.s).",
+        "effort": "M",
+        "wow": true
+      },
+      {
+        "id": "T1-08",
+        "title": "Upgrade the menu-bar strip to instrument-grade: units, pixel-snapped viz, unified baseline",
+        "area": "Menu-bar glyphs (the status-bar monitor)",
+        "why": "The always-visible face of the beat-iStat promise shows a bare unitless 0 when the network is idle (LiveMetrics.swift:367), renders histogram bars on fractional device pixels (1.6pt bars smear to grey blur), uses soft rounded digits that waste horizontal space, and lets NetGlyph baseline drift. iStat strip is a knife-edge gauge cluster; this looks like a shrunk app view.",
+        "implementation": "(1) LiveMetrics.swift compactRate: always emit a unit - 0 KB/s below 1KB/s, %.0f KB/s to 1MB/s, %.1f MB/s above. (2) MiniHistogram: snap bars to whole device px at scale2 (width2=4px, drop 0.5 cornerRadius), fix bar count to tile 24pt (8x2+7x1=23). (3) Standardize all glyphs to one content height (16) with a shared baseline (NetGlyph VStack(spacing:0),.baselineOffset). (4) Numerals design:.default size12 weight.semibold .monospacedDigit(); .rounded only in panels.",
+        "effort": "M",
+        "wow": true
+      }
+    ],
+    "tier2": [
+      {
+        "id": "T2-01",
+        "title": "Introduce XMotion token namespace and replace all ad-hoc curves",
+        "area": "Motion / Design-system foundations",
+        "implementation": "Add enum XMotion to Tokens.swift: snappy=spring(response:0.3,dampingFraction:0.72), settle=spring(0.5,0.82), celebrate=spring(0.55,0.6), gauge=easeInOut(0.5), crossfade=easeInOut(0.3). Sweep the ~28 scattered literal spring()/easeInOut() call sites onto these tokens.",
+        "effort": "L"
+      },
+      {
+        "id": "T2-02",
+        "title": "Define a real 3-tier elevation ladder and route surfaces through it",
+        "area": "Design-system foundations",
+        "implementation": "Replace single-tier shadows with enum XElevation { flush, resting(r10/y3/0.06), raised(r20/y10/0.12), overlay(r36/y18/0.20) }. Give XCard an elevation param (drop boolean elevated); hover promotes resting->raised; route menu-bar popovers and the Pricing modal to .overlay.",
+        "effort": "M"
+      },
+      {
+        "id": "T2-03",
+        "title": "Flat-first fill policy: reserve gradients for one hero element per screen",
+        "area": "Design-system foundations",
+        "implementation": "Give XIconTile and XMiniRing a style:.flat(Color)|.gradient([Color]) with .flat default (accent tint ~14% bg + solid glyph). Convert the 6-up metric row to flat tints. Reserve brandGradient for the scan orb / primary CTA; keep AngularGradient only on XScanOrb. The #1 driver of the candy/web feel.",
+        "effort": "L"
+      },
+      {
+        "id": "T2-04",
+        "title": "Fix WCAG contrast: textTertiary and white-on-light-accent both fail AA",
+        "area": "Accessibility / dark-light parity",
+        "implementation": "In Tokens.swift: textTertiary light->0x71778C (~4.6:1 on white), dark->0x8A91A8. Deepen light-mode accents under white text ~15-20% (accentTeal->0x1E9E98, success->0x159463, warning->0xCF7A00, auroraRose->0xC25794) or add XColor.onAccent that darkens in light; verify the brandGradient tail since XPrimaryButtonStyle paints .white over it.",
+        "effort": "M"
+      },
+      {
+        "id": "T2-05",
+        "title": "Section-group the flat 14-card Settings wall",
+        "area": "Onboarding / Settings / Pricing",
+        "implementation": "In SettingsView.swift insert xSectionLabel() headers with .padding(.top,XSpacing.l) between groups: General, License-and-updates, Appearance, Monitoring-and-alerts, System-permissions. Group spacing XSpacing.l between, XSpacing.m within. Soften xSectionLabel to 11pt semibold, tracking 0.3-0.6.",
+        "effort": "M"
+      },
+      {
+        "id": "T2-06",
+        "title": "Enrich the menu-bar dropdown: process bars/icons, network stats, overview sparklines",
+        "area": "Menu-bar dropdown detail panels",
+        "implementation": "Standardize both panels to width 320 (shared constant - now 288 vs 300). Add inline usage bars + app icons + rank + a Processes section label to processList (MenuPanels.swift:171), replacing size:11 with XFont.caption/mono. Add peak/total chips + interface name + scale label to the near-empty network panel. Add 16pt XLineChart sparklines under the three overview rings.",
+        "effort": "M"
+      },
+      {
+        "id": "T2-07",
+        "title": "Reuse the count-up CompletionView for Uninstaller and Shredder; add Select-All",
+        "area": "Task-flow pages",
+        "implementation": "Reuse CompletionView (or extract XResultBanner) for Uninstaller lastFreed and Shredder resultText - spring check, XCelebrationBurst, freed bytes from 0 via .contentTransition(.numericText()). Add a master XCheckbox select-all header + running size to Uninstaller (add allSelected/toggleAll), and an Update All XPrimaryButtonStyle in AppUpdater header.",
+        "effort": "M"
+      },
+      {
+        "id": "T2-08",
+        "title": "Surface TreemapView and spotlight sunburst hue-families",
+        "area": "Data-viz feature pages",
+        "implementation": "TreemapView is fully built but never rendered. Add a segmented control (ring/blocks) to SpaceLensView.header toggling Sunburst/Treemap, persisted via @AppStorage. On sunburst hover dim non-matching root-hue families to ~0.35, keep hovered at full depthOpacity + 1pt textPrimary.opacity(0.15) inner stroke, .animation(0.18). Extract XColor.spacePalette so tile and wedge match by sibling index (not name.hashValue); replace white-opacity borders with XColor.hairline.",
+        "effort": "M"
+      },
+      {
+        "id": "T2-09",
+        "title": "Pulsing XLiveDot plus honest empty/success/error/loading states",
+        "area": "Motion / states",
+        "implementation": "Extract XLiveDot (success dot + expanding-fading ring on repeatForever 1.6s, reduceMotion-gated), reuse in Monitor/Hardware headers (both static Circles). Give XEmptyState a kind:.success/.neutral/.error/.loading - tint by kind, scale/opacity entrance on XMotion.settle, spring pop + XGlow for .success, embedded XRingGauge(spinning:true) for .loading.",
+        "effort": "M"
+      },
+      {
+        "id": "T2-10",
+        "title": "Per-sensor bars and live resource cost on Optimization; asymmetric scan-to-results transition",
+        "area": "In-app pages / Task-flow / Motion",
+        "implementation": "HardwareView sensorsCard: each temp row gets a 4px surfaceAlt track filled tempColor(celsius) scaled to celsius/100. OptimizationView: per-row CPU% (XMiniRing) + resident memory (XFont.mono) sorted by CPU desc. In SessionScaffold give results .transition(.move(edge:.bottom)+opacity) and scanning .scale(0.96)+opacity on XMotion.settle so the orb resolves into findings.",
+        "effort": "L"
+      }
+    ],
+    "tier3": [
+      {
+        "id": "T3-01",
+        "title": "Add missing type-scale rungs and ban raw .system(size:) in feature code",
+        "implementation": "Add XFont.nano (9pt), microMono, and a wordmark token; sweep the ~40 raw size:7.5/8/9/13.5/14/21 literals in HardwareView/MonitorView/MenuPanels/MenuBarGlyph/RootView/PricingView onto tokens; add a CI grep banning .system(size:) in Features."
+      },
+      {
+        "id": "T3-02",
+        "title": "Add XRadius.micro (3) and .chip (6) for chart bars and legend swatches",
+        "implementation": "Replace raw cornerRadius 2/3/4/6 in MonitorView, MenuPanels, SunburstView, NetworkView, TreemapView with XRadius.micro/chip; nudge tile 12->10 so tile-vs-card nesting reads."
+      },
+      {
+        "id": "T3-03",
+        "title": "Add semantic info/onAccent/idle colors",
+        "implementation": "Add XColor.info (dynamic 0x3B82F6/0x6BA6FF), XColor.onAccent, and an .idle neutral; replace literal .white in XPrimaryButtonStyle/XIconTile/XCheckbox with onAccent, and textTertiary-as-inactive with .idle."
+      },
+      {
+        "id": "T3-04",
+        "title": "Localize sidebar VoiceOver labels and add hero-ring a11y label",
+        "implementation": "Wrap RootView SidebarTile .accessibilityLabel/.accessibilityHint in xLoc() (currently raw Chinese keys spoken to all 11 langs); add a label param to XRingGauge and pass localized available-space/health-score at ScanViews call sites. Audit all a11y modifiers taking raw keys."
+      },
+      {
+        "id": "T3-05",
+        "title": "Fix i18n-fragile fixed-width layouts",
+        "implementation": "Drop .fixedSize() on MonitorView chartRow label (161) - widen to 84pt truncating-tail so German/Russian labels do not shove the chart; replace fixed .frame(width:260-288) on segmented pickers (MonitorView, OptimizationView, MenuPanels) with .fixedSize(horizontal:true)."
+      },
+      {
+        "id": "T3-06",
+        "title": "Neutralize permission/trial nudge banners; add XSkeleton loading primitive",
+        "implementation": "Recolor PermissionBanner and trial-state LicenseBanner from warning/pink to brand palette; reserve amber only for expired/invalid license. Add XSkeleton (surfaceAlt + reduceMotion-gated shimmer sweep) for metric cards and monitor gauges before first sample."
+      },
+      {
+        "id": "T3-07",
+        "title": "Equalize Pricing plan-card heights; replace cleaning-state spinner; onboarding grant-flip",
+        "implementation": "PricingView: plan cards .frame(maxHeight:.infinity)+Spacer() so both CTAs share a baseline. Replace the raw ProgressView() cleaning spinner (ScanViews.swift:116) and AppUpdater checking state with XRingGauge(spinning:true) in brand colors. Bind onboarding FDA card to model.hasFullDiskAccess so it flips to a granted badge with a scale+opacity transition."
+      },
+      {
+        "id": "T3-08",
+        "title": "Sunburst center share-% and scrollable legend; add keyboard focus rings",
+        "implementation": "Add a share-of-parent % line (captionEmphasis/brand, .contentTransition(.numericText())) to sunburst centerLabel; wrap the legend in a ScrollView and drop the prefix(14) cap. Add a shared focus-ring modifier (2px XColor.brand stroke, inset 2pt) + .focusable() to SidebarTile and button styles - the app has zero keyboard focus indicators."
+      }
+    ],
+    "competitiveGaps": [
+      "Live, scrubbable history: iStat Menus lets you hover any graph to read the exact value and timestamp and draws gridlines/baselines; Xico's XLineChart hard-cuts each tick with no animation, no scale reference, and no hover readout.",
+      "Visual duplicate/similar-image review: CleanMyMac, Gemini, and Photos show crisp thumbnail galleries; Xico shows the same feature as identical grey text rows with no preview and no thumbnail field in the data model.",
+      "Depth and material realism: CleanMyMac and iStat use a clear multi-tier elevation ladder and real translucency; Xico renders every card at one flat shadow tier on opaque surfaces (VisualEffect blur is defined but essentially unused), so it looks painted rather than layered over the desktop."
+    ],
+    "competitiveWins": [
+      "The undo / one-click-restore of every cleanup - Xico's stated exclusive selling point - beats CleanMyMac's irreversible delete; surfacing it as a first-class, elevated home card turns a hidden feature into a trust differentiator.",
+      "A truly honest, restrained instrument aesthetic: one ownable X mark, one flat accent per screen, and a determinate scan ring make Xico calmer than CleanMyMac's busy dial and confetti, while out-classing iStat's static gauges with streaming, count-up motion.",
+      "Engineered-not-just-styled polish: real 11-language i18n, AA-contrast tiers, VoiceOver labels, and keyboard focus across the whole app - a correctness bar iStat never bothered with - plus a live menu-bar preview in Settings that makes the monitor configurable in place."
+    ],
+    "northStar": "Xico should feel like lifting the lid on a machined precision instrument: one ownable mark, one restrained jewel-tone accent per screen, real z-axis depth, and live gauges that visibly stream - calmer, denser, and more truthful than iStat Menus, and more self-assured (never candy, never confetti) than CleanMyMac. Every number carries a unit and a scale you can trust at a glance; every state change moves on one coherent spring language; and the app reads the same premium tier from the flagship Cleanup flow through the last Settings row.</northStar>\n</invoke>\n"
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Audit"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Synthesize"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "audit:brand-logo",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "af96218d8d86d6bcf",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125088674,
+      "queuedAt": 1783125088653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Brand mark, logo & app icon",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"Brand mark, logo & app icon\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/DesignSystem/IconArt.swift (XBrandMark, SparkleShape, XAppIcon), Sources/XicoApp/IconRende…",
+      "lastProgressAt": 1783125159059,
+      "tokens": 51915,
+      "toolCalls": 5,
+      "durationMs": 70385,
+      "resultPreview": "{\"area\":\"Brand mark, logo & app icon\",\"northStar\":\"A single ownable geometric mark — a rounded-square \\\"X\\\" cut from negative space with an aurora-jewel gradient and a soft inner bevel — that reads instantly at 16px in the sidebar and looks like sculpted glass at 1024px, so Xico is recognizable by silhouette alone the way Things, Bear, or CleanMyMac's Panda are, rather than being one more anonymou…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "audit:sidebar-nav",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a6b9861787c0fe745",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125088676,
+      "queuedAt": 1783125088653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Sidebar & navigation",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"Sidebar & navigation\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/Features/RootView.swift (SidebarView, SidebarTile, brandHeader, diskFooter, AppearanceToggle), an…",
+      "lastProgressAt": 1783125183522,
+      "tokens": 64321,
+      "toolCalls": 13,
+      "durationMs": 94846,
+      "resultPreview": "{\"area\":\"Sidebar & navigation\",\"northStar\":\"Opening Xico should feel like Things or Linear: a calm, near-monochrome rail where a single selected row glides on a soft, flat-tinted pill, each section reads as a quiet whisper of a label, and the footer utilities recede — so the eye goes straight to content, and the one accent in view feels intentional and expensive, not like a glowing candy button.\",…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "audit:menubar-glyph",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a8c463d389bf3fcc4",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125088676,
+      "queuedAt": 1783125088653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Menu-bar glyphs (the status-bar monitor)",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"Menu-bar glyphs (the status-bar monitor)\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/Features/MenuBarGlyph.swift, Sources/XicoApp/MenuBarController.swift\n\nLENS: U…",
+      "lastProgressAt": 1783125171285,
+      "tokens": 53934,
+      "toolCalls": 6,
+      "durationMs": 82609,
+      "resultPreview": "{\"area\":\"Menu-bar glyphs (the status-bar monitor)\",\"northStar\":\"Every glyph is a razor-crisp, pixel-snapped instrument at 22pt: numbers always carry a unit and never drift, the mini-viz reads instantly at a glance, and the whole strip sips horizontal space — so Xico's menu bar looks like a machined gauge cluster next to iStat's, not a shrunk-down app view.\",\"findings\":[{\"title\":\"Network rate colla…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "audit:menubar-panels",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a22f33773df16ae6e",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125088677,
+      "queuedAt": 1783125088653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Menu-bar dropdown detail panels (MenuMetricPanel + MenuBarV…",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"Menu-bar dropdown detail panels\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/Features/MenuPanels.swift (MenuMetricPanel), Sources/Features/RootView.swift (MenuBarV…",
+      "lastProgressAt": 1783125158755,
+      "tokens": 58782,
+      "toolCalls": 9,
+      "durationMs": 70078,
+      "resultPreview": "{\"area\":\"Menu-bar dropdown detail panels (MenuMetricPanel + MenuBarView)\",\"northStar\":\"Clicking the menu-bar icon should feel like popping open a precision instrument cluster: a tight 320pt panel where every metric has a live sparkline, per-core bars read like a hardware VU meter, memory decomposes into a legible spectrum, and the top processes update in place — denser, calmer, and more trustworth…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "audit:home-dashboard",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "ae0934e7a40b3ecab",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125088677,
+      "queuedAt": 1783125088653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Smart-Scan home dashboard (first impression)",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"Smart-Scan home dashboard (first impression)\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/Features/ScanViews.swift (SmartScanView / dashboard / recentCleanupCard /…",
+      "lastProgressAt": 1783125180296,
+      "tokens": 73032,
+      "toolCalls": 10,
+      "durationMs": 91619,
+      "resultPreview": "{\"area\":\"Smart-Scan home dashboard (first impression)\",\"northStar\":\"Opening Xico should feel like lifting the lid on a precision instrument: one calm, honest hero number you trust instantly, a single confident color story, generous breathing room top-to-bottom, and one obvious button — quieter and more self-assured than CleanMyMac's busy dial, never repeating itself or shouting.\",\"findings\":[{\"tit…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "audit:design-system",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "aa406962d48e646a1",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125088677,
+      "queuedAt": 1783125088653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Design-system foundations (Tokens/Theme/Components/Motion/V…",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"Design-system foundations\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/DesignSystem/Tokens.swift, Theme.swift, Components.swift, Motion.swift, Visuals.swift, Visua…",
+      "lastProgressAt": 1783125164537,
+      "tokens": 65228,
+      "toolCalls": 9,
+      "durationMs": 75859,
+      "resultPreview": "{\"area\":\"Design-system foundations (Tokens/Theme/Components/Motion/Visuals/VisualEffect)\",\"northStar\":\"Every surface, number, and gap should feel like it was drawn from one tightly-governed physical material system — a single luminous accent, a real 3-tier elevation model, one type ramp with zero stray sizes — so the app reads as a machined instrument (better than iStat) rather than a themeable we…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 7,
+      "label": "audit:dataviz-pages",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a7fbe56a0805a064b",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125158757,
+      "queuedAt": 1783125088653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Data-viz feature pages (SpaceLens / Sunburst / Treemap / Du…",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"Data-viz feature pages (SpaceLens/Duplicates/SimilarImages/LargeFiles)\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/Features/SpaceLensView.swift, TreemapView.swift…",
+      "lastProgressAt": 1783125317650,
+      "tokens": 86166,
+      "toolCalls": 19,
+      "durationMs": 158893,
+      "resultPreview": "{\"area\":\"Data-viz feature pages (SpaceLens / Sunburst / Treemap / Duplicates / SimilarImages / LargeFiles)\",\"northStar\":\"Opening Space Lens should feel like DaisyDisk's inheritance made calmer and more Apple-native: a jewel-toned radial map that breathes to life as it scans, where hovering any wedge lights up its entire folder-family, the center reads both the size AND its share of the parent, and…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 8,
+      "label": "audit:task-pages",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a7997332ee8afe355",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125159060,
+      "queuedAt": 1783125088653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Task-flow pages (Uninstaller / AppUpdater / Shredder / Opti…",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"Task-flow pages (Uninstaller/AppUpdater/Shredder/Optimization/Maintenance)\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/Features/UninstallerView.swift, AppUpdaterV…",
+      "lastProgressAt": 1783125261454,
+      "tokens": 74492,
+      "toolCalls": 14,
+      "durationMs": 102394,
+      "resultPreview": "{\"area\":\"Task-flow pages (Uninstaller / AppUpdater / Shredder / Optimization / Maintenance)\",\"northStar\":\"Every action page should feel like one continuous, confident flow — a scannable list with unmistakable selection state, a single gradient primary action that always shows what it will do and to how much, honest risk color, and a satisfying count-up finish — so switching from the flagship Clean…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 9,
+      "label": "audit:monitor-pages",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "acfe6d61ef478dc97",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125164538,
+      "queuedAt": 1783125088654,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "In-app Monitor / Hardware / Network pages",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"In-app Monitor / Hardware / Network pages\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/Features/MonitorView.swift, HardwareView.swift, NetworkView.swift, Sources/D…",
+      "lastProgressAt": 1783125257663,
+      "tokens": 75962,
+      "toolCalls": 13,
+      "durationMs": 93125,
+      "resultPreview": "{\"area\":\"In-app Monitor / Hardware / Network pages\",\"northStar\":\"Opening the monitor should feel like a live instrument panel: gridded charts that slide continuously left as new samples arrive, a pulsing LIVE indicator, dense sensor readouts with per-row sparklines and min/peak scales, and a scrubbable timeline that reads out exact values on hover — visibly calmer, denser, and more truthful than i…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 10,
+      "label": "audit:firstrun-config",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a8a39a17da60b06e6",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125171286,
+      "queuedAt": 1783125088654,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Onboarding / Settings / Pricing / Permissions banners",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"Onboarding / Settings / Pricing / Permissions banners\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/Features/OnboardingView.swift, SettingsView.swift, PricingView.s…",
+      "lastProgressAt": 1783125257913,
+      "tokens": 77194,
+      "toolCalls": 10,
+      "durationMs": 86626,
+      "resultPreview": "{\"area\":\"Onboarding / Settings / Pricing / Permissions banners\",\"northStar\":\"The first-run screen should feel like unwrapping a precision instrument — one warm, animated hero, a live permission chip that visibly flips to \\\"granted,\\\" and a single confident CTA — while Settings reads as a calm, sectioned control room (grouped, searchable) and Pricing closes with two perfectly-mirrored, equal-height…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 11,
+      "label": "audit:motion-states",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "af8f7f5c4b28f52da",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125180297,
+      "queuedAt": 1783125088654,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Motion, micro-interactions, and empty/loading/error states",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"Motion, micro-interactions, empty/loading/error states\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/DesignSystem/Motion.swift, Components.swift (XEmptyState), Sour…",
+      "lastProgressAt": 1783125302399,
+      "tokens": 68759,
+      "toolCalls": 12,
+      "durationMs": 122102,
+      "resultPreview": "{\"area\":\"Motion, micro-interactions, and empty/loading/error states\",\"northStar\":\"Every state change should feel like one physical material responding — a single, named spring language where scans breathe with real progress, results settle in with directional depth, and empty/success/error states arrive with intent — so Xico reads as a machined instrument, calmer and more deliberate than CleanMyMa…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 12,
+      "label": "audit:a11y-i18n-parity",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a5c0251f201d493b0",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125183523,
+      "queuedAt": 1783125088654,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Accessibility, i18n layout robustness, dark/light parity",
+      "promptPreview": "You are a world-class macOS product designer + SwiftUI engineer doing a PREMIUM-FEEL AUDIT of the Xico app (a native CleanMyMac-style cleaner) for the \"Accessibility, i18n layout robustness, dark/light parity\" dimension.\n\nRepo root is the current working directory. READ these files first (and grep for related symbols as needed):\nSources/DesignSystem/Localization.swift, Sources/DesignSystem/Tokens.…",
+      "lastProgressAt": 1783125312852,
+      "tokens": 74523,
+      "toolCalls": 16,
+      "durationMs": 129329,
+      "resultPreview": "{\"area\":\"Accessibility, i18n layout robustness, dark/light parity\",\"northStar\":\"Every glanceable number and label survives Русский/Deutsch/日本語 without clipping, reads at AA contrast in both light and dark, and speaks a full, translated sentence to VoiceOver — so the app feels engineered, not just styled, the way iStat Menus never bothered to be.\",\"findings\":[{\"title\":\"textTertiary fails WCAG contr…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 13,
+      "label": "synthesize:roadmap",
+      "phaseIndex": 2,
+      "phaseTitle": "Synthesize",
+      "agentId": "af2f31ac058f7e857",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1783125317669,
+      "queuedAt": 1783125317652,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Xico should feel like lifting the lid on a machined precisi…",
+      "promptPreview": "You are the design director consolidating a 12-dimension premium-feel audit of the Xico macOS cleaner into ONE actionable roadmap.\n\nHere are the per-dimension audits as JSON:\n\n[\n  {\n    \"area\": \"Brand mark, logo & app icon\",\n    \"northStar\": \"A single ownable geometric mark — a rounded-square \\\"X\\\" cut from negative space with an aurora-jewel gradient and a soft inner bevel — that reads instantly …",
+      "lastProgressAt": 1783125802341,
+      "tokens": 120508,
+      "toolCalls": 7,
+      "durationMs": 484671,
+      "resultPreview": "{\"tier1\":[{\"id\":\"T1-01\",\"title\":\"Replace the generic sparkle with an ownable X mark, aurora-tuned and beveled\",\"area\":\"Brand mark, logo and app icon\",\"why\":\"The app is named Xico yet its mark contains no X - a stock 4-point sparkle that fails the recognizable-by-silhouette test, hardcodes a hot-candy magenta the palette was tuned away from, and reads flat-plastic at 1024px. First thing users see i…"
+    }
+  ],
+  "totalTokens": 944816,
+  "totalToolCalls": 143
+}

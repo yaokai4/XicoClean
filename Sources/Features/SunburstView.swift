@@ -110,6 +110,11 @@ public struct SunburstView: View {
 
     private func centerLabel(hole: CGFloat) -> some View {
         let shown = hovered ?? node
+        // 悬停子目录时，中心显示其占父目录的比例（图标 + %，无需本地化文案）。
+        let sharePct: Int? = {
+            guard let h = hovered, h.id != node.id, node.size > 0 else { return nil }
+            return Int((Double(h.size) / Double(node.size) * 100).rounded())
+        }()
         return VStack(spacing: 3) {
             Text(shown.size.formattedBytes)
                 .font(.system(size: max(15, hole * 0.34), weight: .bold, design: .rounded))
@@ -119,6 +124,14 @@ public struct SunburstView: View {
                 .font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 .lineLimit(1).truncationMode(.middle)
                 .frame(maxWidth: hole * 1.7)
+            if let pct = sharePct {
+                HStack(spacing: 3) {
+                    Image(systemName: "chart.pie.fill").font(.system(size: 9))
+                    Text("\(pct)%").font(XFont.captionEmphasis).monospacedDigit()
+                }
+                .foregroundStyle(XColor.brand)
+                .contentTransition(.numericText())
+            }
         }
     }
 
@@ -126,7 +139,6 @@ public struct SunburstView: View {
 
     private var legend: some View {
         let sorted = node.children.sorted { $0.size > $1.size }
-        let tops = Array(sorted.prefix(14))
         let total = max(node.size, 1)
         return VStack(alignment: .leading, spacing: XSpacing.s) {
             HStack {
@@ -138,18 +150,15 @@ public struct SunburstView: View {
             Text(xLocF("%d 个项目 · 点击色块或环钻取", node.children.count))
                 .font(XFont.caption).foregroundStyle(XColor.textTertiary)
             Divider().padding(.vertical, 2)
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(tops.enumerated()), id: \.element.id) { i, child in
-                    legendRow(child, color: Self.palette[i % Self.palette.count],
-                              fraction: Double(child.size) / Double(total))
-                }
-                if sorted.count > tops.count {
-                    Text(xLocF("+ 另外 %d 项", sorted.count - tops.count))
-                        .font(XFont.caption).foregroundStyle(XColor.textTertiary)
-                        .padding(.leading, XSpacing.s).padding(.top, 2)
+            // 全部条目可滚动（不再截断到 14 项）——大目录也能逐项审阅。
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(sorted.enumerated()), id: \.element.id) { i, child in
+                        legendRow(child, color: Self.palette[i % Self.palette.count],
+                                  fraction: Double(child.size) / Double(total))
+                    }
                 }
             }
-            Spacer(minLength: 0)
         }
     }
 

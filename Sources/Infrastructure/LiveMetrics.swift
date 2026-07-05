@@ -63,6 +63,10 @@ public struct MacInfo: Sendable {
     public let macOS: String
     public let memory: String
     public let cores: Int
+    public let performanceCores: Int
+    public let efficiencyCores: Int
+    /// 每逻辑 CPU 是否性能核（按 perCore 索引对齐）；Intel/读不到为空数组。
+    public let coreClusters: [Bool]
     public let uptime: String
 }
 
@@ -330,6 +334,9 @@ public final class LiveMetricsSampler: @unchecked Sendable {
             macOS: profile.macOS,
             memory: profile.memoryDescription,
             cores: profile.totalCores,
+            performanceCores: profile.performanceCores,
+            efficiencyCores: profile.efficiencyCores,
+            coreClusters: hardware.cpuClusterTypes(),
             uptime: formatUptime(bootUptime()))
     }
 
@@ -360,10 +367,11 @@ public extension Double {
         if self < 1 { return "0 KB/s" }
         return Int64(self).formattedBytes + "/s"
     }
-    /// 菜单栏紧凑速率，如 "1.2M" / "386K"
+    /// 菜单栏紧凑速率，如 "1.2M" / "386K"。空闲也带单位后缀（"0K"），
+    /// 绝不显示裸露无单位的 "0"（对标 iStat 的刀锋级读数）。
     var compactRate: String {
         if self >= 1_000_000 { return String(format: "%.1fM", self / 1_000_000) }
         if self >= 1_000 { return String(format: "%.0fK", self / 1_000) }
-        return "0"
+        return "0K"
     }
 }

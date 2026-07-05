@@ -23,6 +23,25 @@ public struct HardwareProfile: Sendable {
     public let isAppleSilicon: Bool
 }
 
+/// system_profiler 派生的补充档案（较慢，后台按需加载，复用缓存的 profiler JSON）。
+/// 与 HardwareProfile 分离：让 AppModel 冷启动只走微秒级快通道，型号编号/内存规格这类
+/// 需要子进程的字段异步补齐。
+public struct HardwareDetails: Sendable {
+    public let modelNumber: String       // "Z11C000HFJ/A"，部分机型为空
+    public let memoryType: String        // "LPDDR5" / "DDR4"，读不到为空
+    public let memorySpeed: String       // "6400 MT/s" / "3733 MHz"，Apple Silicon 常为空
+    public let memoryManufacturer: String // "Samsung" / "Micron"，读不到为空（AS 通常不透传）
+    public let memorySlots: String       // Intel："已用 2 / 共 4"；Apple Silicon："板载"；读不到为空
+    public init(modelNumber: String, memoryType: String, memorySpeed: String,
+                memoryManufacturer: String = "", memorySlots: String = "") {
+        self.modelNumber = modelNumber
+        self.memoryType = memoryType
+        self.memorySpeed = memorySpeed
+        self.memoryManufacturer = memoryManufacturer
+        self.memorySlots = memorySlots
+    }
+}
+
 /// 电池健康。
 public struct BatteryHealth: Sendable {
     public let healthPercent: Int        // 满充/设计 容量比（对齐系统设置"最大容量"）
@@ -100,8 +119,52 @@ public final class HardwareProfileService: @unchecked Sendable {
     private let lock = NSLock()
     private var cachedProfile: HardwareProfile?
     private var cachedProfilerJSON: [String: Any]?
+    private var cachedClusters: [Bool]?
 
     public init() {}
+
+    // MARK: 每逻辑 CPU 的簇类型（性能核 / 能效核）
+
+    /// 每个逻辑 CPU 是否为性能核（true=P，false=E），按 logical-cpu-id 升序索引——
+    /// 与 host_processor_info / perCore 数组顺序一一对应。权威读自 IODeviceTree 的 `cluster-type`，
+    /// 不猜核序（Apple Silicon 上 E 簇通常在前，但以真实读数为准）。Intel / 读不到返回空数组。
+    public func cpuClusterTypes() -> [Bool] {
+        lock.lock()
+        if let c = cachedClusters { lock.unlock(); return c }
+        lock.unlock()
+
+        var pairs: [(id: Int, perf: Bool)] = []
+        let root = IORegistryEntryFromPath(kIOMainPortDefault, "IODeviceTree:/cpus")
+        if root != 0 {
+            defer { IOObjectRelease(root) }
+            var iter: io_iterator_t = 0
+            if IORegistryEntryGetChildIterator(root, "IODeviceTree", &iter) == KERN_SUCCESS {
+                defer { IOObjectRelease(iter) }
+                var child = IOIteratorNext(iter)
+                while child != 0 {
+                    if let id = ioRegInt(child, "logical-cpu-id"),
+                       let ct = clusterTypeString(child) {
+                        pairs.append((id, ct.uppercased().hasPrefix("P")))
+                    }
+                    IOObjectRelease(child)
+                    child = IOIteratorNext(iter)
+                }
+            }
+        }
+        let sorted = pairs.sorted { $0.id < $1.id }.map(\.perf)
+        lock.lock(); cachedClusters = sorted; lock.unlock()
+        return sorted
+    }
+
+    /// 读 cpu 节点的 `cluster-type`（Data "E"/"P"，可能带 NUL；个别机型为 String）。
+    private func clusterTypeString(_ entry: io_registry_entry_t) -> String? {
+        guard let prop = IORegistryEntryCreateCFProperty(entry, "cluster-type" as CFString, kCFAllocatorDefault, 0) else { return nil }
+        let value = prop.takeRetainedValue()
+        if let data = value as? Data {
+            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: CharacterSet(charactersIn: "\0 \n"))
+        }
+        return value as? String
+    }
 
     // MARK: 静态档案
 
@@ -423,6 +486,88 @@ public final class HardwareProfileService: @unchecked Sendable {
         } catch {
             return [:]
         }
+    }
+
+    // MARK: 补充档案（型号编号 / 内存规格）
+
+    /// 从（缓存的）system_profiler 数据派生型号编号与内存规格。首次调用会触发 profiler
+    /// 子进程（1–3s），务必在后台队列调用；之后走缓存，微秒级。
+    public func profilerDetails() -> HardwareDetails {
+        let data = hardwareProfilerData()
+        let modelNumber = ((data["model_number"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var memType = "", memSpeed = "", memMfr = "", memSlots = ""
+        if let mem = data["SPMemoryDataType"] as? [String: Any] {
+            let parsed = Self.parseMemorySpec(mem)
+            memType = parsed.type; memSpeed = parsed.speed
+            let extras = Self.parseMemoryExtras(mem, isAppleSilicon: isAppleSiliconMachine())
+            memMfr = extras.manufacturer; memSlots = extras.slots
+        } else if isAppleSiliconMachine() {
+            memSlots = xLoc("板载")
+        }
+        return HardwareDetails(modelNumber: modelNumber, memoryType: memType, memorySpeed: memSpeed,
+                               memoryManufacturer: memMfr, memorySlots: memSlots)
+    }
+
+    /// 解析内存制造商与插槽占用。Intel：逐条 DIMM（制造商 + 已用/总插槽）；
+    /// Apple Silicon：统一内存板载（"板载"）。读不到安静留空，UI 隐藏该行——绝不编造。
+    static func parseMemoryExtras(_ mem: [String: Any], isAppleSilicon: Bool) -> (manufacturer: String, slots: String) {
+        func cleanMfr(_ raw: String) -> String {
+            let t = raw.trimmingCharacters(in: .whitespaces)
+            let low = t.lowercased()
+            if t.isEmpty || low.contains("empty") || low.contains("unknown")
+                || low.contains("noname") || low.hasPrefix("0x") { return "" }
+            return t
+        }
+        if let items = mem["_items"] as? [[String: Any]] {
+            var total = 0, used = 0, mfr = ""
+            for dimm in items {
+                total += 1
+                let status = ((dimm["dimm_status"] as? String) ?? "").lowercased()
+                let size = ((dimm["dimm_size"] as? String) ?? "").lowercased()
+                let occupied = !(status.contains("empty") || size.contains("empty") || size == "0 gb" || size.isEmpty)
+                if occupied {
+                    used += 1
+                    if mfr.isEmpty { mfr = cleanMfr((dimm["dimm_manufacturer"] as? String) ?? "") }
+                }
+            }
+            let slots = total > 0 ? xLocF("已用 %d / 共 %d", used, total) : (isAppleSilicon ? xLoc("板载") : "")
+            return (mfr, slots)
+        }
+        let mfr = cleanMfr((mem["dimm_manufacturer"] as? String) ?? "")
+        return (mfr, isAppleSilicon ? xLoc("板载") : "")
+    }
+
+    /// 解析内存类型/速率。Intel：逐条 DIMM（_items）；Apple Silicon：单条整机内存。
+    /// 键名随机型/系统版本略有出入，故对所有字符串值做 DDR 关键字兜底扫描——
+    /// 目标是「在每台 Mac 上都尽量识别到内存规格」，识别不到则安静留空（UI 隐藏该行）。
+    static func parseMemorySpec(_ mem: [String: Any]) -> (type: String, speed: String) {
+        func normalizeType(_ s: String) -> String {
+            let up = s.uppercased().replacingOccurrences(of: "_", with: "")
+            return up.contains("DDR") ? up : ""
+        }
+        // Intel：逐条 DIMM，取首条已装配的
+        if let items = mem["_items"] as? [[String: Any]] {
+            for dimm in items {
+                let t = normalizeType((dimm["dimm_type"] as? String) ?? "")
+                if !t.isEmpty {
+                    let sp = ((dimm["dimm_speed"] as? String) ?? "").trimmingCharacters(in: .whitespaces)
+                    return (t, sp)
+                }
+            }
+        }
+        // Apple Silicon / 兜底：直接键 + 全值扫描
+        if let t = mem["dimm_type"] as? String {
+            let n = normalizeType(t)
+            if !n.isEmpty { return (n, ((mem["dimm_speed"] as? String) ?? "")) }
+        }
+        for v in mem.values {
+            if let s = v as? String {
+                let n = normalizeType(s)
+                if !n.isEmpty { return (n, "") }
+            }
+        }
+        return ("", "")
     }
 
     private func friendlyModel(from identifier: String) -> String {

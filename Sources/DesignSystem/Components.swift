@@ -36,7 +36,8 @@ public struct XCard<Content: View>: View {
 private struct ConditionalCardShadow: ViewModifier {
     let enabled: Bool
     func body(content: Content) -> some View {
-        if enabled { content.xCardShadow() } else { content }
+        // 走统一层次阶梯（raised ≈ 原 xCardShadow，视感一致但纳入 z 轴体系）。
+        if enabled { content.xElevation(.raised) } else { content }
     }
 }
 
@@ -96,17 +97,19 @@ public struct XBadge: View {
 public struct XPrimaryButtonStyle: ButtonStyle {
     var enabled: Bool
     var large: Bool
-    public init(enabled: Bool = true, large: Bool = false) {
+    var compact: Bool
+    public init(enabled: Bool = true, large: Bool = false, compact: Bool = false) {
         self.enabled = enabled
         self.large = large
+        self.compact = compact
     }
     public func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(large ? XFont.title : XFont.headline)
+            .font(large ? XFont.title : (compact ? XFont.bodyEmphasis : XFont.headline))
             // 禁用态背景是浅色 surfaceAlt，白字会消失——改用次要文字色保证浅色模式可读
-            .foregroundStyle(enabled ? AnyShapeStyle(.white) : AnyShapeStyle(XColor.textTertiary))
-            .padding(.horizontal, large ? XSpacing.xxl : XSpacing.xl)
-            .padding(.vertical, large ? XSpacing.l : XSpacing.m)
+            .foregroundStyle(enabled ? AnyShapeStyle(XColor.onAccent) : AnyShapeStyle(XColor.textTertiary))
+            .padding(.horizontal, large ? XSpacing.xxl : (compact ? XSpacing.m : XSpacing.xl))
+            .padding(.vertical, large ? XSpacing.l : (compact ? XSpacing.s : XSpacing.m))
             .background(
                 enabled ? AnyShapeStyle(XColor.brandGradient) : AnyShapeStyle(XColor.surfaceAlt),
                 in: Capsule()
@@ -128,13 +131,14 @@ public struct XPrimaryButtonStyle: ButtonStyle {
 }
 
 public struct XSecondaryButtonStyle: ButtonStyle {
-    public init() {}
+    var compact: Bool
+    public init(compact: Bool = false) { self.compact = compact }
     public func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(XFont.headline)
+            .font(compact ? XFont.bodyEmphasis : XFont.headline)
             .foregroundStyle(XColor.textPrimary)
-            .padding(.horizontal, XSpacing.xl)
-            .padding(.vertical, XSpacing.m)
+            .padding(.horizontal, compact ? XSpacing.m : XSpacing.xl)
+            .padding(.vertical, compact ? XSpacing.s : XSpacing.m)
             .background(XColor.surfaceAlt, in: Capsule())
             .overlay(Capsule().strokeBorder(XColor.border, lineWidth: 1))
             .opacity(configuration.isPressed ? 0.8 : 1)
@@ -201,25 +205,97 @@ public struct XActionBar<Trailing: View>: View {
     }
 }
 
+// MARK: - 骨架屏（首帧未采样占位）
+
+/// 首帧数据未就绪时的占位骨架：surfaceAlt 底 + 一道柔和微光扫过（Reduce Motion 下静止）。
+/// 取代生硬的「正在读取…」文字，让指标卡/环/列表在数据到达前也有「结构感」而非空白。
+public struct XSkeleton: View {
+    let width: CGFloat?
+    let height: CGFloat
+    let cornerRadius: CGFloat
+    @State private var shimmer = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    public init(width: CGFloat? = nil, height: CGFloat = 12, cornerRadius: CGFloat = XRadius.chip) {
+        self.width = width
+        self.height = height
+        self.cornerRadius = cornerRadius
+    }
+    public var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(XColor.surfaceAlt)
+            .frame(width: width, height: height)
+            .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
+            .overlay {
+                if !reduceMotion {
+                    GeometryReader { geo in
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(LinearGradient(colors: [.clear, .white.opacity(0.10), .clear],
+                                                 startPoint: .leading, endPoint: .trailing))
+                            .frame(width: geo.size.width * 0.6)
+                            .offset(x: shimmer ? geo.size.width : -geo.size.width * 0.6)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                }
+            }
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.linear(duration: 1.3).repeatForever(autoreverses: false)) { shimmer = true }
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+/// 若干行骨架（列表/明细占位）。行宽做轻微递减，更像真实文本块而非等长积木。
+public struct XSkeletonRows: View {
+    let count: Int
+    public init(count: Int = 3) { self.count = count }
+    public var body: some View {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
+            ForEach(0..<count, id: \.self) { i in
+                XSkeleton(width: nil, height: 11)
+                    .frame(maxWidth: i == count - 1 ? 160 : .infinity, alignment: .leading)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(xLoc("加载中"))
+    }
+}
+
 // MARK: - 空态
 
 public struct XEmptyState: View {
+    public enum Kind { case neutral, success, error, loading }
     let systemImage: String
     let title: String
     let subtitle: String
-    public init(systemImage: String, title: String, subtitle: String) {
+    let kind: Kind
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    public init(systemImage: String, title: String, subtitle: String, kind: Kind = .neutral) {
         self.systemImage = systemImage
         self.title = title
         self.subtitle = subtitle
+        self.kind = kind
+    }
+    private var tint: [Color] {
+        switch kind {
+        case .neutral, .loading: return XColor.brandGradientColors
+        case .success: return [XColor.accentTeal, XColor.success]
+        case .error:   return [XColor.warning, XColor.accentPink]
+        }
     }
     public var body: some View {
         VStack(spacing: XSpacing.m) {
             ZStack {
-                Circle().fill(XColor.brand.opacity(0.12)).frame(width: 96, height: 96)
+                Circle().fill(tint[0].opacity(0.12)).frame(width: 96, height: 96)
+                if kind == .success { Circle().stroke(tint[0].opacity(0.35), lineWidth: 1).frame(width: 96, height: 96) }
                 Image(systemName: systemImage)
                     .font(.system(size: 42, weight: .light))
-                    .foregroundStyle(XColor.brandGradient)
+                    .foregroundStyle(LinearGradient(colors: tint, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .xGlow(kind == .success ? tint[0] : .clear, radius: 18, opacity: 0.5)
             }
+            .scaleEffect(appeared || reduceMotion ? 1 : 0.7)
+            .opacity(appeared || reduceMotion ? 1 : 0)
             Text(title).xTitle().foregroundStyle(XColor.textPrimary)
             Text(subtitle)
                 .font(XFont.body).foregroundStyle(XColor.textSecondary)
@@ -227,5 +303,6 @@ public struct XEmptyState: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(XSpacing.xxl)
+        .onAppear { if !reduceMotion { withAnimation(XMotion.settle) { appeared = true } } }
     }
 }

@@ -7,14 +7,31 @@ public struct XScanOrb: View {
     let label: String
     let colors: [Color]
     let size: CGFloat
+    /// 确定性进度（0…1）。非 nil 时在彗星后画一圈「诚实填充」的进度弧——
+    /// 让长扫描有真实完成感，而不是纯装饰的循环（对标 CleanMyMac 的填充环）。
+    let progress: Double?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(value: String, label: String,
-                colors: [Color] = XColor.ringColors, size: CGFloat = 300) {
+                colors: [Color] = XColor.ringColors, size: CGFloat = 300, progress: Double? = nil) {
         self.value = value
         self.label = label
         self.colors = colors.isEmpty ? XColor.ringColors : colors
         self.size = size
+        self.progress = progress
+    }
+
+    /// 进度填充弧（彗星后方的「诚实」环）。
+    @ViewBuilder private func progressArc(lineWidth: CGFloat) -> some View {
+        if let p = progress, p > 0.004 {
+            Circle()
+                .trim(from: 0, to: min(p, 1))
+                .stroke(AngularGradient(colors: colors + [colors[0]], center: .center),
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .opacity(0.9)
+                .animation(reduceMotion ? nil : XMotion.gauge, value: p)
+        }
     }
 
     public var body: some View {
@@ -26,81 +43,84 @@ public struct XScanOrb: View {
         .accessibilityValue("\(label) \(value)")
     }
 
-    /// Reduce Motion 下的静态降级：无旋转/粒子，仅静态环 + 数值
+    /// 彗星渐变：尾部透明 → 头部最亮（location 0.72 即弧头）。
+    /// 头部本身就是渐变的最亮端 + 柔光，取代旧版「浮在弧末的分离白点」（用户点名的塑料感来源）。
+    private var cometGradient: Gradient {
+        let c0 = colors[0]
+        let c1 = colors[min(1, colors.count - 1)]
+        let c2 = colors[min(2, colors.count - 1)]
+        return Gradient(stops: [
+            .init(color: c0.opacity(0),    location: 0.00),
+            .init(color: c0.opacity(0.22), location: 0.26),
+            .init(color: c1,               location: 0.54),
+            .init(color: c2,               location: 0.72),
+            .init(color: c2,               location: 1.00),
+        ])
+    }
+
+    private var centerLabel: some View {
+        // 等宽数字裸刷新（不做逐位滚动，避免「永远过渡中」发虚），平滑攀升、清晰不糊。
+        VStack(spacing: 6) {
+            Text(value).xHeroNumber().foregroundStyle(XColor.textPrimary)
+            Text(label).font(XFont.body).foregroundStyle(XColor.textSecondary).tracking(0.3)
+        }
+    }
+
+    /// Reduce Motion 下的静态降级：无旋转，单条渐变弧 + 数值（同样无分离白点）。
     private var staticOrb: some View {
-        let lineW = size * 0.03
+        let lineW = size * 0.028
+        let c2 = colors[min(2, colors.count - 1)]
         return ZStack {
-            Circle().stroke(XColor.surfaceAlt.opacity(0.38), lineWidth: lineW)
+            Circle().stroke(XColor.surfaceAlt.opacity(0.30), lineWidth: lineW)
             Circle()
-                .trim(from: 0, to: 0.7)
-                .stroke(AngularGradient(colors: colors + [colors[0]], center: .center),
+                .trim(from: 0, to: progress.map { min(max($0, 0.02), 1) } ?? 0.72)
+                .stroke(AngularGradient(gradient: cometGradient, center: .center),
                         style: StrokeStyle(lineWidth: lineW, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-            VStack(spacing: 6) {
-                Text(value).xHeroNumber().foregroundStyle(XColor.textPrimary)
-                Text(label).font(XFont.body).foregroundStyle(XColor.textSecondary).tracking(0.3)
-            }
+                .shadow(color: c2.opacity(0.35), radius: lineW * 1.3)
+                .animation(reduceMotion ? nil : XMotion.gauge, value: progress)
+            centerLabel
         }
         .frame(width: size, height: size)
     }
 
     @ViewBuilder private var animatedOrb: some View {
-        let lineW = size * 0.03
-        let r = size / 2 - lineW / 2
-        let c0 = colors[0]
+        let lineW = size * 0.028
         let c1 = colors[min(1, colors.count - 1)]
         let c2 = colors[min(2, colors.count - 1)]
 
         TimelineView(.animation) { tl in
             let t = tl.date.timeIntervalSinceReferenceDate
-            // 非线性旋转：基础速度 + 正弦微调 → 有机、不机械
-            let angle = t * 52 + 16 * sin(t * 0.85)
-            // 弧长呼吸式伸缩（彗尾时长时短，灵动）
-            let arcLen = 0.46 + 0.20 * (0.5 + 0.5 * sin(t * 1.35))
-            // 辉光脉动
-            let breathe = 0.5 + 0.5 * sin(t * 1.05)
-            let headRad = (angle + arcLen * 360) * .pi / 180
+            let angle = t * 58                        // 恒定转速——沉稳精确，不再忽快忽慢
+            let breathe = 0.5 + 0.5 * sin(t * 0.85)   // 仅驱动柔光呼吸；彗尾弧长恒定，不再「变长变端」
 
             ZStack {
-                // 柔光底（脉动呼吸）
+                // 呼吸柔光底（低幅、克制，纵深而不喧哗）
                 Circle()
-                    .fill(RadialGradient(colors: [c1.opacity(0.12 + 0.08 * breathe), .clear],
-                                         center: .center, startRadius: 0, endRadius: size * 0.5))
-                    .blur(radius: 38)
-                    .scaleEffect(0.9 + 0.12 * breathe)
+                    .fill(RadialGradient(colors: [c1.opacity(0.10 + 0.05 * breathe), .clear],
+                                         center: .center, startRadius: size * 0.08, endRadius: size * 0.50))
+                    .blur(radius: 30)
+                    .scaleEffect(0.95 + 0.05 * breathe)
 
                 // 轨道底环
-                Circle().stroke(XColor.surfaceAlt.opacity(0.38), lineWidth: lineW)
+                Circle().stroke(XColor.surfaceAlt.opacity(0.30), lineWidth: lineW)
 
-                // 反向内弧（不同速度，增加层次与流动感）
-                Circle()
-                    .trim(from: 0, to: 0.22)
-                    .stroke(c2.opacity(0.32), style: StrokeStyle(lineWidth: lineW * 0.5, lineCap: .round))
-                    .rotationEffect(.degrees(-angle * 0.62))
-                    .padding(lineW * 1.8)
+                // 幽灵满环：整圈透出一丝品牌色，环「活着」但极克制
+                Circle().stroke(c1.opacity(0.09), lineWidth: lineW)
 
-                // 主弧（流动的彗星：弧长呼吸 + 有机旋转 + 柔和辉光）
+                // 诚实进度弧（有确定性 progress 时才画）
+                progressArc(lineWidth: lineW)
+
+                // 主彗星：恒定弧长 0.72，尾透明 → 头最亮，柔和同色辉光；
+                // 头即渐变最亮端，与弧体连为一体——无分离白点、无塑料感。
                 Circle()
-                    .trim(from: 0, to: arcLen)
-                    .stroke(AngularGradient(colors: colors + [c0], center: .center),
+                    .trim(from: 0, to: 0.72)
+                    .stroke(AngularGradient(gradient: cometGradient, center: .center),
                             style: StrokeStyle(lineWidth: lineW, lineCap: .round))
-                    .rotationEffect(.degrees(angle))
-                    .shadow(color: c1.opacity(0.3 + 0.15 * breathe), radius: 14)
+                    .rotationEffect(.degrees(angle - 90))
+                    .shadow(color: c2.opacity(0.40 + 0.12 * breathe), radius: lineW * 1.6)
 
-                // 弧头高光点（彗星头）
-                Circle()
-                    .fill(.white)
-                    .frame(width: lineW * (0.9 + 0.2 * breathe), height: lineW * (0.9 + 0.2 * breathe))
-                    .shadow(color: c2.opacity(0.9), radius: 10)
-                    .offset(x: CGFloat(cos(headRad)) * r, y: CGFloat(sin(headRad)) * r)
-
-                // 中心：等宽数字直接刷新（不做逐位滚动）。扫描计数每秒更新多次，
-                // 一旦叠加 numericText 滚动动画就会永远处于「过渡中」→ 数字发虚模糊。
-                // 等宽字形保证位宽稳定，裸刷新看起来是平滑攀升，干净、高级、不糊。
-                VStack(spacing: 6) {
-                    Text(value).xHeroNumber().foregroundStyle(XColor.textPrimary)
-                    Text(label).font(XFont.body).foregroundStyle(XColor.textSecondary).tracking(0.3)
-                }
+                centerLabel
             }
             .frame(width: size, height: size)
         }
@@ -187,6 +207,39 @@ public struct XCelebrationBurst: View {
             }
         }
         .allowsHitTesting(false)
+    }
+}
+
+// MARK: - 实时脉冲点（LIVE 指示）
+
+/// 会呼吸的「实时」小圆点：实心点 + 向外扩散淡出的圆环。用在监视器/硬件页头部，
+/// 让「LIVE」不再是一颗死气沉沉的静态圆点。Reduce Motion 下退化为静态点。
+public struct XLiveDot: View {
+    var color: Color
+    var size: CGFloat
+    @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    public init(color: Color = XColor.success, size: CGFloat = 7) {
+        self.color = color
+        self.size = size
+    }
+    public var body: some View {
+        ZStack {
+            if !reduceMotion {
+                Circle().stroke(color, lineWidth: 1.5)
+                    .frame(width: size, height: size)
+                    .scaleEffect(pulse ? 2.6 : 1)
+                    .opacity(pulse ? 0 : 0.55)
+            }
+            Circle().fill(color).frame(width: size, height: size)
+                .shadow(color: color.opacity(0.7), radius: 3)
+        }
+        .frame(width: size, height: size)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) { pulse = true }
+        }
+        .accessibilityHidden(true)
     }
 }
 

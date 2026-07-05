@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import DesignSystem
 import Features
+import Infrastructure
 
 /// 渲染 1024×1024 App 图标主图到 /tmp/xico-icon/icon-master.png。用法：Xico --icon
 @MainActor
@@ -33,8 +34,18 @@ func renderMenuBar() {
         return 0.35 + 0.28 * sin(x * 0.35) + 0.06 * sin(x * 1.7)
     }
     model.memHistory = (0..<44).map { (i: Int) -> Double in 0.72 + 0.07 * sin(Double(i) * 0.3) }
+    model.gpuHistory = (0..<44).map { (i: Int) -> Double in max(0.0, 0.24 + 0.18 * abs(sin(Double(i) * 0.4))) }
     model.netDownHistory = (0..<44).map { (i: Int) -> Double in max(0.0, 250_000.0 + 220_000.0 * sin(Double(i) * 0.5)) }
     model.netUpHistory = (0..<44).map { (i: Int) -> Double in max(0.0, 90_000.0 + 70_000.0 * sin(Double(i) * 0.7 + 1.0)) }
+    // 离屏预览：模拟后台隔次采样才能拿到的 P/E 频率、会话统计与接口清单（真实运行时为实时采样）。
+    model.cpuFreqP = 3228; model.cpuFreqE = 1050
+    model.netDownPeak = 4_820_000; model.netUpPeak = 1_240_000
+    model.sessionDownBytes = 1_820_000_000; model.sessionUpBytes = 214_000_000
+    model.networkInterfaces = [
+        NetworkInterfaceInfo(id: "en0", displayName: "Wi-Fi (en0)", type: .wifi, isActive: true,
+                             ipv4: "192.168.1.24", ipv6: nil, macAddress: nil,
+                             downBytesPerSec: 512_000, upBytesPerSec: 96_000)
+    ]
 
     func write(_ view: some View, _ name: String) {
         let wrapped = view.padding(8).background(XColor.surface).environment(\.colorScheme, .dark)
@@ -45,10 +56,10 @@ func renderMenuBar() {
             try? png.write(to: dir.appendingPathComponent(name))
         }
     }
-    write(MenuBarView(model: model).frame(width: 300), "menubar-dark.png")
-    write(MenuMetricPanel(model: model, metric: .cpu).frame(width: 260), "mb-cpu.png")
-    write(MenuMetricPanel(model: model, metric: .memory).frame(width: 260), "mb-memory.png")
-    write(MenuMetricPanel(model: model, metric: .network).frame(width: 260), "mb-network.png")
+    write(MenuBarView(model: model), "menubar-dark.png")
+    write(MenuMetricPanel(model: model, metric: .cpu), "mb-cpu.png")
+    write(MenuMetricPanel(model: model, metric: .memory), "mb-memory.png")
+    write(MenuMetricPanel(model: model, metric: .network), "mb-network.png")
     FileHandle.standardError.write("menubar panels rendered to \(dir.path)\n".data(using: .utf8)!)
 }
 

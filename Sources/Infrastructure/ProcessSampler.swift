@@ -58,6 +58,13 @@ public final class ProcessSampler: @unchecked Sendable {
         return (byCPU, byMem)
     }
 
+    /// 某进程的即时内存占用（phys_footprint）。用于给「运行中应用」列表标注内存，
+    /// 无需时间差分即准确（CPU% 才需要两次采样，故此处只给内存）。
+    public func memoryFootprint(pid: Int32) -> Int64? {
+        guard let info = rusage(pid) else { return nil }
+        return Int64(info.ri_phys_footprint)
+    }
+
     private func allPIDs() -> [Int32] {
         let count = proc_listallpids(nil, 0)
         guard count > 0 else { return [] }

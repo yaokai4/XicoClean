@@ -74,6 +74,8 @@ final class SpaceLensModel: ObservableObject {
 
 public struct SpaceLensView: View {
     @StateObject private var model: SpaceLensModel
+    /// 可视化方式：放射环形（ring）/ 方块 treemap（blocks），持久化记住偏好。
+    @AppStorage("xico.spacelens.viz") private var viz = "ring"
 
     public init(env: XicoEnvironment) {
         _model = StateObject(wrappedValue: SpaceLensModel(env: env))
@@ -96,13 +98,21 @@ public struct SpaceLensView: View {
         HStack(spacing: XSpacing.m) {
             breadcrumb
             Spacer()
+            if model.current != nil && !model.isScanning {
+                Picker("", selection: $viz) {
+                    Image(systemName: "circle.hexagongrid").tag("ring")
+                    Image(systemName: "square.grid.2x2").tag("blocks")
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
             Button { model.chooseFolder() } label: {
                 Label(xLoc("选择文件夹"), systemImage: "folder")
             }
+            .buttonStyle(XSecondaryButtonStyle(compact: true))
             Button { model.scan() } label: {
                 Label(xLoc("扫描"), systemImage: "arrow.clockwise")
             }
-            .buttonStyle(XPrimaryButtonStyle())
+            .buttonStyle(XPrimaryButtonStyle(compact: true))
         }
         .padding(.horizontal, XSpacing.xl)
         .padding(.vertical, XSpacing.m)
@@ -143,8 +153,15 @@ public struct SpaceLensView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let node = model.current {
-            SunburstView(node: node) { child in model.drill(into: child) }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                if viz == "blocks" {
+                    TreemapView(node: node) { child in model.drill(into: child) }
+                        .padding(XSpacing.xl)
+                } else {
+                    SunburstView(node: node) { child in model.drill(into: child) }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             // 空态：整组垂直+水平居中，按钮紧跟说明文字（不再被撑到下方）
             VStack(spacing: XSpacing.l) {

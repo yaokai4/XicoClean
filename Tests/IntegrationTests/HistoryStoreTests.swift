@@ -63,6 +63,42 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.totalReclaimedAllTime, 100, "clearRestorable 不应影响累计统计")
     }
 
+    /// 核心修复：废纸篓被清空后，撤销卡片不应再空许「可放回原位」。
+    /// firstUndoable 按文件系统现实过滤——注入「文件已不存在」→ 返回 nil。
+    func testFirstUndoableHidesWhenTrashEmptied() throws {
+        let store = HistoryStore(directory: tmpDir)
+        let items = [RestorableItem(originalURL: URL(fileURLWithPath: "/tmp/a"),
+                                    trashedURL: URL(fileURLWithPath: "/tmp/.Trash/a")),
+                     RestorableItem(originalURL: URL(fileURLWithPath: "/tmp/b"),
+                                    trashedURL: URL(fileURLWithPath: "/tmp/.Trash/b"))]
+        store.record(module: "系统垃圾", reclaimedBytes: 100, removedCount: 2, restorable: items)
+
+        // 文件还在废纸篓 → 可撤销
+        XCTAssertNotNil(store.firstUndoable(existsInTrash: { _ in true }))
+        // 废纸篓已清空（所有 trashedURL 不存在）→ 不再展示撤销
+        XCTAssertNil(store.firstUndoable(existsInTrash: { _ in false }),
+                     "清空废纸篓后撤销入口必须消失")
+        // 且累计释放统计不受影响（撤销消失 ≠ 清理没发生过）
+        XCTAssertEqual(store.totalReclaimedAllTime, 100)
+    }
+
+    /// 部分清空：只保留仍在废纸篓的项为可撤销，并把已消失映射自愈剪除（跨会话持久）。
+    func testFirstUndoablePrunesMissingItemsAndPersists() throws {
+        let store = HistoryStore(directory: tmpDir)
+        let a = RestorableItem(originalURL: URL(fileURLWithPath: "/tmp/a"),
+                               trashedURL: URL(fileURLWithPath: "/tmp/.Trash/a"))
+        let b = RestorableItem(originalURL: URL(fileURLWithPath: "/tmp/b"),
+                               trashedURL: URL(fileURLWithPath: "/tmp/.Trash/b"))
+        store.record(module: "系统垃圾", reclaimedBytes: 100, removedCount: 2, restorable: [a, b])
+
+        // 只有 a 还在废纸篓 → 记录仍可撤销，但只剩 a 一项
+        let rec = try XCTUnwrap(store.firstUndoable(existsInTrash: { $0 == a.trashedURL }))
+        XCTAssertEqual(rec.restorable, [a])
+        // 自愈已落盘：重建 store 后仍只剩 a（默认存在性检查此时会判 a 也不存在，但持久化的映射应只含 a）
+        let reloaded = HistoryStore(directory: tmpDir)
+        XCTAssertEqual(reloaded.recent(1).first?.restorable, [a], "剪除后的映射应持久化")
+    }
+
     /// 旧版 history.json（无 restorable 字段）必须能被容错解码
     func testDecodesLegacyRecordsWithoutRestorable() throws {
         let legacy = """

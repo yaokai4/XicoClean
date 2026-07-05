@@ -38,7 +38,7 @@ public struct OnboardingView: View {
                                 .font(XFont.caption).foregroundStyle(XColor.textSecondary)
                         }
                         Spacer()
-                        Button(xLoc("去开启")) { model.openFullDiskAccessSettings() }.buttonStyle(.bordered)
+                        Button(xLoc("去开启")) { model.openFullDiskAccessSettings() }.buttonStyle(XSecondaryButtonStyle(compact: true))
                     }
                 }
                 .frame(maxWidth: 460)

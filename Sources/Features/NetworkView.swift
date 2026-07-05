@@ -208,7 +208,7 @@ struct MonitorCard<Content: View>: View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.m) {
                 HStack(spacing: XSpacing.s) {
-                    XIconTile(systemImage: icon, colors: colors, size: 28)
+                    XIconTile(systemImage: icon, colors: colors, size: 28, flat: true)
                     Text(title).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
                         .textCase(.uppercase).tracking(0.6)
                     Spacer()

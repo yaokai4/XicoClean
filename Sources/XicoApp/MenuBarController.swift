@@ -125,22 +125,27 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
         return UserDefaults.standard.object(forKey: "xico.mb.colored") == nil ? false : UserDefaults.standard.bool(forKey: "xico.mb.colored")
     }
+    /// 每项独立的「图形加框」开关（`xico.mb.<id>.border`，默认开）。只圈动态图形，数值永远在框外。
+    private func border(for id: String) -> Bool {
+        UserDefaults.standard.object(forKey: "xico.mb.\(id).border") == nil ? true : UserDefaults.standard.bool(forKey: "xico.mb.\(id).border")
+    }
 
     private func image(for id: String, snapshot s: SystemSnapshot?) -> NSImage? {
         let style = style(for: id)
         let colored = colored(for: id)
+        let border = border(for: id)
         switch id {
         case "cpu":      return MenuBarGlyph.cpu(fraction: s?.cpuUsage ?? 0,
-                                                 history: model.cpuHistory, style: style, colored: colored)
+                                                 history: model.cpuHistory, style: style, colored: colored, border: border)
         case "memory":   return MenuBarGlyph.memory(fraction: s?.memoryUsedFraction ?? 0,
-                                                    history: model.memHistory, style: style, colored: colored)
+                                                    history: model.memHistory, style: style, colored: colored, border: border)
         case "network":  return MenuBarGlyph.network(down: s?.netDownBytesPerSec ?? 0,
                                                      up: s?.netUpBytesPerSec ?? 0,
-                                                     history: netNormHistory(), style: style, colored: colored)
+                                                     history: netNormHistory(), style: style, colored: colored, border: border)
         case "temp":     return MenuBarGlyph.temperature(celsius: s?.cpuTemp, style: style, colored: colored)
-        case "disk":     return MenuBarGlyph.disk(fraction: s?.diskUsedFraction ?? 0, style: style, colored: colored)
+        case "disk":     return MenuBarGlyph.disk(fraction: s?.diskUsedFraction ?? 0, style: style, colored: colored, border: border)
         case "gpu":      return MenuBarGlyph.gpu(fraction: s?.gpuUsage ?? 0,
-                                                 history: model.cpuHistory, style: style, colored: colored)
+                                                 history: model.gpuHistory, style: style, colored: colored, border: border)
         case "combined": return MenuBarGlyph.combined(colored: colored)
         default:         return nil
         }

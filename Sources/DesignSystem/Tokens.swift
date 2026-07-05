@@ -25,9 +25,43 @@ public enum XColor {
     // 仪表/图表默认配色——随当前主题变化
     public static var ringColors: [Color] { XThemeStore.current.ring }
 
+    /// 主题色阶索引取色（环绕）。所有数据可视化的「第 n 号强调色」都走它——
+    /// 切主题即整体换色。i 可为任意整数（自动取模），永不越界。
+    public static func ring(_ i: Int) -> Color {
+        let r = XThemeStore.current.ring
+        guard !r.isEmpty else { return brand }
+        return r[((i % r.count) + r.count) % r.count]
+    }
+
+    // MARK: 各指标的语义色阶（全部从当前主题色阶派生）
+    //
+    // 单一事实源：CPU/内存/网络/GPU/磁盘的环·条·直方图·折线·卡片强调统一从这里取色，
+    // 切主题时全体同步换色（G1）。各指标取不同的色阶位以在合并总览里互相可辨。
+    public static var metricCPU: [Color]     { [ring(2), ring(1)] }   // 冷蓝→紫
+    public static var metricMemory: [Color]  { [ring(1), ring(0)] }   // 紫→玫
+    public static var metricGPU: [Color]     { [ring(1), ring(2)] }   // 紫→蓝（「在干活」非告警）
+    public static var metricNetwork: [Color] { [ring(3), ring(2)] }   // 薄荷→蓝
+    public static var metricDisk: [Color]    { [ring(2), ring(3)] }   // 蓝→薄荷
+    /// 网络上下行两色（下行 / 上行），随主题走且互相可辨。
+    public static var netDown: Color { ring(3) }
+    public static var netUp: Color   { ring(0) }
+
+    // 内存明细分类色：3 档主题色阶 + 语义暖橙（压缩=有压力）+ 中性（可用），互相可辨且随主题走。
+    public static var memApp: Color        { ring(2) }
+    public static var memWired: Color      { ring(0) }
+    public static var memCompressed: Color { warning }
+    public static var memCached: Color     { ring(3) }
+    public static var memFree: Color       { idle }
+
     public static let success      = dynamic(light: 0x1FB87A, dark: 0x35DEA0)
     public static let warning      = dynamic(light: 0xF59E0B, dark: 0xFFC53D)
     public static let danger       = dynamic(light: 0xF24B5E, dark: 0xFF6F80)
+    /// 信息/中性提示（区别于告警橙）——用于非告警型引导横幅等。
+    public static let info         = dynamic(light: 0x2E74E6, dark: 0x6BA6FF)
+    /// 强调色之上的前景（按钮/图标块白字）。品牌渐变足够深，白字达标。
+    public static let onAccent     = Color.white
+    /// 非活动/占位中性色（分段控件未选段、骨架屏等），比 textTertiary 更淡。
+    public static let idle         = dynamic(light: 0xB4B9C8, dark: 0x4A5066)
 
     // 背景与表面（冷调墨黑，独立于 CleanMyMac 的紫调）
     public static let canvasTop    = dynamic(light: 0xF6F7FC, dark: 0x10121E)
@@ -39,7 +73,8 @@ public enum XColor {
 
     public static let textPrimary   = dynamic(light: 0x171A28, dark: 0xF4F6FC)
     public static let textSecondary = dynamic(light: 0x666C80, dark: 0xA4ABC2)
-    public static let textTertiary  = dynamic(light: 0x9AA0B4, dark: 0x666D84)
+    // 三级文字：旧值在白底/深底上均未达 WCAG AA（对比 <4.5:1）。加深浅色档、提亮深色档达标。
+    public static let textTertiary  = dynamic(light: 0x71778C, dark: 0x8A91A8)
     public static let border        = dynamic(light: 0xE5E8F1, dark: 0x2A2F44)
     public static let hairline      = dynamic(light: 0xEDEFF6, dark: 0x1D2131)
 
@@ -63,9 +98,9 @@ public enum XColor {
         return ringColors
     }
 
-    /// GPU 专用光环：高占用是「在干活」而非告警，永不转红，用清凉的紫罗兰渐变。
+    /// GPU 专用光环：高占用是「在干活」而非告警，永不转红——用主题色阶的冷调段。
     public static func gpuGauge(_ fraction: Double) -> [Color] {
-        [auroraViolet, auroraOrchid]
+        metricGPU
     }
 
     /// 便捷构造动态色（供主题定义用）。
@@ -105,6 +140,8 @@ public enum XSpacing {
 // MARK: - 圆角
 
 public enum XRadius {
+    public static let micro: CGFloat = 3     // 图表条 / 图例小方块
+    public static let chip: CGFloat = 6      // 徽标 / 小胶囊 / 复选框
     public static let control: CGFloat = 8
     public static let button: CGFloat = 11
     public static let tile: CGFloat = 12
@@ -129,6 +166,9 @@ public enum XFont {
     public static let caption = Font.system(size: 11, weight: .regular)
     public static let captionEmphasis = Font.system(size: 11, weight: .semibold)
     public static let micro = Font.system(size: 10, weight: .medium)                                          // 唯一合法 10pt（收编所有魔法数字）
+    public static let nano = Font.system(size: 9, weight: .semibold)                                           // 图例/角标最小字（收编 size:8/9）
+    public static let microMono = Font.system(size: 9, weight: .semibold, design: .rounded).monospacedDigit()  // 迷你数字（菜单栏副行等）
+    public static let wordmark = Font.system(size: 21, weight: .bold, design: .rounded)                        // 品牌字标「Xico」
     public static let mono = Font.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit()
     public static let monoLarge = Font.system(size: 19, weight: .bold, design: .rounded).monospacedDigit()
     public static let monoHero = Font.system(size: 34, weight: .bold, design: .rounded).monospacedDigit()     // 价格/详情锚点数字
@@ -170,4 +210,36 @@ public extension View {
     func xGlow(_ color: Color, radius: CGFloat = 16, opacity: Double = 0.28) -> some View {
         shadow(color: color.opacity(opacity), radius: radius, x: 0, y: 0)
     }
+    /// 统一层次阶梯（见 XElevation）。
+    func xElevation(_ level: XElevation) -> some View { modifier(level.modifier) }
+}
+
+// MARK: - 层次阶梯（真实 z 轴：贴面 → 静置 → 抬起 → 浮层）
+
+/// 三级（+贴面）立体阶梯，取代散落的单层阴影。卡片默认 resting，悬停升 raised，
+/// 菜单栏弹窗/定价 sheet 用 overlay。让界面像「叠在桌面之上的分层实物」，而非平面贴纸。
+public enum XElevation {
+    case flush, resting, raised, overlay
+    var modifier: XShadow {
+        switch self {
+        case .flush:   return XShadow(radius: 0,  y: 0,  opacity: 0)
+        case .resting: return XShadow(radius: 10, y: 3,  opacity: 0.06)
+        case .raised:  return XShadow(radius: 20, y: 10, opacity: 0.12)
+        case .overlay: return XShadow(radius: 36, y: 18, opacity: 0.20)
+        }
+    }
+}
+
+// MARK: - 动效令牌（统一 spring/曲线语言，收编散落的 spring()/easeInOut()）
+
+/// 一套连贯的动效语言：所有状态变化都从这里取曲线，避免各处随手写不同参数导致
+/// 动作「各说各话」。snappy 用于点按/选中，settle 用于入场/布局，celebrate 用于完成庆祝，
+/// gauge 用于仪表/进度，crossfade 用于淡入淡出，hover 用于悬停。
+public enum XMotion {
+    public static let snappy    = Animation.spring(response: 0.30, dampingFraction: 0.72)
+    public static let settle    = Animation.spring(response: 0.50, dampingFraction: 0.82)
+    public static let celebrate = Animation.spring(response: 0.55, dampingFraction: 0.60)
+    public static let gauge     = Animation.easeInOut(duration: 0.50)
+    public static let crossfade = Animation.easeInOut(duration: 0.30)
+    public static let hover     = Animation.easeOut(duration: 0.12)
 }

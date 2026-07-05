@@ -41,9 +41,8 @@ struct ItemRowView: View {
         HStack(spacing: XSpacing.m) {
             XCheckbox(isOn: item.isSelected, toggle: onToggle)
 
-            Image(systemName: item.url.hasDirectoryPath ? "folder.fill" : "doc.fill")
-                .foregroundStyle(XColor.textTertiary)
-                .frame(width: 18)
+            // 真实缩略图（图片/视频/PDF 等），非可视文件回退类型图标——告别灰色文字行。
+            XThumbnail(url: item.url, side: 30)
 
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
@@ -121,6 +120,52 @@ struct ResultGroupCard: View {
     }
     private static let previewCap = 80
 
+    /// 视觉组：过半为可预览的图片/视频 → 用缩略图画廊而非文字行。
+    private var isVisualGroup: Bool {
+        guard !group.items.isEmpty else { return false }
+        let vis = group.items.filter { XThumbnail.isPreviewable($0.url) }.count
+        return Double(vis) / Double(group.items.count) >= 0.5
+    }
+
+    private func galleryGrid(_ items: [CleanableItem]) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 108), spacing: XSpacing.s)], spacing: XSpacing.m) {
+            ForEach(items) { item in galleryTile(item) }
+        }
+        .padding(.top, XSpacing.xs)
+    }
+
+    private func galleryTile(_ item: CleanableItem) -> some View {
+        VStack(spacing: 4) {
+            XThumbnail(url: item.url, side: 104, corner: XRadius.tile)
+                .overlay(alignment: .topTrailing) {
+                    if item.isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 19)).foregroundStyle(.white, XColor.brand)
+                            .padding(5)
+                    }
+                }
+                .overlay(RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
+                    .strokeBorder(item.isSelected ? XColor.brand : Color.clear, lineWidth: 2))
+                .overlay(alignment: .bottomLeading) {
+                    Text(item.size.formattedBytes)
+                        .font(XFont.nano).foregroundStyle(.white)
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        .padding(5)
+                }
+            Text(item.displayName).font(XFont.nano).foregroundStyle(XColor.textSecondary)
+                .lineLimit(1).truncationMode(.middle).frame(maxWidth: 104)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { onToggleItem(item.id) }
+        .help(item.displayName)
+        .contextMenu {
+            Button(xLoc("快速查看")) { quickLook(item.url) }
+            Button(xLoc("在 Finder 中显示")) { revealInFinder(item.url) }
+            if let onIgnoreItem { Divider(); Button(xLoc("永不清理此项")) { onIgnoreItem(item.id) } }
+        }
+    }
+
     var body: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.s) {
@@ -174,12 +219,17 @@ struct ResultGroupCard: View {
 
                 if expanded {
                     Divider().padding(.vertical, 2)
+                    let items = sortedItems
+                    let shown = showAll ? items : Array(items.prefix(Self.previewCap))
                     VStack(spacing: 0) {
-                        let items = sortedItems
-                        let shown = showAll ? items : Array(items.prefix(Self.previewCap))
-                        ForEach(shown) { item in
-                            ItemRowView(item: item, onToggle: { onToggleItem(item.id) },
-                                        onIgnore: onIgnoreItem.map { cb in { cb(item.id) } })
+                        // 图片/视频组 → 缩略图画廊；其余 → 文字行。
+                        if isVisualGroup {
+                            galleryGrid(shown)
+                        } else {
+                            ForEach(shown) { item in
+                                ItemRowView(item: item, onToggle: { onToggleItem(item.id) },
+                                            onIgnore: onIgnoreItem.map { cb in { cb(item.id) } })
+                            }
                         }
                         if items.count > Self.previewCap && !showAll {
                             // 关键：隐藏项仍会被清理。给出可点击入口让用户能审阅全部，
@@ -219,9 +269,10 @@ struct ResultGroupCard: View {
 struct ScanningIndicator: View {
     let bytes: Int64
     let message: String
+    var progress: Double? = nil
     var body: some View {
         VStack(spacing: XSpacing.xl) {
-            XScanOrb(value: bytes.formattedBytes, label: xLoc("已发现"), size: 300)
+            XScanOrb(value: bytes.formattedBytes, label: xLoc("已发现"), size: 300, progress: progress)
             Text(message.isEmpty ? xLoc("正在扫描…") : message)
                 .font(XFont.body).foregroundStyle(XColor.textSecondary)
                 .lineLimit(1).truncationMode(.middle).frame(maxWidth: 380)
@@ -233,13 +284,20 @@ struct ScanningIndicator: View {
 
 // MARK: - 完成页（庆祝动画）
 
-struct CompletionView: View {
-    let report: CleaningReport
-    let intent: DeleteIntent
-    let onUndo: () -> Void
-    let onDone: () -> Void
+/// 全应用统一的「任务完成」庆祝页：喷发彩带 + 打勾弹入 + 主数字从 0 数到目标（ease-out）。
+/// 清理 / 粉碎 / 卸载 / 更新检查等所有批量任务流共用同一套庆祝语言与动效，达成一致的「完成」体验。
+/// `metricText` 把当前动画值格式化为主标题（字节量或计数由调用方决定）；按钮均可选。
+struct TaskCompletionView: View {
+    let animateTo: Int64
+    let metricText: (Int64) -> String
+    let detail: String
+    var undoTitle: String? = nil
+    var onUndo: (() -> Void)? = nil
+    var doneTitle: String? = nil
+    var onDone: (() -> Void)? = nil
+
     @State private var pop = false
-    @State private var shownBytes: Int64 = 0   // 从 0 数到释放量的动画值
+    @State private var shown: Int64 = 0   // 从 0 数到目标的动画值
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -255,21 +313,25 @@ struct CompletionView: View {
                 .scaleEffect(pop ? 1 : 0.3)
                 .opacity(pop ? 1 : 0)
 
-                Text(xLocF("已释放 %@", shownBytes.formattedBytes))
+                Text(metricText(shown))
                     .xLargeTitle().foregroundStyle(XColor.textPrimary)
                     .monospacedDigit()
                     .contentTransition(.numericText())
-                Text(xLocF("清理了 %d 项", report.removedCount) +
-                     (report.failures.isEmpty ? "" : xLocF(" · %d 项被跳过", report.failures.count)))
+                Text(detail)
                     .font(XFont.body).foregroundStyle(XColor.textSecondary)
-                HStack(spacing: XSpacing.m) {
-                    if intent == .trash && !report.restorable.isEmpty {
-                        Button(xLoc("撤销")) { onUndo() }.buttonStyle(XSecondaryButtonStyle())
+                    .multilineTextAlignment(.center)
+                if (undoTitle != nil && onUndo != nil) || (doneTitle != nil && onDone != nil) {
+                    HStack(spacing: XSpacing.m) {
+                        if let undoTitle, let onUndo {
+                            Button(undoTitle) { onUndo() }.buttonStyle(XSecondaryButtonStyle())
+                        }
+                        if let doneTitle, let onDone {
+                            Button(doneTitle) { onDone() }.buttonStyle(XPrimaryButtonStyle())
+                        }
                     }
-                    Button(xLoc("完成")) { onDone() }.buttonStyle(XPrimaryButtonStyle())
+                    .padding(.top, XSpacing.s)
+                    .opacity(pop ? 1 : 0)
                 }
-                .padding(.top, XSpacing.s)
-                .opacity(pop ? 1 : 0)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -279,21 +341,43 @@ struct CompletionView: View {
         }
     }
 
-    /// 释放量从 0 数到目标（ease-out），命中 CleanMyMac 式满足感的关键动效。
+    /// 主数字从 0 数到目标（ease-out cubic），命中 CleanMyMac 式满足感的关键动效。Reduce Motion 直接到位。
     private func countUp() {
-        let target = report.reclaimedBytes
-        guard target > 0, !reduceMotion else { shownBytes = target; return }
+        let target = animateTo
+        guard target > 0, !reduceMotion else { shown = target; return }
         Task { @MainActor in
             let start = Date()
             let duration = 0.9
             while true {
                 let t = min(1, Date().timeIntervalSince(start) / duration)
                 let eased = 1 - pow(1 - t, 3)   // ease-out cubic
-                shownBytes = Int64(Double(target) * eased)
+                shown = Int64(Double(target) * eased)
                 if t >= 1 { break }
                 try? await Task.sleep(nanoseconds: 16_000_000)   // ~60fps
             }
-            shownBytes = target
+            shown = target
         }
+    }
+}
+
+/// 清理流的完成页——薄封装 `TaskCompletionView`（释放字节数计数庆祝 + 撤销/完成）。
+struct CompletionView: View {
+    let report: CleaningReport
+    let intent: DeleteIntent
+    let onUndo: () -> Void
+    let onDone: () -> Void
+
+    private var canUndo: Bool { intent == .trash && !report.restorable.isEmpty }
+
+    var body: some View {
+        TaskCompletionView(
+            animateTo: report.reclaimedBytes,
+            metricText: { xLocF("已释放 %@", $0.formattedBytes) },
+            detail: xLocF("清理了 %d 项", report.removedCount) +
+                (report.failures.isEmpty ? "" : xLocF(" · %d 项被跳过", report.failures.count)),
+            undoTitle: canUndo ? xLoc("撤销") : nil,
+            onUndo: canUndo ? onUndo : nil,
+            doneTitle: xLoc("完成"),
+            onDone: onDone)
     }
 }

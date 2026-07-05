@@ -19,6 +19,16 @@ public enum MenuBarStyle: String, CaseIterable, Sendable {
         case .rich:      return xLoc("可视化 + 数值")
         }
     }
+
+    /// 可视化选择器用的短标签（图形本身就是主要提示，标签只作辅助）。
+    public var shortTitle: String {
+        switch self {
+        case .iconValue: return xLoc("图标")
+        case .valueOnly: return xLoc("数值")
+        case .graph:     return xLoc("迷你图")
+        case .rich:      return xLoc("可视化")
+        }
+    }
 }
 
 // MARK: - 菜单栏图形化状态项（极简单色，随菜单栏深浅自适应）
@@ -29,35 +39,38 @@ public enum MenuBarStyle: String, CaseIterable, Sendable {
 @MainActor
 public enum MenuBarGlyph {
 
-    public static func cpu(fraction: Double, history: [Double], style: MenuBarStyle, colored: Bool = false) -> NSImage {
+    public static func cpu(fraction: Double, history: [Double], style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
+        let s = chip(colored: colored, tint: XColor.metricCPU)
+        let value = "\(pct(fraction))%"
         if style == .rich {
-            return render(RichGlyph(viz: .histogram(history), value: "\(pct(fraction))%"),
-                          colored: colored, tint: [XColor.auroraBlue, XColor.auroraViolet])
+            return rasterize(RichGlyph(viz: .histogram(history), value: value, chip: s, border: border), colored: colored)
         }
-        return render(MetricGlyph(glyph: "cpu", value: "\(pct(fraction))%", history: history, style: style),
-               colored: colored, tint: [XColor.auroraBlue, XColor.auroraViolet])
+        return rasterize(MetricGlyph(glyph: "cpu", value: value, history: history, style: style, chip: s, border: border), colored: colored)
     }
 
-    public static func memory(fraction: Double, history: [Double], style: MenuBarStyle, colored: Bool = false) -> NSImage {
+    public static func memory(fraction: Double, history: [Double], style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
+        let s = chip(colored: colored, tint: XColor.metricMemory)
+        let value = "\(pct(fraction))%"
         if style == .rich {
-            return render(RichGlyph(viz: .ring(fraction), value: "\(pct(fraction))%"),
-                          colored: colored, tint: [XColor.auroraViolet, XColor.auroraRose])
+            return rasterize(RichGlyph(viz: .ring(fraction), value: value, chip: s, border: border), colored: colored)
         }
-        return render(MetricGlyph(glyph: "memorychip", value: "\(pct(fraction))%", history: history, style: style),
-               colored: colored, tint: [XColor.auroraViolet, XColor.auroraRose])
+        return rasterize(MetricGlyph(glyph: "memorychip", value: value, history: history, style: style, chip: s, border: border), colored: colored)
     }
 
-    public static func network(down: Double, up: Double, history: [Double], style: MenuBarStyle, colored: Bool = false) -> NSImage {
-        render(NetGlyph(up: up.compactRate, down: down.compactRate, history: history, style: style),
-               colored: colored, tint: [XColor.accentTeal, XColor.auroraBlue])
+    public static func network(down: Double, up: Double, history: [Double], style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
+        // 网络无专属可视化：只有 graph（含迷你折线）时才是「图形」→ 折线本身加框，数值在框外。
+        let s = chip(colored: colored, tint: XColor.metricNetwork)
+        return rasterize(NetGlyph(up: up.compactRate, down: down.compactRate, history: history, style: style, chip: s, border: border), colored: colored)
     }
 
     /// CPU 温度（如 "44°"）。celsius 为 nil/0 时显示 "—°"，不误导为 0 度。
     /// 彩色模式下按温区着色：冷→绿、温→橙、热→红，一眼判断冷热。
-    public static func temperature(celsius: Double?, style: MenuBarStyle, colored: Bool = false) -> NSImage {
+    public static func temperature(celsius: Double?, style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
         let text = (celsius != nil && celsius! > 0) ? "\(Int(celsius!.rounded()))°" : "—°"
-        return render(MetricGlyph(glyph: "thermometer.medium", value: text, history: [], style: style == .rich ? .iconValue : style),
-                      colored: colored, tint: tempTint(celsius))
+        // 温度无曲线可画：始终「图标 + 数值」或「仅数值」，永不加框（消灭温度旁的空框）。
+        let s = chip(colored: colored, tint: tempTint(celsius))
+        return rasterize(MetricGlyph(glyph: "thermometer.medium", value: text, history: [],
+                                     style: style == .valueOnly ? .valueOnly : .iconValue, chip: s, border: false), colored: colored)
     }
 
     private static func tempTint(_ c: Double?) -> [Color] {
@@ -68,51 +81,75 @@ public enum MenuBarGlyph {
     }
 
     /// 磁盘占用（如 "39%"）。
-    public static func disk(fraction: Double, style: MenuBarStyle, colored: Bool = false) -> NSImage {
+    public static func disk(fraction: Double, style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
+        let s = chip(colored: colored, tint: XColor.metricDisk)
+        let value = "\(pct(fraction))%"
         if style == .rich {
-            return render(RichGlyph(viz: .bar(fraction), value: "\(pct(fraction))%"),
-                          colored: colored, tint: [XColor.accentTeal, XColor.success])
+            return rasterize(RichGlyph(viz: .bar(fraction), value: value, chip: s, border: border), colored: colored)
         }
-        return render(MetricGlyph(glyph: "internaldrive", value: "\(pct(fraction))%", history: [], style: style),
-               colored: colored, tint: [XColor.accentTeal, XColor.success])
+        return rasterize(MetricGlyph(glyph: "internaldrive", value: value, history: [], style: style, chip: s, border: border), colored: colored)
     }
 
     /// GPU 占用（如 "26%"）。
-    public static func gpu(fraction: Double, history: [Double], style: MenuBarStyle, colored: Bool = false) -> NSImage {
+    public static func gpu(fraction: Double, history: [Double], style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
+        let s = chip(colored: colored, tint: XColor.metricGPU)
+        let value = "\(pct(fraction))%"
         if style == .rich {
-            return render(RichGlyph(viz: .ring(fraction), value: "\(pct(fraction))%"),
-                          colored: colored, tint: [XColor.auroraViolet, XColor.auroraOrchid])
+            return rasterize(RichGlyph(viz: .ring(fraction), value: value, chip: s, border: border), colored: colored)
         }
-        return render(MetricGlyph(glyph: "cpu.fill", value: "\(pct(fraction))%", history: history, style: style),
-               colored: colored, tint: [XColor.auroraViolet, XColor.auroraOrchid])
+        return rasterize(MetricGlyph(glyph: "cpu.fill", value: value, history: history, style: style, chip: s, border: border), colored: colored)
     }
 
     public static func combined(colored: Bool = false) -> NSImage {
         // 合并总览用单色，避免即使其它项克制、这个图标仍是一条彩虹。
-        render(GlyphOnly(glyph: "gauge.with.dots.needle.50percent", size: 14),
-               colored: colored, tint: [XColor.textPrimary])
+        let fg: Color = colored ? XColor.textPrimary : .black
+        return rasterize(GlyphOnly(glyph: "gauge.with.dots.needle.50percent", size: 14).foregroundStyle(fg), colored: colored)
     }
 
     private static func pct(_ f: Double) -> Int { Int((f * 100).rounded()) }
 
-    /// 渲染菜单栏图标。colored=false → 模板图（系统按深浅自动黑/白，永远清晰，默认）；
-    /// colored=true → 单一色相着色（每指标一色，克制不刺眼，像 iStat 的彩色模式，
-    /// 而非之前的双色极光渐变）。真正的彩虹极光留给点开后的详情面板。
-    private static func render<V: View>(_ view: V, colored: Bool, tint: [Color]) -> NSImage {
-        if colored {
-            // 只取该指标的主色做单色填充——避免菜单栏里出现刺眼的多色渐变。
-            let solid = tint.first ?? XColor.textPrimary
-            let r = ImageRenderer(content: view.foregroundStyle(solid))
-            r.scale = 2
-            let img = r.nsImage ?? NSImage()
-            img.isTemplate = false   // 保留彩色
-            return img
+    /// 前景色 + 「圈图形」的描边/底色。colored=false → 模板黑（系统按深浅自动黑白）；
+    /// colored=true → 单一主色。描边只用于包住图形本身，数值文字永远在框外。
+    static func chip(colored: Bool, tint: [Color]) -> GlyphChip {
+        let fg: Color = colored ? (tint.first ?? XColor.textPrimary) : .black
+        // 「圈图形」的软框：淡底（~0.06–0.08）+ 发丝描边（~0.22–0.32），Sensei 式而非生硬黑框。
+        return GlyphChip(fg: fg,
+                         stroke: colored ? fg.opacity(0.30) : Color.black.opacity(0.24),
+                         fill: colored ? fg.opacity(0.08) : Color.black.opacity(0.07))
+    }
+
+    private static func rasterize<V: View>(_ view: V, colored: Bool) -> NSImage {
+        let r = ImageRenderer(content: view)
+        r.scale = 2
+        let img = r.nsImage ?? NSImage()
+        img.isTemplate = !colored   // 单色→系统按深浅自动黑白；彩色→保留
+        return img
+    }
+}
+
+/// 字形的前景色与「圈图形」描边样式（在字形内部只应用到图形本身，数值文字不进框）。
+struct GlyphChip {
+    let fg: Color
+    let stroke: Color
+    let fill: Color
+}
+
+// MARK: - 只圈图形的描边框
+//
+// 关键：边框**只圈住图形本身**（迷你折线 / 直方图 / 环 / 进度条），旁边的数值百分比一律在框外并排，
+// 绝不进框——进框既丑、也与「边框只圈图形」的设计铁律相悖。深浅自适应：模板模式描边为系统色低透明度。
+private extension View {
+    /// 「圈图形」软框。`on=false` 时退化为裸图形（框可按项开关）。几何 @2x 落整数设备像素：
+    /// 水平内边距 2.5pt=5px、垂直 1pt=2px、圆角 4pt=8px、描边 1pt=2px。
+    @ViewBuilder func menuGraphicChip(_ chip: GlyphChip, on: Bool = true) -> some View {
+        if on {
+            self
+                .padding(.horizontal, 2.5)
+                .padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(chip.fill))
+                .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(chip.stroke, lineWidth: 1))
         } else {
-            let r = ImageRenderer(content: view.foregroundStyle(.black))
-            r.scale = 2
-            let img = r.nsImage ?? NSImage()
-            img.isTemplate = true    // 系统自动着色
-            return img
+            self
         }
     }
 }
@@ -164,40 +201,54 @@ private struct MetricGlyph: View {
     let value: String
     let history: [Double]
     let style: MenuBarStyle
+    let chip: GlyphChip
+    var border: Bool = true
 
     var body: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 3.5) {
             switch style {
             case .iconValue, .rich:
                 Image(systemName: glyph).font(.system(size: 12.5, weight: .semibold))
             case .valueOnly:
                 EmptyView()
             case .graph:
-                MiniSparkline(values: history)
+                // 把折线迷你图圈成一枚淡淡的「图表区」（框可按项关闭）；数值在框外并排。
+                // 无历史数据时不画空框，退化为图标（避免空盒子——温度等无曲线指标的丑框由此消除）。
+                if history.count >= 2 {
+                    MiniSparkline(values: history).menuGraphicChip(chip, on: border)
+                } else {
+                    Image(systemName: glyph).font(.system(size: 12.5, weight: .semibold))
+                }
             }
             Text(value).font(.system(size: 12.5, weight: .semibold, design: .rounded)).monospacedDigit()
         }
+        .foregroundStyle(chip.fg)
         .frame(height: 18)
         .padding(.horizontal, 1)
     }
 }
 
-// MARK: - 网络字形（↑ / ↓ 两行；graph 样式额外加折线）
+// MARK: - 网络字形（↑ / ↓ 两行；graph 样式额外加折线，只圈折线）
 
 private struct NetGlyph: View {
     let up: String
     let down: String
     let history: [Double]
     let style: MenuBarStyle
+    let chip: GlyphChip
+    var border: Bool = true
 
     var body: some View {
-        HStack(spacing: 3) {
-            if style == .graph { MiniSparkline(values: history) }
+        HStack(spacing: 3.5) {
+            if style == .graph, history.count >= 2 {
+                MiniSparkline(values: history).menuGraphicChip(chip, on: border)   // 折线迷你图（框可按项开关）
+            }
             VStack(alignment: .trailing, spacing: 0) {
                 row("arrow.up", up)
                 row("arrow.down", down)
             }
         }
+        .foregroundStyle(chip.fg)
         .frame(height: 18)
         .padding(.horizontal, 1)
     }
@@ -209,46 +260,57 @@ private struct NetGlyph: View {
     }
 }
 
-// MARK: - 指标专属迷你可视化（rich 样式，iStat 风格）
-
+// MARK: - 指标专属迷你可视化（rich 样式，Sensei 风格）
+//
+// 直方图 / 环 / 进度条这类「自成形状」的图形**一律不加框**（对齐 Sensei 菜单栏：环、电池、条都裸露）。
+// 只有折线迷你图（graph）需要一枚淡淡的框把「图表区」圈出来——那个在 MetricGlyph/NetGlyph 里处理。
 private struct RichGlyph: View {
     enum Viz {
-        case histogram([Double])   // CPU/GPU：彩色直方条
+        case histogram([Double])   // CPU/GPU：直方条
         case ring(Double)          // 内存/GPU：迷你环
-        case bar(Double)           // 磁盘：横向填充条
+        case bar(Double)           // 磁盘：横向进度条
     }
     let viz: Viz
     let value: String
+    let chip: GlyphChip
+    var border: Bool = false   // 直方图/环/条默认裸露（对齐 Sensei）；开框则套软框
 
     var body: some View {
-        HStack(spacing: 3) {
-            switch viz {
-            case .histogram(let h): MiniHistogram(values: h)
-            case .ring(let f):      MiniRingGlyph(fraction: f)
-            case .bar(let f):       MiniBarGlyph(fraction: f)
-            }
+        HStack(spacing: 3.5) {
+            graphic.menuGraphicChip(chip, on: border)   // 默认裸图形；框可按项开启
             Text(value).font(.system(size: 12, weight: .semibold, design: .rounded)).monospacedDigit()
         }
+        .foregroundStyle(chip.fg)
         .frame(height: 18)
         .padding(.horizontal, 1)
+    }
+
+    @ViewBuilder private var graphic: some View {
+        switch viz {
+        case .histogram(let h): MiniHistogram(values: h)
+        case .ring(let f):      MiniRingGlyph(fraction: f)
+        case .bar(let f):       MiniBarGlyph(fraction: f)
+        }
     }
 }
 
 /// 迷你直方图（当前用色渲染，模板/彩色由 render 决定）。
+/// 像素对齐：8 根 2pt 实心条 + 1pt 间距（8×2+7×1=23pt），@2x 落在整数设备像素上，
+/// 不再是 1.6pt 分数宽度糊成灰块。
 private struct MiniHistogram: View {
     let values: [Double]
     var body: some View {
-        let v = Array(values.suffix(12))
+        let v = Array(values.suffix(8))
         HStack(alignment: .bottom, spacing: 1) {
             ForEach(Array(v.enumerated()), id: \.offset) { _, val in
                 let f = min(max(val, 0), 1)
-                RoundedRectangle(cornerRadius: 0.5)
+                Rectangle()
                     // 单色模板下按值分层不透明度，低值淡高值实，保证直方图不糊成一团。
                     .opacity(0.4 + 0.6 * f)
-                    .frame(width: 1.6, height: max(1.5, 13 * CGFloat(f)))
+                    .frame(width: 2, height: max(2, 13 * CGFloat(f)))
             }
         }
-        .frame(width: 24, height: 13, alignment: .bottom)
+        .frame(width: 23, height: 13, alignment: .bottom)
     }
 }
 

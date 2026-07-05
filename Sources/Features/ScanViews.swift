@@ -73,7 +73,7 @@ struct SessionScaffold<Idle: View>: View {
 
     private var scanningView: some View {
         VStack(spacing: XSpacing.xl) {
-            ScanningIndicator(bytes: vm.progressBytes, message: vm.statusMessage)
+            ScanningIndicator(bytes: vm.progressBytes, message: vm.statusMessage, progress: vm.progress > 0 ? vm.progress : nil)
             Button(xLoc("取消")) { vm.cancel() }.buttonStyle(XSecondaryButtonStyle())
                 .keyboardShortcut(.cancelAction)
         }
@@ -113,7 +113,10 @@ struct SessionScaffold<Idle: View>: View {
                 subtitle: actionSubtitle
             ) {
                 if vm.phase == .cleaning {
-                    HStack(spacing: XSpacing.s) { ProgressView().controlSize(.small); Text(xLoc("清理中…")).font(XFont.caption) }
+                    HStack(spacing: XSpacing.s) {
+                        XRingGauge(progress: 0, spinning: true, colors: XColor.brandGradientColors, lineWidth: 2.5, size: 16) { EmptyView() }
+                        Text(xLoc("清理中…")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    }
                 } else {
                     Button("\(cleanButtonTitle) · \(vm.selectedSize.formattedBytes)") {
                         if vm.intent == .permanent || vm.selectedRequiresHelper { confirmPermanent = true } else { vm.clean() }
@@ -157,7 +160,7 @@ struct SessionScaffold<Idle: View>: View {
         VStack(spacing: XSpacing.l) {
             XEmptyState(systemImage: "checkmark.seal.fill",
                         title: xLoc("太棒了，这里很干净 ✨"),
-                        subtitle: xLoc("没有发现可清理的项目。"))
+                        subtitle: xLoc("没有发现可清理的项目。"), kind: .success)
                 .frame(maxHeight: 340)
             Button(xLoc("重新扫描")) { vm.start() }.buttonStyle(XSecondaryButtonStyle())
         }
@@ -254,7 +257,8 @@ public struct SmartScanView: View {
     private func refresh() {
         capacity = env.fs.volumeCapacity(for: FileManager.default.homeDirectoryForCurrentUser)
         metrics = env.metrics.sample()
-        lastUndoable = env.history.recent(3).first(where: \.canUndo)
+        // 只在废纸篓里文件确实还在时才展示撤销入口——清空废纸篓后不再空许「可放回原位」。
+        lastUndoable = env.history.firstUndoable()
     }
 
     /// 撤销最近一次清理（把废纸篓项放回原位）——把独家卖点「可撤销」放到主页可发现处。
@@ -300,10 +304,12 @@ public struct SmartScanView: View {
         let mem = metrics?.memoryUsedFraction ?? 0
         let health = healthScore(disk: disk, mem: mem)
         return VStack(spacing: XSpacing.xl) {
-            healthHeader(score: health, disk: disk)
+            healthHeader(score: health)
 
-            // 环填「可用率」并用清凉青蓝：环越满 = 越空 = 越好，与中心「可用空间」同向同义。
-            XRingGauge(progress: free, colors: [XColor.accentTeal, XColor.auroraBlue], lineWidth: 16, size: 296) {
+            // 环填「可用率」，配色跟随当前主题（ringColors）——首屏中心元件与卡片/按钮同主题，
+            // 换 暖阳/品红 等主题时不再是一枝独秀的青蓝。环越满 = 越空 = 越好。
+            XRingGauge(progress: free, colors: XColor.ringColors, lineWidth: 16, size: 296,
+                       a11yLabel: xLoc("可用空间")) {
                 VStack(spacing: XSpacing.xxs) {
                     heroBytes(capacity?.available ?? 0)
                     Text(xLoc("可用空间")).font(XFont.body).foregroundStyle(XColor.textSecondary)
@@ -347,7 +353,7 @@ public struct SmartScanView: View {
         let unit = parts.count > 1 ? String(parts[1]) : ""
         return HStack(alignment: .firstTextBaseline, spacing: 5) {
             Text(value)
-                .font(.system(size: 46, weight: .bold, design: .rounded)).monospacedDigit()
+                .font(XFont.heroCompact)
             Text(unit)
                 .font(.system(size: 23, weight: .semibold, design: .rounded))
                 .foregroundStyle(XColor.textSecondary)
@@ -358,7 +364,7 @@ public struct SmartScanView: View {
         .layoutPriority(1)
     }
 
-    private func healthHeader(score: Int, disk: Double) -> some View {
+    private func healthHeader(score: Int) -> some View {
         VStack(spacing: 6) {
             HStack(spacing: 7) {
                 Circle().fill(healthColors(score)[0]).frame(width: 8, height: 8)
@@ -367,7 +373,8 @@ public struct SmartScanView: View {
                     .font(.system(size: 22, weight: .bold, design: .rounded))
                     .foregroundStyle(XColor.textPrimary)
             }
-            Text(xLocF("磁盘已用 %d%% · 一键扫描，安全释放空间", Int(disk * 100)))
+            // 磁盘占用只在环副标题出现一次；此处不再重复 %（原首屏三处重复占用率）。
+            Text(xLoc("一键扫描，安全释放空间"))
                 .font(XFont.callout).foregroundStyle(XColor.textSecondary)
         }
         .padding(.bottom, XSpacing.xs)

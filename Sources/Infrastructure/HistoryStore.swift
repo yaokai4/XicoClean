@@ -110,6 +110,33 @@ public final class HistoryStore: @unchecked Sendable {
         return Array(records.prefix(limit))
     }
 
+    /// 最近**仍可真正撤销**的记录：其废纸篓映射至少有一项仍存在于磁盘。
+    ///
+    /// 关键修复：`canUndo` 只看 restorable 是否为空，不看废纸篓里文件是否还在——
+    /// 用户清空废纸篓（或手动删除）后，撤销卡片仍空许「可一键放回原位」，点了必然全失败。
+    /// 这里在读取时按文件系统现实**自愈**：把已消失的映射剪除并落盘，
+    /// 使 UI 只在真正可恢复时才展示撤销入口。`existsInTrash` 可注入用于测试。
+    public func firstUndoable(within limit: Int = 3,
+                              existsInTrash: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> CleaningRecord? {
+        lock.lock(); defer { lock.unlock() }
+        var mutated = false
+        var result: CleaningRecord?
+        for i in records.indices.prefix(limit) {
+            let r = records[i]
+            guard !r.restorable.isEmpty else { continue }
+            let alive = r.restorable.filter { existsInTrash($0.trashedURL) }
+            if alive.count != r.restorable.count {
+                records[i] = CleaningRecord(id: r.id, date: r.date, module: r.module,
+                                            reclaimedBytes: r.reclaimedBytes, removedCount: r.removedCount,
+                                            restorable: alive)
+                mutated = true
+            }
+            if !alive.isEmpty { result = records[i]; break }
+        }
+        if mutated { persist() }
+        return result
+    }
+
     public var totalReclaimedAllTime: Int64 {
         lock.lock(); defer { lock.unlock() }
         return records.reduce(0) { $0 + $1.reclaimedBytes }

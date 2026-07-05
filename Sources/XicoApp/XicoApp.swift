@@ -34,6 +34,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        if CommandLine.arguments.contains("--layout") {
+            renderLayout()
+            NSApp.terminate(nil)
+            return
+        }
         if CommandLine.arguments.contains("--selftest") {
             Task { let ok = await runSelfTest(); exit(ok ? 0 : 1) }
             return

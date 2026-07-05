@@ -47,8 +47,8 @@ public struct AppUpdaterView: View {
     public var body: some View {
         VStack(spacing: 0) {
             XHeaderBar(title: xLoc("应用更新"), subtitle: xLocF("%d 个应用支持自更新", model.candidates.count)) {
-                if model.checking { ProgressView().controlSize(.small) }
-                else { Button(xLoc("检查更新")) { model.check() }.buttonStyle(.borderedProminent) }
+                if model.checking { XSpinner() }
+                else { Button(xLoc("检查更新")) { model.check() }.buttonStyle(XPrimaryButtonStyle(compact: true)) }
             }
             content
         }
@@ -57,7 +57,7 @@ public struct AppUpdaterView: View {
 
     @ViewBuilder private var content: some View {
         if model.checking {
-            XEmptyState(systemImage: "arrow.triangle.2.circlepath", title: xLoc("正在检查更新"), subtitle: model.progress)
+            XEmptyState(systemImage: "arrow.triangle.2.circlepath", title: xLoc("正在检查更新"), subtitle: model.progress, kind: .loading)
         } else if !model.updates.isEmpty {
             ScrollView {
                 LazyVStack(spacing: XSpacing.s) {
@@ -66,8 +66,11 @@ public struct AppUpdaterView: View {
                 .padding(XSpacing.xl)
             }
         } else if model.checked {
-            XEmptyState(systemImage: "checkmark.seal.fill", title: xLoc("全部为最新"),
-                        subtitle: xLocF("已检查 %d 个可自更新的应用，没有发现新版本。", model.candidates.count))
+            // 统一庆祝：已检查的应用数从 0 数起 + 「全部为最新」。
+            TaskCompletionView(
+                animateTo: Int64(model.candidates.count),
+                metricText: { xLocF("已检查 %d 个应用", Int($0)) },
+                detail: xLoc("全部为最新版本，没有发现新版本。"))
         } else {
             XEmptyState(systemImage: "arrow.triangle.2.circlepath", title: xLoc("检查应用更新"),
                         subtitle: xLoc("Xico 会读取带 Sparkle 自更新源的应用，比对各自最新版本。App Store 应用请在 App Store 更新。"))
@@ -86,7 +89,7 @@ public struct AppUpdaterView: View {
                 }
                 Spacer()
                 if let dl = app.downloadURL {
-                    Button(xLoc("下载")) { NSWorkspace.shared.open(dl) }.buttonStyle(.borderedProminent)
+                    Button(xLoc("下载")) { NSWorkspace.shared.open(dl) }.buttonStyle(XPrimaryButtonStyle(compact: true))
                 }
             }
         }
