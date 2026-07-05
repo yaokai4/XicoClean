@@ -121,21 +121,23 @@ public struct MenuMetricPanel: View {
         }
     }
 
-    /// 每核心迷你环：颜色随占用三段语义。有权威簇信息（Apple Silicon）时按「性能核 / 能效核」
-    /// 分组标注（对齐 Sensei）；否则密排成网格（Intel / 读不到）。
+    /// 每核心迷你环：**统一一张按内核序号排列的网格**（不再拆成性能/能效两排，太挤太小）。
+    /// 每行最多 8 个、核多自动换行，多核机型（M1 Max / M2 Ultra 等）也按序整齐铺开。
+    /// 性能核在序号旁点一枚主色小点标注 P/E，既并排又不丢分组信息；构成另见下方文案。
     private func perCoreRings(_ cores: [Double]) -> some View {
         let clusters = model.macInfo?.coreClusters ?? []
-        let grouped = clusters.count == cores.count && clusters.contains(true) && clusters.contains(false)
-        return VStack(alignment: .leading, spacing: XSpacing.s) {
-            if grouped {
-                clusterRow(xLoc("性能核"), cores.indices.filter { clusters[$0] }.map { cores[$0] })
-                clusterRow(xLoc("能效核"), cores.indices.filter { !clusters[$0] }.map { cores[$0] })
-            } else {
-                let cols = Array(repeating: GridItem(.flexible(), spacing: XSpacing.s),
-                                 count: min(max(cores.count, 1), 8))
-                LazyVGrid(columns: cols, spacing: XSpacing.s) {
-                    ForEach(Array(cores.enumerated()), id: \.offset) { _, v in
-                        XMiniRing(fraction: v, colors: XColor.gauge(v), size: 26, lineWidth: 3.5)
+        let hasClusters = clusters.count == cores.count
+        let perRow = min(max(cores.count, 1), 8)
+        let cols = Array(repeating: GridItem(.flexible(), spacing: XSpacing.xs), count: perRow)
+        return LazyVGrid(columns: cols, spacing: XSpacing.s) {
+            ForEach(Array(cores.enumerated()), id: \.offset) { idx, v in
+                VStack(spacing: 2) {
+                    XMiniRing(fraction: v, colors: XColor.gauge(v), size: 28, lineWidth: 3.5)
+                    HStack(spacing: 2) {
+                        if hasClusters && clusters[idx] {
+                            Circle().fill(XColor.metricCPU[0]).frame(width: 3, height: 3)  // 性能核标记
+                        }
+                        Text("\(idx)").font(.system(size: 8, weight: .medium)).foregroundStyle(XColor.textTertiary)
                     }
                 }
             }
@@ -143,20 +145,6 @@ public struct MenuMetricPanel: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(xLoc("每核心占用"))
         .accessibilityValue(xLocF("平均 %d%%", Int((cores.reduce(0, +) / Double(max(cores.count, 1))) * 100)))
-    }
-
-    /// 一簇核心：簇标签（上）+ 一排迷你环（下）。标签置顶，避免长语言在窄标签里被截断。
-    private func clusterRow(_ label: String, _ values: [Double]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.system(size: 9, weight: .semibold)).foregroundStyle(XColor.textTertiary)
-                .textCase(.uppercase).tracking(0.4)
-            HStack(spacing: XSpacing.s) {
-                ForEach(Array(values.enumerated()), id: \.offset) { _, v in
-                    XMiniRing(fraction: v, colors: XColor.gauge(v), size: 24, lineWidth: 3.5)
-                }
-                Spacer(minLength: 0)
-            }
-        }
     }
 
     private func gpuSegment(_ g: Double) -> some View {

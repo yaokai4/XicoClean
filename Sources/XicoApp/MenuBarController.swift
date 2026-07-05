@@ -14,6 +14,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var statusItems: [String: NSStatusItem] = [:]
     private let popover = NSPopover()
     private var cancellables = Set<AnyCancellable>()
+    /// 面板打开期间监听「面板之外」的鼠标点击，点到别处即关闭。
+    /// `.transient` 在 accessory（菜单栏）App 里对「点其他 App」不总生效，故显式补一层监听。
+    private var outsideClickMonitor: Any?
 
     /// 各项：UserDefaults 键 + 默认是否显示。顺序即菜单栏从右到左的插入顺序。
     private let config: [(id: String, key: String, def: Bool)] = [
@@ -31,6 +34,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         super.init()
         popover.behavior = .transient        // 点击外部自动关闭
         popover.animates = true
+        popover.delegate = self              // popoverDidClose → 清理点击监听
 
         model.startMetricsTimer()            // 即使主窗口未开，菜单栏也持续刷新
         rebuild()
@@ -193,13 +197,40 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                                      height: fitting.height > 0 ? fitting.height : 360)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
+        installOutsideClickMonitor()
+    }
+
+    // MARK: 点击面板之外即关闭（补齐 .transient 在菜单栏 App 里的漏网）
+
+    private func installOutsideClickMonitor() {
+        removeOutsideClickMonitor()
+        // 全局监听：点其他 App 的窗口 / 桌面 → 关闭面板。
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            self?.popover.performClose(nil)
+        }
+    }
+
+    private func removeOutsideClickMonitor() {
+        if let m = outsideClickMonitor {
+            NSEvent.removeMonitor(m)
+            outsideClickMonitor = nil
+        }
+    }
+
+    /// 面板关闭（点外部、再次点同项、Esc 等任意途径）→ 摘除监听，避免泄漏与误触发。
+    func popoverDidClose(_ notification: Notification) {
+        removeOutsideClickMonitor()
     }
 
     @ViewBuilder private func panel(for id: String) -> some View {
         switch id {
-        case "cpu", "temp", "gpu": MenuMetricPanel(model: model, metric: .cpu)
+        case "cpu":     MenuMetricPanel(model: model, metric: .cpu)
         case "memory":  MenuMetricPanel(model: model, metric: .memory)
         case "network": MenuMetricPanel(model: model, metric: .network)
+        // 温度 / GPU / 磁盘 / 合并：没有专属深度面板，一律打开「系统总览」（含各自卡片），
+        // 避免点温度却弹出「处理器」面板、以及多个项弹出同一张 CPU 面板的错乱。
         default:        MenuBarView(model: model)
         }
     }

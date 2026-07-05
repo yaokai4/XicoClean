@@ -107,14 +107,24 @@ public final class ModuleSessionViewModel: ObservableObject {
                 merged.removeAll { $0.items.isEmpty }
                 if Task.isCancelled { return }
                 self.groups = merged
-                self.scanWarning = self.postScanWarning?()
+                let fdaOK = self.env.permissions.hasFullDiskAccess()
                 if !merged.isEmpty {
                     self.phase = .results
-                } else if !self.env.permissions.hasFullDiskAccess() {
+                    // 有结果也要如实告知是否「已扫全」：未授 FDA 时，多数受保护位置根本没被扫到，
+                    // 用户看到的只是冰山一角——用横幅明说，避免误以为「扫完就这么点」。
+                    var warnings: [String] = []
+                    if let w = self.postScanWarning?() { warnings.append(w) }
+                    if !fdaOK {
+                        warnings.append(xLoc("未获完全磁盘访问权限，部分位置无法扫描。授权后可发现更多可清理项。"))
+                    }
+                    self.scanWarning = warnings.isEmpty ? nil : warnings.joined(separator: "\n")
+                    self.permissionIssue = !fdaOK
+                } else if !fdaOK {
                     // 空结果可能只是没权限——绝不伪装成「很干净」
                     self.permissionIssue = true
                     self.phase = .failed(xLoc("未获完全磁盘访问权限，部分位置无法扫描。授权后可发现更多可清理项。"))
                 } else {
+                    self.scanWarning = self.postScanWarning?()
                     self.phase = .empty
                 }
             } catch is CancellationError {

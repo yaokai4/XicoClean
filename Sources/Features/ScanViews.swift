@@ -89,7 +89,13 @@ struct SessionScaffold<Idle: View>: View {
                 HStack(spacing: XSpacing.s) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(XColor.warning)
                     Text(warning).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                    Spacer()
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: XSpacing.s)
+                    // 未授 FDA → 就地给一枚授权按钮，让用户一键去开启后重扫，真正扫全。
+                    if vm.permissionIssue {
+                        Button(xLoc("开启完全磁盘访问")) { vm.openPermissionSettings() }
+                            .buttonStyle(XSecondaryButtonStyle(compact: true))
+                    }
                 }
                 .padding(.horizontal, XSpacing.xl).padding(.vertical, XSpacing.s)
                 .background(XColor.warning.opacity(0.12))

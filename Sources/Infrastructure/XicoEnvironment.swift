@@ -124,10 +124,12 @@ public final class XicoEnvironment: @unchecked Sendable {
         ShredderService(safety: safety)
     }
 
-    /// 智能扫描聚合：系统垃圾 + 隐私（均为定义驱动、快速）。
-    /// 不含全盘大文件（耗时长，单列为模块）与废纸篓（彻底删除需单独确认）。
+    /// 智能扫描聚合：系统垃圾 + 隐私 + 废纸篓（含外置卷）——覆盖用户期望「一次扫全」的常见垃圾源。
+    /// 三者均为定义/位置驱动、递归精确计尺寸。仍不含全盘大文件（遍历整盘耗时长，单列为独立模块，
+    /// 避免把「清理垃圾」拖成「全盘体检」）。废纸篓项在结果里列出供审阅，删除仍需用户显式确认，
+    /// 不会一键静默清空。
     public func smartScanCoordinator() -> ScanCoordinator {
-        let modules = [scanner(for: .systemJunk), scanner(for: .privacy)].compactMap { $0 }
+        let modules = [scanner(for: .systemJunk), scanner(for: .privacy), scanner(for: .trash)].compactMap { $0 }
         return ScanCoordinator(modules: modules)
     }
 }
