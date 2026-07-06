@@ -34,6 +34,7 @@ public struct XRingGauge<Center: View>: View {
     let center: Center
     @State private var spin = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(progress: Double, spinning: Bool = false,
                 colors: [Color] = XColor.brandGradientColors,
@@ -53,11 +54,12 @@ public struct XRingGauge<Center: View>: View {
             Circle()
                 .stroke(XColor.surfaceAlt, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
 
-            // 幽灵渐变环：未填充处也透出一丝品牌色，更通透高级
+            // 幽灵渐变环：未填充处也透出一丝品牌色，更通透高级。
+            // 浅色底上 0.12 几乎不可见，按配色方案给到 0.22 保住轨道轮廓。
             Circle()
                 .stroke(AngularGradient(colors: colors + [colors.first!], center: .center),
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .opacity(0.12)
+                .opacity(colorScheme == .light ? 0.22 : 0.12)
 
             Circle()
                 .fill(RadialGradient(colors: [colors.first!.opacity(0.16), .clear],
