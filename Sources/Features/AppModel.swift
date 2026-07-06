@@ -80,6 +80,7 @@ public final class AppModel: ObservableObject {
     @Published public var sensorTemps: [TempReading] = []
     @Published public var fans: [FanInfo] = []
     @Published public var storageVolumes: [StorageHealth] = []
+    @Published public var gpuInfo: GPUInfo?
     private let sensorReader = SensorReader()
     private let hardwareProfiler = HardwareProfileService()
     private let processes = ProcessSampler()
@@ -241,6 +242,7 @@ public final class AppModel: ObservableObject {
                 let temps = sensors.temperatures()
                 let fanList = sensors.fans()
                 let volumes = hw.storageHealth()
+                let gpu = hw.gpu()
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     if let f = freq { self.cpuFreqP = f.performance; self.cpuFreqE = f.efficiency }
@@ -248,6 +250,7 @@ public final class AppModel: ObservableObject {
                     self.sensorTemps = temps
                     self.fans = fanList
                     self.storageVolumes = volumes
+                    self.gpuInfo = gpu
                 }
             }
         }

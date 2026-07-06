@@ -688,3 +688,18 @@
 "只读分析 · 不修改任何文件" = "Nur-Lese-Analyse · keine Dateien werden geändert";
 "点击环层钻取 · 点击中心返回" = "Ring anklicken zum Vertiefen · Mitte anklicken zum Zurückgehen";
 "放射环形图 · 逐层钻取 · 只读分析" = "Sunburst-Diagramm · Ebene für Ebene erkunden · nur lesend";
+
+/* Disk benchmark + GPU menu panel (2026-07-07) */
+"磁盘测速" = "Festplatten-Geschwindigkeitstest";
+"运行基准测试" = "Benchmark starten";
+"就绪 · 测速约需 10 秒" = "Bereit · dauert etwa 10 Sekunden";
+"写入测试中…" = "Schreibtest läuft…";
+"读取测试中…" = "Lesetest läuft…";
+"测速完成" = "Benchmark abgeschlossen";
+"测速未完成，请重试。" = "Benchmark nicht abgeschlossen — bitte erneut versuchen.";
+"测速会在系统卷写入最多 2 GB 临时文件，完成后自动删除；期间请勿进行大量拷贝。" = "Der Test schreibt bis zu 2 GB temporäre Daten auf das Systemvolume und löscht sie danach; vermeiden Sie währenddessen große Kopiervorgänge.";
+"历史记录" = "Verlauf";
+"完成一次测速后会在这里看到记录" = "Führen Sie einen Benchmark aus, um hier Ergebnisse zu sehen";
+"%d 核心" = "%d Kerne";
+"显存占用" = "VRAM belegt";
+"利用率" = "Auslastung";

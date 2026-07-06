@@ -688,3 +688,18 @@
 "只读分析 · 不修改任何文件" = "Read-only analysis · no files modified";
 "点击环层钻取 · 点击中心返回" = "Click a ring to drill in · click the center to go back";
 "放射环形图 · 逐层钻取 · 只读分析" = "Sunburst chart · drill down level by level · read-only";
+
+/* Disk benchmark + GPU menu panel (2026-07-07) */
+"磁盘测速" = "Disk Speed Test";
+"运行基准测试" = "Run Benchmark";
+"就绪 · 测速约需 10 秒" = "Ready · takes about 10 seconds";
+"写入测试中…" = "Write test running…";
+"读取测试中…" = "Read test running…";
+"测速完成" = "Benchmark complete";
+"测速未完成，请重试。" = "Benchmark didn't finish — please try again.";
+"测速会在系统卷写入最多 2 GB 临时文件，完成后自动删除；期间请勿进行大量拷贝。" = "The test writes up to 2 GB of temporary data to the system volume and deletes it afterwards; avoid large copies meanwhile.";
+"历史记录" = "History";
+"完成一次测速后会在这里看到记录" = "Run a benchmark to see results here";
+"%d 核心" = "%d cores";
+"显存占用" = "VRAM in use";
+"利用率" = "Utilization";

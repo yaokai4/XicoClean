@@ -141,6 +141,7 @@ public struct HardwareView: View {
     }
 
     private let columns = [GridItem(.adaptive(minimum: 320), spacing: XSpacing.m)]
+    @State private var showBenchmark = false
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -418,6 +419,17 @@ public struct HardwareView: View {
                     if s.isInternal { smartDetail }
                 }
                 .padding(.vertical, 2)
+            }
+            // 磁盘测速（Sensei 式基准）：双仪表 + 历史记录，入口就近放在存储健康卡
+            Button {
+                showBenchmark = true
+            } label: {
+                Label(xLoc("磁盘测速"), systemImage: "speedometer").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(XSecondaryButtonStyle(compact: true))
+            .sheet(isPresented: $showBenchmark) {
+                DiskBenchmarkView(device: vm.storage.first(where: { $0.isInternal })
+                    .map { $0.model.isEmpty ? $0.name : $0.model } ?? "Macintosh HD")
             }
         }
     }

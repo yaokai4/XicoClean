@@ -231,7 +231,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         case "network": MenuMetricPanel(model: model, metric: .network)
         case "temp":    MenuMetricPanel(model: model, metric: .temperature)
         case "disk":    MenuMetricPanel(model: model, metric: .disk)
-        // GPU / 合并：没有专属深度面板，打开「系统总览」（含各自卡片）。
+        case "gpu":     MenuMetricPanel(model: model, metric: .gpu)
+        // 合并总览保持系统总览面板。
         default:        MenuBarView(model: model)
         }
     }

@@ -3,7 +3,7 @@ import Infrastructure
 import DesignSystem
 
 public enum MenuMetric: Sendable {
-    case cpu, memory, network, temperature, disk
+    case cpu, memory, network, temperature, disk, gpu
 
     var title: String {
         switch self {
@@ -12,6 +12,7 @@ public enum MenuMetric: Sendable {
         case .network: return xLoc("网络")
         case .temperature: return xLoc("温度")
         case .disk: return xLoc("磁盘")
+        case .gpu: return "GPU"
         }
     }
     var icon: String {
@@ -21,6 +22,7 @@ public enum MenuMetric: Sendable {
         case .network: return "antenna.radiowaves.left.and.right"
         case .temperature: return "thermometer.medium"
         case .disk: return "internaldrive"
+        case .gpu: return "cpu.fill"
         }
     }
     var colors: [Color] {
@@ -30,6 +32,7 @@ public enum MenuMetric: Sendable {
         case .network: return XColor.metricNetwork
         case .temperature: return [XColor.warning, XColor.accentPink]
         case .disk: return XColor.metricDisk
+        case .gpu: return XColor.metricGPU
         }
     }
 }
@@ -83,6 +86,7 @@ public struct MenuMetricPanel: View {
         case .network:     networkContent(s)
         case .temperature: temperatureContent(s)
         case .disk:        diskContent(s)
+        case .gpu:         gpuContent(s)
         }
     }
 
@@ -523,6 +527,33 @@ public struct MenuMetricPanel: View {
                 .monospacedDigit()
         }
         .help(fan.target.map { xLocF("目标 %d", $0) } ?? "")
+    }
+
+    // MARK: - GPU 面板（利用率环 + 显存/核心/温度 + 历史曲线）
+
+    @ViewBuilder private func gpuContent(_ s: SystemSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: XSpacing.m) {
+            HStack(spacing: XSpacing.l) {
+                ringGauge(s.gpuUsage ?? 0)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.gpuInfo?.name ?? model.macInfo?.chip ?? "GPU")
+                        .font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                    if let cores = model.gpuInfo?.coreCount {
+                        Text(xLocF("%d 核心", cores)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    }
+                }
+                Spacer()
+                if let t = s.gpuTemp { tempHero(xLoc("温度"), t) }
+            }
+            HStack(spacing: XSpacing.l) {
+                if let mem = model.gpuInfo?.inUseMemoryBytes {
+                    metricChip(xLoc("显存占用"), mem.formattedMemory)
+                }
+                metricChip(xLoc("利用率"), "\(Int(((s.gpuUsage ?? 0) * 100).rounded()))%")
+                Spacer(minLength: 0)
+            }
+            XLineChart(values: model.gpuHistory, colors: XColor.metricGPU).frame(height: 44)
+        }
     }
 
     // MARK: - 磁盘面板（读写大数字 + 双线图 + 每卷用量 + 健康，对标 iStat Disks）

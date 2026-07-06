@@ -48,6 +48,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        if CommandLine.arguments.contains("--diskbench") {
+            // 磁盘测速引擎自检：真实写读一轮，打印结果（验证 F_NOCACHE 路径与清理）。
+            let svc = DiskBenchmarkService()
+            let r = svc.run(device: "selftest") { p in
+                if case .writing(let m) = p { FileHandle.standardError.write("w \(Int(m)) MB/s\n".data(using: .utf8)!) }
+                if case .reading(let m) = p { FileHandle.standardError.write("r \(Int(m)) MB/s\n".data(using: .utf8)!) }
+            }
+            print(r.map { "done read=\(Int($0.readMBps)) write=\(Int($0.writeMBps)) MB/s" } ?? "failed")
+            exit(r == nil ? 1 : 0)
+        }
         if CommandLine.arguments.contains("--liveshots") {
             renderLiveShots()
             NSApp.terminate(nil)
