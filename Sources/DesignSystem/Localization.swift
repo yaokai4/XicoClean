@@ -74,11 +74,15 @@ public enum XLocale {
     }
 
     /// 当前语言对应的资源包（system → 默认按系统解析）。
+    /// 注意：SPM 会把资源里的 lproj 目录名小写化（zh-Hans.lproj → zh-hans.lproj），
+    /// 而 path(forResource:) 按目录条目精确匹配大小写——必须再试一次小写名，
+    /// 否则 zh-Hans / zh-Hant / pt-BR 的手动选择会静默回退到系统语言。
     static func activeBundle() -> Bundle {
         let lang = current
         guard lang != .system else { return .module }
         if let b = cache[lang.rawValue] { return b }
-        guard let path = Bundle.module.path(forResource: lang.rawValue, ofType: "lproj"),
+        guard let path = Bundle.module.path(forResource: lang.rawValue, ofType: "lproj")
+                ?? Bundle.module.path(forResource: lang.rawValue.lowercased(), ofType: "lproj"),
               let b = Bundle(path: path) else { return .module }
         cache[lang.rawValue] = b
         return b
