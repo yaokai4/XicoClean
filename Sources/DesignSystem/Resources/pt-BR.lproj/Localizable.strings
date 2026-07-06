@@ -649,3 +649,27 @@
 "目标 %d" = "Alvo %d";
 "每核心近 60 秒负载 · 越亮越忙" = "Carga por núcleo, últimos 60 s · mais brilhante = mais ocupado";
 "每核心负载历史热力图" = "Mapa de calor do histórico de carga por núcleo";
+
+/* Online activation + menu-bar per-item style hint (2026-07) */
+"输入 18 位激活码" = "Digite o código de ativação de 18 caracteres";
+"18 位激活码" = "Código de 18 caracteres";
+"激活" = "Ativar";
+"激活中…" = "Ativando…";
+"已购买？输入激活码解锁" = "Já comprou? Digite seu código para desbloquear";
+"或导入许可证文件" = "Ou importar um arquivo de licença";
+"激活成功，感谢支持！" = "Ativado — obrigado pelo seu apoio!";
+"激活码格式不正确，请检查后重试。" = "O formato do código está incorreto — verifique e tente novamente.";
+"未找到该激活码，请确认输入是否正确。" = "Código de ativação não encontrado — confira o que foi digitado.";
+"该激活码已失效或已退款。" = "Este código de ativação foi revogado ou reembolsado.";
+"激活台数已达上限。" = "Limite de ativações atingido.";
+"激活台数已达上限（%d 台）。如需在更多设备使用，请升级或联系我们。" = "Limite de ativações atingido (%d Macs). Para usar em mais dispositivos, faça upgrade ou fale conosco.";
+"激活响应无效，请稍后重试。" = "Resposta de ativação inválida — tente novamente mais tarde.";
+"服务器繁忙，请稍后重试。" = "Servidor ocupado — tente novamente mais tarde.";
+"网络连接失败，请检查网络后重试。" = "Falha na conexão de rede — verifique sua conexão e tente novamente.";
+"已选 %d 项 · %@" = "%d selecionados · %@";
+"每项都能单独切换显示方式——直接点选下方图形（图标+数值 / 仅数值 / 迷你折线 / 可视化），像 iStat 一样可视化自定义" = "Cada item pode alternar o estilo individualmente — toque em um gráfico abaixo (ícone+valor / somente valor / minigráfico / visual), personalização visual no estilo iStat";
+
+/* Module idle trust facts (2026-07) */
+"仅移入废纸篓 · 一键可撤销" = "Move apenas para a Lixeira · desfazer com um clique";
+"彻底删除 · 执行前二次确认" = "Exclusão permanente · confirmada antes de executar";
+"上次清理 %@ · 释放 %@" = "Última limpeza %@ · %@ liberados";

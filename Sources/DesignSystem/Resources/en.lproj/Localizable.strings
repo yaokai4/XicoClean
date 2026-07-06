@@ -649,3 +649,27 @@
 "目标 %d" = "Target %d";
 "每核心近 60 秒负载 · 越亮越忙" = "Per-core load, last 60s · brighter = busier";
 "每核心负载历史热力图" = "Per-core load history heatmap";
+
+/* Online activation + menu-bar per-item style hint (2026-07) */
+"输入 18 位激活码" = "Enter your 18-character activation code";
+"18 位激活码" = "18-character code";
+"激活" = "Activate";
+"激活中…" = "Activating…";
+"已购买？输入激活码解锁" = "Already purchased? Enter your code to unlock";
+"或导入许可证文件" = "Or import a license file";
+"激活成功，感谢支持！" = "Activated — thank you for your support!";
+"激活码格式不正确，请检查后重试。" = "That code doesn't look right — please check it and try again.";
+"未找到该激活码，请确认输入是否正确。" = "Activation code not found — please double-check your entry.";
+"该激活码已失效或已退款。" = "This activation code has been revoked or refunded.";
+"激活台数已达上限。" = "Activation limit reached.";
+"激活台数已达上限（%d 台）。如需在更多设备使用，请升级或联系我们。" = "Activation limit reached (%d Macs). To use more devices, upgrade or contact us.";
+"激活响应无效，请稍后重试。" = "Invalid activation response — please try again later.";
+"服务器繁忙，请稍后重试。" = "Server is busy — please try again later.";
+"网络连接失败，请检查网络后重试。" = "Network connection failed — check your connection and try again.";
+"已选 %d 项 · %@" = "%d selected · %@";
+"每项都能单独切换显示方式——直接点选下方图形（图标+数值 / 仅数值 / 迷你折线 / 可视化），像 iStat 一样可视化自定义" = "Each item's style can be switched individually — tap a graphic below (icon+value / value only / sparkline / visual), iStat-style visual customization";
+
+/* Module idle trust facts (2026-07) */
+"仅移入废纸篓 · 一键可撤销" = "Moves to Trash only · one-click undo";
+"彻底删除 · 执行前二次确认" = "Permanent delete · confirmed before running";
+"上次清理 %@ · 释放 %@" = "Last cleanup %@ · freed %@";

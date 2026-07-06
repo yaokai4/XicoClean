@@ -191,7 +191,7 @@
 "快速（1 秒）" = "Rapide (1 s)";
 "忽略清单" = "Liste d’exceptions";
 "性能与安全" = "Performances et sécurité";
-"性能核频率" = "Fréq. cœurs performance";
+"性能核频率" = "Fréq. cœurs perf.";
 "总占用" = "Total utilisé";
 "总览" = "Vue d’ensemble";
 "总量" = "Total";
@@ -649,3 +649,27 @@
 "目标 %d" = "Cible %d";
 "每核心近 60 秒负载 · 越亮越忙" = "Charge par cœur, 60 dernières s · plus clair = plus occupé";
 "每核心负载历史热力图" = "Carte thermique de l’historique de charge par cœur";
+
+/* Online activation + menu-bar per-item style hint (2026-07) */
+"输入 18 位激活码" = "Saisissez le code d'activation à 18 caractères";
+"18 位激活码" = "Code à 18 caractères";
+"激活" = "Activer";
+"激活中…" = "Activation…";
+"已购买？输入激活码解锁" = "Déjà acheté ? Saisissez votre code pour déverrouiller";
+"或导入许可证文件" = "Ou importer un fichier de licence";
+"激活成功，感谢支持！" = "Activé — merci de votre soutien !";
+"激活码格式不正确，请检查后重试。" = "Le format du code est incorrect — vérifiez puis réessayez.";
+"未找到该激活码，请确认输入是否正确。" = "Code d'activation introuvable — vérifiez votre saisie.";
+"该激活码已失效或已退款。" = "Ce code d'activation a été révoqué ou remboursé.";
+"激活台数已达上限。" = "Limite d'activations atteinte.";
+"激活台数已达上限（%d 台）。如需在更多设备使用，请升级或联系我们。" = "Limite d'activations atteinte (%d Mac). Pour plus d'appareils, mettez à niveau ou contactez-nous.";
+"激活响应无效，请稍后重试。" = "Réponse d'activation invalide — réessayez plus tard.";
+"服务器繁忙，请稍后重试。" = "Serveur occupé — réessayez plus tard.";
+"网络连接失败，请检查网络后重试。" = "Échec de la connexion réseau — vérifiez votre connexion puis réessayez.";
+"已选 %d 项 · %@" = "%d sélectionnés · %@";
+"每项都能单独切换显示方式——直接点选下方图形（图标+数值 / 仅数值 / 迷你折线 / 可视化），像 iStat 一样可视化自定义" = "Chaque élément peut changer de style individuellement — touchez un graphique ci-dessous (icône+valeur / valeur seule / courbe / visuel), personnalisation visuelle façon iStat";
+
+/* Module idle trust facts (2026-07) */
+"仅移入废纸篓 · 一键可撤销" = "Déplacé vers la corbeille · annulation en un clic";
+"彻底删除 · 执行前二次确认" = "Suppression définitive · confirmation avant exécution";
+"上次清理 %@ · 释放 %@" = "Dernier nettoyage %@ · %@ libérés";

@@ -374,6 +374,7 @@ public struct MenuMetricPanel: View {
     private func metricChip(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(label).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                .lineLimit(1).minimumScaleFactor(0.85)
             Text(value).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

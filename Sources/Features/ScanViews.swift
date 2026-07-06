@@ -212,11 +212,20 @@ struct SummaryHeader: View {
 // MARK: - 模块通用 idle 英雄
 
 struct ModuleIdleHero: View {
+    /// 英雄区下方的小事实胶囊（安全承诺 / 上次清理），给空旷的 idle 页一层「可信赖」的质感。
+    struct Fact: Identifiable {
+        let id = UUID()
+        let icon: String
+        let text: String
+        var tint: Color = XColor.textSecondary
+    }
+
     let icon: String
     let colors: [Color]
     let title: String
     let subtitle: String
     let buttonTitle: String
+    var facts: [Fact] = []
     let action: () -> Void
     var body: some View {
         VStack(spacing: XSpacing.l) {
@@ -229,6 +238,22 @@ struct ModuleIdleHero: View {
                 .buttonStyle(XPrimaryButtonStyle(large: true))
                 .keyboardShortcut(.defaultAction)
                 .padding(.top, XSpacing.s)
+            if !facts.isEmpty {
+                HStack(spacing: XSpacing.s) {
+                    ForEach(facts) { fact in
+                        HStack(spacing: 5) {
+                            Image(systemName: fact.icon).font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(fact.tint)
+                            Text(fact.text).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        }
+                        .padding(.horizontal, XSpacing.m)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(XColor.surface.opacity(0.6)))
+                        .overlay(Capsule().stroke(XColor.hairline, lineWidth: 1))
+                    }
+                }
+                .padding(.top, XSpacing.m)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -426,12 +451,36 @@ public struct ModuleScanView: View {
     @ObservedObject private var vm: ModuleSessionViewModel
     private let meta: ModuleMetadata?
     private let intent: DeleteIntent
+    private let history: HistoryStore
 
     public init(model: AppModel, moduleID: ModuleID, intent: DeleteIntent) {
         let meta = ModuleCatalog.all.first { $0.id == moduleID }
         self.meta = meta
         self.intent = intent
+        self.history = model.env.history
         self.vm = model.moduleSession(moduleID: moduleID, intent: intent, title: meta?.title ?? "")
+    }
+
+    /// idle 英雄区的信任胶囊：安全承诺 + 该模块最近一次清理成果。
+    private func idleFacts() -> [ModuleIdleHero.Fact] {
+        var facts: [ModuleIdleHero.Fact] = []
+        if intent == .permanent {
+            facts.append(.init(icon: "exclamationmark.shield", text: xLoc("彻底删除 · 执行前二次确认"),
+                               tint: XColor.warning))
+        } else {
+            facts.append(.init(icon: "arrow.uturn.backward.circle", text: xLoc("仅移入废纸篓 · 一键可撤销"),
+                               tint: XColor.success))
+        }
+        if let title = meta?.title,
+           let rec = history.recent(30).first(where: { $0.module == title && $0.reclaimedBytes > 0 }) {
+            let fmt = RelativeDateTimeFormatter()
+            fmt.locale = XLocale.swiftUILocale
+            fmt.unitsStyle = .short
+            let when = fmt.localizedString(for: rec.date, relativeTo: Date())
+            facts.append(.init(icon: "clock.arrow.circlepath",
+                               text: xLocF("上次清理 %@ · 释放 %@", when, rec.reclaimedBytes.formattedBytes)))
+        }
+        return facts
     }
 
     public var body: some View {
@@ -442,6 +491,7 @@ public struct ModuleScanView: View {
                 title: meta?.title ?? xLoc("扫描"),
                 subtitle: meta?.subtitle ?? "",
                 buttonTitle: intent == .permanent ? xLoc("扫描废纸篓") : xLoc("开始扫描"),
+                facts: idleFacts(),
                 action: { vm.start() })
         }
         .onAppear {

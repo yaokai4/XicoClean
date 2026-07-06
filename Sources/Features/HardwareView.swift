@@ -253,7 +253,8 @@ public struct HardwareView: View {
                 .help(xLoc("点击复制序列号"))
             } else {
                 Text(item.value).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
-                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

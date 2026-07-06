@@ -649,3 +649,27 @@
 "目标 %d" = "Ziel %d";
 "每核心近 60 秒负载 · 越亮越忙" = "Last je Kern, letzte 60 s · heller = ausgelasteter";
 "每核心负载历史热力图" = "Verlaufs-Heatmap der Kernlast";
+
+/* Online activation + menu-bar per-item style hint (2026-07) */
+"输入 18 位激活码" = "18-stelligen Aktivierungscode eingeben";
+"18 位激活码" = "18-stelliger Code";
+"激活" = "Aktivieren";
+"激活中…" = "Aktivierung…";
+"已购买？输入激活码解锁" = "Bereits gekauft? Code eingeben und freischalten";
+"或导入许可证文件" = "Oder Lizenzdatei importieren";
+"激活成功，感谢支持！" = "Aktiviert — danke für Ihre Unterstützung!";
+"激活码格式不正确，请检查后重试。" = "Das Codeformat ist ungültig — bitte prüfen und erneut versuchen.";
+"未找到该激活码，请确认输入是否正确。" = "Aktivierungscode nicht gefunden — bitte Eingabe überprüfen.";
+"该激活码已失效或已退款。" = "Dieser Aktivierungscode wurde widerrufen oder erstattet.";
+"激活台数已达上限。" = "Aktivierungslimit erreicht.";
+"激活台数已达上限（%d 台）。如需在更多设备使用，请升级或联系我们。" = "Aktivierungslimit erreicht (%d Macs). Für weitere Geräte upgraden oder kontaktieren Sie uns.";
+"激活响应无效，请稍后重试。" = "Ungültige Aktivierungsantwort — bitte später erneut versuchen.";
+"服务器繁忙，请稍后重试。" = "Server ausgelastet — bitte später erneut versuchen.";
+"网络连接失败，请检查网络后重试。" = "Netzwerkverbindung fehlgeschlagen — Verbindung prüfen und erneut versuchen.";
+"已选 %d 项 · %@" = "%d ausgewählt · %@";
+"每项都能单独切换显示方式——直接点选下方图形（图标+数值 / 仅数值 / 迷你折线 / 可视化），像 iStat 一样可视化自定义" = "Jedes Element lässt sich einzeln umschalten — tippen Sie unten auf eine Grafik (Symbol+Wert / nur Wert / Sparkline / visuell), visuelle Anpassung im iStat-Stil";
+
+/* Module idle trust facts (2026-07) */
+"仅移入废纸篓 · 一键可撤销" = "Nur in den Papierkorb · Ein-Klick-Rückgängig";
+"彻底删除 · 执行前二次确认" = "Endgültiges Löschen · Bestätigung vor Ausführung";
+"上次清理 %@ · 释放 %@" = "Letzte Bereinigung %@ · %@ freigegeben";

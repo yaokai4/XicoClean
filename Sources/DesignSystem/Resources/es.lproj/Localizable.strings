@@ -649,3 +649,27 @@
 "目标 %d" = "Objetivo %d";
 "每核心近 60 秒负载 · 越亮越忙" = "Carga por núcleo, últimos 60 s · más brillante = más ocupado";
 "每核心负载历史热力图" = "Mapa de calor del historial de carga por núcleo";
+
+/* Online activation + menu-bar per-item style hint (2026-07) */
+"输入 18 位激活码" = "Introduce el código de activación de 18 caracteres";
+"18 位激活码" = "Código de 18 caracteres";
+"激活" = "Activar";
+"激活中…" = "Activando…";
+"已购买？输入激活码解锁" = "¿Ya lo compraste? Introduce tu código para desbloquear";
+"或导入许可证文件" = "O importar un archivo de licencia";
+"激活成功，感谢支持！" = "Activado — ¡gracias por tu apoyo!";
+"激活码格式不正确，请检查后重试。" = "El formato del código no es correcto — revísalo e inténtalo de nuevo.";
+"未找到该激活码，请确认输入是否正确。" = "No se encontró el código de activación — comprueba lo introducido.";
+"该激活码已失效或已退款。" = "Este código de activación fue revocado o reembolsado.";
+"激活台数已达上限。" = "Límite de activaciones alcanzado.";
+"激活台数已达上限（%d 台）。如需在更多设备使用，请升级或联系我们。" = "Límite de activaciones alcanzado (%d Mac). Para usar más dispositivos, actualiza o contáctanos.";
+"激活响应无效，请稍后重试。" = "Respuesta de activación no válida — inténtalo más tarde.";
+"服务器繁忙，请稍后重试。" = "Servidor ocupado — inténtalo más tarde.";
+"网络连接失败，请检查网络后重试。" = "Fallo de conexión de red — comprueba tu conexión e inténtalo de nuevo.";
+"已选 %d 项 · %@" = "%d seleccionados · %@";
+"每项都能单独切换显示方式——直接点选下方图形（图标+数值 / 仅数值 / 迷你折线 / 可视化），像 iStat 一样可视化自定义" = "Cada elemento puede cambiar de estilo individualmente — toca un gráfico abajo (icono+valor / solo valor / minigráfico / visual), personalización visual estilo iStat";
+
+/* Module idle trust facts (2026-07) */
+"仅移入废纸篓 · 一键可撤销" = "Solo se mueve a la papelera · deshacer con un clic";
+"彻底删除 · 执行前二次确认" = "Eliminación definitiva · se confirma antes de ejecutar";
+"上次清理 %@ · 释放 %@" = "Última limpieza %@ · %@ liberados";
