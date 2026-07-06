@@ -171,7 +171,7 @@ private struct MiniSparkline: View {
     let values: [Double]   // 0…1
 
     private func points(in size: CGSize) -> [CGPoint] {
-        let v = Array(values.suffix(18))
+        let v = Array(values.suffix(30))   // 30 个采样点：半分钟走势，框内信息密度对齐 iStat
         guard v.count > 1 else { return [] }
         return v.enumerated().map { i, val in
             CGPoint(x: size.width * CGFloat(i) / CGFloat(v.count - 1),
@@ -201,7 +201,7 @@ private struct MiniSparkline: View {
             }
             .stroke(style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
         }
-        .frame(width: 24, height: 13)
+        .frame(width: 40, height: 15)
     }
 }
 
@@ -216,17 +216,18 @@ private struct MetricGlyph: View {
     var border: Bool = true
 
     var body: some View {
-        HStack(spacing: 3.5) {
+        // 间距按黄金比收紧（图形→数值 3pt，无外侧余量）——多项并排时节省顶栏空间。
+        HStack(spacing: 3) {
             switch style {
             case .iconValue, .rich:
                 Image(systemName: glyph).font(.system(size: 12.5, weight: .semibold))
             case .valueOnly:
                 EmptyView()
             case .graph:
-                // 把折线迷你图圈成一枚淡淡的「图表区」（框可按项关闭）；数值在框外并排。
+                // 折线迷你图贴边入框（框=图表坐标系，走势线挤满图表区）；数值在框外并排。
                 // 无历史数据时不画空框，退化为图标（避免空盒子——温度等无曲线指标的丑框由此消除）。
                 if history.count >= 2 {
-                    MiniSparkline(values: history).menuGraphicChip(chip, on: border)
+                    MiniSparkline(values: history).menuGraphicChip(chip, on: border, flush: true)
                 } else {
                     Image(systemName: glyph).font(.system(size: 12.5, weight: .semibold))
                 }
@@ -235,7 +236,6 @@ private struct MetricGlyph: View {
         }
         .foregroundStyle(chip.fg)
         .frame(height: 18)
-        .padding(.horizontal, 1)
     }
 }
 
@@ -250,9 +250,9 @@ private struct NetGlyph: View {
     var border: Bool = true
 
     var body: some View {
-        HStack(spacing: 3.5) {
+        HStack(spacing: 3) {
             if style == .graph, history.count >= 2 {
-                MiniSparkline(values: history).menuGraphicChip(chip, on: border)   // 折线迷你图（框可按项开关）
+                MiniSparkline(values: history).menuGraphicChip(chip, on: border, flush: true)   // 折线贴边入框
             }
             VStack(alignment: .trailing, spacing: 0) {
                 row("arrow.up", up)
@@ -261,7 +261,6 @@ private struct NetGlyph: View {
         }
         .foregroundStyle(chip.fg)
         .frame(height: 18)
-        .padding(.horizontal, 1)
     }
     private func row(_ icon: String, _ value: String) -> some View {
         HStack(spacing: 1.5) {
@@ -287,14 +286,13 @@ private struct RichGlyph: View {
     var border: Bool = false   // 直方图/环/条默认裸露（对齐 Sensei）；开框则套软框
 
     var body: some View {
-        HStack(spacing: 3.5) {
+        HStack(spacing: 3) {
             // 直方图/进度条贴边入框（框=坐标系）；环形留呼吸边距
             graphic.menuGraphicChip(chip, on: border, flush: isFlushViz)
             Text(value).font(.system(size: 12, weight: .semibold, design: .rounded)).monospacedDigit()
         }
         .foregroundStyle(chip.fg)
         .frame(height: 18)
-        .padding(.horizontal, 1)
     }
 
     private var isFlushViz: Bool {
@@ -312,22 +310,22 @@ private struct RichGlyph: View {
 }
 
 /// 迷你直方图（当前用色渲染，模板/彩色由 render 决定）。
-/// 像素对齐：8 根 2pt 实心条 + 1pt 间距（8×2+7×1=23pt），@2x 落在整数设备像素上，
-/// 不再是 1.6pt 分数宽度糊成灰块。
+/// 像素对齐：13 根 2pt 实心条 + 1pt 间距（13×2+12×1=38pt），@2x 落在整数设备像素上；
+/// 条数与宽度对齐 iStat 的信息密度，柱体贴住 flush 框的内底沿挤满图表区。
 private struct MiniHistogram: View {
     let values: [Double]
     var body: some View {
-        let v = Array(values.suffix(8))
+        let v = Array(values.suffix(13))
         HStack(alignment: .bottom, spacing: 1) {
             ForEach(Array(v.enumerated()), id: \.offset) { _, val in
                 let f = min(max(val, 0), 1)
                 Rectangle()
                     // 单色模板下按值分层不透明度，低值淡高值实，保证直方图不糊成一团。
                     .opacity(0.4 + 0.6 * f)
-                    .frame(width: 2, height: max(2, 13 * CGFloat(f)))
+                    .frame(width: 2, height: max(2, 15 * CGFloat(f)))
             }
         }
-        .frame(width: 23, height: 13, alignment: .bottom)
+        .frame(width: 38, height: 15, alignment: .bottom)
     }
 }
 
@@ -345,7 +343,7 @@ private struct MiniRingGlyph: View {
     }
 }
 
-/// 迷你横向填充条（磁盘）。
+/// 迷你横向填充条（磁盘）。加宽对齐直方图/折线的图表区宽度，framed 后挤满边框。
 private struct MiniBarGlyph: View {
     let fraction: Double
     var body: some View {
@@ -355,7 +353,7 @@ private struct MiniBarGlyph: View {
                 Capsule().frame(width: max(2, geo.size.width * min(max(fraction, 0), 1)))
             }
         }
-        .frame(width: 20, height: 8)
+        .frame(width: 38, height: 8)
     }
 }
 

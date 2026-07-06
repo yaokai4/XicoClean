@@ -505,27 +505,16 @@ public struct SettingsView: View {
                 Toggle("", isOn: enabled).toggleStyle(.switch).labelsHidden()
             }
             if enabled.wrappedValue, let style = style {
-                let framed = border?.wrappedValue ?? false
+                // 图形恒定加框（框=图表坐标系，内容贴边挤满），不再提供开关。
                 HStack(spacing: 6) {
                     ForEach(MenuBarStyle.allCases, id: \.rawValue) { st in
-                        MBStyleTile(style: st, tint: tint, icon: icon, framed: framed,
+                        MBStyleTile(style: st, tint: tint, icon: icon, framed: true,
                                     selected: style.wrappedValue == st.rawValue) {
                             withAnimation(XMotion.snappy) { style.wrappedValue = st.rawValue }
                         }
                     }
                 }
                 .padding(.leading, XSpacing.l + 6)
-                // 「图形加框」开关：只在当前样式含动态图形（迷你折线 / 可视化）时才有意义。
-                if let border = border, style.wrappedValue == MenuBarStyle.graph.rawValue || style.wrappedValue == MenuBarStyle.rich.rawValue {
-                    HStack(spacing: XSpacing.s) {
-                        Image(systemName: "square.dashed").font(.system(size: 10, weight: .semibold)).foregroundStyle(XColor.textTertiary)
-                        Text(xLoc("图形加框")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                        Spacer()
-                        Toggle("", isOn: border).toggleStyle(.switch).labelsHidden().scaleEffect(0.8)
-                    }
-                    .padding(.leading, XSpacing.l + 6)
-                    .padding(.bottom, 2)
-                }
             }
         }
         .padding(.vertical, 1)

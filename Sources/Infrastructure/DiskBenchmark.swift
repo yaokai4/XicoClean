@@ -35,8 +35,17 @@ public enum DiskBenchmarkPhase: Sendable, Equatable {
 
 public final class DiskBenchmarkService: @unchecked Sendable {
     public static let chunkBytes = 32 * 1024 * 1024         // 32 MB：摊薄 F_NOCACHE 下的每次调用开销
-    public static let maxBytes = Int64(2) * 1024 * 1024 * 1024  // 2 GB 上限
-    public static let maxSeconds: TimeInterval = 4           // 每阶段 4s 上限
+    public static let maxBytes = Int64(10) * 1024 * 1024 * 1024  // 10 GB：样本大到跨过 SLC/控制器缓存，读写更准
+    public static let maxSeconds: TimeInterval = 15          // 每阶段 15s 上限（慢盘兜底）
+    /// 需保留的安全余量：可用空间低于「目标 + 余量」时自动缩小测试文件。
+    public static let safetyMargin = Int64(4) * 1024 * 1024 * 1024
+
+    /// 按可用空间自适应的实际测试大小（最少 1 GB；不足则返回 nil = 空间太紧不测）。
+    public static func targetBytes(freeBytes: Int64) -> Int64? {
+        let usable = freeBytes - safetyMargin
+        guard usable >= 1024 * 1024 * 1024 else { return nil }
+        return min(maxBytes, usable)
+    }
 
     private let historyURL: URL
     private let lock = NSLock()
@@ -78,12 +87,20 @@ public final class DiskBenchmarkService: @unchecked Sendable {
     public func run(device: String,
                     isCancelled: @escaping @Sendable () -> Bool = { false },
                     progress: @escaping @Sendable (DiskBenchmarkPhase) -> Void) -> DiskBenchmarkResult? {
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("xico-diskbench-\(UUID().uuidString).bin")
+        let tmpDir = FileManager.default.temporaryDirectory
+        let tmp = tmpDir.appendingPathComponent("xico-diskbench-\(UUID().uuidString).bin")
         defer { try? FileManager.default.removeItem(at: tmp) }
 
+        // 空间预检：按可用空间自适应测试大小，永不写爆磁盘。
+        let freeRaw = (try? tmpDir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage ?? 0
+        let free = Int64(freeRaw)
+        guard let budget = Self.targetBytes(freeBytes: free) else {
+            progress(.failed); return nil
+        }
+
         // —— 写阶段 ——
-        guard let writeMBps = writePhase(to: tmp, isCancelled: isCancelled, progress: progress) else {
+        guard let writeMBps = writePhase(to: tmp, budget: budget, isCancelled: isCancelled, progress: progress) else {
             progress(.failed); return nil
         }
         if isCancelled() { return nil }
@@ -99,7 +116,7 @@ public final class DiskBenchmarkService: @unchecked Sendable {
         return result
     }
 
-    private func writePhase(to url: URL,
+    private func writePhase(to url: URL, budget: Int64,
                             isCancelled: @escaping @Sendable () -> Bool,
                             progress: @escaping @Sendable (DiskBenchmarkPhase) -> Void) -> Double? {
         let fd = open(url.path, O_CREAT | O_TRUNC | O_WRONLY, 0o600)
@@ -116,7 +133,7 @@ public final class DiskBenchmarkService: @unchecked Sendable {
         var total: Int64 = 0
         let start = Date()
         var lastTick = start
-        while total < Self.maxBytes, Date().timeIntervalSince(start) < Self.maxSeconds {
+        while total < budget, Date().timeIntervalSince(start) < Self.maxSeconds {
             if isCancelled() { return nil }
             let n = buffer.withUnsafeBytes { ptr in write(fd, ptr.baseAddress, ptr.count) }
             guard n > 0 else { return nil }

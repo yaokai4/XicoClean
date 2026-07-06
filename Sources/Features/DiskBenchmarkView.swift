@@ -83,11 +83,11 @@ final class DiskBenchmarkViewModel: ObservableObject {
 
     var phaseText: String {
         switch phase {
-        case .idle:    return xLoc("就绪 · 测速约需 10 秒")
+        case .idle:    return xLoc("就绪 · 测速约需 15 秒")
         case .writing: return xLoc("写入测试中…")
         case .reading: return xLoc("读取测试中…")
         case .done:    return xLoc("测速完成")
-        case .failed:  return xLoc("测速未完成，请重试。")
+        case .failed:  return xLoc("测速未完成：磁盘可用空间不足或发生错误，请清理后重试。")
         }
     }
 }
@@ -95,15 +95,40 @@ final class DiskBenchmarkViewModel: ObservableObject {
 public struct DiskBenchmarkView: View {
     @StateObject private var vm: DiskBenchmarkViewModel
     @Environment(\.dismiss) private var dismiss
+    /// true = 侧边栏独立功能页（自适应尺寸、无关闭按钮）；false = 弹出 sheet。
+    private let standalone: Bool
 
-    public init(device: String) {
+    public init(device: String, standalone: Bool = false) {
         _vm = StateObject(wrappedValue: DiskBenchmarkViewModel(device: device))
+        self.standalone = standalone
     }
 
     public var body: some View {
+        if standalone { pageBody } else { sheetBody }
+    }
+
+    /// 独立功能页：与其它页面同语言的页头 + 居中大仪表。
+    private var pageBody: some View {
+        VStack(spacing: 0) {
+            XHeaderBar(title: xLoc("磁盘测速"), subtitle: vm.device)
+            ScrollView {
+                VStack(spacing: XSpacing.l) {
+                    gauges(size: 220)
+                    statusRow
+                    Divider().overlay(XColor.hairline)
+                    historySection
+                }
+                .frame(maxWidth: 760)
+                .padding(XSpacing.xl)
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var sheetBody: some View {
         VStack(alignment: .leading, spacing: XSpacing.l) {
-            header
-            gauges
+            sheetHeader
+            gauges(size: 190)
             statusRow
             Divider().overlay(XColor.hairline)
             historySection
@@ -113,9 +138,9 @@ public struct DiskBenchmarkView: View {
         .background(AppBackground())
     }
 
-    private var header: some View {
+    private var sheetHeader: some View {
         HStack(spacing: XSpacing.m) {
-            XIconTile(systemImage: "speedometer", colors: XColor.metricDisk, size: 40)
+            XIconTile(systemImage: "gauge.with.needle", colors: XColor.metricDisk, size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(xLoc("磁盘测速")).xHeadline().foregroundStyle(XColor.textPrimary)
                 Text(vm.device).font(XFont.caption).foregroundStyle(XColor.textSecondary)
@@ -129,14 +154,14 @@ public struct DiskBenchmarkView: View {
         }
     }
 
-    private var gauges: some View {
+    private func gauges(size: CGFloat) -> some View {
         HStack(spacing: XSpacing.xl) {
             Spacer(minLength: 0)
             XSpeedGauge(value: vm.readMBps, maxValue: vm.gaugeMax, label: xLoc("读取"),
-                        colors: [XColor.netDown, XColor.ring(2)],
+                        colors: [XColor.netDown, XColor.ring(2)], size: size,
                         active: activeGauge != .write)
             XSpeedGauge(value: vm.writeMBps, maxValue: vm.gaugeMax, label: xLoc("写入"),
-                        colors: [XColor.netUp, XColor.ring(1)],
+                        colors: [XColor.netUp, XColor.ring(1)], size: size,
                         active: activeGauge != .read)
             Spacer(minLength: 0)
         }
@@ -165,7 +190,7 @@ public struct DiskBenchmarkView: View {
                     .buttonStyle(XPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
             }
-            Text(xLoc("测速会在系统卷写入最多 2 GB 临时文件，完成后自动删除；期间请勿进行大量拷贝。"))
+            Text(xLoc("测速会在系统卷写入最多 10 GB 临时文件（空间不足时自动缩小），完成后自动删除；期间请勿进行大量拷贝。"))
                 .font(XFont.caption).foregroundStyle(XColor.textTertiary)
                 .multilineTextAlignment(.center)
         }

@@ -141,7 +141,6 @@ public struct HardwareView: View {
     }
 
     private let columns = [GridItem(.adaptive(minimum: 320), spacing: XSpacing.m)]
-    @State private var showBenchmark = false
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -154,12 +153,14 @@ public struct HardwareView: View {
             ScrollView {
                 VStack(spacing: XSpacing.m) {
                     heroCard
+                    // 卡片按「高矮配对」排布：电池|内存（高）→ 存储|散热（高）→ GPU|网络（中）
+                    // → 显示器|传感器（中），同排等高，消除一大一小的错落感。
                     LazyVGrid(columns: columns, spacing: XSpacing.m) {
                         if vm.battery != nil { batteryCard }
                         memoryCard
                         storageCard
-                        gpuCard
                         thermalCard
+                        gpuCard
                         if !vm.interfaces.isEmpty { networkCard }
                         if !vm.displays.isEmpty { displayCard }
                         if !vm.temps.isEmpty { sensorsCard }
@@ -419,17 +420,6 @@ public struct HardwareView: View {
                     if s.isInternal { smartDetail }
                 }
                 .padding(.vertical, 2)
-            }
-            // 磁盘测速（Sensei 式基准）：双仪表 + 历史记录，入口就近放在存储健康卡
-            Button {
-                showBenchmark = true
-            } label: {
-                Label(xLoc("磁盘测速"), systemImage: "speedometer").frame(maxWidth: .infinity)
-            }
-            .buttonStyle(XSecondaryButtonStyle(compact: true))
-            .sheet(isPresented: $showBenchmark) {
-                DiskBenchmarkView(device: vm.storage.first(where: { $0.isInternal })
-                    .map { $0.model.isEmpty ? $0.name : $0.model } ?? "Macintosh HD")
             }
         }
     }

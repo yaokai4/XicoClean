@@ -703,3 +703,21 @@
 "%d 核心" = "%d núcleos";
 "显存占用" = "VRAM em uso";
 "利用率" = "Utilização";
+
+/* Standalone disk speed + 4-layer threat protection (2026-07-07) */
+"就绪 · 测速约需 15 秒" = "Pronto · leva cerca de 15 segundos";
+"测速会在系统卷写入最多 10 GB 临时文件（空间不足时自动缩小），完成后自动删除；期间请勿进行大量拷贝。" = "O teste grava até 10 GB de dados temporários no volume do sistema (reduzido automaticamente se faltar espaço) e os exclui depois; evite cópias grandes durante a execução.";
+"测速未完成：磁盘可用空间不足或发生错误，请清理后重试。" = "O benchmark não terminou: espaço livre insuficiente ou erro — libere espaço e tente novamente.";
+"顺序读写基准" = "Benchmark sequencial de leitura/gravação";
+"签名校验 / 可疑启动项" = "Verificação de assinatura / itens de login suspeitos";
+"特征库 · 签名校验 · 伪装与危险路径" = "Banco de assinaturas · verificação de código · disfarce e caminhos de risco";
+"已知威胁" = "Ameaças conhecidas";
+"可疑启动项" = "Itens de login suspeitos";
+"关联载荷" = "Carga associada";
+"命中已知广告软件特征 · 请审阅" = "Corresponde a assinatura de adware conhecida · revise";
+"伪装成系统组件的启动项 · 高度可疑" = "Item de login disfarçado de componente do sistema · altamente suspeito";
+"载荷位于一次性目录 · 典型恶意驻留" = "Carga em diretório descartável · persistência clássica de malware";
+"登录自启动的载荷未签名 · 请确认来源" = "Carga iniciada no login não assinada · verifique a origem";
+"载荷签名已破损（内容被篡改过）· 请审阅" = "Assinatura da carga corrompida (conteúdo modificado) · revise";
+"载荷为临时签名（无开发者身份）· 请确认来源" = "Carga com assinatura ad hoc (sem identidade de desenvolvedor) · verifique a origem";
+"未命中特征库，但存在真实可疑迹象：伪装系统名 / 载荷未签名或签名破损 / 驻留危险路径。逐条给出理由，请核对来源后再决定移除。" = "Sem correspondência de assinatura, mas com sinais reais: disfarce com nome do sistema / assinatura ausente ou corrompida / persistência em caminhos de risco. Cada item informa o motivo — verifique a fonte antes de remover.";

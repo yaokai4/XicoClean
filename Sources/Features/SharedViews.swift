@@ -49,7 +49,7 @@ struct ItemRowView: View {
                     Text(item.displayName)
                         .font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary).lineLimit(1)
                     if let note = item.note {
-                        Text(note)
+                        Text(xLoc(note))
                             .font(.system(size: 9.5, weight: .semibold))
                             .foregroundStyle(XColor.warning)
                             .padding(.horizontal, 5).padding(.vertical, 1)

@@ -703,3 +703,21 @@
 "%d 核心" = "%d cores";
 "显存占用" = "VRAM in use";
 "利用率" = "Utilization";
+
+/* Standalone disk speed + 4-layer threat protection (2026-07-07) */
+"就绪 · 测速约需 15 秒" = "Ready · takes about 15 seconds";
+"测速会在系统卷写入最多 10 GB 临时文件（空间不足时自动缩小），完成后自动删除；期间请勿进行大量拷贝。" = "The test writes up to 10 GB of temporary data to the system volume (shrunk automatically when space is tight) and deletes it afterwards; avoid large copies meanwhile.";
+"测速未完成：磁盘可用空间不足或发生错误，请清理后重试。" = "Benchmark didn't finish: not enough free space or an error occurred — free up space and try again.";
+"顺序读写基准" = "Sequential read/write benchmark";
+"签名校验 / 可疑启动项" = "Signature checks / suspicious login items";
+"特征库 · 签名校验 · 伪装与危险路径" = "Signature DB · code-sign checks · masquerade & risky paths";
+"已知威胁" = "Known threats";
+"可疑启动项" = "Suspicious login items";
+"关联载荷" = "Associated payload";
+"命中已知广告软件特征 · 请审阅" = "Matches known adware signature · please review";
+"伪装成系统组件的启动项 · 高度可疑" = "Login item masquerading as a system component · highly suspicious";
+"载荷位于一次性目录 · 典型恶意驻留" = "Payload lives in a throwaway directory · classic malware persistence";
+"登录自启动的载荷未签名 · 请确认来源" = "Login-launched payload is unsigned · verify its origin";
+"载荷签名已破损（内容被篡改过）· 请审阅" = "Payload signature is broken (contents were modified) · please review";
+"载荷为临时签名（无开发者身份）· 请确认来源" = "Payload has an ad-hoc signature (no developer identity) · verify its origin";
+"未命中特征库，但存在真实可疑迹象：伪装系统名 / 载荷未签名或签名破损 / 驻留危险路径。逐条给出理由，请核对来源后再决定移除。" = "No signature match, but real red flags: system-name masquerade / unsigned or broken payload signature / persistence in risky paths. Each finding states its reason — verify the source before removing.";

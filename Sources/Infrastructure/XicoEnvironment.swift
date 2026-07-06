@@ -152,10 +152,11 @@ public enum ModuleCatalog {
 
         ModuleMetadata(id: .optimization, title: "优化", subtitle: "登录项 / 高耗进程", systemImage: "speedometer", category: .performance),
         ModuleMetadata(id: .maintenance, title: "维护", subtitle: "缓存 / 索引 / 重启", systemImage: "wrench.and.screwdriver", category: .performance),
-        ModuleMetadata(id: .malware, title: "威胁防护", subtitle: "广告软件 / 可疑启动项", systemImage: "shield.lefthalf.filled", category: .performance),
+        ModuleMetadata(id: .malware, title: "威胁防护", subtitle: "签名校验 / 可疑启动项", systemImage: "shield.lefthalf.filled", category: .performance),
+        ModuleMetadata(id: .diskSpeed, title: "磁盘测速", subtitle: "顺序读写基准", systemImage: "gauge.with.needle", category: .performance),
         ModuleMetadata(id: .hardware, title: "硬件", subtitle: "档案 · 健康 · 温度", systemImage: "cpu", category: .performance),
-        ModuleMetadata(id: .monitor, title: "系统监视", subtitle: "CPU / 内存 / 网络 / GPU 实时", systemImage: "waveform.path.ecg", category: .performance),
-        ModuleMetadata(id: .privacy, title: "隐私", subtitle: "浏览器数据清理", systemImage: "hand.raised", category: .performance)
+        ModuleMetadata(id: .monitor, title: "系统监视", subtitle: "CPU / 内存 / 网络 / GPU 实时", systemImage: "waveform.path.ecg", category: .performance)
+        // 隐私（浏览器数据）已并入智能扫描一键流程，不再单列侧边栏入口。
     ]
 
     public static func grouped() -> [(ModuleCategory, [ModuleMetadata])] {

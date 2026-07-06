@@ -703,3 +703,21 @@
 "%d 核心" = "%d Kerne";
 "显存占用" = "VRAM belegt";
 "利用率" = "Auslastung";
+
+/* Standalone disk speed + 4-layer threat protection (2026-07-07) */
+"就绪 · 测速约需 15 秒" = "Bereit · dauert etwa 15 Sekunden";
+"测速会在系统卷写入最多 10 GB 临时文件（空间不足时自动缩小），完成后自动删除；期间请勿进行大量拷贝。" = "Der Test schreibt bis zu 10 GB temporäre Daten auf das Systemvolume (bei wenig Platz automatisch verkleinert) und löscht sie danach; vermeiden Sie währenddessen große Kopiervorgänge.";
+"测速未完成：磁盘可用空间不足或发生错误，请清理后重试。" = "Benchmark nicht abgeschlossen: zu wenig freier Speicher oder ein Fehler — Platz schaffen und erneut versuchen.";
+"顺序读写基准" = "Sequenzieller Lese-/Schreib-Benchmark";
+"签名校验 / 可疑启动项" = "Signaturprüfung / verdächtige Anmeldeobjekte";
+"特征库 · 签名校验 · 伪装与危险路径" = "Signatur-DB · Codesignatur-Prüfung · Tarnung & riskante Pfade";
+"已知威胁" = "Bekannte Bedrohungen";
+"可疑启动项" = "Verdächtige Anmeldeobjekte";
+"关联载荷" = "Zugehörige Nutzlast";
+"命中已知广告软件特征 · 请审阅" = "Trifft bekannte Adware-Signatur · bitte prüfen";
+"伪装成系统组件的启动项 · 高度可疑" = "Anmeldeobjekt tarnt sich als Systemkomponente · hochverdächtig";
+"载荷位于一次性目录 · 典型恶意驻留" = "Nutzlast liegt in einem Wegwerf-Verzeichnis · klassische Malware-Persistenz";
+"登录自启动的载荷未签名 · 请确认来源" = "Bei Anmeldung gestartete Nutzlast ist unsigniert · Herkunft prüfen";
+"载荷签名已破损（内容被篡改过）· 请审阅" = "Signatur der Nutzlast beschädigt (Inhalt verändert) · bitte prüfen";
+"载荷为临时签名（无开发者身份）· 请确认来源" = "Nutzlast mit Ad-hoc-Signatur (keine Entwickleridentität) · Herkunft prüfen";
+"未命中特征库，但存在真实可疑迹象：伪装系统名 / 载荷未签名或签名破损 / 驻留危险路径。逐条给出理由，请核对来源后再决定移除。" = "Keine Signaturübereinstimmung, aber echte Warnzeichen: Tarnung als Systemname / unsignierte oder beschädigte Signatur / Persistenz in riskanten Pfaden. Jeder Fund nennt seinen Grund — Quelle prüfen, dann entfernen.";

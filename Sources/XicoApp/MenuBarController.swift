@@ -129,18 +129,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
         return UserDefaults.standard.object(forKey: "xico.mb.colored") == nil ? false : UserDefaults.standard.bool(forKey: "xico.mb.colored")
     }
-    /// 每项独立的「图形加框」开关（`xico.mb.<id>.border`）。只圈动态图形，数值永远在框外。
-    /// 默认按图形类型校准：图表区图形（CPU 直方图 / 网络折线）加框读感最佳；环/条裸露更干净（对齐 Sensei）。
-    private func border(for id: String) -> Bool {
-        let key = "xico.mb.\(id).border"
-        if UserDefaults.standard.object(forKey: key) != nil {
-            return UserDefaults.standard.bool(forKey: key)
-        }
-        switch id {
-        case "cpu", "network": return true    // 直方图 / 折线：图表区，加框
-        default:               return false   // memory·gpu（环）· disk（条）：裸露
-        }
-    }
+    /// 图形恒定加框（用户拍板：不再提供开关）。框即图表坐标系，内容贴边挤满；
+    /// 环形自身就是完整图形，套框反而画蛇添足，仍保持裸露。
+    private func border(for id: String) -> Bool { true }
 
     private func image(for id: String, snapshot s: SystemSnapshot?) -> NSImage? {
         let style = style(for: id)

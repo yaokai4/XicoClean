@@ -131,15 +131,18 @@ public struct SidebarView: View {
     }
 
     private var brandHeader: some View {
-        HStack(spacing: XSpacing.s) {
-            XBrandMark(size: 30)
-            Text("Xico").font(.system(size: 21, weight: .bold, design: .rounded))
+        // 品牌抬头：更大的极光 X 徽 + 柔光，整体上移贴近红绿灯区（用户拍板）。
+        HStack(spacing: XSpacing.s + 2) {
+            XBrandMark(size: 34)
+                .xGlow(XColor.brand, radius: 12)
+            Text("Xico").font(.system(size: 22, weight: .bold, design: .rounded))
                 .foregroundStyle(XColor.textPrimary)
+                .tracking(0.2)
             Spacer()
         }
         .padding(.horizontal, XSpacing.m)
-        .padding(.top, 38)
-        .padding(.bottom, XSpacing.m)
+        .padding(.top, 24)
+        .padding(.bottom, XSpacing.s)
     }
 
     private var diskFooter: some View {
@@ -262,16 +265,24 @@ struct DetailView: View {
         case .shredder:     ShredderView(env: model.env)
         case .uninstaller:  UninstallerView(env: model.env)
         case .appUpdater:   AppUpdaterView(env: model.env)
+        // 隐私已并入智能扫描；老用户持久化的选中项仍可正常打开
         case .privacy:      ModuleScanView(model: model, moduleID: .privacy, intent: .trash)
         case .optimization: OptimizationView(env: model.env)
         case .maintenance:  MaintenanceView(env: model.env)
         case .malware:      ModuleScanView(model: model, moduleID: .malware, intent: .trash)
+        case .diskSpeed:    DiskBenchmarkView(device: internalDiskModel, standalone: true)
         case .hardware:     HardwareView(env: model.env)
         case .monitor:      MonitorView(env: model.env)
         case .settings:     SettingsView(model: model)
         // 未知模块 ID（例如开发用 --open=<拼写错误>）回落到仪表盘，而非过时的「即将推出」占位页。
         default:            SmartScanView(model: model)
         }
+    }
+
+    /// 内置盘型号（磁盘测速页抬头）；后台采样未就绪时回落系统卷名。
+    private var internalDiskModel: String {
+        model.storageVolumes.first(where: { $0.isInternal })
+            .map { $0.model.isEmpty ? $0.name : $0.model } ?? "Macintosh HD"
     }
 }
 

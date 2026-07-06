@@ -1,11 +1,16 @@
 import Foundation
+import Security
 import Domain
 
-/// 威胁防护：基于内置特征库，扫描启动项中已知的广告软件 / 潜在有害程序（PUP）。
-/// 命中即标记为高风险，供用户审阅后移除（移入废纸篓，可恢复）。
+/// 威胁防护：四层真实检测（不做「安全剧场」，每条命中都给出可核实的理由）。
+/// 1. 特征库：启动项命中已知广告软件 / PUP 标识（内置 + 签名通道下发）；
+/// 2. 代码签名：登录自启动的载荷未签名 / ad-hoc / 签名破损——正规软件极少如此；
+/// 3. 系统伪装：用户目录里的 com.apple.* 启动项——Apple 从不把自家 LaunchAgent 装进用户目录；
+/// 4. 危险路径：载荷位于 /tmp、Downloads、/Users/Shared 等一次性目录——经典恶意驻留手法。
+/// 命中标记为高风险、默认不勾选，供用户审阅后移除（移入废纸篓，可恢复）。
 public struct ThreatScanner: ScannerModule {
     public let metadata = ModuleMetadata(
-        id: .malware, title: "威胁防护", subtitle: "扫描已知广告软件与可疑启动项",
+        id: .malware, title: "威胁防护", subtitle: "特征库 · 签名校验 · 伪装与危险路径",
         systemImage: "shield.lefthalf.filled", category: .performance)
 
     private let fs: FileSystemService
@@ -37,46 +42,134 @@ public struct ThreatScanner: ScannerModule {
     public func scan(progress: @escaping ProgressHandler) async throws -> ScanResult {
         let dirs = [
             home.appendingPathComponent("Library/LaunchAgents"),
+            home.appendingPathComponent("Library/LaunchDaemons"),   // 用户目录本不该有 Daemons——有即可疑
             URL(fileURLWithPath: "/Library/LaunchAgents"),
             URL(fileURLWithPath: "/Library/LaunchDaemons")
         ]
-        var items: [CleanableItem] = []
+        var signatureHits: [CleanableItem] = []
+        var heuristicHits: [CleanableItem] = []
 
         let sigs = allSignatures
         var seen = Set<String>()
+
+        /// 把 plist + 其载荷加入结果组（去重、安全红线校验统一走这里）。
+        func appendFinding(_ url: URL, _ dict: NSDictionary, note: String, to bucket: inout [CleanableItem]) {
+            guard safety.verify(url, intent: .trash).isAllowed, seen.insert(url.path).inserted else { return }
+            bucket.append(CleanableItem(url: url, displayName: url.lastPathComponent,
+                                        detail: url.path, size: max(fs.allocatedSize(of: url), 1),
+                                        safety: .risky, isSelected: false, note: note))
+            progress(ScanProgress(message: url.lastPathComponent, bytesFound: 0))
+            // 载荷本体：只删 plist 会留下磁盘上的可执行文件
+            for payload in payloadPaths(dict) {
+                let p = URL(fileURLWithPath: payload)
+                guard fs.exists(p), safety.verify(p, intent: .trash).isAllowed,
+                      seen.insert(p.path).inserted else { continue }
+                bucket.append(CleanableItem(url: p, displayName: p.lastPathComponent,
+                                            detail: p.path, size: max(fs.allocatedSize(of: p), 1),
+                                            safety: .risky, isSelected: false,
+                                            note: "关联载荷"))
+            }
+        }
+
         for dir in dirs {
+            let isUserDir = dir.path.hasPrefix(home.path)
             for url in fs.contentsOfDirectory(dir) where url.pathExtension == "plist" {
                 if Task.isCancelled { break }
                 guard let dict = NSDictionary(contentsOf: url) else { continue }
                 let haystack = buildHaystack(dict, fileName: url.lastPathComponent).lowercased()
-                guard sigs.contains(where: { haystack.contains($0) }) else { continue }
-                guard safety.verify(url, intent: .trash).isAllowed, seen.insert(url.path).inserted else { continue }
-                // 1) plist 本身
-                items.append(CleanableItem(url: url, displayName: url.lastPathComponent,
-                                           detail: url.path, size: max(fs.allocatedSize(of: url), 1),
-                                           safety: .risky, isSelected: false,
-                                           note: "高风险启动项 · 请审阅"))
-                progress(ScanProgress(message: url.lastPathComponent, bytesFound: 0))
-                // 2) 载荷本体：Program / ProgramArguments[0] 指向的可执行文件也一并列入删除，
-                //    只删 plist 会留下磁盘上的恶意二进制。
-                for payload in payloadPaths(dict) {
-                    let p = URL(fileURLWithPath: payload)
-                    guard fs.exists(p), safety.verify(p, intent: .trash).isAllowed,
-                          seen.insert(p.path).inserted else { continue }
-                    items.append(CleanableItem(url: p, displayName: p.lastPathComponent,
-                                               detail: p.path, size: max(fs.allocatedSize(of: p), 1),
-                                               safety: .risky, isSelected: false,
-                                               note: "关联恶意载荷"))
+
+                // —— 第 1 层：已知特征库 ——
+                if sigs.contains(where: { haystack.contains($0) }) {
+                    appendFinding(url, dict, note: "命中已知广告软件特征 · 请审阅", to: &signatureHits)
+                    continue
+                }
+
+                // —— 第 3 层：系统伪装（Apple 从不把自家启动项装进用户目录）——
+                let name = url.lastPathComponent.lowercased()
+                let label = (dict["Label"] as? String ?? "").lowercased()
+                if isUserDir, name.hasPrefix("com.apple.") || label.hasPrefix("com.apple.") {
+                    appendFinding(url, dict, note: "伪装成系统组件的启动项 · 高度可疑", to: &heuristicHits)
+                    continue
+                }
+
+                // —— 第 4 层：危险路径载荷 ——
+                let payloads = payloadPaths(dict)
+                if payloads.contains(where: { isDangerousPath($0) }) {
+                    // 固定文案（不插值）——note 是 xLoc 查表键，动态拼接会漏翻
+                    appendFinding(url, dict, note: "载荷位于一次性目录 · 典型恶意驻留", to: &heuristicHits)
+                    continue
+                }
+
+                // —— 第 2 层：代码签名校验（只查非系统解释器的真实二进制）——
+                if let payload = payloads.first, !isSystemBinary(payload), fs.exists(URL(fileURLWithPath: payload)) {
+                    switch codeSignState(URL(fileURLWithPath: payload)) {
+                    case .unsigned:
+                        appendFinding(url, dict, note: "登录自启动的载荷未签名 · 请确认来源", to: &heuristicHits)
+                    case .invalid:
+                        appendFinding(url, dict, note: "载荷签名已破损（内容被篡改过）· 请审阅", to: &heuristicHits)
+                    case .adhoc:
+                        appendFinding(url, dict, note: "载荷为临时签名（无开发者身份）· 请确认来源", to: &heuristicHits)
+                    case .valid:
+                        break
+                    }
                 }
             }
         }
 
-        let group = ScanResultGroup(
-            id: "threats", title: "可疑启动项与载荷",
-            description: "命中已知广告软件 / PUP 特征，含其磁盘载荷。移除将移入废纸篓（可恢复）；"
-                       + "已在运行的进程会在你注销或重启后停止。",
-            systemImage: "exclamationmark.shield", safety: .risky, items: items)
-        return ScanResult(moduleID: .malware, groups: items.isEmpty ? [] : [group])
+        var groups: [ScanResultGroup] = []
+        if !signatureHits.isEmpty {
+            groups.append(ScanResultGroup(
+                id: "threats", title: "已知威胁",
+                description: "命中已知广告软件 / PUP 特征，含其磁盘载荷。移除将移入废纸篓（可恢复）；"
+                           + "已在运行的进程会在你注销或重启后停止。",
+                systemImage: "exclamationmark.shield", safety: .risky, items: signatureHits))
+        }
+        if !heuristicHits.isEmpty {
+            groups.append(ScanResultGroup(
+                id: "suspicious", title: "可疑启动项",
+                description: "未命中特征库，但存在真实可疑迹象：伪装系统名 / 载荷未签名或签名破损 / 驻留危险路径。"
+                           + "逐条给出理由，请核对来源后再决定移除。",
+                systemImage: "questionmark.diamond", safety: .risky, items: heuristicHits))
+        }
+        return ScanResult(moduleID: .malware, groups: groups)
+    }
+
+    // MARK: 检测助手
+
+    /// 载荷是否位于「正规软件绝不会驻留」的一次性目录。
+    private func isDangerousPath(_ path: String) -> Bool {
+        let p = path.lowercased()
+        return p.hasPrefix("/tmp/") || p.hasPrefix("/private/tmp/") || p.hasPrefix("/var/tmp/")
+            || p.hasPrefix("/private/var/tmp/") || p.hasPrefix("/users/shared/")
+            || p.contains("/downloads/") || p.contains("/library/caches/")
+    }
+
+    /// 系统自带解释器/工具（bash、python、launchctl 等）：由 Apple 签名，无需校验，
+    /// 且大量正规工具用它们做启动脚本——校验它们只会制造噪音。
+    private func isSystemBinary(_ path: String) -> Bool {
+        path.hasPrefix("/bin/") || path.hasPrefix("/usr/bin/") || path.hasPrefix("/usr/sbin/")
+            || path.hasPrefix("/sbin/") || path.hasPrefix("/usr/libexec/") || path.hasPrefix("/System/")
+    }
+
+    enum CodeSignState { case valid, adhoc, unsigned, invalid }
+
+    /// 静态代码签名校验（Security.framework，与 codesign --verify 同源）。
+    func codeSignState(_ url: URL) -> CodeSignState {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode) == errSecSuccess,
+              let code = staticCode else { return .unsigned }
+        let status = SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSBasicValidateOnly), nil)
+        if status == errSecCSUnsigned { return .unsigned }
+        guard status == errSecSuccess else { return .invalid }
+        // 有效签名：区分 ad-hoc（无开发者身份）与正规签名
+        var infoRef: CFDictionary?
+        if SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &infoRef) == errSecSuccess,
+           let info = infoRef as? [String: Any],
+           let flags = info[kSecCodeInfoFlags as String] as? UInt32,
+           flags & SecCodeSignatureFlags.adhoc.rawValue != 0 {
+            return .adhoc
+        }
+        return .valid
     }
 
     /// 从 launchd plist 提取磁盘载荷路径（Program 或 ProgramArguments 首元素）。

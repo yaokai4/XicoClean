@@ -45,6 +45,8 @@ public struct XScanOrb: View {
 
     /// 彗星渐变：尾部透明 → 头部最亮（location 0.72 即弧头）。
     /// 头部本身就是渐变的最亮端 + 柔光，取代旧版「浮在弧末的分离白点」（用户点名的塑料感来源）。
+    /// 注意 0.78 之后归零：圆头笔帽会越过 trim 端点少许继续采样角度渐变，
+    /// 尾帽越过 0 时回绕到 location≈1.0——若那里仍是亮色，就会在尾部憋出一颗「孤点」。
     private var cometGradient: Gradient {
         let c0 = colors[0]
         let c1 = colors[min(1, colors.count - 1)]
@@ -54,7 +56,9 @@ public struct XScanOrb: View {
             .init(color: c0.opacity(0.22), location: 0.26),
             .init(color: c1,               location: 0.54),
             .init(color: c2,               location: 0.72),
-            .init(color: c2,               location: 1.00),
+            .init(color: c2,               location: 0.745),
+            .init(color: c2.opacity(0),    location: 0.78),
+            .init(color: c2.opacity(0),    location: 1.00),
         ])
     }
 
@@ -67,18 +71,27 @@ public struct XScanOrb: View {
     }
 
     /// Reduce Motion 下的静态降级：无旋转，单条渐变弧 + 数值（同样无分离白点）。
+    /// 确定性进度用实色渐变（彗星渐变 0.78 后归零，进度 >78% 会「断头」）。
     private var staticOrb: some View {
         let lineW = size * 0.028
         let c2 = colors[min(2, colors.count - 1)]
         return ZStack {
             Circle().stroke(XColor.surfaceAlt.opacity(0.30), lineWidth: lineW)
-            Circle()
-                .trim(from: 0, to: progress.map { min(max($0, 0.02), 1) } ?? 0.72)
-                .stroke(AngularGradient(gradient: cometGradient, center: .center),
-                        style: StrokeStyle(lineWidth: lineW, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-                .shadow(color: c2.opacity(0.35), radius: lineW * 1.3)
-                .animation(reduceMotion ? nil : XMotion.gauge, value: progress)
+            if let p = progress {
+                Circle()
+                    .trim(from: 0, to: min(max(p, 0.02), 1))
+                    .stroke(AngularGradient(colors: colors + [colors[0]], center: .center),
+                            style: StrokeStyle(lineWidth: lineW, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .shadow(color: c2.opacity(0.35), radius: lineW * 1.3)
+            } else {
+                Circle()
+                    .trim(from: 0.01, to: 0.72)
+                    .stroke(AngularGradient(gradient: cometGradient, center: .center),
+                            style: StrokeStyle(lineWidth: lineW, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .shadow(color: c2.opacity(0.35), radius: lineW * 1.3)
+            }
             centerLabel
         }
         .frame(width: size, height: size)
@@ -111,10 +124,18 @@ public struct XScanOrb: View {
                 // 诚实进度弧（有确定性 progress 时才画）
                 progressArc(lineWidth: lineW)
 
+                // 内圈反向细弧：极淡的第二层运动，给环纵深感（精致但不喧哗）
+                Circle()
+                    .trim(from: 0.01, to: 0.30)
+                    .stroke(c1.opacity(0.16), style: StrokeStyle(lineWidth: lineW * 0.5, lineCap: .round))
+                    .padding(lineW * 2.6)
+                    .rotationEffect(.degrees(-angle * 0.6 - 90))
+
                 // 主彗星：恒定弧长 0.72，尾透明 → 头最亮，柔和同色辉光；
                 // 头即渐变最亮端，与弧体连为一体——无分离白点、无塑料感。
+                // trim 从 0.01 起：配合渐变尾端归零，双保险杜绝尾帽回绕亮点。
                 Circle()
-                    .trim(from: 0, to: 0.72)
+                    .trim(from: 0.01, to: 0.72)
                     .stroke(AngularGradient(gradient: cometGradient, center: .center),
                             style: StrokeStyle(lineWidth: lineW, lineCap: .round))
                     .rotationEffect(.degrees(angle - 90))
