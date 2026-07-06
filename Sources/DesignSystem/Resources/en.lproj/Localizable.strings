@@ -673,3 +673,18 @@
 "仅移入废纸篓 · 一键可撤销" = "Moves to Trash only · one-click undo";
 "彻底删除 · 执行前二次确认" = "Permanent delete · confirmed before running";
 "上次清理 %@ · 释放 %@" = "Last cleanup %@ · freed %@";
+
+/* Space Lens redesign + temp/disk menu panels + hardware live specs (2026-07-07) */
+"读取" = "Read";
+"写入" = "Write";
+"%d 转" = "%d RPM";
+"已启用" = "Enabled";
+"未启用" = "Disabled";
+"开机时长" = "Uptime";
+"上次开机" = "Last boot";
+"%d 小时 %d 分钟" = "%dh %dm";
+"%d 分钟" = "%dm";
+"返回上一级" = "Go up one level";
+"只读分析 · 不修改任何文件" = "Read-only analysis · no files modified";
+"点击环层钻取 · 点击中心返回" = "Click a ring to drill in · click the center to go back";
+"放射环形图 · 逐层钻取 · 只读分析" = "Sunburst chart · drill down level by level · read-only";

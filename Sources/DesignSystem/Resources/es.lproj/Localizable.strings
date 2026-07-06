@@ -673,3 +673,18 @@
 "仅移入废纸篓 · 一键可撤销" = "Solo se mueve a la papelera · deshacer con un clic";
 "彻底删除 · 执行前二次确认" = "Eliminación definitiva · se confirma antes de ejecutar";
 "上次清理 %@ · 释放 %@" = "Última limpieza %@ · %@ liberados";
+
+/* Space Lens redesign + temp/disk menu panels + hardware live specs (2026-07-07) */
+"读取" = "Lectura";
+"写入" = "Escritura";
+"%d 转" = "%d RPM";
+"已启用" = "Activado";
+"未启用" = "Desactivado";
+"开机时长" = "Tiempo encendido";
+"上次开机" = "Último arranque";
+"%d 小时 %d 分钟" = "%d h %d min";
+"%d 分钟" = "%d min";
+"返回上一级" = "Subir un nivel";
+"只读分析 · 不修改任何文件" = "Análisis de solo lectura · no se modifica ningún archivo";
+"点击环层钻取 · 点击中心返回" = "Haz clic en un anillo para profundizar · en el centro para volver";
+"放射环形图 · 逐层钻取 · 只读分析" = "Gráfico solar · exploración nivel a nivel · solo lectura";

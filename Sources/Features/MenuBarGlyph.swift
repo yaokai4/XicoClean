@@ -141,13 +141,24 @@ struct GlyphChip {
 private extension View {
     /// 「圈图形」软框。`on=false` 时退化为裸图形（框可按项开关）。几何 @2x 落整数设备像素：
     /// 水平内边距 2.5pt=5px、垂直 1pt=2px、圆角 4pt=8px、描边 1pt=2px。
-    @ViewBuilder func menuGraphicChip(_ chip: GlyphChip, on: Bool = true) -> some View {
+    /// `flush=true` 用于直方图/进度条这类「有地面」的图形：柱子直接坐在边框内底沿，
+    /// 两侧只留 1.5pt，超出圆角部分裁切——框是图形的坐标系，而不是漂浮的装饰框。
+    @ViewBuilder func menuGraphicChip(_ chip: GlyphChip, on: Bool = true, flush: Bool = false) -> some View {
         if on {
-            self
-                .padding(.horizontal, 2.5)
-                .padding(.vertical, 1)
-                .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(chip.fill))
-                .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(chip.stroke, lineWidth: 1))
+            if flush {
+                self
+                    .padding(.horizontal, 1.5)
+                    .padding(.top, 2)
+                    .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(chip.fill))
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(chip.stroke, lineWidth: 1))
+            } else {
+                self
+                    .padding(.horizontal, 2.5)
+                    .padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(chip.fill))
+                    .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(chip.stroke, lineWidth: 1))
+            }
         } else {
             self
         }
@@ -277,12 +288,18 @@ private struct RichGlyph: View {
 
     var body: some View {
         HStack(spacing: 3.5) {
-            graphic.menuGraphicChip(chip, on: border)   // 默认裸图形；框可按项开启
+            // 直方图/进度条贴边入框（框=坐标系）；环形留呼吸边距
+            graphic.menuGraphicChip(chip, on: border, flush: isFlushViz)
             Text(value).font(.system(size: 12, weight: .semibold, design: .rounded)).monospacedDigit()
         }
         .foregroundStyle(chip.fg)
         .frame(height: 18)
         .padding(.horizontal, 1)
+    }
+
+    private var isFlushViz: Bool {
+        if case .ring = viz { return false }
+        return true
     }
 
     @ViewBuilder private var graphic: some View {

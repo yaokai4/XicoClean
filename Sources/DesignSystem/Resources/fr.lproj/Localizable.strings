@@ -673,3 +673,18 @@
 "仅移入废纸篓 · 一键可撤销" = "Déplacé vers la corbeille · annulation en un clic";
 "彻底删除 · 执行前二次确认" = "Suppression définitive · confirmation avant exécution";
 "上次清理 %@ · 释放 %@" = "Dernier nettoyage %@ · %@ libérés";
+
+/* Space Lens redesign + temp/disk menu panels + hardware live specs (2026-07-07) */
+"读取" = "Lecture";
+"写入" = "Écriture";
+"%d 转" = "%d tr/min";
+"已启用" = "Activé";
+"未启用" = "Désactivé";
+"开机时长" = "Temps de fonctionnement";
+"上次开机" = "Dernier démarrage";
+"%d 小时 %d 分钟" = "%d h %d min";
+"%d 分钟" = "%d min";
+"返回上一级" = "Remonter d'un niveau";
+"只读分析 · 不修改任何文件" = "Analyse en lecture seule · aucun fichier modifié";
+"点击环层钻取 · 点击中心返回" = "Cliquez sur un anneau pour explorer · au centre pour revenir";
+"放射环形图 · 逐层钻取 · 只读分析" = "Graphique en anneaux · exploration niveau par niveau · lecture seule";

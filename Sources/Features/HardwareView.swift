@@ -24,18 +24,33 @@ final class HardwareViewModel: ObservableObject {
     // 网络接口档案（名称 / 类型 / IP / MAC / 速率）——超越 Sensei 的硬件页网络卡。
     @Published var interfaces: [NetworkInterfaceInfo] = []
     @Published var wifi: WiFiInfo?
+    // CPU 实时频率（P/E 簇，MHz）与系统热压力——档案页的「活」指标。
+    @Published var freqP: Double?
+    @Published var freqE: Double?
+    @Published var thermal: ProcessInfo.ThermalState = .nominal
 
     private let hw: HardwareProfileService
     private let sensors: SensorReader
+    private let metrics: LiveMetricsSampler
     // 专属网络采样器：接口速率靠「上次采样」增量计算，与菜单栏/监视页共享同一实例会互相污染基线，
     // 故硬件页自持一份，速率读数独立稳定（名称/IP/MAC 本就无状态）。
     private let network = NetworkInfoService()
     private let bgQueue = DispatchQueue(label: "app.xico.hardware", qos: .userInitiated)
     private var timer: Timer?
 
-    init(hw: HardwareProfileService, sensors: SensorReader) {
+    init(hw: HardwareProfileService, sensors: SensorReader, metrics: LiveMetricsSampler) {
         self.hw = hw
         self.sensors = sensors
+        self.metrics = metrics
+    }
+
+    /// 真实开机时刻（kern.boottime；systemUptime 睡眠会漂移，不用它）。
+    var bootDate: Date? {
+        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
+        var boot = timeval()
+        var size = MemoryLayout<timeval>.stride
+        guard sysctl(&mib, 2, &boot, &size, nil, 0) == 0, boot.tv_sec != 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(boot.tv_sec))
     }
 
     func start() {
@@ -71,13 +86,15 @@ final class HardwareViewModel: ObservableObject {
 
     /// 电池 / GPU / 温度 / 风扇 / 网络接口：轻量，2 秒刷新。
     private func refreshHealth() {
-        bgQueue.async { [hw, sensors, network] in
+        bgQueue.async { [hw, sensors, network, metrics] in
             let battery = hw.battery()
             let gpu = hw.gpu()
             let temps = sensors.temperatures()
             let fans = sensors.fans()
             let ifaces = network.interfaces()
             let wifi = network.wifi()
+            let freq = metrics.cpuFrequency()   // 阻塞 ~90ms，已在后台队列
+            let thermal = ProcessInfo.processInfo.thermalState
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.battery = battery
@@ -86,6 +103,9 @@ final class HardwareViewModel: ObservableObject {
                 self.fans = fans
                 self.interfaces = ifaces
                 self.wifi = wifi
+                self.freqP = freq?.performance
+                self.freqE = freq?.efficiency
+                self.thermal = thermal
                 if let b = battery, abs(b.powerWatts) > 0.01 {
                     self.powerHistory.append(abs(b.powerWatts))
                     if self.powerHistory.count > self.powerCap {
@@ -115,7 +135,8 @@ public struct HardwareView: View {
 
     public init(env: XicoEnvironment) {
         self.env = env
-        _vm = StateObject(wrappedValue: HardwareViewModel(hw: env.hardware, sensors: env.sensors))
+        _vm = StateObject(wrappedValue: HardwareViewModel(hw: env.hardware, sensors: env.sensors,
+                                                          metrics: env.liveMetrics))
         self.engine = env.metricsEngine
     }
 
@@ -211,7 +232,34 @@ public struct HardwareView: View {
         if let serial = vm.profile?.serialNumber, !serial.isEmpty {
             out.append(SpecItem(id: "serial", label: xLoc("序列号"), value: serial, copyValue: serial))
         }
+        // 活指标：CPU 实时频率（P/E 簇）与开机信息——档案不止是静态铭牌。
+        if let p = vm.freqP, p > 0 {
+            out.append(SpecItem(id: "freqp", label: xLoc("性能核频率"), value: freqText(p), copyValue: nil))
+        }
+        if let e = vm.freqE, e > 0 {
+            out.append(SpecItem(id: "freqe", label: xLoc("能效核频率"), value: freqText(e), copyValue: nil))
+        }
+        if let boot = vm.bootDate {
+            out.append(SpecItem(id: "uptime", label: xLoc("开机时长"),
+                                value: uptimeText(since: boot), copyValue: nil))
+            let fmt = DateFormatter()
+            fmt.locale = XLocale.swiftUILocale
+            fmt.dateStyle = .medium; fmt.timeStyle = .short
+            out.append(SpecItem(id: "boot", label: xLoc("上次开机"), value: fmt.string(from: boot), copyValue: nil))
+        }
         return out
+    }
+
+    private func freqText(_ mhz: Double) -> String {
+        mhz >= 1000 ? String(format: "%.2f GHz", mhz / 1000) : String(format: "%.0f MHz", mhz)
+    }
+
+    private func uptimeText(since boot: Date) -> String {
+        let s = Int(Date().timeIntervalSince(boot))
+        let d = s / 86400, h = (s % 86400) / 3600, m = (s % 3600) / 60
+        if d > 0 { return xLocF("%d 天 %d 小时", d, h) }
+        if h > 0 { return xLocF("%d 小时 %d 分钟", h, m) }
+        return xLocF("%d 分钟", m)
     }
 
     /// 内存规格文案：容量 + 类型（如「16 GB 统一内存 · LPDDR5」），读不到类型则只显容量。
@@ -349,7 +397,8 @@ public struct HardwareView: View {
             if vm.storage.isEmpty {
                 XSkeletonRows(count: 3)
             }
-            ForEach(vm.storage) { s in
+            // 内置卷始终显示；外置卷剔除 0 可用的只读挂载镜像（DMG 噪音，不是真磁盘）。
+            ForEach(vm.storage.filter { $0.isInternal || $0.freeBytes > 0 }) { s in
                 VStack(alignment: .leading, spacing: XSpacing.s) {
                     HStack {
                         Text(s.name).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
@@ -422,6 +471,15 @@ public struct HardwareView: View {
             tempRow("GPU", gpu)
             tempRow(xLoc("固态硬盘"), ssd)
             tempRow(xLoc("电池"), bat)
+            // 系统热压力（macOS 官方口径）：正常之外的状态才值得担心，用色点直说。
+            HStack {
+                Text(xLoc("热压力")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                Spacer()
+                HStack(spacing: 5) {
+                    Circle().fill(thermalColor(vm.thermal)).frame(width: 7, height: 7)
+                    Text(thermalLabel(vm.thermal)).font(XFont.mono).foregroundStyle(thermalColor(vm.thermal))
+                }
+            }
             if !vm.fans.isEmpty {
                 Divider().overlay(XColor.hairline)
                 ForEach(vm.fans) { fan in fanRow(fan) }
@@ -465,6 +523,26 @@ public struct HardwareView: View {
                     Text(xLocF("最高 %d", mx)).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
                 }
             }
+        }
+    }
+
+    private func thermalLabel(_ t: ProcessInfo.ThermalState) -> String {
+        switch t {
+        case .nominal:  return xLoc("正常")
+        case .fair:     return xLoc("一般")
+        case .serious:  return xLoc("偏热")
+        case .critical: return xLoc("过热")
+        @unknown default: return xLoc("正常")
+        }
+    }
+
+    private func thermalColor(_ t: ProcessInfo.ThermalState) -> Color {
+        switch t {
+        case .nominal:  return XColor.success
+        case .fair:     return XColor.accentTeal
+        case .serious:  return XColor.warning
+        case .critical: return XColor.danger
+        @unknown default: return XColor.success
         }
     }
 

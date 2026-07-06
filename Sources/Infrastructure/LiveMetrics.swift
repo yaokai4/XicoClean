@@ -35,6 +35,8 @@ public struct SystemSnapshot: Sendable {
     public let diskTotal: Int64
     public let netDownBytesPerSec: Double
     public let netUpBytesPerSec: Double
+    public let diskReadBytesPerSec: Double    // 全盘读速率（IOBlockStorageDriver 统计差分）
+    public let diskWriteBytesPerSec: Double   // 全盘写速率
     public let gpuUsage: Double?          // 0...1（IOAccelerator）
     public let cpuTemp: Double?           // ℃（Apple Silicon HID / Intel SMC）
     public let gpuTemp: Double?           // ℃
@@ -78,6 +80,13 @@ public final class LiveMetricsSampler: @unchecked Sendable {
     private var prevPerCore: [(user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)]?
     private var prevNet: (down: UInt64, up: UInt64)?
     private var prevNetTime: Date?
+    /// GPU 利用率的指数移动平均状态。IOAccelerator 的 "Device Utilization %" 是瞬时忙碌值，
+    /// 逐秒读数在 0↔80 间跳变属于硬件真实行为，但直接显示像假数据；
+    /// iStat 同样做平滑。α=0.35：3 秒左右收敛，既平稳又不迟钝。
+    private var gpuEMA: Double?
+    /// 磁盘累计读写字节的差分状态（与网络同一套路）。
+    private var prevDisk: (read: UInt64, write: UInt64)?
+    private var prevDiskTime: Date?
     private let fs: FileSystemService
     private let smc = SMCReader()
     private let sensors = SensorReader()
@@ -91,9 +100,10 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         let mem = sampleMemory()
         let swap = sampleSwap()
         let net = sampleNetwork()
+        let disk = sampleDiskIO()
         let load = loadAverage()
         let cap = fs.volumeCapacity(for: FileManager.default.homeDirectoryForCurrentUser)
-        let gpu = hardware.acceleratorPerformance().utilization.map { min(1, max(0, $0 / 100)) }
+        let gpu = smoothedGPU(hardware.acceleratorPerformance().utilization.map { min(1, max(0, $0 / 100)) })
         let temp = sensors.summary()
         let battery = batteryStatus()
         return SystemSnapshot(
@@ -105,10 +115,59 @@ public final class LiveMetricsSampler: @unchecked Sendable {
             memoryPressure: memoryPressureLevel(), pageIns: mem.pageIns, pageOuts: mem.pageOuts,
             diskFree: cap?.available ?? 0, diskTotal: cap?.total ?? 0,
             netDownBytesPerSec: net.down, netUpBytesPerSec: net.up,
+            diskReadBytesPerSec: disk.read, diskWriteBytesPerSec: disk.write,
             gpuUsage: gpu,
             cpuTemp: temp.cpu, gpuTemp: temp.gpu,
             batteryPercent: battery.percent, batteryCharging: battery.charging,
             thermal: thermalLevel(), fanRPM: smc.fanRPM())
+    }
+
+    // MARK: 磁盘 I/O（IOBlockStorageDriver Statistics 差分，与 iStat 同源）
+
+    private func sampleDiskIO() -> (read: Double, write: Double) {
+        guard let cur = diskIOTotals() else { return (0, 0) }
+        let now = Date()
+        stateLock.lock(); defer { stateLock.unlock() }
+        defer { prevDisk = cur; prevDiskTime = now }
+        guard let prev = prevDisk, let prevT = prevDiskTime else { return (0, 0) }
+        let dt = now.timeIntervalSince(prevT)
+        guard dt > 0.1 else { return (0, 0) }
+        // 卸载外置盘会让累计值回退——出现负差时按 0 处理
+        let dr = cur.read >= prev.read ? Double(cur.read - prev.read) : 0
+        let dw = cur.write >= prev.write ? Double(cur.write - prev.write) : 0
+        return (dr / dt, dw / dt)
+    }
+
+    /// 汇总所有块存储驱动的累计读写字节。
+    private func diskIOTotals() -> (read: UInt64, write: UInt64)? {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault,
+                                           IOServiceMatching("IOBlockStorageDriver"), &iterator) == KERN_SUCCESS else {
+            return nil
+        }
+        defer { IOObjectRelease(iterator) }
+        var read: UInt64 = 0, write: UInt64 = 0, found = false
+        var service = IOIteratorNext(iterator)
+        while service != 0 {
+            if let prop = IORegistryEntryCreateCFProperty(service, "Statistics" as CFString, kCFAllocatorDefault, 0),
+               let stats = prop.takeRetainedValue() as? [String: Any] {
+                read += (stats["Bytes (Read)"] as? NSNumber)?.uint64Value ?? 0
+                write += (stats["Bytes (Write)"] as? NSNumber)?.uint64Value ?? 0
+                found = true
+            }
+            IOObjectRelease(service)
+            service = IOIteratorNext(iterator)
+        }
+        return found ? (read, write) : nil
+    }
+
+    /// GPU EMA 平滑（见 gpuEMA 注释）。读不到时清状态，避免陈旧值假装还活着。
+    private func smoothedGPU(_ raw: Double?) -> Double? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        guard let raw else { gpuEMA = nil; return nil }
+        let next = gpuEMA.map { 0.35 * raw + 0.65 * $0 } ?? raw
+        gpuEMA = next
+        return next
     }
 
     // MARK: CPU 聚合

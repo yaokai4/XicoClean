@@ -61,6 +61,8 @@ public final class AppModel: ObservableObject {
     @Published public var gpuHistory: [Double] = []
     @Published public var netDownHistory: [Double] = []
     @Published public var netUpHistory: [Double] = []
+    @Published public var diskReadHistory: [Double] = []
+    @Published public var diskWriteHistory: [Double] = []
     // 菜单栏详情面板的进程榜
     @Published public var topByCPU: [ProcessUsage] = []
     @Published public var topByMemory: [ProcessUsage] = []
@@ -74,6 +76,12 @@ public final class AppModel: ObservableObject {
     @Published public var sessionUpBytes: Int64 = 0
     // 网络接口清单（名称 / 类型 / IP / 速率）——后台隔次采样。
     @Published public var networkInterfaces: [NetworkInterfaceInfo] = []
+    // 温度传感器 / 风扇 / 磁盘卷（菜单栏温度、磁盘专属面板的数据源）——后台隔次采样。
+    @Published public var sensorTemps: [TempReading] = []
+    @Published public var fans: [FanInfo] = []
+    @Published public var storageVolumes: [StorageHealth] = []
+    private let sensorReader = SensorReader()
+    private let hardwareProfiler = HardwareProfileService()
     private let processes = ProcessSampler()
     private let historyCap = 60
     /// 详情类采样（CPU 频率 / 网络接口）走后台队列，绝不阻塞菜单栏主线程。
@@ -200,6 +208,8 @@ public final class AppModel: ObservableObject {
         push(&gpuHistory, s.gpuUsage ?? 0)
         push(&netDownHistory, s.netDownBytesPerSec)
         push(&netUpHistory, s.netUpBytesPerSec)
+        push(&diskReadHistory, s.diskReadBytesPerSec)
+        push(&diskWriteHistory, s.diskWriteBytesPerSec)
         // 本次会话峰值 / 累计（累计 = 速率 × 实测时间间隔的积分，来自真实采样，非编造）。
         let now0 = Date()
         netDownPeak = max(netDownPeak, s.netDownBytesPerSec)
@@ -221,13 +231,23 @@ public final class AppModel: ObservableObject {
         if detailTick % 3 == 1 {
             let sampler = env.liveMetrics
             let netInfo = mbNetwork
+            let sensors = sensorReader
+            let hw = hardwareProfiler
             detailQueue.async { [weak self] in
                 let freq = sampler.cpuFrequency()
                 let ifaces = netInfo.interfaces()
+                // 温度/风扇/磁盘卷：温度与磁盘专属面板的数据源（首个 storageHealth 会触发一次
+                // system_profiler，之后走缓存，稳定在毫秒级）。
+                let temps = sensors.temperatures()
+                let fanList = sensors.fans()
+                let volumes = hw.storageHealth()
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     if let f = freq { self.cpuFreqP = f.performance; self.cpuFreqE = f.efficiency }
                     self.networkInterfaces = ifaces
+                    self.sensorTemps = temps
+                    self.fans = fanList
+                    self.storageVolumes = volumes
                 }
             }
         }

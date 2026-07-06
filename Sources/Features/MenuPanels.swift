@@ -3,16 +3,24 @@ import Infrastructure
 import DesignSystem
 
 public enum MenuMetric: Sendable {
-    case cpu, memory, network
+    case cpu, memory, network, temperature, disk
 
     var title: String {
-        switch self { case .cpu: return xLoc("处理器"); case .memory: return xLoc("内存"); case .network: return xLoc("网络") }
+        switch self {
+        case .cpu: return xLoc("处理器")
+        case .memory: return xLoc("内存")
+        case .network: return xLoc("网络")
+        case .temperature: return xLoc("温度")
+        case .disk: return xLoc("磁盘")
+        }
     }
     var icon: String {
         switch self {
         case .cpu: return "cpu"
         case .memory: return "memorychip"
         case .network: return "antenna.radiowaves.left.and.right"
+        case .temperature: return "thermometer.medium"
+        case .disk: return "internaldrive"
         }
     }
     var colors: [Color] {
@@ -20,6 +28,8 @@ public enum MenuMetric: Sendable {
         case .cpu: return XColor.metricCPU
         case .memory: return XColor.metricMemory
         case .network: return XColor.metricNetwork
+        case .temperature: return [XColor.warning, XColor.accentPink]
+        case .disk: return XColor.metricDisk
         }
     }
 }
@@ -68,9 +78,11 @@ public struct MenuMetricPanel: View {
 
     @ViewBuilder private func content(_ s: SystemSnapshot) -> some View {
         switch metric {
-        case .cpu:     cpuContent(s)
-        case .memory:  memoryContent(s)
-        case .network: networkContent(s)
+        case .cpu:         cpuContent(s)
+        case .memory:      memoryContent(s)
+        case .network:     networkContent(s)
+        case .temperature: temperatureContent(s)
+        case .disk:        diskContent(s)
         }
     }
 
@@ -378,5 +390,207 @@ public struct MenuMetricPanel: View {
             Text(value).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - 温度面板（全部传感器 + 热状态 + 风扇，对标 iStat Sensors）
+
+    @ViewBuilder private func temperatureContent(_ s: SystemSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: XSpacing.m) {
+            // 三大代表温度：CPU / GPU / SSD（读不到的自动隐藏）
+            HStack(spacing: XSpacing.l) {
+                if let c = s.cpuTemp { tempHero(xLoc("处理器"), c) }
+                if let g = s.gpuTemp { tempHero("GPU", g) }
+                if let d = avgTemp(.ssd) { tempHero(xLoc("固态硬盘"), d) }
+                Spacer(minLength: 0)
+                thermalChip(s.thermal)
+            }
+            if !model.sensorTemps.isEmpty {
+                Divider().padding(.vertical, 1)
+                // 全部命名传感器（按温度降序，滚动查看）——密度即诚意
+                ScrollView {
+                    VStack(spacing: 3) {
+                        ForEach(model.sensorTemps.sorted { $0.celsius > $1.celsius }) { t in
+                            sensorRow(t)
+                        }
+                    }
+                }
+                .frame(maxHeight: 240)
+            }
+            if !model.fans.isEmpty {
+                Divider().padding(.vertical, 1)
+                Text(xLoc("风扇")).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                ForEach(model.fans) { fan in fanRow(fan) }
+            }
+        }
+    }
+
+    private func tempHero(_ label: String, _ celsius: Double) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                .lineLimit(1).minimumScaleFactor(0.85)
+            Text("\(Int(celsius.rounded()))°")
+                .font(XFont.monoLarge).foregroundStyle(tempColor(celsius))
+                .contentTransition(.numericText())
+        }
+    }
+
+    private func thermalChip(_ level: ThermalLevel) -> some View {
+        let (color, icon): (Color, String) = {
+            switch level {
+            case .nominal: return (XColor.success, "checkmark.circle.fill")
+            case .fair:    return (XColor.accentTeal, "thermometer.low")
+            case .serious: return (XColor.warning, "thermometer.high")
+            case .critical: return (XColor.danger, "flame.fill")
+            }
+        }()
+        return HStack(spacing: 4) {
+            Image(systemName: icon).font(.system(size: 10, weight: .semibold))
+            Text(xLoc(level.rawValue)).font(XFont.captionEmphasis)
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, XSpacing.s).padding(.vertical, 4)
+        .background(Capsule().fill(color.opacity(0.12)))
+    }
+
+    private func avgTemp(_ cat: TempReading.Category) -> Double? {
+        let vals = model.sensorTemps.filter { $0.category == cat }.map(\.celsius)
+        guard !vals.isEmpty else { return nil }
+        return vals.reduce(0, +) / Double(vals.count)
+    }
+
+    /// 传感器显示名：把冗长的固件命名压成可读短名（完整名保留在悬停提示里）。
+    /// 例：pACC MTR Temp Sensor4 → pACC #4 · SOC MTR Temp Sensor1 → SOC #1
+    private func sensorDisplayName(_ raw: String) -> String {
+        raw.replacingOccurrences(of: " MTR Temp Sensor", with: " #")
+           .replacingOccurrences(of: " Temp Sensor", with: " #")
+           .replacingOccurrences(of: "Temp Sensor", with: "#")
+    }
+
+    /// 单个传感器行：名称 + 热度条（20…105℃ 归一）+ 读数。
+    private func sensorRow(_ t: TempReading) -> some View {
+        let frac = min(1, max(0, (t.celsius - 20) / 85))
+        return HStack(spacing: XSpacing.s) {
+            Text(sensorDisplayName(t.name)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                .lineLimit(1).truncationMode(.middle)
+                .frame(width: 128, alignment: .leading)
+                .help(t.name)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(XColor.surfaceAlt)
+                    Capsule()
+                        .fill(LinearGradient(colors: [XColor.accentTeal, XColor.warning, XColor.danger],
+                                             startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(4, geo.size.width * frac))
+                }
+            }
+            .frame(height: 5)
+            Text(String(format: "%.0f°", t.celsius))
+                .font(XFont.microMono).foregroundStyle(tempColor(t.celsius))
+                .frame(width: 34, alignment: .trailing)
+                .monospacedDigit()
+        }
+    }
+
+    private func tempColor(_ c: Double) -> Color {
+        if c >= 85 { return XColor.danger }
+        if c >= 70 { return XColor.warning }
+        return XColor.textPrimary
+    }
+
+    /// 风扇行：编号 + 区间条（含目标刻度）+ 当前转速。
+    private func fanRow(_ fan: FanInfo) -> some View {
+        HStack(spacing: XSpacing.s) {
+            Image(systemName: "fan.fill").font(.system(size: 10)).foregroundStyle(XColor.accentTeal)
+                .frame(width: 14)
+            Text(xLocF("风扇 %d", fan.id + 1)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                .frame(width: 60, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(XColor.surfaceAlt)
+                    Capsule().fill(XColor.accentTeal)
+                        .frame(width: max(4, geo.size.width * fan.fraction))
+                    if let tf = fan.targetFraction {
+                        Rectangle().fill(XColor.textSecondary)
+                            .frame(width: 1.5, height: 9)
+                            .offset(x: geo.size.width * tf)
+                    }
+                }
+            }
+            .frame(height: 5)
+            Text(xLocF("%d 转", fan.rpm))
+                .font(XFont.microMono).foregroundStyle(XColor.textPrimary)
+                .frame(width: 58, alignment: .trailing)
+                .monospacedDigit()
+        }
+        .help(fan.target.map { xLocF("目标 %d", $0) } ?? "")
+    }
+
+    // MARK: - 磁盘面板（读写大数字 + 双线图 + 每卷用量 + 健康，对标 iStat Disks）
+
+    @ViewBuilder private func diskContent(_ s: SystemSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: XSpacing.m) {
+            HStack(spacing: XSpacing.xl) {
+                rateColumn("arrow.down.doc", XColor.netDown, xLoc("读取"), s.diskReadBytesPerSec)
+                rateColumn("arrow.up.doc", XColor.netUp, xLoc("写入"), s.diskWriteBytesPerSec)
+                Spacer()
+            }
+            diskChart.frame(height: 48)
+            // 只展示真实磁盘：内置卷始终显示；外置卷剔除只读挂载镜像（0 可用的 DMG 噪音）。
+            let realVolumes = model.storageVolumes.filter { $0.isInternal || $0.freeBytes > 0 }
+            if !realVolumes.isEmpty {
+                Divider().padding(.vertical, 1)
+                ForEach(realVolumes) { vol in volumeRow(vol) }
+            }
+            // SSD 温度（有传感器才显示，与硬件页同源）
+            if let ssdT = avgTemp(.ssd) {
+                HStack(spacing: XSpacing.l) {
+                    metricChip(xLoc("固态温度"), String(format: "%.0f℃", ssdT))
+                    if let trim = model.storageVolumes.first(where: { $0.isInternal })?.trimEnabled {
+                        metricChip("TRIM", trim ? xLoc("已启用") : xLoc("未启用"))
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    private var diskChart: some View {
+        let maxV = max((model.diskReadHistory + model.diskWriteHistory).max() ?? 1, 1)
+        let read = model.diskReadHistory.map { $0 / maxV }
+        let write = model.diskWriteHistory.map { $0 / maxV }
+        return ZStack {
+            XLineChart(values: read, colors: [XColor.netDown, XColor.ring(2)], showDot: false)
+            XLineChart(values: write, colors: [XColor.netUp, XColor.ring(1)], showFill: false, showDot: false)
+        }
+    }
+
+    /// 单卷行：名称 + SMART 徽章 + 用量条 + 「可用/总量」。
+    private func volumeRow(_ vol: StorageHealth) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: XSpacing.s) {
+                Image(systemName: vol.isInternal ? "internaldrive.fill" : "externaldrive.fill")
+                    .font(.system(size: 10)).foregroundStyle(XColor.accentTeal)
+                Text(vol.name).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
+                    .lineLimit(1).truncationMode(.middle)
+                if vol.isInternal, vol.smartStatus == "Verified" {
+                    Text("SMART").font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(XColor.success)
+                        .padding(.horizontal, 4).padding(.vertical, 1.5)
+                        .background(Capsule().fill(XColor.success.opacity(0.14)))
+                }
+                Spacer()
+                Text(xLocF("%@ 可用", vol.freeBytes.formattedBytes))
+                    .font(XFont.microMono).foregroundStyle(XColor.textSecondary)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(XColor.surfaceAlt)
+                    Capsule()
+                        .fill(LinearGradient(colors: XColor.metricDisk, startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(4, geo.size.width * vol.usedFraction))
+                }
+            }
+            .frame(height: 6)
+        }
     }
 }

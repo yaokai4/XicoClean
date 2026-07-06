@@ -42,13 +42,19 @@ private struct RingSector: Shape {
 public struct SunburstView: View {
     let node: DiskNode
     let onDrill: (DiskNode) -> Void
+    /// 点击中心返回上一级（DaisyDisk 式手势）；nil 表示已在顶层。
+    let onUp: (() -> Void)?
 
-    public init(node: DiskNode, onDrill: @escaping (DiskNode) -> Void) {
+    public init(node: DiskNode, onDrill: @escaping (DiskNode) -> Void, onUp: (() -> Void)? = nil) {
         self.node = node
         self.onDrill = onDrill
+        self.onUp = onUp
     }
 
     @State private var hovered: DiskNode?
+    @State private var centerHover = false
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // 珠宝色相盘：每个一级文件夹分一个色相，子孙继承。
     private static let palette: [Color] = [
@@ -91,21 +97,36 @@ public struct SunburstView: View {
                 let inner = hole + CGFloat(arc.depth - 1) * ringW
                 let outer = inner + ringW - 1.5   // 环间留 1.5pt 缝
                 let isHot = hovered?.id == arc.node.id
+                // 同族高亮：悬停某段时，它与它的祖先/子孙（同色相路径）保持满亮，其余变淡——
+                // 一眼看清「这块空间从哪来、往哪去」。
+                let dimmed = hovered != nil && !isHot && !isRelated(arc.node, to: hovered)
                 RingSector(start: arc.start + 0.25, end: arc.end - 0.25, inner: inner, outer: outer)
-                    .fill(arc.color.opacity(isHot ? 1 : depthOpacity(arc.depth)))
+                    .fill(arc.color.opacity(isHot ? 1 : depthOpacity(arc.depth) * (dimmed ? 0.35 : 1)))
                     .overlay(
                         RingSector(start: arc.start + 0.25, end: arc.end - 0.25, inner: inner, outer: outer)
                             .stroke(Color.white.opacity(isHot ? 0.9 : 0.0), lineWidth: 1.5)
                     )
+                    .shadow(color: isHot ? arc.color.opacity(0.55) : .clear, radius: isHot ? 10 : 0)
                     .contentShape(RingSector(start: arc.start, end: arc.end, inner: inner, outer: outer))
                     .onHover { if $0 { hovered = arc.node } else if hovered?.id == arc.node.id { hovered = nil } }
                     .onTapGesture { if arc.node.isDirectory, !arc.node.children.isEmpty { onDrill(arc.node) } }
                     .help("\(arc.node.name) · \(arc.node.size.formattedBytes)")
+                    .animation(.easeOut(duration: 0.15), value: hovered?.id)
             }
             centerLabel(hole: hole)
         }
         .frame(width: side, height: side)
+        .scaleEffect(appeared || reduceMotion ? 1 : 0.94)
+        .opacity(appeared || reduceMotion ? 1 : 0)
+        .onAppear { withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) { appeared = true } }
         .frame(maxWidth: .infinity, maxHeight: .infinity)  // 居中
+    }
+
+    /// 判断两个节点是否同一路径族（祖先或子孙关系）——用 URL 前缀近似，无需回溯树。
+    private func isRelated(_ a: DiskNode, to b: DiskNode?) -> Bool {
+        guard let b else { return false }
+        let pa = a.url.path, pb = b.url.path
+        return pa.hasPrefix(pb + "/") || pb.hasPrefix(pa + "/") || pa == pb
     }
 
     private func centerLabel(hole: CGFloat) -> some View {
@@ -115,24 +136,46 @@ public struct SunburstView: View {
             guard let h = hovered, h.id != node.id, node.size > 0 else { return nil }
             return Int((Double(h.size) / Double(node.size) * 100).rounded())
         }()
-        return VStack(spacing: 3) {
-            Text(shown.size.formattedBytes)
-                .font(.system(size: max(15, hole * 0.34), weight: .bold, design: .rounded))
-                .foregroundStyle(XColor.textPrimary)
-                .monospacedDigit()
-            Text(xLoc(shown.name))
-                .font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                .lineLimit(1).truncationMode(.middle)
-                .frame(maxWidth: hole * 1.7)
-            if let pct = sharePct {
-                HStack(spacing: 3) {
-                    Image(systemName: "chart.pie.fill").font(.system(size: 9))
-                    Text("\(pct)%").font(XFont.captionEmphasis).monospacedDigit()
+        let canGoUp = onUp != nil && hovered == nil
+        return ZStack {
+            // 中心盘：给数字一块「表盘」底座，悬停上一级时点亮
+            Circle().fill(XColor.surface.opacity(centerHover && canGoUp ? 0.9 : 0.5))
+            Circle().stroke(XColor.hairline, lineWidth: 1)
+            VStack(spacing: 3) {
+                if centerHover && canGoUp {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: max(18, hole * 0.3), weight: .semibold))
+                        .foregroundStyle(XColor.brand)
+                    Text(xLoc("返回上一级")).font(XFont.captionEmphasis).foregroundStyle(XColor.brand)
+                } else {
+                    Text(shown.size.formattedBytes)
+                        .font(.system(size: max(15, hole * 0.30), weight: .bold, design: .rounded))
+                        .foregroundStyle(XColor.textPrimary)
+                        .monospacedDigit()
+                        .lineLimit(1).minimumScaleFactor(0.55)
+                        .contentTransition(.numericText())
+                    Text(xLoc(shown.name))
+                        .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        .lineLimit(1).truncationMode(.middle)
+                        .frame(maxWidth: hole * 1.6)
+                    if let pct = sharePct {
+                        HStack(spacing: 3) {
+                            Image(systemName: "chart.pie.fill").font(.system(size: 9))
+                            Text("\(pct)%").font(XFont.captionEmphasis).monospacedDigit()
+                        }
+                        .foregroundStyle(XColor.brand)
+                        .contentTransition(.numericText())
+                    }
                 }
-                .foregroundStyle(XColor.brand)
-                .contentTransition(.numericText())
             }
+            .padding(hole * 0.10)
         }
+        .frame(width: hole * 2 - 6, height: hole * 2 - 6)
+        .contentShape(Circle())
+        .onHover { centerHover = $0 }
+        .onTapGesture { onUp?() }
+        .animation(.easeOut(duration: 0.15), value: centerHover)
+        .accessibilityLabel(canGoUp ? xLoc("返回上一级") : xLoc(shown.name))
     }
 
     // MARK: 图例（最大的文件夹）
@@ -177,7 +220,10 @@ public struct SunburstView: View {
                         Text(xLoc(child.name)).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                             .lineLimit(1).truncationMode(.middle)
                         Spacer()
+                        Text("\(Int((fraction * 100).rounded()))%")
+                            .font(XFont.caption).foregroundStyle(isHot ? color : XColor.textTertiary).monospacedDigit()
                         Text(child.size.formattedBytes).font(XFont.caption).foregroundStyle(XColor.textSecondary).monospacedDigit()
+                            .frame(minWidth: 64, alignment: .trailing)
                     }
                     // 占比条
                     GeometryReader { g in

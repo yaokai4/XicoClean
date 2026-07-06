@@ -273,11 +273,24 @@ struct ScanningIndicator: View {
     var body: some View {
         VStack(spacing: XSpacing.xl) {
             XScanOrb(value: bytes.formattedBytes, label: xLoc("已发现"), size: 300, progress: progress)
-            Text(message.isEmpty ? xLoc("正在扫描…") : message)
-                .font(XFont.body).foregroundStyle(XColor.textSecondary)
-                .lineLimit(1).truncationMode(.middle).frame(maxWidth: 380)
-                .transition(.opacity)
-                .id(message)
+            // 状态胶囊：脉冲点 + 正在扫描的位置（等宽、居中截断）+ 确定性进度百分比
+            HStack(spacing: XSpacing.s) {
+                XLiveDot()
+                Text(message.isEmpty ? xLoc("正在扫描…") : message)
+                    .font(XFont.captionMono).foregroundStyle(XColor.textSecondary)
+                    .lineLimit(1).truncationMode(.middle)
+                if let p = progress {
+                    Text("\(Int((min(max(p, 0), 1) * 100).rounded()))%")
+                        .font(XFont.captionEmphasis).foregroundStyle(XColor.brand)
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                }
+            }
+            .padding(.horizontal, XSpacing.l).padding(.vertical, 7)
+            .background(Capsule().fill(XColor.surface.opacity(0.6)))
+            .overlay(Capsule().stroke(XColor.hairline, lineWidth: 1))
+            .frame(maxWidth: 440)
+            .animation(.easeOut(duration: 0.2), value: message)
         }
     }
 }

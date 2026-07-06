@@ -226,6 +226,9 @@ struct ModuleIdleHero: View {
     let subtitle: String
     let buttonTitle: String
     var facts: [Fact] = []
+    /// 可选的次要动作（如空间透镜的「选择文件夹…」），与主 CTA 并排。
+    var secondaryTitle: String?
+    var secondaryAction: (() -> Void)?
     let action: () -> Void
     var body: some View {
         VStack(spacing: XSpacing.l) {
@@ -234,10 +237,15 @@ struct ModuleIdleHero: View {
             Text(xLoc(title)).xLargeTitle().foregroundStyle(XColor.textPrimary)
             Text(xLoc(subtitle)).font(XFont.body).foregroundStyle(XColor.textSecondary)
                 .multilineTextAlignment(.center).frame(maxWidth: 460).lineSpacing(2)
-            Button(buttonTitle, action: action)
-                .buttonStyle(XPrimaryButtonStyle(large: true))
-                .keyboardShortcut(.defaultAction)
-                .padding(.top, XSpacing.s)
+            HStack(spacing: XSpacing.m) {
+                Button(buttonTitle, action: action)
+                    .buttonStyle(XPrimaryButtonStyle(large: true))
+                    .keyboardShortcut(.defaultAction)
+                if let t = secondaryTitle, let act = secondaryAction {
+                    Button(t, action: act).buttonStyle(XSecondaryButtonStyle())
+                }
+            }
+            .padding(.top, XSpacing.s)
             if !facts.isEmpty {
                 HStack(spacing: XSpacing.s) {
                     ForEach(facts) { fact in

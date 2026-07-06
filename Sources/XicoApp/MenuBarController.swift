@@ -229,8 +229,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         case "cpu":     MenuMetricPanel(model: model, metric: .cpu)
         case "memory":  MenuMetricPanel(model: model, metric: .memory)
         case "network": MenuMetricPanel(model: model, metric: .network)
-        // 温度 / GPU / 磁盘 / 合并：没有专属深度面板，一律打开「系统总览」（含各自卡片），
-        // 避免点温度却弹出「处理器」面板、以及多个项弹出同一张 CPU 面板的错乱。
+        case "temp":    MenuMetricPanel(model: model, metric: .temperature)
+        case "disk":    MenuMetricPanel(model: model, metric: .disk)
+        // GPU / 合并：没有专属深度面板，打开「系统总览」（含各自卡片）。
         default:        MenuBarView(model: model)
         }
     }

@@ -23,6 +23,9 @@ func renderLiveShots() {
         ("12-menu-cpu", AnyView(panelBG { MenuMetricPanel(model: model, metric: .cpu) }), CGSize(width: 320, height: 560)),
         ("13-menu-memory", AnyView(panelBG { MenuMetricPanel(model: model, metric: .memory) }), CGSize(width: 320, height: 560)),
         ("14-menu-network", AnyView(panelBG { MenuMetricPanel(model: model, metric: .network) }), CGSize(width: 320, height: 320)),
+        ("22-menu-temp", AnyView(panelBG { MenuMetricPanel(model: model, metric: .temperature) }), CGSize(width: 320, height: 560)),
+        ("23-menu-disk", AnyView(panelBG { MenuMetricPanel(model: model, metric: .disk) }), CGSize(width: 320, height: 480)),
+        ("24-spacelens-idle", AnyView(SpaceLensView(env: env)), CGSize(width: 1080, height: 720)),
         ("15-settings", AnyView(SettingsView(model: model).environmentObject(model)), CGSize(width: 900, height: 1180)),
         ("18-pricing", AnyView(PricingView(model: model)), CGSize(width: 760, height: 720)),
         ("20-dashboard", AnyView(SmartScanView(model: model)), CGSize(width: 900, height: 820))
