@@ -116,7 +116,7 @@ append_info_string "XicoPurchaseURL" "${XICO_PURCHASE_URL:-https://mac.xicoai.co
 # 在线激活服务地址（软件把激活码 POST 到 <此地址>/api/license/activate）
 append_info_string "XicoActivationURL" "${XICO_ACTIVATION_URL:-https://mac.xicoai.com}"
 # 更新源（Sparkle 兼容的 appcast 键；内置更新检查器也读它）
-append_info_string "SUFeedURL" "${XICO_FEED_URL:-https://xico.app/appcast.xml}"
+append_info_string "SUFeedURL" "${XICO_FEED_URL:-https://mac.xicoai.com/appcast.xml}"
 cat <<PLIST
 </dict>
 </plist>

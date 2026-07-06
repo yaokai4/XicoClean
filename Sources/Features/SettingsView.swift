@@ -215,10 +215,10 @@ public struct SettingsView: View {
                     Text(xLoc("macOS 系统清理 · 磁盘管理 · 性能优化")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     Text(xLocF("版本 %@", version)).font(XFont.caption).foregroundStyle(XColor.textTertiary)
                     HStack(spacing: XSpacing.s) {
-                        Button(xLoc("隐私政策")) { NSWorkspace.shared.open(URL(string: "https://xico.app/privacy")!) }
+                        Button(xLoc("隐私政策")) { NSWorkspace.shared.open(URL(string: "https://mac.xicoai.com/security")!) }
                             .buttonStyle(.link).font(XFont.caption)
                         Text("·").foregroundStyle(XColor.textTertiary)
-                        Button(xLoc("许可协议")) { NSWorkspace.shared.open(URL(string: "https://xico.app/eula")!) }
+                        Button(xLoc("许可协议")) { NSWorkspace.shared.open(URL(string: "https://xicoai.com/terms")!) }
                             .buttonStyle(.link).font(XFont.caption)
                     }
                 }
