@@ -52,7 +52,7 @@ public enum MenuBarGlyph {
         let s = chip(colored: colored, tint: XColor.metricMemory)
         let value = "\(pct(fraction))%"
         if style == .rich {
-            return rasterize(RichGlyph(viz: .ring(fraction), value: value, chip: s, border: border), colored: colored)
+            return rasterize(RichGlyph(viz: .pie(fraction), value: value, chip: s, border: border), colored: colored)
         }
         return rasterize(MetricGlyph(glyph: "memorychip", value: value, history: history, style: style, chip: s, border: border), colored: colored)
     }
@@ -85,7 +85,7 @@ public enum MenuBarGlyph {
         let s = chip(colored: colored, tint: XColor.metricDisk)
         let value = "\(pct(fraction))%"
         if style == .rich {
-            return rasterize(RichGlyph(viz: .bar(fraction), value: value, chip: s, border: border), colored: colored)
+            return rasterize(RichGlyph(viz: .pie(fraction), value: value, chip: s, border: border), colored: colored)
         }
         return rasterize(MetricGlyph(glyph: "internaldrive", value: value, history: [], style: style, chip: s, border: border), colored: colored)
     }
@@ -95,7 +95,7 @@ public enum MenuBarGlyph {
         let s = chip(colored: colored, tint: XColor.metricGPU)
         let value = "\(pct(fraction))%"
         if style == .rich {
-            return rasterize(RichGlyph(viz: .ring(fraction), value: value, chip: s, border: border), colored: colored)
+            return rasterize(RichGlyph(viz: .pie(fraction), value: value, chip: s, border: border), colored: colored)
         }
         return rasterize(MetricGlyph(glyph: "cpu.fill", value: value, history: history, style: style, chip: s, border: border), colored: colored)
     }
@@ -277,9 +277,9 @@ private struct NetGlyph: View {
 // 只有折线迷你图（graph）需要一枚淡淡的框把「图表区」圈出来——那个在 MetricGlyph/NetGlyph 里处理。
 private struct RichGlyph: View {
     enum Viz {
-        case histogram([Double])   // CPU/GPU：直方条
-        case ring(Double)          // 内存/GPU：迷你环
-        case bar(Double)           // 磁盘：横向进度条
+        case histogram([Double])   // CPU：直方条
+        case pie(Double)           // 内存/GPU/磁盘：实心饼盘（iStat 式，圆盘永远完整无缺口）
+        case bar(Double)           // 备用：横向进度条
     }
     let viz: Viz
     let value: String
@@ -297,14 +297,14 @@ private struct RichGlyph: View {
     }
 
     private var isFlushViz: Bool {
-        if case .ring = viz { return false }
+        if case .pie = viz { return false }   // 饼盘是自完整图形，永远裸露不套框
         return true
     }
 
     @ViewBuilder private var graphic: some View {
         switch viz {
         case .histogram(let h): MiniHistogram(values: h)
-        case .ring(let f):      MiniRingGlyph(fraction: f)
+        case .pie(let f):       MiniPieGlyph(fraction: f)
         case .bar(let f):       MiniBarGlyph(fraction: f)
         }
     }
@@ -330,17 +330,33 @@ private struct MiniHistogram: View {
     }
 }
 
-/// 迷你环（用 trim 画部分弧）。
-private struct MiniRingGlyph: View {
+/// 迷你饼盘（iStat 式）：淡底圆盘 + 实心扇形填充 + 清晰外沿。
+/// 环形在高占比时留下的「缺口」在彩色壁纸上像被咬了一口——饼盘的圆盘永远完整。
+private struct MiniPieGlyph: View {
     let fraction: Double
     var body: some View {
         ZStack {
-            Circle().stroke(lineWidth: 2).opacity(0.25)
-            Circle().trim(from: 0, to: max(0.02, min(fraction, 1)))
-                .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                .rotationEffect(.degrees(-90))
+            Circle().opacity(0.22)                                  // 底盘：未用部分
+            PieSector(fraction: max(0.02, min(fraction, 1)))        // 实心扇形：已用部分
+            Circle().stroke(lineWidth: 1).opacity(0.5)              // 外沿：圆盘轮廓永远闭合
         }
-        .frame(width: 13, height: 13)
+        .frame(width: 14, height: 14)
+        .padding(.vertical, 0.5)
+    }
+}
+
+/// 从 12 点方向顺时针展开的实心扇形。
+private struct PieSector: Shape {
+    var fraction: Double
+    func path(in rect: CGRect) -> Path {
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        var p = Path()
+        p.move(to: c)
+        p.addArc(center: c, radius: min(rect.width, rect.height) / 2,
+                 startAngle: .degrees(-90), endAngle: .degrees(-90 + 360 * min(fraction, 1)),
+                 clockwise: false)
+        p.closeSubpath()
+        return p
     }
 }
 
