@@ -721,3 +721,14 @@
 "载荷签名已破损（内容被篡改过）· 请审阅" = "Payload signature is broken (contents were modified) · please review";
 "载荷为临时签名（无开发者身份）· 请确认来源" = "Payload has an ad-hoc signature (no developer identity) · verify its origin";
 "未命中特征库，但存在真实可疑迹象：伪装系统名 / 载荷未签名或签名破损 / 驻留危险路径。逐条给出理由，请核对来源后再决定移除。" = "No signature match, but real red flags: system-name masquerade / unsigned or broken payload signature / persistence in risky paths. Each finding states its reason — verify the source before removing.";
+
+/* Deep full-disk scan layer (2026-07-07) */
+"已走查 %@ 个文件" = "%@ files inspected";
+"深度扫描" = "Deep Scan";
+"全盘走查：残留安装包 / 中断下载" = "Full-disk walk: leftover installers / broken downloads";
+"残留安装包" = "Leftover installers";
+"中断的下载" = "Broken downloads";
+"安装包 · 装完即可删" = "Installer · safe to delete after installing";
+"中断的下载残块" = "Broken download fragment";
+"安装完成后 .dmg / .pkg 就完成了使命；超过 30 天未动的默认勾选，移入废纸篓可恢复。" = "Once installed, .dmg / .pkg files have served their purpose; those untouched for 30+ days are selected by default. Moved to Trash, recoverable.";
+"下载中断留下的残块（.crdownload / .part / .download），续传会重新开始，可安全清理。" = "Fragments left by interrupted downloads (.crdownload / .part / .download). Resuming starts over anyway — safe to clean.";

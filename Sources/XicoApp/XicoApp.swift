@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Features
+import Domain
 import Infrastructure
 import DesignSystem
 
@@ -48,6 +49,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        if CommandLine.arguments.contains("--deepscan") {
+            // 深度全盘扫描自检：真实走查家目录，打印命中组与耗时。
+            let svc = DeepScanner(fs: LocalFileSystemService(), safety: DefaultSafetyEngine())
+            let start = Date()
+            Task {
+                let lastMsg = AtomicMessage()
+                let result = try await svc.scan { p in lastMsg.set(p.message) }
+                let secs = Date().timeIntervalSince(start)
+                print(String(format: "deepscan done in %.1fs · %@", secs, lastMsg.get()))
+                for g in result.groups {
+                    print("== \(g.title): \(g.items.count) 项 · \(g.items.reduce(Int64(0)) { $0 + $1.size }.formattedBytes)")
+                    for i in g.items.prefix(5) { print("   \(i.displayName) · \(i.size.formattedBytes) · selected=\(i.isSelected)") }
+                }
+                exit(0)
+            }
+            RunLoop.main.run()
+        }
         if CommandLine.arguments.contains("--diskbench") {
             // 磁盘测速引擎自检：真实写读一轮，打印结果（验证 F_NOCACHE 路径与清理）。
             let svc = DiskBenchmarkService()
@@ -62,6 +80,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             renderLiveShots()
             NSApp.terminate(nil)
             return
+        }
+        // 单实例守卫：更新替换 App 或多路径安装时旧实例可能仍在运行——两个进程会各画一套
+        // 菜单栏状态项（用户报告的「莫名冒出两个一样的监控」）。发现同 bundle 的其他实例：
+        // 激活它、退出自己，绝不并存。
+        if let bid = Bundle.main.bundleIdentifier, !bid.isEmpty {
+            let others = NSRunningApplication.runningApplications(withBundleIdentifier: bid)
+                .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+            if let other = others.first {
+                other.activate()
+                NSApp.terminate(nil)
+                return
+            }
         }
         // 正常启动：用 AppKit 接管菜单栏（瞬态弹窗，自动消失 + 可在设置里编辑）
         menuBar = MenuBarController(model: .shared)
@@ -124,4 +154,12 @@ struct XicoMain: App {
         }
         // 菜单栏由 AppKit 的 MenuBarController 接管（见 AppDelegate）
     }
+}
+
+/// --deepscan 自检用的跨线程消息盒（进度回调在后台线程触发）。
+final class AtomicMessage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var v = ""
+    func set(_ s: String) { lock.lock(); v = s; lock.unlock() }
+    func get() -> String { lock.lock(); defer { lock.unlock() }; return v }
 }

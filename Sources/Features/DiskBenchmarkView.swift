@@ -178,11 +178,21 @@ public struct DiskBenchmarkView: View {
 
     private var statusRow: some View {
         VStack(spacing: XSpacing.m) {
+            // 状态胶囊：彗星旋转器 + 阶段文案（与扫描态同一套视觉语言）
             HStack(spacing: XSpacing.s) {
-                if vm.running { XSpinner(size: 13) }
+                if vm.running {
+                    XCometSpinner(size: 14, colors: XColor.metricDisk)
+                } else if case .done = vm.phase {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(XColor.success)
+                }
                 Text(vm.phaseText).font(XFont.callout).foregroundStyle(XColor.textSecondary)
                     .contentTransition(.opacity)
             }
+            .padding(.horizontal, XSpacing.l).padding(.vertical, 7)
+            .background(Capsule().fill(XColor.surface.opacity(0.6)))
+            .overlay(Capsule().stroke(XColor.hairline, lineWidth: 1))
+            .animation(.easeOut(duration: 0.2), value: vm.running)
             if vm.running {
                 Button(xLoc("取消")) { vm.cancel() }.buttonStyle(XSecondaryButtonStyle(compact: true))
             } else {

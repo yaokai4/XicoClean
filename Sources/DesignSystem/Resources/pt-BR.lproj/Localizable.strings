@@ -721,3 +721,14 @@
 "载荷签名已破损（内容被篡改过）· 请审阅" = "Assinatura da carga corrompida (conteúdo modificado) · revise";
 "载荷为临时签名（无开发者身份）· 请确认来源" = "Carga com assinatura ad hoc (sem identidade de desenvolvedor) · verifique a origem";
 "未命中特征库，但存在真实可疑迹象：伪装系统名 / 载荷未签名或签名破损 / 驻留危险路径。逐条给出理由，请核对来源后再决定移除。" = "Sem correspondência de assinatura, mas com sinais reais: disfarce com nome do sistema / assinatura ausente ou corrompida / persistência em caminhos de risco. Cada item informa o motivo — verifique a fonte antes de remover.";
+
+/* Deep full-disk scan layer (2026-07-07) */
+"已走查 %@ 个文件" = "%@ arquivos inspecionados";
+"深度扫描" = "Análise profunda";
+"全盘走查：残留安装包 / 中断下载" = "Varredura completa do disco: instaladores residuais / downloads interrompidos";
+"残留安装包" = "Instaladores residuais";
+"中断的下载" = "Downloads interrompidos";
+"安装包 · 装完即可删" = "Instalador · pode excluir após instalar";
+"中断的下载残块" = "Fragmento de download interrompido";
+"安装完成后 .dmg / .pkg 就完成了使命；超过 30 天未动的默认勾选，移入废纸篓可恢复。" = "Após a instalação, os .dmg / .pkg cumpriram seu papel; os intocados há mais de 30 dias vêm selecionados por padrão. Para a Lixeira, recuperáveis.";
+"下载中断留下的残块（.crdownload / .part / .download），续传会重新开始，可安全清理。" = "Fragmentos deixados por downloads interrompidos (.crdownload / .part / .download). Retomar recomeça do zero — limpeza segura.";

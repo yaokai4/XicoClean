@@ -472,3 +472,107 @@ public struct TrashScanner: ScannerModule {
         return locations
     }
 }
+
+// MARK: - 深度全盘扫描器（智能扫描的「全面检测」层）
+//
+// 与定点清理不同：这里对整个用户目录做真实逐文件走查（复用 deepEnumerate，
+// node_modules 等海量小文件目录已由系统垃圾定义覆盖故剪枝），路上识别两类
+// 「定点规则覆盖不到、但人人都有」的可清理物：
+//   1. 残留安装包：.dmg/.pkg/.xip/.iso——装完即弃，30 天未动默认勾选；
+//   2. 中断的下载：.crdownload/.part/.partial/.download——续传会重新开始，残块无用。
+// 走查过程实时上报「已走查 N 个文件」，扫描的覆盖面对用户可见。
+
+public struct DeepScanner: ScannerModule {
+    public let metadata = ModuleMetadata(
+        id: .deepScan, title: "深度扫描", subtitle: "全盘走查：残留安装包 / 中断下载",
+        systemImage: "binoculars", category: .cleanup)
+
+    private let fs: FileSystemService
+    private let safety: SafetyEngine
+    private let home: URL
+
+    private static let installerExts: Set<String> = ["dmg", "pkg", "mpkg", "xip", "iso"]
+    private static let partialExts: Set<String> = ["crdownload", "part", "partial", "download"]
+
+    public init(fs: FileSystemService, safety: SafetyEngine,
+                home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        self.fs = fs
+        self.safety = safety
+        self.home = home
+    }
+
+    public func scan(progress: @escaping ProgressHandler) async throws -> ScanResult {
+        var installers: [CleanableItem] = []
+        var partials: [CleanableItem] = []
+        var filesScanned = 0
+        var bytesFound: Int64 = 0
+        let now = Date()
+
+        for await entry in fs.deepEnumerate(home, includeFiles: true) {
+            if Task.isCancelled { break }
+            let ext = entry.url.pathExtension.lowercased()
+
+            // Safari 的 .download 是目录包——目录也要看扩展名，其余目录跳过
+            if entry.isDirectory && ext != "download" { continue }
+
+            filesScanned += 1
+            if filesScanned % 1500 == 0 {
+                progress(ScanProgress(message: xLocF("已走查 %@ 个文件", Self.countText(filesScanned)),
+                                      bytesFound: bytesFound))
+            }
+
+            if Self.installerExts.contains(ext), !entry.isDirectory {
+                guard entry.size > 512 * 1024 else { continue }   // 碎渣不值得列
+                guard safety.verify(entry.url, intent: .trash).isAllowed else { continue }
+                let age = now.timeIntervalSince(entry.modificationDate ?? entry.accessDate ?? now)
+                let stale = age > 30 * 86400
+                let size = fs.entry(for: entry.url)?.size ?? entry.size
+                installers.append(CleanableItem(
+                    url: entry.url, displayName: entry.url.lastPathComponent,
+                    detail: entry.url.path, size: size,
+                    safety: stale ? .safe : .caution, isSelected: stale,
+                    note: "安装包 · 装完即可删"))
+                bytesFound += size
+                progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: bytesFound))
+            } else if Self.partialExts.contains(ext) {
+                guard safety.verify(entry.url, intent: .trash).isAllowed else { continue }
+                let age = now.timeIntervalSince(entry.modificationDate ?? now)
+                guard age > 7 * 86400 else { continue }   // 一周内的可能还在续传
+                let size = max(fs.allocatedSize(of: entry.url), 1)
+                partials.append(CleanableItem(
+                    url: entry.url, displayName: entry.url.lastPathComponent,
+                    detail: entry.url.path, size: size,
+                    safety: .safe, isSelected: true,
+                    note: "中断的下载残块"))
+                bytesFound += size
+                progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: bytesFound))
+            }
+        }
+        progress(ScanProgress(message: xLocF("已走查 %@ 个文件", Self.countText(filesScanned)),
+                              bytesFound: bytesFound))
+
+        installers.sort { $0.size > $1.size }
+        partials.sort { $0.size > $1.size }
+        var groups: [ScanResultGroup] = []
+        if !installers.isEmpty {
+            groups.append(ScanResultGroup(
+                id: "leftover-installers", title: "残留安装包",
+                description: "安装完成后 .dmg / .pkg 就完成了使命；超过 30 天未动的默认勾选，移入废纸篓可恢复。",
+                systemImage: "shippingbox", safety: .safe, items: installers))
+        }
+        if !partials.isEmpty {
+            groups.append(ScanResultGroup(
+                id: "partial-downloads", title: "中断的下载",
+                description: "下载中断留下的残块（.crdownload / .part / .download），续传会重新开始，可安全清理。",
+                systemImage: "icloud.and.arrow.down", safety: .safe, items: partials))
+        }
+        return ScanResult(moduleID: .deepScan, groups: groups)
+    }
+
+    /// 千分位计数（不依赖 locale 的稳定输出）。
+    private static func countText(_ n: Int) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        return f.string(from: NSNumber(value: n)) ?? "\(n)"
+    }
+}

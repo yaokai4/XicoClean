@@ -27,6 +27,7 @@ public extension ModuleID {
     static let appUpdater = ModuleID("app-updater")
     static let shredder = ModuleID("shredder")
     static let diskSpeed = ModuleID("disk-speed")
+    static let deepScan = ModuleID("deep-scan")
     static let settings = ModuleID("settings")
 }
 

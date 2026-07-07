@@ -129,7 +129,10 @@ public final class XicoEnvironment: @unchecked Sendable {
     /// 避免把「清理垃圾」拖成「全盘体检」）。废纸篓项在结果里列出供审阅，删除仍需用户显式确认，
     /// 不会一键静默清空。
     public func smartScanCoordinator() -> ScanCoordinator {
-        let modules = [scanner(for: .systemJunk), scanner(for: .privacy), scanner(for: .trash)].compactMap { $0 }
+        // 定点规则（系统垃圾/隐私/废纸篓）+ 深度全盘走查（逐文件检测残留安装包与中断下载）——
+        // 智能扫描既有「知道去哪找」的精准，也有「每个文件都看过」的全面。
+        var modules = [scanner(for: .systemJunk), scanner(for: .privacy), scanner(for: .trash)].compactMap { $0 }
+        modules.append(DeepScanner(fs: fs, safety: safety))
         return ScanCoordinator(modules: modules)
     }
 }

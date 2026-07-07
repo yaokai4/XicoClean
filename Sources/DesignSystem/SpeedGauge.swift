@@ -41,7 +41,7 @@ public struct XSpeedGauge: View {
                         style: StrokeStyle(lineWidth: size * 0.055, lineCap: .round))
                 .rotationEffect(.degrees(135))
                 .opacity(0.14)
-            // 值弧
+            // 值弧：0.15s 线性跟随 0.1s 的采样节奏——指针「贴着」实时速度走，不拖不跳
             if fraction > 0.004 {
                 Circle()
                     .trim(from: 0, to: sweep * fraction)
@@ -49,8 +49,8 @@ public struct XSpeedGauge: View {
                                             startAngle: .degrees(135), endAngle: .degrees(405)),
                             style: StrokeStyle(lineWidth: size * 0.055, lineCap: .round))
                     .rotationEffect(.degrees(135))
-                    .xGlow(colors.first!, radius: 9)
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: fraction)
+                    .xGlow(colors.first!, radius: active ? 12 : 8)
+                    .animation(reduceMotion ? nil : .linear(duration: 0.15), value: fraction)
             }
             // 刻度（9 根主刻度，等分满量程）
             ForEach(0..<9, id: \.self) { i in
@@ -85,5 +85,52 @@ public struct XSpeedGauge: View {
 
     private var centerText: String {
         value >= 1 ? String(format: "%.0f", value) : "0"
+    }
+}
+
+// MARK: - 品牌彗星旋转器（替代普通转圈，测速/短等待用）
+
+public struct XCometSpinner: View {
+    let size: CGFloat
+    let colors: [Color]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    public init(size: CGFloat = 16, colors: [Color] = XColor.brandGradientColors) {
+        self.size = size
+        self.colors = colors
+    }
+
+    private var comet: Gradient {
+        let c0 = colors[0]
+        let c1 = colors[min(1, colors.count - 1)]
+        // 与 XScanOrb 同一套「尾透明→头最亮、尾帽回绕归零」的防孤点做法
+        return Gradient(stops: [
+            .init(color: c0.opacity(0),   location: 0.00),
+            .init(color: c0.opacity(0.4), location: 0.35),
+            .init(color: c1,              location: 0.70),
+            .init(color: c1,              location: 0.72),
+            .init(color: c1.opacity(0),   location: 0.76),
+            .init(color: c1.opacity(0),   location: 1.00),
+        ])
+    }
+
+    public var body: some View {
+        Group {
+            if reduceMotion {
+                Circle().trim(from: 0.01, to: 0.70)
+                    .stroke(AngularGradient(gradient: comet, center: .center),
+                            style: StrokeStyle(lineWidth: size * 0.14, lineCap: .round))
+            } else {
+                TimelineView(.animation) { tl in
+                    let angle = tl.date.timeIntervalSinceReferenceDate * 220
+                    Circle().trim(from: 0.01, to: 0.70)
+                        .stroke(AngularGradient(gradient: comet, center: .center),
+                                style: StrokeStyle(lineWidth: size * 0.14, lineCap: .round))
+                        .rotationEffect(.degrees(angle))
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }

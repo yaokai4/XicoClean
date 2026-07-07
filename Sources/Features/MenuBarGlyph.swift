@@ -112,9 +112,9 @@ public enum MenuBarGlyph {
     /// colored=true → 单一主色。描边只用于包住图形本身，数值文字永远在框外。
     static func chip(colored: Bool, tint: [Color]) -> GlyphChip {
         let fg: Color = colored ? (tint.first ?? XColor.textPrimary) : .black
-        // 「圈图形」的软框：淡底（~0.06–0.08）+ 发丝描边（~0.22–0.32），Sensei 式而非生硬黑框。
+        // 「圈图形」的软框：淡底 + 清晰描边（加深到 0.42/0.36，之前太浅在浅色壁纸上看不清）。
         return GlyphChip(fg: fg,
-                         stroke: colored ? fg.opacity(0.30) : Color.black.opacity(0.24),
+                         stroke: colored ? fg.opacity(0.42) : Color.black.opacity(0.36),
                          fill: colored ? fg.opacity(0.08) : Color.black.opacity(0.07))
     }
 
@@ -146,9 +146,10 @@ private extension View {
     @ViewBuilder func menuGraphicChip(_ chip: GlyphChip, on: Bool = true, flush: Bool = false) -> some View {
         if on {
             if flush {
+                // 框贴身：左右各 1pt、顶 1.5pt——内容与边框 100% 齐平挤满，框即坐标系。
                 self
-                    .padding(.horizontal, 1.5)
-                    .padding(.top, 2)
+                    .padding(.horizontal, 1)
+                    .padding(.top, 1.5)
                     .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(chip.fill))
                     .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(chip.stroke, lineWidth: 1))
@@ -287,8 +288,8 @@ private struct RichGlyph: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            // 直方图/进度条贴边入框（框=坐标系）；环形留呼吸边距
-            graphic.menuGraphicChip(chip, on: border, flush: isFlushViz)
+            // 直方图/进度条贴边入框（框=坐标系）；环形是自完整图形，永远裸露不套框（用户拍板）
+            graphic.menuGraphicChip(chip, on: border && isFlushViz, flush: isFlushViz)
             Text(value).font(.system(size: 12, weight: .semibold, design: .rounded)).monospacedDigit()
         }
         .foregroundStyle(chip.fg)

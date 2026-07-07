@@ -721,3 +721,14 @@
 "载荷签名已破损（内容被篡改过）· 请审阅" = "Signatur der Nutzlast beschädigt (Inhalt verändert) · bitte prüfen";
 "载荷为临时签名（无开发者身份）· 请确认来源" = "Nutzlast mit Ad-hoc-Signatur (keine Entwickleridentität) · Herkunft prüfen";
 "未命中特征库，但存在真实可疑迹象：伪装系统名 / 载荷未签名或签名破损 / 驻留危险路径。逐条给出理由，请核对来源后再决定移除。" = "Keine Signaturübereinstimmung, aber echte Warnzeichen: Tarnung als Systemname / unsignierte oder beschädigte Signatur / Persistenz in riskanten Pfaden. Jeder Fund nennt seinen Grund — Quelle prüfen, dann entfernen.";
+
+/* Deep full-disk scan layer (2026-07-07) */
+"已走查 %@ 个文件" = "%@ Dateien geprüft";
+"深度扫描" = "Tiefenscan";
+"全盘走查：残留安装包 / 中断下载" = "Kompletter Diskdurchlauf: übrig gebliebene Installer / abgebrochene Downloads";
+"残留安装包" = "Übrige Installer";
+"中断的下载" = "Abgebrochene Downloads";
+"安装包 · 装完即可删" = "Installer · nach Installation löschbar";
+"中断的下载残块" = "Fragment eines abgebrochenen Downloads";
+"安装完成后 .dmg / .pkg 就完成了使命；超过 30 天未动的默认勾选，移入废纸篓可恢复。" = "Nach der Installation haben .dmg / .pkg ihren Zweck erfüllt; seit 30+ Tagen unberührte sind standardmäßig ausgewählt. In den Papierkorb, wiederherstellbar.";
+"下载中断留下的残块（.crdownload / .part / .download），续传会重新开始，可安全清理。" = "Fragmente abgebrochener Downloads (.crdownload / .part / .download). Fortsetzen beginnt ohnehin neu — gefahrlos zu bereinigen.";
