@@ -96,6 +96,7 @@ func renderGlyphs() {
     strip(dark: false, style: .iconValue, "glyphs-light.png")
     strip(dark: true, style: .valueOnly, "glyphs-valueonly.png")
     strip(dark: true, style: .graph, "glyphs-graph.png")
+    strip(dark: true, style: .ring, "glyphs-ring.png")
 
     // 彩色模式 + 全部新指标（温度/磁盘/GPU），对标 iStat 彩色菜单栏
     func coloredStrip(dark: Bool, _ name: String) {

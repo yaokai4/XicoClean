@@ -9,7 +9,8 @@ public enum MenuBarStyle: String, CaseIterable, Sendable {
     case iconValue   // 图标 + 数值
     case valueOnly   // 仅数值
     case graph       // 迷你折线 + 数值
-    case rich        // 指标专属迷你可视化（CPU 直方图 / 内存·磁盘环 / 网络双行）— iStat 风格
+    case rich        // 指标专属迷你可视化（CPU 直方图 / 内存·GPU·磁盘饼盘 / 网络双行）— iStat 风格
+    case ring        // 圆环进度（占比类指标：CPU / 内存 / GPU / 磁盘）
 
     public var title: String {
         switch self {
@@ -17,6 +18,7 @@ public enum MenuBarStyle: String, CaseIterable, Sendable {
         case .valueOnly: return xLoc("仅数值")
         case .graph:     return xLoc("迷你图 + 数值")
         case .rich:      return xLoc("可视化 + 数值")
+        case .ring:      return xLoc("圆环 + 数值")
         }
     }
 
@@ -27,8 +29,12 @@ public enum MenuBarStyle: String, CaseIterable, Sendable {
         case .valueOnly: return xLoc("数值")
         case .graph:     return xLoc("迷你图")
         case .rich:      return xLoc("可视化")
+        case .ring:      return xLoc("圆环")
         }
     }
+
+    /// 该样式是否需要「单一占比」——网络（双向速率）、温度（非占比）不适用圆环。
+    public var needsFraction: Bool { self == .ring }
 }
 
 // MARK: - 菜单栏图形化状态项（极简单色，随菜单栏深浅自适应）
@@ -45,6 +51,9 @@ public enum MenuBarGlyph {
         if style == .rich {
             return rasterize(RichGlyph(viz: .histogram(history), value: value, chip: s, border: border), colored: colored)
         }
+        if style == .ring {
+            return rasterize(RichGlyph(viz: .ringViz(fraction), value: value, chip: s, border: border), colored: colored)
+        }
         return rasterize(MetricGlyph(glyph: "cpu", value: value, history: history, style: style, chip: s, border: border), colored: colored)
     }
 
@@ -53,6 +62,15 @@ public enum MenuBarGlyph {
         let value = "\(pct(fraction))%"
         if style == .rich {
             return rasterize(RichGlyph(viz: .pie(fraction), value: value, chip: s, border: border), colored: colored)
+        }
+        if style == .ring {
+            return rasterize(RichGlyph(viz: .ringViz(fraction), value: value, chip: s, border: border), colored: colored)
+        }
+        if style == .ring {
+            return rasterize(RichGlyph(viz: .ringViz(fraction), value: value, chip: s, border: border), colored: colored)
+        }
+        if style == .ring {
+            return rasterize(RichGlyph(viz: .ringViz(fraction), value: value, chip: s, border: border), colored: colored)
         }
         return rasterize(MetricGlyph(glyph: "memorychip", value: value, history: history, style: style, chip: s, border: border), colored: colored)
     }
@@ -220,7 +238,7 @@ private struct MetricGlyph: View {
         // 间距按黄金比收紧（图形→数值 3pt，无外侧余量）——多项并排时节省顶栏空间。
         HStack(spacing: 3) {
             switch style {
-            case .iconValue, .rich:
+            case .iconValue, .rich, .ring:   // ring 对无占比指标回退为图标+数值
                 Image(systemName: glyph).font(.system(size: 12.5, weight: .semibold))
             case .valueOnly:
                 EmptyView()
@@ -278,7 +296,8 @@ private struct NetGlyph: View {
 private struct RichGlyph: View {
     enum Viz {
         case histogram([Double])   // CPU：直方条
-        case pie(Double)           // 内存/GPU/磁盘：实心饼盘（iStat 式，圆盘永远完整无缺口）
+        case pie(Double)           // 饼盘：实心扇形，圆盘永远完整无缺口
+        case ringViz(Double)       // 圆环：描边进度环（底轨加深，缺口读作轨道而非「被咬」）
         case bar(Double)           // 备用：横向进度条
     }
     let viz: Viz
@@ -297,7 +316,10 @@ private struct RichGlyph: View {
     }
 
     private var isFlushViz: Bool {
-        if case .pie = viz { return false }   // 饼盘是自完整图形，永远裸露不套框
+        switch viz {
+        case .pie, .ringViz: return false   // 饼盘/圆环是自完整图形，永远裸露不套框
+        default: return true
+        }
         return true
     }
 
@@ -305,6 +327,7 @@ private struct RichGlyph: View {
         switch viz {
         case .histogram(let h): MiniHistogram(values: h)
         case .pie(let f):       MiniPieGlyph(fraction: f)
+        case .ringViz(let f):   MiniRingGlyph(fraction: f)
         case .bar(let f):       MiniBarGlyph(fraction: f)
         }
     }
@@ -342,6 +365,21 @@ private struct MiniPieGlyph: View {
         }
         .frame(width: 14, height: 14)
         .padding(.vertical, 0.5)
+    }
+}
+
+/// 迷你圆环（描边进度）。底轨 0.38：高占比留下的缺口读作「轨道」而非缺损。
+private struct MiniRingGlyph: View {
+    let fraction: Double
+    var body: some View {
+        ZStack {
+            Circle().stroke(lineWidth: 2).opacity(0.38)
+            Circle().trim(from: 0, to: max(0.02, min(fraction, 1)))
+                .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 13, height: 13)
+        .padding(1)
     }
 }
 

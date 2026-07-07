@@ -732,3 +732,7 @@
 "中断的下载残块" = "Broken download fragment";
 "安装完成后 .dmg / .pkg 就完成了使命；超过 30 天未动的默认勾选，移入废纸篓可恢复。" = "Once installed, .dmg / .pkg files have served their purpose; those untouched for 30+ days are selected by default. Moved to Trash, recoverable.";
 "下载中断留下的残块（.crdownload / .part / .download），续传会重新开始，可安全清理。" = "Fragments left by interrupted downloads (.crdownload / .part / .download). Resuming starts over anyway — safe to clean.";
+
+/* Ring style option (2026-07-08) */
+"圆环" = "Ring";
+"圆环 + 数值" = "Ring + value";

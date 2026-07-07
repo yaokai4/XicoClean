@@ -732,3 +732,7 @@
 "中断的下载残块" = "Fragmento de download interrompido";
 "安装完成后 .dmg / .pkg 就完成了使命；超过 30 天未动的默认勾选，移入废纸篓可恢复。" = "Após a instalação, os .dmg / .pkg cumpriram seu papel; os intocados há mais de 30 dias vêm selecionados por padrão. Para a Lixeira, recuperáveis.";
 "下载中断留下的残块（.crdownload / .part / .download），续传会重新开始，可安全清理。" = "Fragmentos deixados por downloads interrompidos (.crdownload / .part / .download). Retomar recomeça do zero — limpeza segura.";
+
+/* Ring style option (2026-07-08) */
+"圆环" = "Anel";
+"圆环 + 数值" = "Anel + valor";

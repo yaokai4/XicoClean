@@ -506,8 +506,10 @@ public struct SettingsView: View {
             }
             if enabled.wrappedValue, let style = style {
                 // 图形恒定加框（框=图表坐标系，内容贴边挤满），不再提供开关。
+                // 网络(双向速率)/温度(非占比)没有单一占比,不提供圆环样式
+                let hasFraction = !(icon == "antenna.radiowaves.left.and.right" || icon == "thermometer.medium")
                 HStack(spacing: 6) {
-                    ForEach(MenuBarStyle.allCases, id: \.rawValue) { st in
+                    ForEach(MenuBarStyle.allCases.filter { hasFraction || !$0.needsFraction }, id: \.rawValue) { st in
                         MBStyleTile(style: st, tint: tint, icon: icon, framed: true,
                                     selected: style.wrappedValue == st.rawValue) {
                             withAnimation(XMotion.snappy) { style.wrappedValue = st.rawValue }
@@ -731,10 +733,56 @@ private struct MBStyleTile: View {
             }
         case .rich:
             HStack(spacing: 2) {
-                chipped(MBHistoPreview())
+                // 与真实字形一致:CPU=直方图入框,内存/GPU/磁盘=裸露饼盘
+                if icon == "cpu" {
+                    chipped(MBHistoPreview())
+                } else {
+                    MBPiePreview()
+                }
+                Text("42%").font(.system(size: 9, weight: .semibold, design: .rounded)).monospacedDigit()
+            }
+        case .ring:
+            HStack(spacing: 2) {
+                MBRingPreview()
                 Text("42%").font(.system(size: 9, weight: .semibold, design: .rounded)).monospacedDigit()
             }
         }
+    }
+}
+
+private struct MBPiePreview: View {
+    var body: some View {
+        ZStack {
+            Circle().opacity(0.22)
+            MBPieSector(fraction: 0.42)
+            Circle().stroke(lineWidth: 1).opacity(0.5)
+        }
+        .frame(width: 12, height: 12)
+    }
+}
+
+private struct MBPieSector: Shape {
+    var fraction: Double
+    func path(in rect: CGRect) -> Path {
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        var p = Path()
+        p.move(to: c)
+        p.addArc(center: c, radius: min(rect.width, rect.height) / 2,
+                 startAngle: .degrees(-90), endAngle: .degrees(-90 + 360 * fraction), clockwise: false)
+        p.closeSubpath()
+        return p
+    }
+}
+
+private struct MBRingPreview: View {
+    var body: some View {
+        ZStack {
+            Circle().stroke(lineWidth: 1.8).opacity(0.38)
+            Circle().trim(from: 0, to: 0.42)
+                .stroke(style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 12, height: 12)
     }
 }
 
