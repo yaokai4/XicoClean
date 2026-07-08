@@ -181,6 +181,11 @@ public final class AppModel: ObservableObject {
         refreshPermissions()
         refreshLicense()
         revalidateLicenseOnline()
+        // 菜单栏长驻进程可能数周不重启——每 6h 唤醒一次复验入口
+        // （内部仍按 72h 节流，绝大多数唤醒直接返回，不产生网络请求）。
+        Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.revalidateLicenseOnline() }
+        }
         refreshMetrics()
         NotificationCenter.default.addObserver(forName: .xicoDidClean, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refreshMetrics() }
@@ -192,6 +197,7 @@ public final class AppModel: ObservableObject {
             Task { @MainActor in
                 self?.refreshPermissions()
                 self?.refreshLicense()
+                self?.revalidateLicenseOnline()
             }
         }
     }
