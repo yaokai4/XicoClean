@@ -40,6 +40,26 @@ private struct ActivateResponse: Decodable {
     let seats: Int?
 }
 
+private struct ValidateRequest: Encodable {
+    let licenseId: String
+    let deviceId: String
+}
+
+private struct ValidateResponse: Decodable {
+    let ok: Bool
+    let status: String?
+}
+
+/// 在线复验的服务器结论。只有 `.revoked` 会触发本地撤销；其余一律宽容。
+public enum LicenseValidationVerdict: Sendable, Equatable {
+    /// 服务器确认许可证有效。
+    case valid
+    /// 服务器明确表示已吊销/已退款——应清除本地许可。
+    case revoked
+    /// 网络失败、服务器错误、未知响应、库中查无此证——保持现状。
+    case inconclusive
+}
+
 /// 把用户输入的激活码 POST 到官网激活接口，成功则返回可离线验签安装的许可信封字节。
 public final class LicenseActivationClient: @unchecked Sendable {
     private let baseURL: URL
@@ -97,6 +117,40 @@ public final class LicenseActivationClient: @unchecked Sendable {
             throw http.statusCode >= 500
                 ? LicenseActivationError.server
                 : LicenseActivationError.malformedResponse
+        }
+    }
+
+    /// 定期在线复验：询问服务器该许可证当前状态。设计为「疑罪从无」——
+    /// 只有服务器明确回答 revoked/refunded 才返回 `.revoked`；断网、超时、
+    /// 5xx、404（库中查无，可能是服务端数据迁移）都返回 `.inconclusive`，
+    /// 绝不因此惩罚正版用户。
+    public func validate(
+        licenseId: String,
+        deviceId: String,
+    ) async -> LicenseValidationVerdict {
+        var request = URLRequest(
+            url: baseURL.appendingPathComponent("api/license/validate"),
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15
+        guard let body = try? JSONEncoder().encode(
+            ValidateRequest(licenseId: licenseId, deviceId: deviceId),
+        ) else { return .inconclusive }
+        request.httpBody = body
+
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse,
+              http.statusCode == 200,
+              let decoded = try? JSONDecoder().decode(ValidateResponse.self, from: data),
+              decoded.ok, let status = decoded.status else {
+            return .inconclusive
+        }
+        switch status {
+        case "active": return .valid
+        case "revoked", "refunded": return .revoked
+        default: return .inconclusive
         }
     }
 }

@@ -180,6 +180,7 @@ public final class AppModel: ObservableObject {
         }
         refreshPermissions()
         refreshLicense()
+        revalidateLicenseOnline()
         refreshMetrics()
         NotificationCenter.default.addObserver(forName: .xicoDidClean, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refreshMetrics() }
@@ -280,6 +281,43 @@ public final class AppModel: ObservableObject {
         licenseStatus = env.license.status()
         if licenseStatus?.state.allowsCommercialUse == true {
             licenseBannerDismissed = false
+        }
+    }
+
+    private static let lastOnlineCheckKey = "xico.license.lastOnlineCheck"
+    /// 复验节流：3 天问一次服务器就够了。
+    private static let onlineCheckInterval: TimeInterval = 72 * 3600
+
+    /// 在线复验（吊销即失效）：已授权时每 ≥72h 向官网确认许可证状态。
+    /// 「疑罪从无」——只有服务器明确回答 revoked/refunded 才清除本地许可；
+    /// 断网/超时/服务器错误一律保持现状，离线用户永不受影响。
+    public func revalidateLicenseOnline(force: Bool = false) {
+        guard case .licensed = licenseStatus?.state ?? env.license.status().state,
+              let licenseID = env.license.status().licenseID else { return }
+        let defaults = UserDefaults.standard
+        if !force,
+           let last = defaults.object(forKey: Self.lastOnlineCheckKey) as? Date,
+           Date().timeIntervalSince(last) < Self.onlineCheckInterval {
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let verdict = await self.activationClient.validate(
+                licenseId: licenseID,
+                deviceId: DeviceIdentity.current(),
+            )
+            await MainActor.run {
+                switch verdict {
+                case .valid:
+                    UserDefaults.standard.set(Date(), forKey: Self.lastOnlineCheckKey)
+                case .revoked:
+                    UserDefaults.standard.set(Date(), forKey: Self.lastOnlineCheckKey)
+                    self.env.license.clearLicense()
+                    self.refreshLicense()
+                case .inconclusive:
+                    break // 下次启动再试，不更新时间戳
+                }
+            }
         }
     }
 
