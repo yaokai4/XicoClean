@@ -40,6 +40,10 @@ public final class SMCReader: @unchecked Sendable {
     private let kSMCReadKey: UInt8 = 5
     private let kSMCGetKeyInfo: UInt8 = 9
     private let kernelIndex: UInt32 = 2
+    /// `conn` 是共享的可变内核连接；`IOConnectCallStructMethod` 非线程安全。
+    /// 用锁把每次内核往返串行化，让 `@unchecked Sendable` 的线程安全承诺名副其实——
+    /// 即便未来有调用方跨线程共享同一个 `SMCReader`，也不会交错内核调用而读到坏帧。
+    private let ioLock = NSLock()
 
     public init() {
         let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
@@ -125,6 +129,10 @@ public final class SMCReader: @unchecked Sendable {
         input.data8 = kSMCGetKeyInfo
         guard call(&input, &output), output.result == 0 else { return nil }
 
+        // 防御：`bytes` 是固定 32 字节字段，绝不让内核自报的 dataSize 超过它。
+        // 现读的温度/风扇键都 ≤4 字节，此上限对现有行为零影响，纯粹堵住越界解码路径。
+        guard output.keyInfo.dataSize <= 32 else { return nil }
+
         // 2. 读取数据
         input.keyInfo.dataSize = output.keyInfo.dataSize
         input.keyInfo.dataType = output.keyInfo.dataType
@@ -138,6 +146,7 @@ public final class SMCReader: @unchecked Sendable {
     private func call(_ input: inout SMCParamStruct, _ output: inout SMCParamStruct) -> Bool {
         let inputSize = MemoryLayout<SMCParamStruct>.stride
         var outputSize = MemoryLayout<SMCParamStruct>.stride
+        ioLock.lock(); defer { ioLock.unlock() }
         let result = IOConnectCallStructMethod(conn, kernelIndex, &input, inputSize, &output, &outputSize)
         return result == kIOReturnSuccess
     }

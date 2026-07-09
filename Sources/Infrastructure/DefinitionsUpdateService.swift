@@ -160,6 +160,14 @@ public final class DefinitionsUpdateService: @unchecked Sendable {
             guard !definition.paths.isEmpty else {
                 throw DefinitionsUpdateError.invalidLibrary(xLocF("%@ 缺少 paths", definition.id))
             }
+            // 路径形状校验（摄入期纵深防御）：拒绝逃逸出预期前缀集的定义，requiresHelper
+            // 定义额外必须落在助手白名单根下——把坏定义在入库前整条拒掉，而非仅靠删除期逐项兜底。
+            for path in definition.paths {
+                guard DefinitionPathPolicy.isAllowed(path: path, requiresHelper: definition.requiresHelper) else {
+                    throw DefinitionsUpdateError.invalidLibrary(
+                        xLocF("%@ 的路径超出允许范围：%@", definition.id, path))
+                }
+            }
         }
     }
 

@@ -118,6 +118,8 @@ public struct DisplayInfo: Sendable, Identifiable {
 /// 静态档案缓存；电池/存储/GPU 为按需刷新（调用方自行控制频率）。
 public final class HardwareProfileService: @unchecked Sendable {
     private let lock = NSLock()
+    // 专用锁：串行化 system_profiler 子进程，确保并发调用者至多触发一次（见 hardwareProfilerData）。
+    private let profilerLock = NSLock()
     private var cachedProfile: HardwareProfile?
     private var cachedProfilerJSON: [String: Any]?
     private var cachedClusters: [Bool]?
@@ -407,11 +409,13 @@ public final class HardwareProfileService: @unchecked Sendable {
     }
 
     /// 内置盘的 SMART 状态本地化。
+    /// 未识别的驱动原始串（IONVMe 少见状态）不直接透传——那会在所有语言下泄漏未翻译的英文/驱动 token；
+    /// 统一回落到规范键 `未知`（已在 11 份 .strings 中有译），保证展示始终经翻译表解析。
     public static func localizedSMART(_ raw: String) -> String {
         switch raw.lowercased() {
         case "verified": return "正常"
         case "failing", "not verified": return "警告"
-        default: return raw
+        default: return "未知"
         }
     }
 
@@ -465,6 +469,16 @@ public final class HardwareProfileService: @unchecked Sendable {
         lock.lock()
         if let c = cachedProfilerJSON { lock.unlock(); return c }
         lock.unlock()
+
+        // 串行化子进程：并发调用者在此排队，首个跑完后其余在下方二次检查命中缓存直接返回，
+        // 避免「检查-再行动」竞态导致多份 system_profiler 同时启动。
+        profilerLock.lock()
+        defer { profilerLock.unlock() }
+        // 二次检查：排队期间可能已被前一个调用者填好缓存。
+        lock.lock()
+        if let c = cachedProfilerJSON { lock.unlock(); return c }
+        lock.unlock()
+
         let json = runSystemProfiler(["SPHardwareDataType", "SPNVMeDataType", "SPDisplaysDataType", "SPMemoryDataType"])
         var flattened: [String: Any] = [:]
         // SPHardwareDataType → 顶层键（machine_name/model_number 等）

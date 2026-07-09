@@ -5,6 +5,10 @@ import Infrastructure
 import DesignSystem
 import Features
 
+// 约 600 行离屏渲染脚手架（QA/调试专用）绝不随发布包出货，整体 #if DEBUG 门控，
+// 对齐 LiveShotRenderer；调度入口（XicoApp.swift 的 --shots 分支）需同样 #if DEBUG 门控。
+#if DEBUG
+
 /// 离屏渲染各页面为 PNG（用于在无法点击驱动时验证 UI）。用法：Xico --shots
 @MainActor
 func renderShots() {
@@ -71,3 +75,5 @@ private func synthDiskTree() -> DiskNode {
         d("Desktop", [ f("shot1.png", 260), f("shot2.png", 240), f("todo.md", 60) ]),
     ])
 }
+
+#endif

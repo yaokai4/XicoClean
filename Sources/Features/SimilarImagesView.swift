@@ -17,6 +17,12 @@ public struct SimilarImagesView: View {
             }))
     }
 
+    /// 从 AppModel 注入缓存的会话：跨 tab 保留昂贵的 Vision 扫描结果（审计 P2，与 DuplicatesView 等一致）。
+    public init(model: AppModel) {
+        self.env = model.env
+        _vm = StateObject(wrappedValue: model.similarImagesSession)
+    }
+
     public var body: some View {
         SessionScaffold(vm: vm, cleanButtonTitle: xLoc("删除所选")) {
             ModuleIdleHero(

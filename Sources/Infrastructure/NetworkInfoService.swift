@@ -149,7 +149,7 @@ public final class NetworkInfoService: @unchecked Sendable {
                     let if2 = raw.loadUnaligned(fromByteOffset: offset, as: if_msghdr2.self)
                     var nameBuf = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
                     if if_indextoname(UInt32(if2.ifm_index), &nameBuf) != nil {
-                        let name = String(cString: nameBuf)
+                        let name = xicoString(fromNullTerminated: nameBuf)
                         result[name] = (if2.ifm_data.ifi_ibytes, if2.ifm_data.ifi_obytes, nil)
                     }
                 }
@@ -174,7 +174,7 @@ public final class NetworkInfoService: @unchecked Sendable {
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             let salen = socklen_t(sa.pointee.sa_len)
             guard getnameinfo(sa, salen, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
-            var ip = String(cString: host)
+            var ip = xicoString(fromNullTerminated: host)
             if let pct = ip.firstIndex(of: "%") { ip = String(ip[..<pct]) }   // 去掉 ipv6 zone
             var entry = out[name] ?? (nil, nil)
             if family == UInt8(AF_INET) { if entry.ipv4 == nil { entry.ipv4 = ip } }
@@ -261,9 +261,21 @@ public final class NetworkInfoService: @unchecked Sendable {
 
     /// 用 NWConnection 对 host:443 做一次握手计时得近似 RTT（毫秒）。
     private final class PingBox: @unchecked Sendable {
-        let lock = NSLock()
-        var done = false
-        func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+        private let lock = NSLock()
+        private var done = false
+        /// 超时 work item：真实回包先到时取消它，连接不再被占用到整个 deadline（对齐 HelperProxy 的 ResumeGuard）。
+        /// 与 done 同锁保护——读写都在临界区内，消除对 class 字段的数据竞争。
+        private var timeout: DispatchWorkItem?
+        func setTimeout(_ w: DispatchWorkItem) { lock.lock(); timeout = w; lock.unlock() }
+        /// 首个赢得处置权者返回 true，并在锁内取消/清空待触发的超时 item；后来者返回 false。
+        func claim() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if done { return false }
+            done = true
+            timeout?.cancel()   // 取消未触发的超时，及时释放连接
+            timeout = nil
+            return true
+        }
     }
 
     public func ping() async -> Double? {
@@ -274,7 +286,7 @@ public final class NetworkInfoService: @unchecked Sendable {
             let conn = NWConnection(host: host, port: port, using: .tcp)
             let start = Date()
             @Sendable func finish(_ ms: Double?) {
-                guard box.claim() else { return }
+                guard box.claim() else { return }   // claim 在锁内取消超时 item
                 conn.cancel()
                 cont.resume(returning: ms)
             }
@@ -286,7 +298,9 @@ public final class NetworkInfoService: @unchecked Sendable {
                 }
             }
             conn.start(queue: .global(qos: .utility))
-            DispatchQueue.global().asyncAfter(deadline: .now() + 3) { finish(nil) }   // 超时
+            let timeout = DispatchWorkItem { finish(nil) }
+            box.setTimeout(timeout)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 3, execute: timeout)   // 超时
         }
     }
 
@@ -303,13 +317,23 @@ public final class NetworkInfoService: @unchecked Sendable {
 
     public func publicIP() async -> String? {
         if let cached = cachedFreshPublicIP() { return cached }
-        guard let url = URL(string: "https://api.ipify.org") else { return nil }
+        // 走自有后端回显端点，不再把请求发给第三方 api.ipify.org（审计 P3 隐私）。
+        // 后端未部署 /ip（404）或任何异常时返回 nil，交由 UI 显示中性回退文案。
+        guard let url = URL(string: "https://mac.xicoai.com/ip") else { return nil }
         var req = URLRequest(url: url)
         req.timeoutInterval = 4
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
               let ip = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !ip.isEmpty, ip.count < 64 else { return nil }
+              Self.looksLikeIPAddress(ip) else { return nil }
         storePublicIP(ip)
         return ip
+    }
+
+    /// 宽松校验回显内容确为 IP（而非 404 页面 HTML 等）：只含 IPv4/IPv6 合法字符且长度合理。
+    private static func looksLikeIPAddress(_ s: String) -> Bool {
+        guard (7...45).contains(s.count) else { return false }
+        let allowed = CharacterSet(charactersIn: "0123456789abcdefABCDEF.:")
+        return s.rangeOfCharacter(from: allowed.inverted) == nil && (s.contains(".") || s.contains(":"))
     }
 }

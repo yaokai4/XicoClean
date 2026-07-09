@@ -4,6 +4,10 @@ import DesignSystem
 import Features
 import Infrastructure
 
+// 离屏图标/菜单栏/字形渲染脚手架（QA/调试专用）绝不随发布包出货，整体 #if DEBUG 门控，
+// 对齐 ShotRenderer/LayoutRender；调度入口（XicoApp.swift 的 --icon/--menubar/--glyphs 分支）需同样 #if DEBUG 门控。
+#if DEBUG
+
 /// 渲染 1024×1024 App 图标主图到 /tmp/xico-icon/icon-master.png。用法：Xico --icon
 @MainActor
 func renderIcon() {
@@ -148,3 +152,5 @@ func renderGlyphs() {
     richStrip(dark: true, "glyphs-rich-dark.png")
     FileHandle.standardError.write("glyphs rendered to \(dir.path)\n".data(using: .utf8)!)
 }
+
+#endif

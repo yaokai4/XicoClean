@@ -55,7 +55,9 @@ final class ScanCoordinatorTests: XCTestCase {
         XCTAssertEqual(results.count, 1, "部分成功应返回成功模块的结果")
     }
 
-    func testOverlappingPathsKeepMoreSpecificItem() async throws {
+    func testOverlappingPathsKeepParentSuperset() async throws {
+        // 真父子重叠：保留父级超集（涵盖整棵子树的可回收字节），子项被覆盖跳过——
+        // 否则丢父保子会少算/少清可回收空间（审计 P2）。删除期仍逐项过 SafetyEngine 红线。
         let parent = URL(fileURLWithPath: "/tmp/Xico/Cache")
         let child = URL(fileURLWithPath: "/tmp/Xico/Cache/Browser")
         let coord = ScanCoordinator(modules: [
@@ -64,6 +66,6 @@ final class ScanCoordinatorTests: XCTestCase {
         ])
 
         let paths = try await coord.scanAll().flatMap { $0.groups }.flatMap { $0.items }.map(\.url.path)
-        XCTAssertEqual(paths, [child.path])
+        XCTAssertEqual(paths, [parent.path], "父子重叠应保留父超集，避免少算/少清")
     }
 }

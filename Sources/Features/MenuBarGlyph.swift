@@ -46,39 +46,49 @@ public enum MenuBarStyle: String, CaseIterable, Sendable {
 public enum MenuBarGlyph {
 
     public static func cpu(fraction: Double, history: [Double], style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
-        let s = chip(colored: colored, tint: XColor.metricCPU)
         let value = "\(pct(fraction))%"
-        if style == .rich {
-            return rasterize(RichGlyph(viz: .histogram(history), value: value, chip: s, border: border), colored: colored)
+        // rich(直方图) 与 graph(折线) 依赖历史；ring 只吃 fraction（舍入已在 value 中）。
+        let usesHist = (style == .rich || style == .graph)
+        let sig = signature(style: style, colored: colored, border: border, value: value,
+                            history: usesHist ? history : nil)
+        return cachedImage(id: "cpu", signature: sig) {
+            let s = chip(colored: colored, tint: XColor.metricCPU)
+            if style == .rich {
+                return rasterize(RichGlyph(viz: .histogram(history), value: value, chip: s, border: border), colored: colored)
+            }
+            if style == .ring {
+                return rasterize(RichGlyph(viz: .ringViz(fraction), value: value, chip: s, border: border), colored: colored)
+            }
+            return rasterize(MetricGlyph(glyph: "cpu", value: value, history: history, style: style, chip: s, border: border), colored: colored)
         }
-        if style == .ring {
-            return rasterize(RichGlyph(viz: .ringViz(fraction), value: value, chip: s, border: border), colored: colored)
-        }
-        return rasterize(MetricGlyph(glyph: "cpu", value: value, history: history, style: style, chip: s, border: border), colored: colored)
     }
 
     public static func memory(fraction: Double, history: [Double], style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
-        let s = chip(colored: colored, tint: XColor.metricMemory)
         let value = "\(pct(fraction))%"
-        if style == .rich {
-            return rasterize(RichGlyph(viz: .pie(fraction), value: value, chip: s, border: border), colored: colored)
+        // rich=饼盘、ring=圆环 都只吃 fraction（体现在 value）；仅 graph 折线依赖历史。
+        let sig = signature(style: style, colored: colored, border: border, value: value,
+                            history: style == .graph ? history : nil)
+        return cachedImage(id: "memory", signature: sig) {
+            let s = chip(colored: colored, tint: XColor.metricMemory)
+            if style == .rich {
+                return rasterize(RichGlyph(viz: .pie(fraction), value: value, chip: s, border: border), colored: colored)
+            }
+            if style == .ring {
+                return rasterize(RichGlyph(viz: .ringViz(fraction), value: value, chip: s, border: border), colored: colored)
+            }
+            return rasterize(MetricGlyph(glyph: "memorychip", value: value, history: history, style: style, chip: s, border: border), colored: colored)
         }
-        if style == .ring {
-            return rasterize(RichGlyph(viz: .ringViz(fraction), value: value, chip: s, border: border), colored: colored)
-        }
-        if style == .ring {
-            return rasterize(RichGlyph(viz: .ringViz(fraction), value: value, chip: s, border: border), colored: colored)
-        }
-        if style == .ring {
-            return rasterize(RichGlyph(viz: .ringViz(fraction), value: value, chip: s, border: border), colored: colored)
-        }
-        return rasterize(MetricGlyph(glyph: "memorychip", value: value, history: history, style: style, chip: s, border: border), colored: colored)
     }
 
     public static func network(down: Double, up: Double, history: [Double], style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
         // 网络无专属可视化：只有 graph（含迷你折线）时才是「图形」→ 折线本身加框，数值在框外。
-        let s = chip(colored: colored, tint: XColor.metricNetwork)
-        return rasterize(NetGlyph(up: up.compactRate, down: down.compactRate, history: history, style: style, chip: s, border: border), colored: colored)
+        let value = "↓\(down.compactRate)|↑\(up.compactRate)"
+        let sig = signature(style: style, colored: colored, border: border, value: value,
+                            history: style == .graph ? history : nil)
+        return cachedImage(id: "network", signature: sig) {
+            let s = chip(colored: colored, tint: XColor.metricNetwork)
+            return rasterize(NetGlyph(up: up.compactRate, down: down.compactRate, history: history, style: style, chip: s, border: border), colored: colored)
+        }
     }
 
     /// CPU 温度（如 "44°"）。celsius 为 nil/0 时显示 "—°"，不误导为 0 度。
@@ -86,9 +96,13 @@ public enum MenuBarGlyph {
     public static func temperature(celsius: Double?, style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
         let text = (celsius != nil && celsius! > 0) ? "\(Int(celsius!.rounded()))°" : "—°"
         // 温度无曲线可画：始终「图标 + 数值」或「仅数值」，永不加框（消灭温度旁的空框）。
-        let s = chip(colored: colored, tint: tempTint(celsius))
-        return rasterize(MetricGlyph(glyph: "thermometer.medium", value: text, history: [],
-                                     style: style == .valueOnly ? .valueOnly : .iconValue, chip: s, border: false), colored: colored)
+        // 签名用 text（已含舍入温度，且 tempTint 的温区阈值也随之确定），值稳定时命中缓存。
+        let sig = signature(style: style, colored: colored, border: false, value: text)
+        return cachedImage(id: "temp", signature: sig) {
+            let s = chip(colored: colored, tint: tempTint(celsius))
+            return rasterize(MetricGlyph(glyph: "thermometer.medium", value: text, history: [],
+                                         style: style == .valueOnly ? .valueOnly : .iconValue, chip: s, border: false), colored: colored)
+        }
     }
 
     private static func tempTint(_ c: Double?) -> [Color] {
@@ -100,28 +114,39 @@ public enum MenuBarGlyph {
 
     /// 磁盘占用（如 "39%"）。
     public static func disk(fraction: Double, style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
-        let s = chip(colored: colored, tint: XColor.metricDisk)
         let value = "\(pct(fraction))%"
-        if style == .rich {
-            return rasterize(RichGlyph(viz: .pie(fraction), value: value, chip: s, border: border), colored: colored)
+        // 磁盘无历史（rich=饼盘只吃 fraction，其余走空历史的 MetricGlyph）——签名不含 history。
+        let sig = signature(style: style, colored: colored, border: border, value: value)
+        return cachedImage(id: "disk", signature: sig) {
+            let s = chip(colored: colored, tint: XColor.metricDisk)
+            if style == .rich {
+                return rasterize(RichGlyph(viz: .pie(fraction), value: value, chip: s, border: border), colored: colored)
+            }
+            return rasterize(MetricGlyph(glyph: "internaldrive", value: value, history: [], style: style, chip: s, border: border), colored: colored)
         }
-        return rasterize(MetricGlyph(glyph: "internaldrive", value: value, history: [], style: style, chip: s, border: border), colored: colored)
     }
 
     /// GPU 占用（如 "26%"）。
     public static func gpu(fraction: Double, history: [Double], style: MenuBarStyle, colored: Bool = false, border: Bool = true) -> NSImage {
-        let s = chip(colored: colored, tint: XColor.metricGPU)
         let value = "\(pct(fraction))%"
-        if style == .rich {
-            return rasterize(RichGlyph(viz: .pie(fraction), value: value, chip: s, border: border), colored: colored)
+        // rich=饼盘只吃 fraction（体现在 value）；仅 graph 折线依赖历史。
+        let sig = signature(style: style, colored: colored, border: border, value: value,
+                            history: style == .graph ? history : nil)
+        return cachedImage(id: "gpu", signature: sig) {
+            let s = chip(colored: colored, tint: XColor.metricGPU)
+            if style == .rich {
+                return rasterize(RichGlyph(viz: .pie(fraction), value: value, chip: s, border: border), colored: colored)
+            }
+            return rasterize(MetricGlyph(glyph: "cpu.fill", value: value, history: history, style: style, chip: s, border: border), colored: colored)
         }
-        return rasterize(MetricGlyph(glyph: "cpu.fill", value: value, history: history, style: style, chip: s, border: border), colored: colored)
     }
 
     public static func combined(colored: Bool = false) -> NSImage {
         // 合并总览用单色，避免即使其它项克制、这个图标仍是一条彩虹。
-        let fg: Color = colored ? XColor.textPrimary : .black
-        return rasterize(GlyphOnly(glyph: "gauge.with.dots.needle.50percent", size: 14).foregroundStyle(fg), colored: colored)
+        return cachedImage(id: "combined", signature: colored ? "1" : "0") {
+            let fg: Color = colored ? XColor.textPrimary : .black
+            return rasterize(GlyphOnly(glyph: "gauge.with.dots.needle.50percent", size: 14).foregroundStyle(fg), colored: colored)
+        }
     }
 
     private static func pct(_ f: Double) -> Int { Int((f * 100).rounded()) }
@@ -143,6 +168,37 @@ public enum MenuBarGlyph {
         img.isTemplate = !colored   // 单色→系统按深浅自动黑白；彩色→保留
         return img
     }
+
+    // MARK: - 光栅化去重缓存
+    //
+    // ImageRenderer 每 tick 在主线程为每个启用的状态项跑一次光栅化（审计 P3）。多数 tick 里显示值
+    // 并未变化（温度稳住、磁盘/空闲 CPU 百分比不动），却仍重复出同一张位图。按「字形 id」缓存上次的
+    // (签名, NSImage)：签名一致即直接复用，跳过 ImageRenderer。缓存被字形 id 天然限量（~7 项）。
+    // 本枚举 @MainActor 隔离，静态缓存只在主线程读写，Swift 6 下无数据竞争。
+
+    private struct CacheEntry { let signature: String; let image: NSImage }
+    private static var renderCache: [String: CacheEntry] = [:]
+
+    private static func cachedImage(id: String, signature: String, _ make: () -> NSImage) -> NSImage {
+        if let e = renderCache[id], e.signature == signature { return e.image }
+        let img = make()
+        renderCache[id] = CacheEntry(signature: signature, image: img)
+        return img
+    }
+
+    /// 构造去重签名：凡是影响像素的输入都纳入。`history` 仅在真正参与绘制的样式（迷你折线/直方图）
+    /// 传入——否则（如饼盘/圆环只吃 fraction，其舍入已体现在 value 里）省略，让值稳定时命中缓存。
+    private static func signature(style: MenuBarStyle, colored: Bool, border: Bool,
+                                  value: String, history: [Double]? = nil) -> String {
+        var s = "\(style.rawValue)|\(colored ? 1 : 0)|\(border ? 1 : 0)|\(value)"
+        if let history { s += "|" + histSignature(history) }
+        return s
+    }
+
+    /// 折线/直方图历史的紧凑签名：量化到整数百分比滤除浮点抖动，只取被绘制的尾部样本。
+    private static func histSignature(_ h: [Double]) -> String {
+        h.suffix(30).reduce(into: "") { $0 += String(Int(($1 * 100).rounded())) + "," }
+    }
 }
 
 /// 字形的前景色与「圈图形」描边样式（在字形内部只应用到图形本身，数值文字不进框）。
@@ -156,9 +212,17 @@ struct GlyphChip {
 //
 // 关键：边框**只圈住图形本身**（迷你折线 / 直方图 / 环 / 进度条），旁边的数值百分比一律在框外并排，
 // 绝不进框——进框既丑、也与「边框只圈图形」的设计铁律相悖。深浅自适应：模板模式描边为系统色低透明度。
+/// 菜单栏「圈图形」软框的光栅化几何常量。**属 MenuBarGlyph 光栅化专属例外**：
+/// 这些值都按 @2x 落整数设备像素挑定（圆角 4pt=8px），刻意不走 XRadius 令牌——
+/// XRadius.micro(3)/chip(6) 会把圆角挪到 6px/12px，打破与 padding/描边共同的整数像素对齐。
+/// 收编成单一具名常量以消除散落的重复字面量，并让「不走令牌」的理由显式可查。
+private enum MenuGlyphMetrics {
+    static let chipRadius: CGFloat = 4   // @2x = 8px
+}
+
 private extension View {
     /// 「圈图形」软框。`on=false` 时退化为裸图形（框可按项开关）。几何 @2x 落整数设备像素：
-    /// 水平内边距 2.5pt=5px、垂直 1pt=2px、圆角 4pt=8px、描边 1pt=2px。
+    /// 水平内边距 2.5pt=5px、垂直 1pt=2px、圆角 4pt=8px（见 MenuGlyphMetrics.chipRadius）、描边 1pt=2px。
     /// `flush=true` 用于直方图/进度条这类「有地面」的图形：柱子直接坐在边框内底沿，
     /// 两侧只留 1.5pt，超出圆角部分裁切——框是图形的坐标系，而不是漂浮的装饰框。
     @ViewBuilder func menuGraphicChip(_ chip: GlyphChip, on: Bool = true, flush: Bool = false) -> some View {
@@ -168,15 +232,15 @@ private extension View {
                 self
                     .padding(.horizontal, 1)
                     .padding(.top, 1.5)
-                    .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(chip.fill))
-                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(chip.stroke, lineWidth: 1))
+                    .background(RoundedRectangle(cornerRadius: MenuGlyphMetrics.chipRadius, style: .continuous).fill(chip.fill))
+                    .clipShape(RoundedRectangle(cornerRadius: MenuGlyphMetrics.chipRadius, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: MenuGlyphMetrics.chipRadius, style: .continuous).strokeBorder(chip.stroke, lineWidth: 1))
             } else {
                 self
                     .padding(.horizontal, 2.5)
                     .padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(chip.fill))
-                    .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(chip.stroke, lineWidth: 1))
+                    .background(RoundedRectangle(cornerRadius: MenuGlyphMetrics.chipRadius, style: .continuous).fill(chip.fill))
+                    .overlay(RoundedRectangle(cornerRadius: MenuGlyphMetrics.chipRadius, style: .continuous).strokeBorder(chip.stroke, lineWidth: 1))
             }
         } else {
             self
@@ -320,7 +384,6 @@ private struct RichGlyph: View {
         case .pie, .ringViz: return false   // 饼盘/圆环是自完整图形，永远裸露不套框
         default: return true
         }
-        return true
     }
 
     @ViewBuilder private var graphic: some View {

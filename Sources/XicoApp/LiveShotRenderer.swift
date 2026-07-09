@@ -4,6 +4,10 @@ import Infrastructure
 import DesignSystem
 import Features
 
+// 离屏实时快照/探针工具仅供 QA 与本地调试使用，整体只编进 DEBUG 构建——
+// 约 600 行离屏渲染脚手架绝不随发布包出货（调度入口在 XicoApp.swift 同样 #if DEBUG 门控）。
+#if DEBUG
+
 /// 渲染需要实时数据的页面（硬件 / 监视）：把视图挂进真实离屏窗口，
 /// 让其 onAppear 定时器与异步加载跑起来，等数据填充后再位图快照。
 /// 用法：Xico --liveshots
@@ -125,3 +129,5 @@ private func panelBG<Content: View>(@ViewBuilder _ content: () -> Content) -> so
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(XColor.surface))
         .padding(XSpacing.l)
 }
+
+#endif

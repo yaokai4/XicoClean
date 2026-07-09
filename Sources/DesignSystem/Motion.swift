@@ -154,12 +154,16 @@ public struct XScanOrb: View {
 public struct XCheckbox: View {
     let isOn: Bool
     let colors: [Color]
+    /// 可选的上下文标签（如文件名/分组名）——让 VoiceOver 念出「<该项> · 已选中」而非泛泛的「勾选」。
+    let a11yLabel: String?
     let toggle: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(isOn: Bool, colors: [Color] = XColor.brandGradientColors, toggle: @escaping () -> Void) {
+    public init(isOn: Bool, colors: [Color] = XColor.brandGradientColors,
+                accessibilityLabel: String? = nil, toggle: @escaping () -> Void) {
         self.isOn = isOn
         self.colors = colors
+        self.a11yLabel = accessibilityLabel
         self.toggle = toggle
     }
 
@@ -185,9 +189,9 @@ public struct XCheckbox: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(xLoc("勾选"))
+        .accessibilityLabel(a11yLabel ?? xLoc("勾选"))
         .accessibilityValue(isOn ? xLoc("已选中") : xLoc("未选中"))
-        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
     }
 }
 

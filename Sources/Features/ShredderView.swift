@@ -63,6 +63,7 @@ final class ShredderModel: ObservableObject {
 public struct ShredderView: View {
     @StateObject private var model: ShredderModel
     @State private var confirm = false
+    @State private var dropTargeted = false
     public init(env: XicoEnvironment) { _model = StateObject(wrappedValue: ShredderModel(env: env)) }
 
     public var body: some View {
@@ -73,7 +74,10 @@ public struct ShredderView: View {
             noticeBar
             content
             if !model.files.isEmpty {
-                XActionBar(title: xLocF("已选 %d 项", model.files.count), subtitle: xLoc("粉碎不可恢复，请谨慎")) {
+                // 部分失败后 files 只剩失败项，content 走文件列表分支不再显示 resultText——
+                // 故把失败摘要提到常显的操作条副标题，用户才看得到「X 项失败」的反馈（审计 P2）。
+                XActionBar(title: xLocF("已选 %d 项", model.files.count),
+                           subtitle: model.resultText ?? xLoc("粉碎不可恢复，请谨慎")) {
                     if model.working { XSpinner() }
                     else {
                         Button(xLocF("粉碎 · %@", model.totalSize.formattedBytes)) { confirm = true }
@@ -126,7 +130,20 @@ public struct ShredderView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onDrop(of: [.fileURL], isTargeted: nil) { providers in handleDrop(providers) }
+            // 拖入反馈：文件悬停于投放区时点亮品牌色虚线边框 + 淡染底，呼应全局悬停语言。
+            .overlay {
+                if dropTargeted {
+                    RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
+                        .strokeBorder(XColor.brand, style: StrokeStyle(lineWidth: 2, dash: [8, 5]))
+                        .background(RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
+                            .fill(XColor.brand.opacity(0.06)))
+                        .padding(XSpacing.l)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
+            .animation(XMotion.hover, value: dropTargeted)
+            .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in handleDrop(providers) }
         } else {
             ScrollView {
                 LazyVStack(spacing: 2) {
@@ -138,6 +155,7 @@ public struct ShredderView: View {
                             Spacer()
                             Button { model.remove(url) } label: { Image(systemName: "xmark.circle.fill") }
                                 .buttonStyle(.plain).foregroundStyle(XColor.textTertiary)
+                                .accessibilityLabel(xLocF("从列表移除 %@", url.lastPathComponent))
                         }
                         .padding(.horizontal, XSpacing.s).padding(.vertical, 5)
                     }

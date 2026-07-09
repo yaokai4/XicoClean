@@ -42,26 +42,61 @@ public struct FanInfo: Sendable, Identifiable {
 public final class SensorReader: @unchecked Sendable {
     private let smc = SMCReader()
 
+    /// 一个采样周期内复用同一次全量枚举：HID 热传感器枚举 + 字符串归类不便宜，
+    /// 而同一 tick 里 summary() 与 temperatures() 常被相继调用。
+    private let cacheLock = NSLock()
+    private var cachedTemps: [TempReading]?
+    private var cachedAt: Date?
+    /// TTL 跟随菜单栏采样节奏：固定 0.5s 在 2s 常驻节奏下**永不命中**，等于每 tick 都重新枚举 HID
+    /// 热传感器（审计 P3）。改为读 `xico.mb.interval`（默认 2s）并下探 0.1s——既覆盖同一采样周期内
+    /// summary()/temperatures() 的相继调用、也让相邻 tick 复用同一次枚举，下限 0.5s 兜底。
+    private var cacheTTL: TimeInterval {
+        let configured = UserDefaults.standard.double(forKey: "xico.mb.interval")
+        let interval = configured > 0 ? configured : 2.0
+        return max(0.5, interval - 0.1)
+    }
+
     public init() {}
 
     /// 全部温度传感器（已归类、按类别聚合的代表值另见 summary()）。
     public func temperatures() -> [TempReading] {
+        cachedTemperatures()
+    }
+
+    /// 归纳后的关键温度：CPU / GPU（若各自有传感器则取平均）。
+    /// 单趟遍历同时累加两类平均，省去按类别的多次 filter/map/reduce。
+    public func summary() -> (cpu: Double?, gpu: Double?) {
+        var cpuSum = 0.0, cpuN = 0
+        var gpuSum = 0.0, gpuN = 0
+        for t in cachedTemperatures() {
+            switch t.category {
+            case .cpu: cpuSum += t.celsius; cpuN += 1
+            case .gpu: gpuSum += t.celsius; gpuN += 1
+            default: break
+            }
+        }
+        return (cpuN > 0 ? cpuSum / Double(cpuN) : nil,
+                gpuN > 0 ? gpuSum / Double(gpuN) : nil)
+    }
+
+    /// 带短 TTL 的全量温度读取：TTL 内复用上次枚举结果，超时即重新枚举并刷新缓存。
+    private func cachedTemperatures() -> [TempReading] {
+        cacheLock.lock()
+        if let cached = cachedTemps, let at = cachedAt, Date().timeIntervalSince(at) < cacheTTL {
+            defer { cacheLock.unlock() }
+            return cached
+        }
+        cacheLock.unlock()
+
         var out = appleSiliconTemperatures()
         if out.isEmpty {
             out = intelTemperatures()   // Intel 机型降级
         }
+        cacheLock.lock()
+        cachedTemps = out
+        cachedAt = Date()
+        cacheLock.unlock()
         return out
-    }
-
-    /// 归纳后的关键温度：CPU / GPU / SSD（若各自有传感器则取平均）。
-    public func summary() -> (cpu: Double?, gpu: Double?) {
-        let all = temperatures()
-        func avg(_ cat: TempReading.Category) -> Double? {
-            let vals = all.filter { $0.category == cat }.map(\.celsius)
-            guard !vals.isEmpty else { return nil }
-            return vals.reduce(0, +) / Double(vals.count)
-        }
-        return (avg(.cpu), avg(.gpu))
     }
 
     public func fans() -> [FanInfo] {

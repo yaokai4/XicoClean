@@ -81,9 +81,17 @@ public struct OptimizationService: Sendable {
             return ToggleResult(url: target, warning: warn)
         } else {
             // 先尝试停用已加载服务，再改名为 .disabled（持久停用）。
-            // service target 需用 plist 内的 Label（与文件名只是约定相等），优先读取、回退文件名。
-            let label = (NSDictionary(contentsOf: agent.url)?["Label"] as? String) ?? agent.label
-            let (ok, out) = await Self.runLaunchctl(["bootout", "\(domain)/\(label)"])
+            // service target 需用 plist 内的 Label（与文件名只是约定相等）。plist Label **不可信**：
+            // 先做与 ThreatRemediation 同源的白名单校验（仅 [A-Za-z0-9._-]），非法则回退到文件系统
+            // 派生的 Label（我方可控），仍非法即跳过 bootout（仅改名做持久停用），绝不把畸形串
+            // 传给 launchctl（防被构造成其它服务目标或参数注入，审计 P3 安全）。
+            let declared = (NSDictionary(contentsOf: agent.url)?["Label"] as? String) ?? agent.label
+            let label = ThreatRemediation.isValidLaunchdLabel(declared) ? declared : agent.label
+            var ok = true
+            var out = ""
+            if ThreatRemediation.isValidLaunchdLabel(label) {
+                (ok, out) = await Self.runLaunchctl(["bootout", "\(domain)/\(label)"])
+            }
             let target = agent.url.appendingPathExtension("disabled")
             do {
                 try fm.moveItem(at: agent.url, to: target)
@@ -108,8 +116,10 @@ public struct OptimizationService: Sendable {
                 proc.standardError = pipe
                 do {
                     try proc.run()
-                    proc.waitUntilExit()
+                    // 先排空管道再 waitUntilExit：若子进程输出填满管道缓冲区而父进程先阻塞在
+                    // waitUntilExit，会互相死锁。与 MaintenanceRunner / runSystemProfiler 同序（审计 P3）。
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    proc.waitUntilExit()
                     let out = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     continuation.resume(returning: (proc.terminationStatus == 0, out.isEmpty ? xLocF("退出码 %d", Int(proc.terminationStatus)) : out))
                 } catch {

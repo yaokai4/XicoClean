@@ -59,8 +59,12 @@ public struct ThreatScanner: ScannerModule {
                                         detail: url.path, size: max(fs.allocatedSize(of: url), 1),
                                         safety: .risky, isSelected: false, note: note))
             progress(ScanProgress(message: url.lastPathComponent, bytesFound: 0))
-            // 载荷本体：只删 plist 会留下磁盘上的可执行文件
-            for payload in payloadPaths(dict) {
+            // 载荷本体：只删 plist 会留下磁盘上的可执行文件。
+            // 但 plist 的 ProgramArguments 是攻击者可控字段——可指向任意用户文件
+            // （如 ~/Documents/tax.pdf）。只把「经核验」的载荷列为可删除：命中特征库，
+            // 或位于启动项可执行文件的常规位置；否则不列入删除候选（fail closed），
+            // 绝不把 vetted 集合之外的路径当作可删除项呈现。移除 plist 已足以断掉自启动。
+            for payload in payloadPaths(dict) where isVettedPayload(payload) {
                 let p = URL(fileURLWithPath: payload)
                 guard fs.exists(p), safety.verify(p, intent: .trash).isAllowed,
                       seen.insert(p.path).inserted else { continue }
@@ -120,15 +124,15 @@ public struct ThreatScanner: ScannerModule {
         if !signatureHits.isEmpty {
             groups.append(ScanResultGroup(
                 id: "threats", title: "已知威胁",
-                description: "命中已知广告软件 / PUP 特征，含其磁盘载荷。移除将移入废纸篓（可恢复）；"
-                           + "已在运行的进程会在你注销或重启后停止。",
+                // 单条字面量（不拼接）——description 会整串走 xLoc 查表，拼接会漏翻成中文
+                description: "命中已知广告软件 / PUP 特征，含其磁盘载荷。移除将移入废纸篓（可恢复）；已在运行的进程会在你注销或重启后停止。",
                 systemImage: "exclamationmark.shield", safety: .risky, items: signatureHits))
         }
         if !heuristicHits.isEmpty {
             groups.append(ScanResultGroup(
                 id: "suspicious", title: "可疑启动项",
-                description: "未命中特征库，但存在真实可疑迹象：伪装系统名 / 载荷未签名或签名破损 / 驻留危险路径。"
-                           + "逐条给出理由，请核对来源后再决定移除。",
+                // 单条字面量（不拼接）——同上，整串走 xLoc 查表
+                description: "未命中特征库，但存在真实可疑迹象：伪装系统名 / 载荷未签名或签名破损 / 驻留危险路径。逐条给出理由，请核对来源后再决定移除。",
                 systemImage: "questionmark.diamond", safety: .risky, items: heuristicHits))
         }
         return ScanResult(moduleID: .malware, groups: groups)
@@ -137,11 +141,31 @@ public struct ThreatScanner: ScannerModule {
     // MARK: 检测助手
 
     /// 载荷是否位于「正规软件绝不会驻留」的一次性目录。
+    /// 仅匹配真正的一次性根：/tmp、/private/var/tmp、/Users/Shared，以及**本用户家目录**的 Downloads。
+    /// 刻意不再用宽泛子串 `/library/caches/`（正规助手载荷常驻此处，会误报）与裸 `/downloads/`
+    /// （任意路径含该分量即命中，误伤面大）——收窄为前缀/家目录锚定匹配。
     private func isDangerousPath(_ path: String) -> Bool {
         let p = path.lowercased()
+        let downloads = home.appendingPathComponent("Downloads").path.lowercased() + "/"
         return p.hasPrefix("/tmp/") || p.hasPrefix("/private/tmp/") || p.hasPrefix("/var/tmp/")
             || p.hasPrefix("/private/var/tmp/") || p.hasPrefix("/users/shared/")
-            || p.contains("/downloads/") || p.contains("/library/caches/")
+            || p.hasPrefix(downloads)
+    }
+
+    /// 载荷是否「经核验」可作为删除候选。plist 的载荷路径由攻击者可控，绝不能凭
+    /// plist 可疑就删其指向的任意文件（可能是用户文档）。仅当满足其一才列为可删除：
+    /// (a) 路径本身命中已知特征库；(b) 位于启动项可执行文件的常规安置位置
+    /// （应用包 / Library / /usr/local / /opt）——刻意排除 文稿/桌面/下载/图片 等用户数据目录。
+    private func isVettedPayload(_ path: String) -> Bool {
+        let p = path.lowercased()
+        // (a) 路径自带已知广告软件 / PUP 特征
+        if allSignatures.contains(where: { p.contains($0) }) { return true }
+        // (b) 启动项可执行文件的常规安置位置
+        let appsUser = home.appendingPathComponent("Applications").path.lowercased() + "/"
+        let libUser = home.appendingPathComponent("Library").path.lowercased() + "/"
+        return p.hasPrefix("/applications/") || p.hasPrefix(appsUser)
+            || p.hasPrefix("/library/") || p.hasPrefix(libUser)
+            || p.hasPrefix("/usr/local/") || p.hasPrefix("/opt/")
     }
 
     /// 系统自带解释器/工具（bash、python、launchctl 等）：由 Apple 签名，无需校验，

@@ -6,13 +6,16 @@
 #   2) 生成 App 专用密码：https://account.apple.com → 登录与安全 → App 专用密码。
 #   3) 存一次 notarytool 凭证（之后复用）：
 #        xcrun notarytool store-credentials "XicoNotary" \
-#          --apple-id "hi@yaokai.me" --team-id "AQ5TMWUPMH" --password "App专用密码"
+#          --apple-id "hi@yaokai.me" --team-id "P22K8NF89K" --password "App专用密码"
 #
-# 注意：此处 --team-id 是 notarytool 用的「账号 Team ID」（AQ5TMWUPMH）；
-#       与运行期特权助手 XPC 校验用的「证书 OU / Team ID」是不同字段——
-#       后者见 Sources/Shared/HelperSecurity.swift 的 teamIdentifier（本机证书实测 OU=P22K8NF89K，
-#       用 `security find-certificate -c "Apple Development: ..." -p | openssl x509 -noout -subject` 可核对）。
-#       换账号/证书时两处都要按各自来源更新，勿混用。
+# 重要：--team-id 必须是拥有 Developer ID 证书的团队 ID = P22K8NF89K（个人账号只有这一个团队）。
+#       核对方法（证书 OU 字段才是权威 Team ID）：
+#         security find-certificate -c "Developer ID Application" -p | openssl x509 -noout -subject  → OU=P22K8NF89K
+#       ⚠︎ 曾误填 AQ5TMWUPMH——那只是 Apple Development 调试证书 CN 括号里的“个人标识符”，不是 Team ID，
+#          会让公证返回 statusCode 7000 "Team is not yet configured for notarization"（并非 Apple 账号被限制）。
+#       ⚠︎ --password 用「App 专用密码」(格式 xxxx-xxxx-xxxx-xxxx)，不是 App Store Connect 那个 32 位十六进制的
+#          「App 专用共享密钥」(后者是内购收据校验用的，公证用不上)。
+#       运行期特权助手 XPC 校验用的 teamIdentifier 见 Sources/Shared/HelperSecurity.swift，同样是 P22K8NF89K。
 #
 # 之后每次发布只需：scripts/notarize.sh
 set -euo pipefail

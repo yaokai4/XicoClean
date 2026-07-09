@@ -27,7 +27,7 @@ struct ThemePickerCard: View {
                                 .opacity(isSel ? 1 : 0.8)
                                 .zIndex(isSel ? 1 : 0)
                                 .onTapGesture {
-                                    withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                                    withAnimation(XMotion.snappy) {
                                         selectedID = theme.id
                                     }
                                 }
@@ -85,7 +85,7 @@ private struct ThemeSwatch: View {
             }
             .scaleEffect(hover ? 1.04 : 1)
             .shadow(color: hover ? theme.accent.opacity(0.3) : .clear, radius: 12, y: 4)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hover)
+            .animation(XMotion.snappy, value: hover)
             .onHover { hover = $0 }
 
             Text(xLoc(theme.name))

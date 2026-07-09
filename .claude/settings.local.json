@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(swift build *)",
-      "Bash(echo \"BUILD_EXIT=$?\")"
+      "Bash(echo \"BUILD_EXIT=$?\")",
+      "Bash(xcrun notarytool *)",
+      "Bash(codesign -dvv ~/Applications/Xico.app)",
+      "Bash(xcrun stapler *)",
+      "Bash(spctl -a -vv ~/Applications/Xico.app)"
     ]
   }
 }

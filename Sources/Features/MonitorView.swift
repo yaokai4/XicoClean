@@ -15,6 +15,9 @@ public struct MonitorView: View {
     @AppStorage("xico.monitor.coreViz") private var coreViz = "bars"
     /// 全部命名温度传感器（传感器中心）——独立于快照采样，进页面时读一次、每 3 秒刷新。
     @State private var allTemps: [TempReading] = []
+    /// 单次持有门闩：SwiftUI 可能重复触发 onAppear（导航复用/父树重建），
+    /// 用它保证 engine.retain()/release() 与 netVM.start()/stop() 严格配对，杜绝采样器泄漏（审计 P2）。
+    @State private var engineRetained = false
     private let sensorTick = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
 
     enum ProcTab { case cpu, memory }
@@ -46,7 +49,7 @@ public struct MonitorView: View {
             XHeaderBar(title: xLoc("系统监视"), subtitle: xLoc("实时刷新 · 每秒")) {
                 HStack(spacing: XSpacing.s) {
                     XLiveDot(size: 7)
-                    Text("LIVE").font(.system(size: 10, weight: .bold)).tracking(1).foregroundStyle(XColor.success)
+                    Text("LIVE").font(XFont.micro).tracking(1).foregroundStyle(XColor.success)
                 }
             }
             Picker("", selection: $tab) {
@@ -70,12 +73,32 @@ public struct MonitorView: View {
         }
         .onAppear {
             info = env.liveMetrics.macInfo()
-            engine.retain()
-            netVM.start()
-            allTemps = env.sensors.temperatures()
+            // 共享 MetricsEngine 是全 App 唯一采样循环；仅在真正未持有时 retain，防重复 onAppear 泄漏。
+            if !engineRetained {
+                engine.retain()
+                netVM.start()
+                engineRetained = true
+            }
+            refreshTemps()
         }
-        .onReceive(sensorTick) { _ in allTemps = env.sensors.temperatures() }
-        .onDisappear { engine.release(); netVM.stop() }
+        .onReceive(sensorTick) { _ in refreshTemps() }
+        .onDisappear {
+            if engineRetained {
+                engine.release()
+                netVM.stop()
+                engineRetained = false
+            }
+        }
+    }
+
+    /// 全量温度枚举（HID 遍历 + 归类）搬到后台，仅回主线程发布，避免每 3 秒在主线程阻塞（审计 P3）。
+    /// 镜像 HardwareView.refreshHealth 的 detached-then-hop 写法。
+    private func refreshTemps() {
+        let sensors = env.sensors
+        Task { @MainActor in
+            let temps = await Task.detached(priority: .utility) { sensors.temperatures() }.value
+            allTemps = temps
+        }
     }
 
     // MARK: 总览
@@ -128,7 +151,7 @@ public struct MonitorView: View {
                 Text(title).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
             }
             .frame(maxWidth: .infinity)
-            .animation(.easeOut(duration: 0.5), value: value)
+            .animation(XMotion.gauge, value: value)
         }
     }
 
@@ -217,7 +240,7 @@ public struct MonitorView: View {
             MonitorCard(icon: "sensor.tag.radiowaves.forward", title: xLoc("传感器"), colors: [XColor.warning, XColor.metricNetwork[0]]) {
                 ForEach(grouped, id: \.0) { name, temps in
                     VStack(alignment: .leading, spacing: XSpacing.s) {
-                        Text(xLoc(name)).font(.system(size: 10, weight: .semibold)).foregroundStyle(XColor.textTertiary)
+                        Text(xLoc(name)).font(XFont.micro).foregroundStyle(XColor.textTertiary)
                             .textCase(.uppercase).tracking(0.5)
                         LazyVGrid(columns: [GridItem(.flexible(), spacing: XSpacing.l, alignment: .leading),
                                             GridItem(.flexible(), alignment: .leading)],
@@ -273,10 +296,14 @@ public struct MonitorView: View {
                     // 当前条 / 迷你环 / 历史热力图 切换（记忆偏好）。
                     Picker("", selection: $coreViz) {
                         Image(systemName: "chart.bar.fill").tag("bars")
+                            .accessibilityLabel(xLoc("柱状"))
                         Image(systemName: "circle.grid.2x2").tag("rings")
+                            .accessibilityLabel(xLoc("圆环"))
                         Image(systemName: "square.grid.3x3.fill").tag("heat")
+                            .accessibilityLabel(xLoc("热力图"))
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    .accessibilityLabel(xLoc("每核心视图"))
                     if let s = snap {
                         Text(xLocF("用户 %d%%  系统 %d%%", Int(s.cpuUser * 100), Int(s.cpuSystem * 100)))
                             .font(XFont.caption).foregroundStyle(XColor.textSecondary)
@@ -326,7 +353,7 @@ public struct MonitorView: View {
 
     private func coreRingCluster(_ label: String, _ pairs: [(Int, Double)]) -> some View {
         VStack(alignment: .leading, spacing: XSpacing.s) {
-            Text(label).font(.system(size: 10, weight: .semibold)).foregroundStyle(XColor.textTertiary)
+            Text(label).font(XFont.micro).foregroundStyle(XColor.textTertiary)
                 .textCase(.uppercase).tracking(0.5)
             coreRingGrid(pairs)
         }
@@ -340,10 +367,10 @@ public struct MonitorView: View {
             ForEach(Array(pairs.enumerated()), id: \.offset) { _, pair in
                 VStack(spacing: 3) {
                     XMiniRing(fraction: pair.1, colors: XColor.gauge(pair.1), size: 40, lineWidth: 5) {
-                        Text("\(Int((pair.1 * 100).rounded()))").font(.system(size: 11, weight: .bold, design: .rounded))
+                        Text("\(Int((pair.1 * 100).rounded()))").font(XFont.monoMini)
                             .foregroundStyle(XColor.textPrimary)
                     }
-                    Text("\(pair.0)").font(.system(size: 8, weight: .medium)).foregroundStyle(XColor.textTertiary)
+                    Text("\(pair.0)").font(XFont.nano).foregroundStyle(XColor.textTertiary)
                 }
             }
         }
@@ -373,7 +400,7 @@ public struct MonitorView: View {
                         CoreHeatRow(index: c, series: hist.map { $0.indices.contains(c) ? $0[c] : 0 }, hot: XColor.metricCPU[0])
                     }
                 }
-                Text(xLoc("每核心近 60 秒负载 · 越亮越忙")).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+                Text(xLoc("每核心近 60 秒负载 · 越亮越忙")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(xLoc("每核心负载历史热力图"))
@@ -382,7 +409,7 @@ public struct MonitorView: View {
 
     private func heatCluster(_ label: String, _ indices: [Int], _ hist: [[Double]], hot: Color) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label).font(.system(size: 9, weight: .semibold)).foregroundStyle(XColor.textTertiary)
+            Text(label).font(XFont.nano).foregroundStyle(XColor.textTertiary)
                 .textCase(.uppercase).tracking(0.5)
             ForEach(indices, id: \.self) { c in
                 CoreHeatRow(index: c, series: hist.map { $0.indices.contains(c) ? $0[c] : 0 }, hot: hot)
@@ -416,21 +443,22 @@ public struct MonitorView: View {
                     RoundedRectangle(cornerRadius: 4)
                         .fill(LinearGradient(colors: XColor.gauge(value), startPoint: .bottom, endPoint: .top))
                         .frame(height: max(3, geo.size.height * value))
-                        .animation(.easeOut(duration: 0.35), value: value)
+                        .animation(XMotion.gauge, value: value)
                 }
             }
-            Text("\(index)").font(.system(size: 8, weight: .medium)).foregroundStyle(XColor.textTertiary)
+            Text("\(index)").font(XFont.nano).foregroundStyle(XColor.textTertiary)
         }
         .frame(maxWidth: .infinity)
     }
 
+    /// 核心构成摘要：改读 onAppear 已载入的 MacInfo（含 P/E 核数），不在 body 里调
+    /// env.hardware.staticProfile()（会取 HardwareProfileService 锁、首帧还会跑 IORegistry/sysctl 探测，审计 P3）。
     private var coreSummary: String {
-        guard let p = info?.cores else { return "" }
-        let profile = env.hardware.staticProfile()
-        if profile.performanceCores > 0 && profile.efficiencyCores > 0 {
-            return xLocF("%d 核 · %d 性能 + %d 能效", p, profile.performanceCores, profile.efficiencyCores)
+        guard let m = info else { return "" }
+        if m.performanceCores > 0 && m.efficiencyCores > 0 {
+            return xLocF("%d 核 · %d 性能 + %d 能效", m.cores, m.performanceCores, m.efficiencyCores)
         }
-        return xLocF("%d 逻辑核心", p)
+        return xLocF("%d 逻辑核心", m.cores)
     }
     private var loadTriple: String {
         guard let s = snap else { return "—" }
@@ -461,7 +489,7 @@ public struct MonitorView: View {
                            colors: pressureColors, lineWidth: 11, size: 120) {
                     VStack(spacing: 0) {
                         Text(xLoc(snap?.memoryPressureLabel ?? "—")).xHeadline().foregroundStyle(XColor.textPrimary)
-                        Text(xLoc("压力")).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+                        Text(xLoc("压力")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
                     }
                 }
                 Text(xLoc("内存压力")).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
@@ -483,7 +511,7 @@ public struct MonitorView: View {
                 XRingGauge(progress: snap?.memoryUsedFraction ?? 0, colors: XColor.gauge(snap?.memoryUsedFraction ?? 0), lineWidth: 11, size: 120) {
                     VStack(spacing: 0) {
                         Text("\(Int((snap?.memoryUsedFraction ?? 0) * 100))%").xTitle().foregroundStyle(XColor.textPrimary)
-                        Text((snap?.memoryUsed ?? 0).formattedMemory).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+                        Text((snap?.memoryUsed ?? 0).formattedMemory).font(XFont.nano).foregroundStyle(XColor.textTertiary)
                     }
                 }
                 Text(xLocF("已用 / %@", (snap?.memoryTotal ?? 0).formattedMemory)).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
@@ -680,7 +708,7 @@ private struct CoreHeatRow: View {
 
     var body: some View {
         HStack(spacing: XSpacing.s) {
-            Text("\(index)").font(.system(size: 9, weight: .medium, design: .rounded)).monospacedDigit()
+            Text("\(index)").font(XFont.microMono)
                 .foregroundStyle(XColor.textTertiary).frame(width: 16, alignment: .trailing)
             Canvas { ctx, size in
                 let n = series.count
@@ -700,7 +728,7 @@ private struct CoreHeatRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 3, style: .continuous).strokeBorder(XColor.hairline, lineWidth: 0.5))
             Text("\(Int((series.last ?? 0) * 100))%")
-                .font(.system(size: 9, weight: .semibold, design: .rounded)).monospacedDigit()
+                .font(XFont.microMono)
                 .foregroundStyle(XColor.textSecondary).frame(width: 30, alignment: .trailing)
         }
     }

@@ -1,6 +1,8 @@
 import Foundation
 import DesignSystem
 import Domain
+import ImageIO
+import CoreGraphics
 #if canImport(Vision)
 import Vision
 #endif
@@ -14,15 +16,21 @@ public struct SimilarImagesScanner: Sendable {
     public let roots: [URL]
     private let minSize: Int64
     private let distanceThreshold: Float
+    private let maxGroups: Int
 
     private static let imageExtensions: Set<String> = [
         "jpg", "jpeg", "png", "heic", "heif", "gif", "tiff", "tif", "bmp", "webp"
     ]
 
+    /// 指纹前降采样的最大边长：VNGenerateImageFeaturePrint 用固定小网格，
+    /// 全分辨率解码纯属浪费——限制到此尺寸即可，解码从「整幅」降到「缩略」。
+    private static let thumbnailMaxPixel = 256
+
     public init(fs: FileSystemService, safety: SafetyEngine,
                 roots: [URL]? = nil,
                 minSizeBytes: Int64 = 50 * 1024,
-                distanceThreshold: Float = 0.28) {
+                distanceThreshold: Float = 0.28,
+                maxGroups: Int = 200) {
         self.fs = fs
         self.safety = safety
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -31,6 +39,7 @@ public struct SimilarImagesScanner: Sendable {
                                home.appendingPathComponent("Downloads")]
         self.minSize = minSizeBytes
         self.distanceThreshold = distanceThreshold
+        self.maxGroups = maxGroups
     }
 
     public func scan(progress: @escaping ProgressHandler) async -> ScanResult {
@@ -47,27 +56,47 @@ public struct SimilarImagesScanner: Sendable {
             }
         }
 
-        // 2. 计算特征指纹（并发有限）
-        var prints: [(url: URL, size: Int64, print: VNFeaturePrintObservation)] = []
+        // 2. 计算特征指纹（4 路并发 + 降采样解码；镜像 DuplicatesScanner 的哈希并发流水线）。
+        //    旧实现串行 + 全分辨率解码（注释谎称并发），指纹阶段是纯 CPU 瓶颈；此处并发解码缩略图。
         let total = candidates.count
-        var done = 0
-        for c in candidates {
-            if Task.isCancelled { break }
-            done += 1
-            progress(ScanProgress(fraction: total > 0 ? Double(done) / Double(total) : nil,
-                                  message: c.url.lastPathComponent, bytesFound: 0))
-            if let fp = Self.featurePrint(for: c.url) {
-                prints.append((c.url, c.size, fp))
+        let prints: [FeaturePrintBox] = await withTaskGroup(of: FeaturePrintBox?.self) { group -> [FeaturePrintBox] in
+            let lanes = 4
+            var iterator = candidates.makeIterator()
+            func addNext() {
+                guard let c = iterator.next() else { return }
+                group.addTask { Self.featureBox(url: c.url, size: c.size) }
             }
+            for _ in 0..<lanes { addNext() }
+            var out: [FeaturePrintBox] = []
+            var done = 0
+            for await box in group {
+                if Task.isCancelled { break }
+                done += 1
+                progress(ScanProgress(fraction: total > 0 ? Double(done) / Double(total) : nil,
+                                      message: box?.url.lastPathComponent ?? "", bytesFound: 0))
+                if let box { out.append(box) }
+                addNext()
+            }
+            return out
         }
 
-        // 3. 贪心聚类：与已有簇的代表距离 < 阈值即归入
-        var clusters: [[(url: URL, size: Int64, print: VNFeaturePrintObservation)]] = []
-        for item in prints {
+        // 3. 贪心聚类：先按纵横比分桶，把全局 O(n²) 降到「各桶内 O(k²)」——只有比例相近的图才可能
+        //    相似，跨桶必不相似故安全跳过；桶内与已有簇的代表距离 < 阈值即归入。
+        var byAspect: [Int: [FeaturePrintBox]] = [:]
+        for p in prints { byAspect[Self.aspectBucket(p.aspect), default: []].append(p) }
+        // 簇按纵横比桶分别维护：每个 item 只与「本桶」已有簇比较，跨桶必不相似故从不参与比较。
+        // 关键区别于旧实现——旧版把所有桶的簇塞进一个全局数组，每个 item 仍要线性扫描整张全局簇表
+        // （再靠 aspectBucket 相等判断跳过），全不相似的图集下退化为跨桶 O(n²)；此处以桶为键的字典
+        // 把比较严格限制在各桶内 O(k²)，正如注释本意。
+        var clustersByBucket: [Int: [[FeaturePrintBox]]] = [:]
+        for (bucket, bucketItems) in byAspect {
             if Task.isCancelled { break }
-            var placed = false
-            for i in clusters.indices {
-                if let rep = clusters[i].first {
+            var bucketClusters: [[FeaturePrintBox]] = []
+            for item in bucketItems {
+                if Task.isCancelled { break }
+                var placed = false
+                for i in bucketClusters.indices {
+                    guard let rep = bucketClusters[i].first else { continue }
                     // 距离默认设为「无穷远」：一旦 computeDistance 抛错（指纹不兼容/损坏），
                     // 视为不相似而非相似——出错方向必须偏向不聚类，绝不能默认把不同图片并入同组预删。
                     var distance = Float.greatestFiniteMagnitude
@@ -77,12 +106,14 @@ public struct SimilarImagesScanner: Sendable {
                         continue   // 无法比较 → 不归入此簇
                     }
                     if distance < distanceThreshold {
-                        clusters[i].append(item); placed = true; break
+                        bucketClusters[i].append(item); placed = true; break
                     }
                 }
+                if !placed { bucketClusters.append([item]) }
             }
-            if !placed { clusters.append([item]) }
+            clustersByBucket[bucket] = bucketClusters
         }
+        let clusters = clustersByBucket.values.flatMap { $0 }
 
         // 4. 生成结果组（仅保留 ≥2 张的簇；保留体积最大者）
         var groups: [ScanResultGroup] = []
@@ -103,6 +134,8 @@ public struct SimilarImagesScanner: Sendable {
                 systemImage: "photo.on.rectangle.angled", safety: .caution, items: items))
         }
         groups.sort { $0.selectedSize > $1.selectedSize }
+        // 结果组封顶（对齐 DuplicatesScanner.maxGroups）：病态输入下也不会无上限地堆结果/占内存。
+        if groups.count > maxGroups { groups = Array(groups.prefix(maxGroups)) }
         return ScanResult(moduleID: .similarImages, groups: groups)
         #else
         return ScanResult(moduleID: .similarImages, groups: [])
@@ -110,16 +143,51 @@ public struct SimilarImagesScanner: Sendable {
     }
 
     #if canImport(Vision)
-    private static func featurePrint(for url: URL) -> VNFeaturePrintObservation? {
+    /// 指纹 + 纵横比载体。VNFeaturePrintObservation 是不可跨并发边界的类，
+    /// 用 @unchecked Sendable 包装以便从 TaskGroup 子任务安全带出——每个盒子只由单个任务产出、
+    /// 收集后单线程使用，无共享可变状态。
+    private struct FeaturePrintBox: @unchecked Sendable {
+        let url: URL
+        let size: Int64
+        let aspect: Double
+        let print: VNFeaturePrintObservation
+    }
+
+    /// 对单张图：先用 CGImageSourceCreateThumbnailAtIndex 限制最大边到 thumbnailMaxPixel 解码缩略图，
+    /// 再在缩略图上算 Vision 指纹（指纹本就用固定小网格，全分辨率解码是浪费）。保留取消支持。
+    private static func featureBox(url: URL, size: Int64) -> FeaturePrintBox? {
+        if Task.isCancelled { return nil }
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        // 纵横比用轻量属性读取（不解码像素），用于聚类前分桶。
+        var aspect = 0.0
+        if let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+           let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+           let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue, h > 0 {
+            aspect = w / h
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: thumbnailMaxPixel
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else { return nil }
         let request = VNGenerateImageFeaturePrintRequest()
-        let handler = VNImageRequestHandler(url: url, options: [:])
+        let handler = VNImageRequestHandler(cgImage: cg, options: [:])
         do {
             try handler.perform([request])
-            return request.results?.first as? VNFeaturePrintObservation
+            guard let fp = request.results?.first as? VNFeaturePrintObservation else { return nil }
+            return FeaturePrintBox(url: url, size: size, aspect: aspect, print: fp)
         } catch {
             XicoLog.scan.debug("图片指纹失败 \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil
         }
+    }
+
+    /// 纵横比分桶：把宽高比按对数量化到离散桶（每 ~6% 比例差一个桶，对横竖图都均匀）。
+    /// 只有同桶（比例相近）的图才进入两两距离比较，将贪心聚类从全局 O(n²) 降为各桶内 O(k²)。
+    private static func aspectBucket(_ aspect: Double) -> Int {
+        guard aspect > 0 else { return 0 }
+        return Int((log(aspect) / 0.06).rounded())
     }
     #endif
 }

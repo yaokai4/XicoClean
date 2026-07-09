@@ -5,6 +5,10 @@ import Infrastructure
 import DesignSystem
 import Features
 
+// 离屏布局渲染脚手架（QA/调试专用）绝不随发布包出货，整体 #if DEBUG 门控，
+// 对齐 ShotRenderer/IconRender；调度入口（XicoApp.swift 的 --layout 分支）需同样 #if DEBUG 门控。
+#if DEBUG
+
 /// 离屏渲染「侧边栏 + 首页仪表盘」组合，用于在无法点击驱动时验证整体布局与配色。
 /// 用法：Xico --layout  → 输出到 /tmp/xico-shots/layout-*.png
 @MainActor
@@ -70,3 +74,5 @@ func renderLayout() {
 
     FileHandle.standardError.write("layout rendered to \(dir.path)\n".data(using: .utf8)!)
 }
+
+#endif

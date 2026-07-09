@@ -24,24 +24,21 @@ final class HardwareViewModel: ObservableObject {
     // 网络接口档案（名称 / 类型 / IP / MAC / 速率）——超越 Sensei 的硬件页网络卡。
     @Published var interfaces: [NetworkInterfaceInfo] = []
     @Published var wifi: WiFiInfo?
-    // CPU 实时频率（P/E 簇，MHz）与系统热压力——档案页的「活」指标。
-    @Published var freqP: Double?
-    @Published var freqE: Double?
+    // 系统热压力——档案页的「活」指标。CPU 实时频率（P/E 簇）改从共享 MetricsEngine 读取，
+    // 不再由本 VM 各自跑一遍 ~90ms 阻塞的 DVFS 采样（消除硬件页与监视页的重复频率读，审计 P3）。
     @Published var thermal: ProcessInfo.ThermalState = .nominal
 
     private let hw: HardwareProfileService
     private let sensors: SensorReader
-    private let metrics: LiveMetricsSampler
     // 专属网络采样器：接口速率靠「上次采样」增量计算，与菜单栏/监视页共享同一实例会互相污染基线，
     // 故硬件页自持一份，速率读数独立稳定（名称/IP/MAC 本就无状态）。
     private let network = NetworkInfoService()
     private let bgQueue = DispatchQueue(label: "app.xico.hardware", qos: .userInitiated)
     private var timer: Timer?
 
-    init(hw: HardwareProfileService, sensors: SensorReader, metrics: LiveMetricsSampler) {
+    init(hw: HardwareProfileService, sensors: SensorReader) {
         self.hw = hw
         self.sensors = sensors
-        self.metrics = metrics
     }
 
     /// 真实开机时刻（kern.boottime；systemUptime 睡眠会漂移，不用它）。
@@ -86,14 +83,13 @@ final class HardwareViewModel: ObservableObject {
 
     /// 电池 / GPU / 温度 / 风扇 / 网络接口：轻量，2 秒刷新。
     private func refreshHealth() {
-        bgQueue.async { [hw, sensors, network, metrics] in
+        bgQueue.async { [hw, sensors, network] in
             let battery = hw.battery()
             let gpu = hw.gpu()
             let temps = sensors.temperatures()
             let fans = sensors.fans()
             let ifaces = network.interfaces()
             let wifi = network.wifi()
-            let freq = metrics.cpuFrequency()   // 阻塞 ~90ms，已在后台队列
             let thermal = ProcessInfo.processInfo.thermalState
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -103,8 +99,6 @@ final class HardwareViewModel: ObservableObject {
                 self.fans = fans
                 self.interfaces = ifaces
                 self.wifi = wifi
-                self.freqP = freq?.performance
-                self.freqE = freq?.efficiency
                 self.thermal = thermal
                 if let b = battery, abs(b.powerWatts) > 0.01 {
                     self.powerHistory.append(abs(b.powerWatts))
@@ -132,11 +126,13 @@ public struct HardwareView: View {
     // 观察并引用计数共享指标引擎：让内存/GPU 卡在硬件页也能拿到实时运行状态。
     // （旧实现只读 env.metricsEngine.snapshot 却从不 retain，非监视页时恒为 nil → 内存卡空白。）
     @ObservedObject private var engine: MetricsEngine
+    // 引擎引用计数守卫：确保 retain/release 每视图各恰好一次——onAppear/onDisappear 可能因
+    // SwiftUI 重建二次触发，无守卫会让计数漂移、采样器在视图消失后仍空转。
+    @State private var didRetain = false
 
     public init(env: XicoEnvironment) {
         self.env = env
-        _vm = StateObject(wrappedValue: HardwareViewModel(hw: env.hardware, sensors: env.sensors,
-                                                          metrics: env.liveMetrics))
+        _vm = StateObject(wrappedValue: HardwareViewModel(hw: env.hardware, sensors: env.sensors))
         self.engine = env.metricsEngine
     }
 
@@ -147,7 +143,7 @@ public struct HardwareView: View {
             XHeaderBar(title: xLoc("硬件"), subtitle: xLoc("档案 · 健康 · 温度")) {
                 HStack(spacing: XSpacing.s) {
                     XLiveDot(size: 7)
-                    Text("LIVE").font(.system(size: 10, weight: .bold)).tracking(1).foregroundStyle(XColor.success)
+                    Text("LIVE").font(XFont.micro).tracking(1).foregroundStyle(XColor.success)
                 }
             }
             ScrollView {
@@ -156,7 +152,7 @@ public struct HardwareView: View {
                     // 卡片按「高矮配对」排布：电池|内存（高）→ 存储|散热（高）→ GPU|网络（中）
                     // → 显示器|传感器（中），同排等高，消除一大一小的错落感。
                     LazyVGrid(columns: columns, spacing: XSpacing.m) {
-                        if vm.battery != nil { batteryCard }
+                        if let b = vm.battery { batteryCard(b) }
                         memoryCard
                         storageCard
                         thermalCard
@@ -169,8 +165,8 @@ public struct HardwareView: View {
                 .padding(XSpacing.xl)
             }
         }
-        .onAppear { vm.start(); engine.retain() }
-        .onDisappear { vm.stop(); engine.release() }
+        .onAppear { vm.start(); if !didRetain { didRetain = true; engine.retain() } }
+        .onDisappear { vm.stop(); if didRetain { didRetain = false; engine.release() } }
     }
 
     // MARK: Hero
@@ -182,11 +178,17 @@ public struct HardwareView: View {
                 HStack(alignment: .center, spacing: XSpacing.l) {
                     XIconTile(systemImage: heroIcon, colors: XColor.brandGradientColors, size: 56)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(vm.profile?.marketingName ?? "Mac")
-                            .xTitle().foregroundStyle(XColor.textPrimary)
-                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                        Text(vm.profile.map { "\($0.chip) · \($0.memoryDescription)" } ?? "—")
-                            .font(XFont.callout).foregroundStyle(XColor.textSecondary)
+                        if let p = vm.profile {
+                            Text(p.marketingName)
+                                .xTitle().foregroundStyle(XColor.textPrimary)
+                                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                            Text("\(p.chip) · \(p.memoryDescription)")
+                                .font(XFont.callout).foregroundStyle(XColor.textSecondary)
+                        } else {
+                            // 静态档案（system_profiler）尚在后台读取——占位骨架，避免抬头「Mac / —」硬闪。
+                            XSkeleton(width: 180, height: 22)
+                            XSkeleton(width: 120, height: 13)
+                        }
                     }
                     Spacer(minLength: 0)
                 }
@@ -235,10 +237,11 @@ public struct HardwareView: View {
             out.append(SpecItem(id: "serial", label: xLoc("序列号"), value: serial, copyValue: serial))
         }
         // 活指标：CPU 实时频率（P/E 簇）与开机信息——档案不止是静态铭牌。
-        if let p = vm.freqP, p > 0 {
+        // 频率取自共享 MetricsEngine（视图 onAppear 已 retain），与监视页复用同一次 DVFS 采样。
+        if let p = engine.cpuFreqP, p > 0 {
             out.append(SpecItem(id: "freqp", label: xLoc("性能核频率"), value: freqText(p), copyValue: nil))
         }
-        if let e = vm.freqE, e > 0 {
+        if let e = engine.cpuFreqE, e > 0 {
             out.append(SpecItem(id: "freqe", label: xLoc("能效核频率"), value: freqText(e), copyValue: nil))
         }
         if let boot = vm.bootDate {
@@ -277,30 +280,48 @@ public struct HardwareView: View {
     private var specGrid: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: XSpacing.l, alignment: .topLeading)],
                   alignment: .leading, spacing: XSpacing.m) {
-            ForEach(specItems()) { specCell($0) }
+            if vm.loaded {
+                ForEach(specItems()) { specCell($0) }
+            } else {
+                // 档案未就绪时预留规格格位（骨架），让抬头高度稳定、不因数据到达而跳动。
+                ForEach(0..<6, id: \.self) { _ in specCellSkeleton }
+            }
         }
     }
 
-    @State private var copied = false
-    private func specCell(_ item: SpecItem) -> some View {
+    private var specCellSkeleton: some View {
         VStack(alignment: .leading, spacing: 3) {
+            XSkeleton(width: 40, height: 9)
+            XSkeleton(width: 90, height: 12)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // 每格独立追踪「已复制」，避免单个共享 flag 让所有可复制格同时切成「已复制」。
+    @State private var copiedID: String?
+    private func specCell(_ item: SpecItem) -> some View {
+        let isCopied = copiedID == item.id
+        return VStack(alignment: .leading, spacing: 3) {
             Text(item.label).font(XFont.caption).foregroundStyle(XColor.textTertiary)
             if let copyValue = item.copyValue {
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(copyValue, forType: .string)
-                    withAnimation { copied = true }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation { copied = false } }
+                    withAnimation { copiedID = item.id }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+                        withAnimation { if copiedID == item.id { copiedID = nil } }
+                    }
                 } label: {
                     HStack(spacing: 4) {
-                        Text(copied ? xLoc("已复制") : item.value)
+                        Text(isCopied ? xLoc("已复制") : item.value)
                             .font(XFont.bodyEmphasis)
-                            .foregroundStyle(copied ? XColor.success : XColor.textPrimary)
-                        Image(systemName: "doc.on.doc").font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+                            .foregroundStyle(isCopied ? XColor.success : XColor.textPrimary)
+                        Image(systemName: "doc.on.doc").font(XFont.nano).foregroundStyle(XColor.textTertiary)
                     }
                 }
                 .buttonStyle(.plain)
                 .help(xLoc("点击复制序列号"))
+                .accessibilityLabel(xLoc("复制序列号"))
             } else {
                 Text(item.value).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                     .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
@@ -312,16 +333,15 @@ public struct HardwareView: View {
 
     // MARK: 电池
 
-    private var batteryCard: some View {
-        let b = vm.battery!
-        return HardwareCard(icon: "battery.100.bolt", title: xLoc("电池健康"),
+    private func batteryCard(_ b: BatteryHealth) -> some View {
+        HardwareCard(icon: "battery.100.bolt", title: xLoc("电池健康"),
                             iconColors: [XColor.success, XColor.accentTeal]) {
             HStack(alignment: .center, spacing: XSpacing.l) {
                 XRingGauge(progress: Double(b.healthPercent) / 100,
                            colors: healthColors(b.healthPercent), lineWidth: 10, size: 104) {
                     VStack(spacing: 0) {
                         Text("\(b.healthPercent)%").xTitle().foregroundStyle(XColor.textPrimary)
-                        Text(xLoc("最大容量")).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+                        Text(xLoc("最大容量")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
                     }
                 }
                 VStack(alignment: .leading, spacing: XSpacing.s) {
@@ -349,7 +369,7 @@ public struct HardwareView: View {
             if vm.powerHistory.count > 1 {
                 let maxW = max(vm.powerHistory.max() ?? 1, 1)
                 HStack(spacing: XSpacing.s) {
-                    Text(xLoc("功率趋势")).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+                    Text(xLoc("功率趋势")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
                     XLineChart(values: vm.powerHistory.map { $0 / maxW },
                                colors: b.isCharging ? [XColor.success, XColor.accentTeal] : [XColor.warning, XColor.accentPink],
                                showDot: false)
@@ -358,7 +378,7 @@ public struct HardwareView: View {
                 }
             } else if abs(b.powerWatts) < 0.05 {
                 // 满电接通电源时功率≈0、无波动——如实说明趋势图将在充放电时出现（绝不画一条假的平线）。
-                Text(xLoc("充放电时显示功率趋势")).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+                Text(xLoc("充放电时显示功率趋势")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
             }
         }
     }
@@ -373,7 +393,7 @@ public struct HardwareView: View {
     @ViewBuilder private func batteryAdviceRow(_ b: BatteryHealth) -> some View {
         let (text, icon, color) = batteryAdvice(health: b.healthPercent, cycles: b.cycleCount)
         HStack(spacing: XSpacing.s) {
-            Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(color)
+            Image(systemName: icon).font(XFont.captionEmphasis).foregroundStyle(color)
             Text(text).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -413,7 +433,7 @@ public struct HardwareView: View {
                             }
                         }
                     }
-                    Text(s.model).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Text(xLoc(s.model)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     XDiskBar(usedFraction: s.usedFraction, label: "", height: 8)
                     Text(xLocF("%@ 可用 / %@", s.freeBytes.formattedBytes, s.totalBytes.formattedBytes))
                         .font(XFont.caption).foregroundStyle(XColor.textTertiary)
@@ -441,7 +461,7 @@ public struct HardwareView: View {
             // 寿命预警：仅在剩余寿命真实偏低时提示（不对健康盘编造告警）。
             if sm.lifeRemaining < 20 {
                 HStack(spacing: XSpacing.s) {
-                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11, weight: .semibold)).foregroundStyle(XColor.warning)
+                    Image(systemName: "exclamationmark.triangle.fill").font(XFont.captionEmphasis).foregroundStyle(XColor.warning)
                     Text(xLoc("固态硬盘剩余寿命偏低，建议及时备份重要数据")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     Spacer(minLength: 0)
                 }
@@ -493,7 +513,7 @@ public struct HardwareView: View {
     private func fanRow(_ fan: FanInfo) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
-                Image(systemName: "fanblades.fill").font(.system(size: 11)).foregroundStyle(XColor.metricNetwork[0])
+                Image(systemName: "fanblades.fill").font(XFont.caption).foregroundStyle(XColor.metricNetwork[0])
                 Text(xLocF("风扇 %d", fan.id + 1)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 Spacer()
                 // 目标转速（SMC 暴露则显）——超越 Sensei 的静态转速。读不到即不显，绝不编造。
@@ -520,9 +540,9 @@ public struct HardwareView: View {
                 }
                 .frame(height: 4)
                 HStack {
-                    Text(xLocF("最低 %d", mn)).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+                    Text(xLocF("最低 %d", mn)).font(XFont.nano).foregroundStyle(XColor.textTertiary)
                     Spacer()
-                    Text(xLocF("最高 %d", mx)).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+                    Text(xLocF("最高 %d", mx)).font(XFont.nano).foregroundStyle(XColor.textTertiary)
                 }
             }
         }
@@ -688,7 +708,7 @@ public struct HardwareView: View {
                 if idx > 0 { Divider().overlay(XColor.hairline) }
                 VStack(alignment: .leading, spacing: XSpacing.xs) {
                     HStack(spacing: XSpacing.s) {
-                        Image(systemName: i.type.icon).font(.system(size: 12)).foregroundStyle(XColor.accentTeal).frame(width: 18)
+                        Image(systemName: i.type.icon).font(XFont.callout).foregroundStyle(XColor.accentTeal).frame(width: 18)
                         Text(i.displayName).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary).lineLimit(1)
                         Spacer()
                         if i.type == .wifi, let tx = vm.wifi?.txRate {
@@ -729,7 +749,7 @@ public struct HardwareView: View {
             }
             ForEach(grouped, id: \.0) { name, temps in
                 VStack(alignment: .leading, spacing: XSpacing.s) {
-                    Text(xLoc(name)).font(.system(size: 10, weight: .semibold)).foregroundStyle(XColor.textTertiary)
+                    Text(xLoc(name)).font(XFont.micro).foregroundStyle(XColor.textTertiary)
                         .textCase(.uppercase).tracking(0.5)
                     // 两列密排：M1 这类机型传感器可达十几个，单列会刷屏——收成两列，像 iStat 传感器面板。
                     // 用下标做 id：传感器名可能重复（如多个 "gas gauge battery"），\.id 会冲突。
@@ -793,7 +813,7 @@ public struct HardwareView: View {
     private func miniStat(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(value).font(XFont.mono).foregroundStyle(XColor.textPrimary)
-            Text(label).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+            Text(label).font(XFont.nano).foregroundStyle(XColor.textTertiary)
         }
     }
 

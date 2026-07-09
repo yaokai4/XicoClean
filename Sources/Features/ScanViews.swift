@@ -23,7 +23,7 @@ struct SessionScaffold<Idle: View>: View {
             case let .failed(message): failedView(message)
             }
         }
-        .animation(.easeInOut(duration: 0.35), value: vm.phase)
+        .animation(XMotion.crossfade, value: vm.phase)
         .alert(xLoc("部分项目未能恢复"), isPresented: $vm.undoFailedAlert) {
             Button(xLoc("在废纸篓中显示")) { vm.revealUndoFailuresInTrash() }
             Button(xLoc("好"), role: .cancel) {}
@@ -123,6 +123,14 @@ struct SessionScaffold<Idle: View>: View {
                         XRingGauge(progress: 0, spinning: true, colors: XColor.brandGradientColors, lineWidth: 2.5, size: 16) { EmptyView() }
                         Text(xLoc("清理中…")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
+                } else if vm.needsPurchaseToClean {
+                    // 试用到期后扫描仍可用（看见价值），但清理需购买——直接给出「购买后清理」CTA，
+                    // 而非让用户点清理再撞授权失败态。破坏性动作的授权红线仍在 vm.clean() 内保持不变。
+                    Button(xLoc("购买后清理") + " · " + vm.selectedSize.formattedBytes) {
+                        NotificationCenter.default.post(name: .xicoShowPricing, object: nil)
+                    }
+                        .buttonStyle(XPrimaryButtonStyle())
+                        .accessibilityLabel(xLoc("购买后清理"))
                 } else {
                     Button("\(cleanButtonTitle) · \(vm.selectedSize.formattedBytes)") {
                         if vm.intent == .permanent || vm.selectedRequiresHelper { confirmPermanent = true } else { vm.clean() }
@@ -203,6 +211,7 @@ struct SummaryHeader: View {
             Button { onRescan() } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.plain).foregroundStyle(XColor.textSecondary)
                 .padding(.leading, XSpacing.m)
+                .accessibilityLabel(xLoc("重新扫描"))
         }
         .padding(.horizontal, XSpacing.xl)
         .padding(.vertical, XSpacing.l)
@@ -250,7 +259,7 @@ struct ModuleIdleHero: View {
                 HStack(spacing: XSpacing.s) {
                     ForEach(facts) { fact in
                         HStack(spacing: 5) {
-                            Image(systemName: fact.icon).font(.system(size: 10, weight: .medium))
+                            Image(systemName: fact.icon).font(XFont.micro)
                                 .foregroundStyle(fact.tint)
                             Text(fact.text).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                         }
@@ -285,7 +294,7 @@ public struct SmartScanView: View {
         SessionScaffold(vm: vm, cleanButtonTitle: xLoc("清理")) { dashboard }
             .onAppear {
                 refresh()
-                withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) { appeared = true }
+                withAnimation(XMotion.settle) { appeared = true }
             }
             .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in refresh() }
     }
@@ -394,7 +403,7 @@ public struct SmartScanView: View {
             Text(value)
                 .font(XFont.heroCompact)
             Text(unit)
-                .font(.system(size: 23, weight: .semibold, design: .rounded))
+                .font(XFont.heroUnit)
                 .foregroundStyle(XColor.textSecondary)
         }
         .foregroundStyle(XColor.textPrimary)
@@ -409,7 +418,7 @@ public struct SmartScanView: View {
                 Circle().fill(healthColors(score)[0]).frame(width: 8, height: 8)
                     .shadow(color: healthColors(score)[0].opacity(0.6), radius: 4)
                 Text(healthTitle(score))
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .font(XFont.titleRounded)
                     .foregroundStyle(XColor.textPrimary)
             }
             // 磁盘占用只在环副标题出现一次；此处不再重复 %（原首屏三处重复占用率）。
@@ -460,6 +469,17 @@ public struct ModuleScanView: View {
     private let meta: ModuleMetadata?
     private let intent: DeleteIntent
     private let history: HistoryStore
+    /// idle 英雄区的信任胶囊——在 .onAppear / .xicoDidClean 时算一次并缓存，
+    /// 而非每次 body 求值都读历史库 + 造格式化器（审计 ScanViews:492 P3）。
+    @State private var facts: [ModuleIdleHero.Fact] = []
+
+    /// 相对时间格式化器只造一次（与 DiskBenchmarkView.dateFmt 同法）；locale 在算 facts 时按需刷新，
+    /// 以跟随运行时语言切换。
+    private static let relativeFmt: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f
+    }()
 
     public init(model: AppModel, moduleID: ModuleID, intent: DeleteIntent) {
         let meta = ModuleCatalog.all.first { $0.id == moduleID }
@@ -469,26 +489,25 @@ public struct ModuleScanView: View {
         self.vm = model.moduleSession(moduleID: moduleID, intent: intent, title: meta?.title ?? "")
     }
 
-    /// idle 英雄区的信任胶囊：安全承诺 + 该模块最近一次清理成果。
-    private func idleFacts() -> [ModuleIdleHero.Fact] {
-        var facts: [ModuleIdleHero.Fact] = []
+    /// idle 英雄区的信任胶囊：安全承诺 + 该模块最近一次清理成果。只在出现/清理后算一次，写入 @State。
+    private func computeFacts() {
+        var result: [ModuleIdleHero.Fact] = []
         if intent == .permanent {
-            facts.append(.init(icon: "exclamationmark.shield", text: xLoc("彻底删除 · 执行前二次确认"),
-                               tint: XColor.warning))
+            result.append(.init(icon: "exclamationmark.shield", text: xLoc("彻底删除 · 执行前二次确认"),
+                                tint: XColor.warning))
         } else {
-            facts.append(.init(icon: "arrow.uturn.backward.circle", text: xLoc("仅移入废纸篓 · 一键可撤销"),
-                               tint: XColor.success))
+            result.append(.init(icon: "arrow.uturn.backward.circle", text: xLoc("仅移入废纸篓 · 一键可撤销"),
+                                tint: XColor.success))
         }
         if let title = meta?.title,
            let rec = history.recent(30).first(where: { $0.module == title && $0.reclaimedBytes > 0 }) {
-            let fmt = RelativeDateTimeFormatter()
+            let fmt = Self.relativeFmt
             fmt.locale = XLocale.swiftUILocale
-            fmt.unitsStyle = .short
             let when = fmt.localizedString(for: rec.date, relativeTo: Date())
-            facts.append(.init(icon: "clock.arrow.circlepath",
-                               text: xLocF("上次清理 %@ · 释放 %@", when, rec.reclaimedBytes.formattedBytes)))
+            result.append(.init(icon: "clock.arrow.circlepath",
+                                text: xLocF("上次清理 %@ · 释放 %@", when, rec.reclaimedBytes.formattedBytes)))
         }
-        return facts
+        facts = result
     }
 
     public var body: some View {
@@ -499,11 +518,13 @@ public struct ModuleScanView: View {
                 title: meta?.title ?? xLoc("扫描"),
                 subtitle: meta?.subtitle ?? "",
                 buttonTitle: intent == .permanent ? xLoc("扫描废纸篓") : xLoc("开始扫描"),
-                facts: idleFacts(),
+                facts: facts,
                 action: { vm.start() })
         }
         .onAppear {
+            computeFacts()
             if CommandLine.arguments.contains("--autoscan"), vm.phase == .idle { vm.start() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in computeFacts() }
     }
 }

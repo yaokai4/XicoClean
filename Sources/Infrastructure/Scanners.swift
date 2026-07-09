@@ -350,19 +350,34 @@ public struct LargeFilesScanner: ScannerModule {
         self.maxItems = maxItems
     }
 
+    /// 体量达标的大文件，附带「是否长期未使用」的年龄维度（回应模块名「大文件与旧文件」）。
+    private struct ScoredFile: Sendable {
+        let item: CleanableItem
+        let stale: Bool
+    }
+
+    /// 长期未使用阈值：最后访问（回退到最后修改）超过此天数即视为「旧文件」。
+    private static let staleInterval: TimeInterval = 180 * 86400
+
+    private static func isStale(access: Date?, modified: Date?, now: Date) -> Bool {
+        guard let last = access ?? modified else { return false }
+        return now.timeIntervalSince(last) > staleInterval
+    }
+
     public func scan(progress: @escaping ProgressHandler) async throws -> ScanResult {
         let roots = scanRoots()
         let counter = AtomicInt()
         let fs = self.fs
         let safety = self.safety
         let threshold = self.threshold
+        let now = Date()
 
         let home = self.home
         // 各用户目录并发遍历，重叠 I/O 提速
-        var items = await withTaskGroup(of: [CleanableItem].self) { group in
+        var scored = await withTaskGroup(of: [ScoredFile].self) { group in
             for root in roots {
                 group.addTask {
-                    var local: [CleanableItem] = []
+                    var local: [ScoredFile] = []
                     for await entry in fs.deepEnumerate(root, includeFiles: true) {
                         if Task.isCancelled { break }
                         // 用逻辑大小做廉价阈值过滤，命中后再取分配大小（只对 ≥阈值 的少量文件多一次 stat），
@@ -370,9 +385,14 @@ public struct LargeFilesScanner: ScannerModule {
                         guard !entry.isDirectory, entry.size >= threshold else { continue }
                         guard safety.verify(entry.url, intent: .trash).isAllowed else { continue }
                         let allocated = fs.entry(for: entry.url)?.size ?? entry.size
-                        local.append(CleanableItem(url: entry.url, displayName: entry.url.lastPathComponent,
-                                                   detail: entry.url.path, size: allocated,
-                                                   safety: .caution, isSelected: false))
+                        // deepEnumerate 已带回访问/修改时间，据此标注「长期未使用」的年龄维度。
+                        let stale = Self.isStale(access: entry.accessDate, modified: entry.modificationDate, now: now)
+                        local.append(ScoredFile(
+                            item: CleanableItem(url: entry.url, displayName: entry.url.lastPathComponent,
+                                                detail: entry.url.path, size: allocated,
+                                                safety: .caution, isSelected: false,
+                                                note: stale ? "长期未使用 · 超过 180 天未打开" : nil),
+                            stale: stale))
                         let running = counter.add(allocated)
                         progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: running))
                     }
@@ -381,29 +401,48 @@ public struct LargeFilesScanner: ScannerModule {
             }
             // 家目录顶层的大文件（如 ~/big.dmg）——此前只遍历子目录，整层漏掉
             group.addTask {
-                var local: [CleanableItem] = []
+                var local: [ScoredFile] = []
                 for url in fs.contentsOfDirectory(home) {
                     if Task.isCancelled { break }
                     guard let e = fs.entry(for: url), !e.isDirectory, e.size >= threshold else { continue }
                     guard safety.verify(url, intent: .trash).isAllowed else { continue }
-                    local.append(CleanableItem(url: url, displayName: url.lastPathComponent,
-                                               detail: url.path, size: e.size, safety: .caution, isSelected: false))
+                    let stale = Self.isStale(access: e.accessDate, modified: e.modificationDate, now: now)
+                    local.append(ScoredFile(
+                        item: CleanableItem(url: url, displayName: url.lastPathComponent,
+                                            detail: url.path, size: e.size, safety: .caution, isSelected: false,
+                                            note: stale ? "长期未使用 · 超过 180 天未打开" : nil),
+                        stale: stale))
                     let running = counter.add(e.size)
                     progress(ScanProgress(message: url.lastPathComponent, bytesFound: running))
                 }
                 return local
             }
-            var all: [CleanableItem] = []
+            var all: [ScoredFile] = []
             for await part in group { all += part }
             return all
         }
 
-        items.sort { $0.size > $1.size }
-        if items.count > maxItems { items = Array(items.prefix(maxItems)) }
-        let group = ScanResultGroup(id: "large-files", title: xLocF("大文件（≥ %@）", threshold.formattedBytes),
-                                    description: "扫描下载、文稿、影片等用户目录；删除前请确认，全部移入废纸篓可恢复。",
-                                    systemImage: "doc.viewfinder", safety: .caution, items: items)
-        return ScanResult(moduleID: .largeFiles, groups: items.isEmpty ? [] : [group])
+        scored.sort { $0.item.size > $1.item.size }
+        if scored.count > maxItems { scored = Array(scored.prefix(maxItems)) }
+
+        // 双维度呈现：先单列「长期未使用 · >180 天」的旧文件（最值得优先释放），
+        // 再按体量排行其余大文件——回应模块名「大文件与旧文件」对年龄维度的承诺。
+        let staleItems = scored.filter(\.stale).map(\.item)
+        let freshItems = scored.filter { !$0.stale }.map(\.item)
+        var groups: [ScanResultGroup] = []
+        if !staleItems.isEmpty {
+            groups.append(ScanResultGroup(
+                id: "large-old-files", title: xLoc("长期未使用 · >180 天"),
+                description: "体量大且超过 180 天未打开的文件——最值得优先释放；删除前请确认，全部移入废纸篓可恢复。",
+                systemImage: "clock.badge.xmark", safety: .caution, items: staleItems))
+        }
+        if !freshItems.isEmpty {
+            groups.append(ScanResultGroup(
+                id: "large-files", title: xLocF("大文件（≥ %@）", threshold.formattedBytes),
+                description: "扫描下载、文稿、影片等用户目录；删除前请确认，全部移入废纸篓可恢复。",
+                systemImage: "doc.viewfinder", safety: .caution, items: freshItems))
+        }
+        return ScanResult(moduleID: .largeFiles, groups: groups)
     }
 
     /// 用户内容目录 + ~/Library（大文件常藏在 Containers/Application Support/iOS 备份里）。
@@ -476,7 +515,8 @@ public struct TrashScanner: ScannerModule {
 // MARK: - 深度全盘扫描器（智能扫描的「全面检测」层）
 //
 // 与定点清理不同：这里对整个用户目录做真实逐文件走查（复用 deepEnumerate，
-// node_modules 等海量小文件目录已由系统垃圾定义覆盖故剪枝），路上识别两类
+// node_modules / Pods / DerivedData 等海量小文件目录仅为扫描提速而剪枝——
+// 它们并非可清理物，也未被任何系统垃圾定义覆盖，只是跳过不深入），路上识别两类
 // 「定点规则覆盖不到、但人人都有」的可清理物：
 //   1. 残留安装包：.dmg/.pkg/.xip/.iso——装完即弃，30 天未动默认勾选；
 //   2. 中断的下载：.crdownload/.part/.partial/.download——续传会重新开始，残块无用。

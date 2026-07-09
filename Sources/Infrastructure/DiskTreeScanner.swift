@@ -27,8 +27,9 @@ public struct DiskTreeScanner: Sendable {
             return DiskNode(url: root, name: root.lastPathComponent, isDirectory: false, size: fs.allocatedSize(of: root))
         }
         let node = await buildDir(root, depth: 0, progress: progress)
-        collapse(node, parentSize: node.size)
-        return node
+        let collapsed = collapse(node, parentSize: node.size)
+        // 至此扫描相构建完成、定型：本函数返回后不再有任何后台任务改动此树（见 DiskNode 不变式）。
+        return collapsed
     }
 
     /// 并发构建（用于顶部 parallelDepth 层）
@@ -110,20 +111,23 @@ public struct DiskTreeScanner: Sendable {
             }
         }
         if otherSize > 0 {
-            children.append(DiskNode(url: url, name: "其他文件", isDirectory: true, size: otherSize))
+            // 合成聚合桶：复用父 URL 仅供展示占比，isAggregate=true 使其绝不可被删除（审计 P0）。
+            children.append(DiskNode(url: url, name: "其他文件", isDirectory: true, size: otherSize, isAggregate: true))
         }
         return DiskNode(url: url, name: url.lastPathComponent, isDirectory: true, size: total, children: children)
     }
 
     /// 显示前裁剪：按大小排序、截断过多/过小子节点。
-    private func collapse(_ node: DiskNode, parentSize: Int64) {
-        guard !node.children.isEmpty else { return }
-        node.children.sort { $0.size > $1.size }
+    /// 纯函数——自底向上返回**全新**的裁剪树，不就地改动传入节点（`DiskNode.children`/`size`
+    /// 对本模块只读；单写不变式见 DiskNode 文档）。`size` 沿用原节点，仅重组 `children`。
+    private func collapse(_ node: DiskNode, parentSize: Int64) -> DiskNode {
+        guard !node.children.isEmpty else { return node }
+        let sorted = node.children.sorted { $0.size > $1.size }
 
         let threshold = Int64(Double(max(parentSize, 1)) * minVisibleFraction)
         var visible: [DiskNode] = []
         var otherSize: Int64 = 0
-        for (index, child) in node.children.enumerated() {
+        for (index, child) in sorted.enumerated() {
             if index < maxChildrenPerNode && child.size >= threshold && child.name != "其他文件" {
                 visible.append(child)
             } else {
@@ -131,11 +135,15 @@ public struct DiskTreeScanner: Sendable {
             }
         }
         if otherSize > 0 {
-            visible.append(DiskNode(url: node.url, name: "其他", isDirectory: true, size: otherSize))
+            // 合成聚合桶：复用父 URL 仅供展示占比，isAggregate=true 使其绝不可被删除（审计 P0）。
+            visible.append(DiskNode(url: node.url, name: "其他", isDirectory: true, size: otherSize, isAggregate: true))
         }
-        node.children = visible
-        for child in node.children where child.isDirectory && child.name != "其他" && child.name != "其他文件" {
-            collapse(child, parentSize: child.size)
+        let collapsedChildren = visible.map { child -> DiskNode in
+            (child.isDirectory && child.name != "其他" && child.name != "其他文件")
+                ? collapse(child, parentSize: child.size)
+                : child
         }
+        return DiskNode(url: node.url, name: node.name, isDirectory: node.isDirectory,
+                        size: node.size, children: collapsedChildren)
     }
 }

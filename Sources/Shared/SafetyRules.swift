@@ -75,6 +75,18 @@ public struct XicoSafetyRules: Sendable {
         ["library", "containers"]                  // 沙盒应用容器根
     ]
 
+    /// 凭证/密钥/云配置点目录（home 相对分量、小写）——**任意用户**主目录下均受保护，禁止删除。
+    /// 单一事实来源（对抗复核 P3）：此前红线仅对任意用户保护 `.ssh`/`.gnupg`，其余凭证目录
+    /// （`.aws`/`.kube`/`.docker` 等）只在**当前用户**由 `DefaultSafetyEngine` 兜底、对其他用户失守。
+    /// 现把完整清单上提到红线唯一事实来源，既覆盖任意用户 `/Users/<any>/…` 分支，也并入注入 home 的
+    /// `extraDenySubtrees`，三处（本类 / `DefaultSafetyEngine` 纵深兜底 / `DefinitionPathPolicy` 摄入期）
+    /// 口径统一。刻意仅收 `.config/gcloud` 而非整个 `.config`——`.config` 下确有合法缓存（走缓存清理）。
+    public static let credentialDotdirsLower: [[String]] = [
+        [".ssh"], [".gnupg"], [".aws"], [".kube"], [".docker"],
+        [".azure"], [".gcloud"], [".oci"], [".terraform.d"],
+        [".config", "gcloud"], [".netrc"]
+    ]
+
     /// 以这些扩展名结尾的「库包」整体受保护（照片/音乐/影片/图库等 bundle，删=图库全毁）。小写。
     // 仅包含「资料库/图库 bundle 目录」后缀；刻意不含 .motn 等单文件类型，
     // 避免把名为 X.motn 的普通模板文件误判为受保护资料库。
@@ -105,10 +117,8 @@ public struct XicoSafetyRules: Sendable {
             exact.insert(homeLower + rel)
         }
         extraDenyExact = exact
-        var subtrees: [[String]] = [
-            homeLower + [".ssh"],
-            homeLower + [".gnupg"]
-        ]
+        // 凭证/密钥/云配置点目录（相对注入 home，整棵保护）——完整清单，单一事实来源。
+        var subtrees: [[String]] = Self.credentialDotdirsLower.map { homeLower + $0 }
         // 云同步/邮件/信息/iPhone 备份子树（相对注入 home，整棵保护）
         for rel in Self.protectedLibrarySubtreesLower {
             subtrees.append(homeLower + rel)
@@ -161,12 +171,16 @@ public struct XicoSafetyRules: Sendable {
             if t.count == 4 && Self.protectedHomeChildrenLower.contains(t[3]) {
                 return "“\(target.count > 3 ? target[3] : "")” 是受保护的用户内容目录"
             }
-            if t.count >= 4 && (t[3] == ".ssh" || t[3] == ".gnupg") {
+            // home 相对分量（t[3...]）——凭证目录与云同步/邮件/备份子树共用。
+            let relative = Array(t.dropFirst(3))   // ["library", "mobile documents", ...] / [".aws", ...]
+            // 5.0 凭证/密钥/云配置点目录：**任意用户**主目录下均保护（对抗复核 P3，扩至完整清单）。
+            //     复用既有已全量本地化的键 "密钥目录受保护，禁止删除"（原 .ssh/.gnupg 分支同款文案），
+            //     避免在 Shared 红线引入未入 11 语言表的新字面量（保持 i18n 覆盖不退化）。
+            for dir in Self.credentialDotdirsLower where Self.isInsideOrEqual(relative, dir) {
                 return "密钥目录受保护，禁止删除"
             }
             // 5.1 家目录内的云同步/邮件/信息/iPhone 备份子树整体保护。
-            //     以 home 相对分量（t[3...]）匹配 protectedLibrarySubtreesLower。
-            let relative = Array(t.dropFirst(3))   // ["library", "mobile documents", ...]
+            //     以 home 相对分量匹配 protectedLibrarySubtreesLower。
             for subtree in Self.protectedLibrarySubtreesLower where Self.isInsideOrEqual(relative, subtree) {
                 return "“\(subtree.last ?? "")” 是受保护的用户数据目录（云同步/邮件/备份），禁止删除"
             }

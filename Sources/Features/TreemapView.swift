@@ -2,12 +2,25 @@ import SwiftUI
 import AppKit
 import Domain
 import DesignSystem
+import Shared
 
 /// 简化的二分切割 treemap：面积正比于占用大小，点击目录方块可钻取。
 struct TreemapView: View {
     let node: DiskNode
     let onSelect: (DiskNode) -> Void
+    /// 就地把某项移到废纸篓（可恢复）。nil 表示宿主未提供该能力。
+    let onTrash: ((DiskNode) -> Void)?
     @State private var hovered: UUID?
+    @State private var pendingTrash: DiskNode?
+    @State private var trashDeny: String?
+
+    init(node: DiskNode,
+         onTrash: ((DiskNode) -> Void)? = nil,
+         onSelect: @escaping (DiskNode) -> Void) {
+        self.node = node
+        self.onTrash = onTrash
+        self.onSelect = onSelect
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -19,41 +32,93 @@ struct TreemapView: View {
                 }
             }
         }
+        .confirmationDialog(xLoc("移到废纸篓"),
+                            isPresented: Binding(get: { pendingTrash != nil },
+                                                 set: { if !$0 { pendingTrash = nil } }),
+                            presenting: pendingTrash) { item in
+            Button(xLoc("移到废纸篓"), role: .destructive) { onTrash?(item); pendingTrash = nil }
+            Button(xLoc("取消"), role: .cancel) { pendingTrash = nil }
+        } message: { item in
+            Text(xLocF("将把「%@」移到废纸篓，之后可从废纸篓恢复。", item.name))
+        }
+        .alert(xLoc("无法移到废纸篓"),
+               isPresented: Binding(get: { trashDeny != nil }, set: { if !$0 { trashDeny = nil } })) {
+            Button(xLoc("好"), role: .cancel) { trashDeny = nil }
+        } message: {
+            Text(trashDeny ?? "")
+        }
+    }
+
+    /// 右键「移到废纸篓」入口：先按删除红线（XicoSafetyRules）自检，命中即拒绝并说明原因；
+    /// 放行才弹出二次确认。真正的回收动作由宿主的 onTrash 走 NSWorkspace.recycle（可恢复）。
+    private func requestTrash(_ item: DiskNode) {
+        let rules = XicoSafetyRules(home: FileManager.default.homeDirectoryForCurrentUser)
+        if let reason = rules.denyReason(for: item.url) {
+            trashDeny = reason
+        } else {
+            pendingTrash = item
+        }
     }
 
     private func tile(_ child: DiskNode, frame: CGRect) -> some View {
         let color = Self.color(for: child.name)
+        let onTile = Self.readableText(on: color)   // 依瓦片亮度选白/深字，浅色主题下不再白字糊白底（审计 P2）
         let isHover = hovered == child.id
         let showLabel = frame.width > 64 && frame.height > 34
         return Button { onSelect(child) } label: {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            RoundedRectangle(cornerRadius: XRadius.chip, style: .continuous)
                 .fill(color.opacity(isHover ? 0.95 : 0.78))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: XRadius.chip, style: .continuous)
+                        .strokeBorder(onTile.opacity(0.28), lineWidth: 1)
                 )
                 .overlay(alignment: .topLeading) {
                     if showLabel {
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(xLoc(child.name)).font(.system(size: 11, weight: .semibold)).lineLimit(1)
-                            Text(child.size.formattedBytes).font(.system(size: 10)).opacity(0.85)
+                            Text(xLoc(child.name)).font(XFont.captionEmphasis).lineLimit(1)
+                            Text(child.size.formattedBytes).font(XFont.micro).opacity(0.85)
                         }
-                        .foregroundStyle(.white)
+                        .foregroundStyle(onTile)
                         .padding(6)
                     }
                 }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(child.name)，\(child.size.formattedBytes)")
+        .accessibilityAddTraits(.isButton)
         .frame(width: max(2, frame.width - 3), height: max(2, frame.height - 3))
+        // 可见的「移到废纸篓」入口：不再只藏在右键菜单里。常显但克制（悬停/聚焦时加亮），
+        // 作为独立 Button 可被 Tab 聚焦、空格触发——键盘用户与不知右键的用户都能发现并执行删除。
+        .overlay(alignment: .topTrailing) {
+            // 合成聚合桶（「其他」）不给删除入口——它复用父目录 URL，删之即误删整个文件夹（审计 P0）。
+            if showLabel, onTrash != nil, !child.isAggregate {
+                Button(role: .destructive) { requestTrash(child) } label: {
+                    Image(systemName: "trash.fill")
+                        .font(XFont.micro).foregroundStyle(.white)
+                        .padding(5)
+                        .background(Circle().fill(.black.opacity(0.42)))
+                }
+                .buttonStyle(.plain)
+                .padding(5)
+                .opacity(isHover ? 1 : 0.5)
+                .animation(XMotion.hover, value: isHover)
+                .help(xLoc("移到废纸篓"))
+                .accessibilityLabel(xLoc("移到废纸篓"))
+            }
+        }
         .offset(x: frame.minX, y: frame.minY)
         .onHover { hovered = $0 ? child.id : nil }
         .help("\(child.name) — \(child.size.formattedBytes)")
         .contextMenu {
             Button(xLoc("在 Finder 中显示")) { NSWorkspace.shared.activateFileViewerSelecting([child.url]) }
             Button(xLoc("快速查看")) { quickLook(child.url) }
+            if onTrash != nil, !child.isAggregate {
+                Divider()
+                Button(role: .destructive) { requestTrash(child) } label: {
+                    Label(xLoc("移到废纸篓"), systemImage: "trash")
+                }
+            }
         }
-        .accessibilityLabel("\(child.name)，\(child.size.formattedBytes)")
-        .accessibilityAddTraits(.isButton)
     }
 
     // MARK: 布局
@@ -95,9 +160,16 @@ struct TreemapView: View {
     }
 
     static func color(for name: String) -> Color {
-        // 淡彩虹色板，与全局配色一致
-        let palette: [Int] = [0x7C97F2, 0xA790F0, 0xC79AE8, 0xE6A6CE, 0x86E6DC, 0x8FB0FF, 0xCBB0FF, 0xAEC2FF]
-        let hash = abs(name.hashValue)
-        return Color(nsColor: NSColor(hex: palette[hash % palette.count]))
+        // 每个文件夹一个稳定色相，取自当前主题的色阶（XColor.ring）——切主题即整体换色、
+        // 亮/暗自动适配（不再硬编码固定十六进制）。ring 内部自带取模，负 hash 亦安全。
+        XColor.ring(name.hashValue)
+    }
+
+    /// 依瓦片底色的相对亮度选可读前景：浅底用近黑字、深底用白字，保证浅色主题下的对比（审计 P2）。
+    /// 动态色以当前外观解析；无法转 sRGB 时退回白字（与旧行为一致，绝不更差）。
+    static func readableText(on color: Color) -> Color {
+        guard let ns = NSColor(color).usingColorSpace(.sRGB) else { return XColor.onAccent }
+        let lum = 0.299 * ns.redComponent + 0.587 * ns.greenComponent + 0.114 * ns.blueComponent
+        return lum > 0.6 ? XColor.textPrimary : XColor.onAccent
     }
 }

@@ -6,6 +6,21 @@
 #include <stdint.h>
 #include <unistd.h>
 
+// MARK: - 私有 API 面（notarization / 长期可用性）
+//
+// 本文件三处硬件监控能力均依赖未公开 SPI，皆为**只读**、与 Stats / iSMC / asitop /
+// DriveDx 等长期在售的 Developer ID 应用同源；notarization 不因私有符号被拒（无 entitlement 滥用）：
+//   1. 温度      —— IOHIDEventSystemClient（本节，weak_import 弱链接）
+//   2. CPU 频率  —— IOReport（下方，dlopen/dlsym 运行时加载）
+//   3. SSD SMART —— IONVMeSMARTUserClient CFPlugin（下方）
+// 三者都做了缺失即降级：符号解析为 NULL / 接口取不到 → 返回 0，Swift 侧静默降级到公开通路
+// （电池温度走 AppleSmartBattery、机型信息走 sysctl），绝不崩溃、绝不显示错值。
+//
+// 维护约定（CI）：每逢新 macOS beta，需在真机跑一次 xico_copy_thermal_sensors /
+// xico_cpu_frequency / xico_read_nvme_smart 冒烟，确认这三组符号仍解析且返回非空；任一失效即
+// 触发「传感器在本系统不可用」的降级态而非空白面板。若某代系统整组失效，应改用公开兜底
+// （Intel 上 IOPMCopyBatteryInfo + SMC sp78 可覆盖电池/CPU 温度）。
+//
 // MARK: - IOHIDEventSystemClient 私有声明
 //
 // 这些符号存在于 IOKit.framework，但不在公开头文件里。声明方式与 exelban/stats、
@@ -15,12 +30,14 @@ typedef struct __IOHIDEvent *IOHIDEventRef;
 typedef struct __IOHIDServiceClient *IOHIDServiceClientRef;
 typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
 
-extern IOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
-extern int   IOHIDEventSystemClientSetMatching(IOHIDEventSystemClientRef client, CFDictionaryRef match);
-extern CFArrayRef IOHIDEventSystemClientCopyServices(IOHIDEventSystemClientRef client);
-extern CFTypeRef  IOHIDServiceClientCopyProperty(IOHIDServiceClientRef service, CFStringRef property);
-extern IOHIDEventRef IOHIDServiceClientCopyEvent(IOHIDServiceClientRef service, int64_t type, int32_t options, int64_t timestamp);
-extern double IOHIDEventGetFloatValue(IOHIDEventRef event, int32_t field);
+// 弱链接（weak_import）：这些私有符号一旦在未来 macOS 被移除，可执行文件仍能正常加载，
+// 缺失符号地址解析为 NULL；调用前逐一空检查，缺任一即返回 0 传感器，Swift 侧静默降级。
+extern IOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator) __attribute__((weak_import));
+extern int   IOHIDEventSystemClientSetMatching(IOHIDEventSystemClientRef client, CFDictionaryRef match) __attribute__((weak_import));
+extern CFArrayRef IOHIDEventSystemClientCopyServices(IOHIDEventSystemClientRef client) __attribute__((weak_import));
+extern CFTypeRef  IOHIDServiceClientCopyProperty(IOHIDServiceClientRef service, CFStringRef property) __attribute__((weak_import));
+extern IOHIDEventRef IOHIDServiceClientCopyEvent(IOHIDServiceClientRef service, int64_t type, int32_t options, int64_t timestamp) __attribute__((weak_import));
+extern double IOHIDEventGetFloatValue(IOHIDEventRef event, int32_t field) __attribute__((weak_import));
 
 // kIOHIDEventTypeTemperature = 15；事件字段基址 = type << 16。
 #define XICO_HID_EVENT_TYPE_TEMPERATURE 15
@@ -55,6 +72,16 @@ static CFDictionaryRef xico_temperature_matching(void) {
 
 int xico_copy_thermal_sensors(XicoTempSensor *out, int maxCount) {
     if (out == NULL || maxCount <= 0) return 0;
+
+    // 弱链接符号缺失检查：任一私有 API 在当前系统上不存在即优雅降级（返回 0）。
+    if (IOHIDEventSystemClientCreate == NULL ||
+        IOHIDEventSystemClientSetMatching == NULL ||
+        IOHIDEventSystemClientCopyServices == NULL ||
+        IOHIDServiceClientCopyProperty == NULL ||
+        IOHIDServiceClientCopyEvent == NULL ||
+        IOHIDEventGetFloatValue == NULL) {
+        return 0;
+    }
 
     IOHIDEventSystemClientRef client = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
     if (client == NULL) return 0;
@@ -297,8 +324,11 @@ static void xico_accumulate_residency(CFDictionaryRef samples,
         if (name == NULL) return 0;
         char buf[64]; buf[0] = '\0';
         CFStringGetCString(name, buf, sizeof(buf), kCFStringEncodingUTF8);
-        int isE = (buf[0] == 'E');
-        int isP = (buf[0] == 'P');
+        // 按完整簇名前缀匹配（"ECPU"/"PCPU"，含 "ECPU0"/"PCPU1" 等分核通道），
+        // 比仅看首字母 'E'/'P' 更稳——跨 M1–M4 各代该命名一致，且不会被恰好以 E/P 开头的
+        // 其它通道名误命中。本组通道已限定 CPU，故保留首字母作简写命名的回退。
+        int isE = (strncmp(buf, "ECPU", 4) == 0) || (strncmp(buf, "PCPU", 4) != 0 && buf[0] == 'E');
+        int isP = (strncmp(buf, "PCPU", 4) == 0) || (strncmp(buf, "ECPU", 4) != 0 && buf[0] == 'P');
         if (!isE && !isP) return 0;
         int states = p_IOReportStateGetCount(ch);
         if (states > 32) states = 32;
@@ -312,12 +342,17 @@ static void xico_accumulate_residency(CFDictionaryRef samples,
 }
 
 // 用频率表 + 驻留（跳过 idle 状态 0）加权求活跃频率（MHz）。
+// 佐证守卫：硬编码的 voltage-states1/5 键在异形/新代硅片上可能与本簇的 IOReport 残留状态错配。
+// 若观测到的活跃状态数（nStates-1）多于频率表条目数 nFreq，说明频率表与本簇对不上——
+// 此时宁可返回 0（Swift 侧显示无值）也绝不把越界状态外推成「末位频率」而给出貌似合理的错值。
 static double xico_weighted_freq(const int64_t *res, int nStates, const double *freq, int nFreq) {
+    if (nFreq <= 0 || nStates <= 1) return 0;   // 无频率表 / 无活跃状态：无值
+    if (nStates - 1 > nFreq) return 0;          // 状态数多于频率表条目：映射不可佐证，拒绝外推
     double num = 0, den = 0;
-    // 状态 1..nStates-1 对应频率表 0..nFreq-1
+    // 状态 1..nStates-1 对应频率表 0..nFreq-1（fi < nFreq 已由上面守卫保证，不再外推末位）
     for (int i = 1; i < nStates; i++) {
         int fi = i - 1;
-        double f = (fi < nFreq) ? freq[fi] : (nFreq > 0 ? freq[nFreq - 1] : 0);
+        double f = freq[fi];
         num += (double)res[i] * f;
         den += (double)res[i];
     }
@@ -328,7 +363,12 @@ int xico_cpu_frequency(double *pClusterMHz, double *eClusterMHz) {
     if (pClusterMHz) *pClusterMHz = 0;
     if (eClusterMHz) *eClusterMHz = 0;
 
-    // 1) 频率表：M1 上 E=voltage-states1(-sram)、P=voltage-states5(-sram)
+    // 1) 频率表：Apple Silicon 设备树约定 E 簇=voltage-states1(-sram)、P 簇=voltage-states5(-sram)。
+    //    该约定在 M1/M2/M3 各档（含 Pro/Max）一致；GPU/ANE 用其它 voltage-states 号，不在此列。
+    //    P/E 的**归属判定**已改由上面 IOReport 的 ECPU/PCPU 通道名前缀完成（跨代稳），此处仅取频率表。
+    //    佐证守卫（见 xico_weighted_freq）：若某簇的 IOReport 残留状态数多于此表条目数，即判定表键
+    //    与本簇错配，该簇返回 0（无值）而非外推错值——异形/新代硅片上宁缺勿错。
+    //    TODO(硅片验证)：多 P 簇/新代（M3/M4 Ultra 等）若频率表号有别，需在真机复核这两个键仍对应 E/P 簇。
     double eFreq[32], pFreq[32];
     int nEFreq = xico_read_freq_table(CFSTR("voltage-states1-sram"), eFreq, 32);
     if (nEFreq == 0) nEFreq = xico_read_freq_table(CFSTR("voltage-states1"), eFreq, 32);

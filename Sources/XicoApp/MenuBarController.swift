@@ -17,6 +17,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     /// 面板打开期间监听「面板之外」的鼠标点击，点到别处即关闭。
     /// `.transient` 在 accessory（菜单栏）App 里对「点其他 App」不总生效，故显式补一层监听。
     private var outsideClickMonitor: Any?
+    /// 上一次 `xico.mb.*` 配置快照——UserDefaults.didChange 是全局广播，
+    /// 仅当菜单栏相关键真的变了才重建，避免任意无关写入都触发全量重建（审计 P3）。
+    private var lastMBDefaults: [String: String] = [:]
 
     /// 各项：UserDefaults 键 + 默认是否显示。顺序即菜单栏从右到左的插入顺序。
     private let config: [(id: String, key: String, def: Bool)] = [
@@ -37,19 +40,36 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         popover.delegate = self              // popoverDidClose → 清理点击监听
 
         model.startMetricsTimer()            // 即使主窗口未开，菜单栏也持续刷新
+        lastMBDefaults = Self.mbDefaultsSnapshot()
         rebuild()
 
-        // 指标变化 → 刷新图标
-        model.$liveSnapshot
+        // 指标变化 → 刷新图标（liveSnapshot 已从 AppModel 迁入 MetricsFeed，改订阅 feed）
+        model.liveMetricsFeed.$liveSnapshot
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.updateImages() }
             .store(in: &cancellables)
 
-        // 设置里的开关变化 → 重建菜单栏项（实时增删）
+        // 设置里的开关变化 → 重建菜单栏项（实时增删）。
+        // 先比对 xico.mb.* 快照：无关键（如其它偏好写入）变化时直接 no-op，不重建。
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .debounce(for: .milliseconds(150), scheduler: RunLoop.main)
-            .sink { [weak self] _ in self?.rebuild() }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let snapshot = Self.mbDefaultsSnapshot()
+                guard snapshot != self.lastMBDefaults else { return }
+                self.lastMBDefaults = snapshot
+                self.rebuild()
+            }
             .store(in: &cancellables)
+    }
+
+    /// 当前所有 `xico.mb.*` 偏好键的字符串化快照（供变化比对）。
+    private static func mbDefaultsSnapshot() -> [String: String] {
+        var out: [String: String] = [:]
+        for (key, value) in UserDefaults.standard.dictionaryRepresentation() where key.hasPrefix("xico.mb.") {
+            out[key] = "\(value)"
+        }
+        return out
     }
 
     private func isEnabled(_ key: String, default def: Bool) -> Bool {
@@ -154,10 +174,16 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
     }
 
-    /// 网络折线归一化（下行 + 上行的最大值）
+    /// 网络折线归一化：绘制**总吞吐（下行 + 上行）**，以同一「下行+上行」峰值为基准归一。
+    /// 此前只画下行，上行流量在菜单栏折线里完全不可见（审计 P3 MenuBarController:178）；
+    /// 现按样本逐点相加，令上行也计入折线高度。两序列长度不齐时以较短尾部对齐，避免错位。
     private func netNormHistory() -> [Double] {
-        let maxV = max((model.netDownHistory + model.netUpHistory).max() ?? 1, 1)
-        return model.netDownHistory.map { $0 / maxV }
+        let down = model.netDownHistory
+        let up = model.netUpHistory
+        let maxV = max((down + up).max() ?? 1, 1)
+        let n = min(down.count, up.count)
+        guard n > 0 else { return down.map { $0 / maxV } }
+        return zip(down.suffix(n), up.suffix(n)).map { (d, u) in (d + u) / maxV }
     }
 
     @objc private func handleClick(_ sender: NSStatusBarButton) {
@@ -189,6 +215,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
         installOutsideClickMonitor()
+        // 弹窗打开即算「详情消费者可见」：即便无前台主窗口，也让 AppModel 恢复温度/风扇/GPU 等详情采样
+        // （审计 P1 回归——此前该标志无人置位，常驻菜单栏弹窗里的详情面板会停采）。
+        model.metricsDetailConsumerVisible = true
     }
 
     // MARK: 点击面板之外即关闭（补齐 .transient 在菜单栏 App 里的漏网）
@@ -213,6 +242,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     /// 面板关闭（点外部、再次点同项、Esc 等任意途径）→ 摘除监听，避免泄漏与误触发。
     func popoverDidClose(_ notification: Notification) {
         removeOutsideClickMonitor()
+        // 详情消费者随弹窗关闭而消失，恢复常驻低耗采样（仅图标折线所需的 cpu/mem/net/gpu）。
+        // 防切换面板竞态：切面板时会先 performClose 再立即 show，此刻 isShown 已为 true → 保持置位不误清。
+        if !popover.isShown { model.metricsDetailConsumerVisible = false }
     }
 
     @ViewBuilder private func panel(for id: String) -> some View {

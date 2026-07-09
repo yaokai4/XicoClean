@@ -41,17 +41,37 @@ public struct DuplicatesScanner: Sendable {
         }
 
         // 2. 同大小者先做头尾哈希快速筛，命中再做全量哈希确认（杜绝中段不同被误判 → 防删错）
-        // 2a. 先在各 size 桶内做头尾哈希，收集需要全量确认的候选（url, size）。
-        var fullHashCandidates: [(url: URL, size: Int64)] = []
+        // 2a. 并发头尾哈希（4 路，与下方全量哈希同一条流水线）：把所有「同大小且 >1 份」桶内的
+        //     文件摊平后并发读头尾，让磁盘 I/O 重叠——避免这一阶段串行读成为隐形瓶颈。
+        var partialTargets: [(url: URL, size: Int64)] = []
         for (size, urls) in bySize where urls.count > 1 {
-            if Task.isCancelled { break }
-            var byPartial: [String: [URL]] = [:]
-            for url in urls {
-                if let h = partialHash(url, size: size) { byPartial[h, default: []].append(url) }
+            for url in urls { partialTargets.append((url, size)) }
+        }
+        let partialed = await withTaskGroup(of: (URL, Int64, String?).self) { group -> [(URL, Int64, String)] in
+            let lanes = 4
+            var iterator = partialTargets.makeIterator()
+            func addNext() {
+                guard let c = iterator.next() else { return }
+                group.addTask { (c.url, c.size, self.partialHash(c.url, size: c.size)) }
             }
-            for (_, candidates) in byPartial where candidates.count > 1 {
-                for url in candidates { fullHashCandidates.append((url, size)) }
+            for _ in 0..<lanes { addNext() }
+            var out: [(URL, Int64, String)] = []
+            for await (url, size, hash) in group {
+                if Task.isCancelled { break }
+                if let hash { out.append((url, size, hash)) }
+                addNext()
             }
+            return out
+        }
+        // 按 (size, 头尾哈希) 分组，仅保留仍 >1 份的组进入全量确认（partialHash 已把 size 混入摘要，
+        // 但显式带上 size 作键更稳妥）。
+        var fullHashCandidates: [(url: URL, size: Int64)] = []
+        var byPartialKey: [String: [(url: URL, size: Int64)]] = [:]
+        for (url, size, hash) in partialed {
+            byPartialKey["\(size)-\(hash)", default: []].append((url, size))
+        }
+        for (_, candidates) in byPartialKey where candidates.count > 1 {
+            fullHashCandidates.append(contentsOf: candidates)
         }
 
         // 2b. 并发全量哈希（4 路），按完成计数上报进度，消除"哈希阶段像卡死"的观感。

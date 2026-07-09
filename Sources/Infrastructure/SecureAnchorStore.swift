@@ -1,11 +1,17 @@
 import Foundation
 import Security
 
-/// 试用期防篡改所需的「安全锚点」存储：与 UserDefaults 相互独立的第二副本。
-/// 试用起始时间取两个来源中的**最早值**——删掉 UserDefaults 并不能重置试用。
+/// 试用期防滥用所需的「安全锚点」存储：与 UserDefaults 相互独立的第二副本。
+/// 试用起始时间取两个来源中的**最早值**——单删 UserDefaults（`defaults delete`）并不能重置试用。
+///
+/// 定位要如实：本机为**非沙盒** App，钥匙串项对拥有 Terminal 访问权的本机用户并非不可篡改——
+/// 有决心者仍可用 `security delete-generic-password` 抹掉锚点重置试用（详见审计 SecureAnchorStore P3）。
+/// 因此这是「抬高门槛、拦住顺手的 `defaults delete`」的双副本冗余，**而非**防篡改保证；
+/// 要根除本地重置，唯有把试用起点落到服务端（按设备/硬件 id 建账），此处不实现、作为已知限制接受。
 public protocol SecureAnchorStore: Sendable {
     func date(forKey key: String) -> Date?
     func set(_ date: Date, forKey key: String)
+    func remove(forKey key: String)
     func removeAll()
 }
 
@@ -37,13 +43,24 @@ public struct KeychainAnchorStore: SecureAnchorStore {
         let base = query(key)
         let status = SecItemCopyMatching(base as CFDictionary, nil)
         if status == errSecSuccess {
-            SecItemUpdate(base as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+            // 顺带把可访问性收敛到「仅本机」——存量项（曾以 AfterFirstUnlock 写入）在此升级，
+            // 从此不再随加密备份迁移到其它机器。
+            SecItemUpdate(base as CFDictionary, [
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            ] as CFDictionary)
         } else {
             var add = base
             add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            // 仅本机可访问：试用锚点 / 吊销名单 / 设备绑定台账绝不随 iCloud/加密备份迁移到别的机器，
+            // 否则「拷贝钥匙串」就能把绑定与吊销状态搬走。取不到（首解锁前）时读返回 nil，逻辑已优雅兜底。
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             SecItemAdd(add as CFDictionary, nil)
         }
+    }
+
+    public func remove(forKey key: String) {
+        SecItemDelete(query(key) as CFDictionary)
     }
 
     public func removeAll() {
@@ -62,6 +79,9 @@ public final class InMemoryAnchorStore: SecureAnchorStore, @unchecked Sendable {
     }
     public func set(_ date: Date, forKey key: String) {
         lock.lock(); storage[key] = date; lock.unlock()
+    }
+    public func remove(forKey key: String) {
+        lock.lock(); storage[key] = nil; lock.unlock()
     }
     public func removeAll() { lock.lock(); storage.removeAll(); lock.unlock() }
 }

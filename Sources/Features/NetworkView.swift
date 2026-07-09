@@ -8,6 +8,8 @@ public final class NetworkViewModel: ObservableObject {
     @Published var interfaces: [NetworkInterfaceInfo] = []
     @Published var wifi: WiFiInfo?
     @Published var publicIP: String?
+    /// 公网 IP 查询是否已失败过（用于把「获取中…」解析为中性回退，而非永久转圈，审计 P3）。
+    @Published var publicIPFailed = false
     @Published var ping: Double?
 
     private let service: NetworkInfoService
@@ -51,7 +53,13 @@ public final class NetworkViewModel: ObservableObject {
         async let ip = service.publicIP()
         let (pingVal, ipVal) = await (p, ip)
         self.ping = pingVal
-        if let ipVal { self.publicIP = ipVal }
+        if let ipVal {
+            self.publicIP = ipVal
+            self.publicIPFailed = false
+        } else if self.publicIP == nil {
+            // 查询返回空且尚无历史值：标记失败，让 UI 结束「获取中…」显示中性回退。
+            self.publicIPFailed = true
+        }
     }
 
     var totalDown: Double { interfaces.reduce(0) { $0 + $1.downBytesPerSec } }
@@ -122,7 +130,7 @@ public struct NetworkView: View {
             if let sec = w.security { row(xLoc("加密"), sec) }
             if w.ssid == nil {
                 Text(xLoc("提示：显示 Wi-Fi 名称需在系统设置授予定位权限"))
-                    .font(.system(size: 10)).foregroundStyle(XColor.textTertiary)
+                    .font(XFont.micro).foregroundStyle(XColor.textTertiary)
             }
         }
     }
@@ -140,7 +148,7 @@ public struct NetworkView: View {
 
     private var connectivityCard: some View {
         MonitorCard(icon: "globe", title: xLoc("连通性"), colors: [XColor.auroraViolet, XColor.auroraBlue]) {
-            row(xLoc("公网 IP"), vm.publicIP ?? xLoc("获取中…"))
+            row(xLoc("公网 IP"), vm.publicIP ?? (vm.publicIPFailed ? xLoc("无法获取") : xLoc("获取中…")))
             row(xLoc("内网 IP"), vm.primaryIPv4 ?? "—")
             HStack {
                 Text(xLocF("Ping %@", vm.pingHost)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
@@ -181,7 +189,7 @@ public struct NetworkView: View {
                         }
                     }
                     if let ip = i.ipv4 { Text(ip).font(XFont.caption).foregroundStyle(XColor.textTertiary) }
-                    if let ip6 = i.ipv6 { Text(ip6).font(.system(size: 10)).foregroundStyle(XColor.textTertiary).lineLimit(1).truncationMode(.middle) }
+                    if let ip6 = i.ipv6 { Text(ip6).font(XFont.micro).foregroundStyle(XColor.textTertiary).lineLimit(1).truncationMode(.middle) }
                 }
                 .padding(.vertical, 2)
             }

@@ -1,6 +1,7 @@
 import SwiftUI
 import Infrastructure
 import DesignSystem
+import Shared
 
 public enum MenuMetric: Sendable {
     case cpu, memory, network, temperature, disk, gpu
@@ -40,10 +41,16 @@ public enum MenuMetric: Sendable {
 /// 单指标的菜单栏详情面板（CPU / 内存 / 网络 各一个，独立菜单栏项）
 public struct MenuMetricPanel: View {
     @ObservedObject var model: AppModel
+    /// 高频快照/进程榜/传感器现归 MetricsFeed（AppModel 不再每 tick 重发布，审计 P2）——本面板须观察 feed 才能实时更新。
+    @ObservedObject var feed: MetricsFeed
     let metric: MenuMetric
+    /// 快速释放内存的进行/结果状态（本面板内联反馈，不弹窗）。
+    @State private var freeingMemory = false
+    @State private var freeMemNote: String?
 
     public init(model: AppModel, metric: MenuMetric) {
         self.model = model
+        self._feed = ObservedObject(wrappedValue: model.liveMetricsFeed)
         self.metric = metric
     }
 
@@ -65,18 +72,72 @@ public struct MenuMetricPanel: View {
             }
 
             Divider().padding(.vertical, 2)
+            // 快捷操作：释放内存 + 快速清理（智能扫描），与「打开监视器」并列。
             HStack(spacing: XSpacing.s) {
-                Button {
-                    NSApp.activate(ignoringOtherApps: true)
-                    model.selection = .monitor
-                    for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
-                } label: { Text(xLoc("打开监视器")).frame(maxWidth: .infinity) }
+                Button { freeMemory() } label: {
+                    HStack(spacing: XSpacing.xs) {
+                        Image(systemName: "memorychip")
+                        Text(freeingMemory ? xLoc("释放中…") : xLoc("释放内存"))
+                    }.frame(maxWidth: .infinity)
+                }
+                .buttonStyle(XSecondaryButtonStyle(compact: true))
+                .disabled(freeingMemory)
+                .accessibilityLabel(xLoc("释放内存"))
+                Button { openSmartScan() } label: {
+                    HStack(spacing: XSpacing.xs) {
+                        Image(systemName: "sparkles")
+                        Text(xLoc("快速清理"))
+                    }.frame(maxWidth: .infinity)
+                }
+                .buttonStyle(XSecondaryButtonStyle(compact: true))
+                .accessibilityLabel(xLoc("快速清理"))
+            }
+            if let note = freeMemNote {
+                Text(note).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(spacing: XSpacing.s) {
+                Button { openMonitor() } label: { Text(xLoc("打开监视器")).frame(maxWidth: .infinity) }
                     .buttonStyle(XPrimaryButtonStyle(compact: true))
-                Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }.buttonStyle(XSecondaryButtonStyle(compact: true))
+                Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }
+                    .buttonStyle(XSecondaryButtonStyle(compact: true))
+                    .accessibilityLabel(xLoc("退出"))
             }
         }
         .padding(XSpacing.m)
         .frame(width: 320)
+    }
+
+    /// 打开主窗口的系统监视页。
+    private func openMonitor() {
+        NSApp.activate(ignoringOtherApps: true)
+        model.selection = .monitor
+        for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
+    }
+
+    /// 快速清理：打开主窗口、切到智能扫描模块，并立即开始扫描——让「快速清理」名副其实
+    /// （此前仅导航不扫描，标签与行为不符，审计 MenuPanels:119 P3）。已在扫描/已有结果则不打断。
+    private func openSmartScan() {
+        NSApp.activate(ignoringOtherApps: true)
+        model.selection = .smartScan
+        for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
+        if model.smartScanSession.phase == .idle { model.smartScanSession.start() }
+    }
+
+    /// 快速释放非活跃内存（purge，经特权助手）。助手未安装则优雅降级为提示，不静默失败。
+    private func freeMemory() {
+        guard !freeingMemory else { return }
+        guard model.env.helper.status() == .installed else {
+            freeMemNote = xLoc("需先在「维护」页安装后台助手")
+            return
+        }
+        freeingMemory = true
+        freeMemNote = nil
+        Task {
+            let (ok, out) = await model.env.helper.runMaintenance(.freeMemory)
+            freeingMemory = false
+            freeMemNote = ok ? xLoc("已释放非活跃内存") : (out ?? xLoc("释放失败"))
+        }
     }
 
     @ViewBuilder private func content(_ s: SystemSnapshot) -> some View {
@@ -153,7 +214,7 @@ public struct MenuMetricPanel: View {
                         if hasClusters && clusters[idx] {
                             Circle().fill(XColor.metricCPU[0]).frame(width: 3, height: 3)  // 性能核标记
                         }
-                        Text("\(idx)").font(.system(size: 8, weight: .medium)).foregroundStyle(XColor.textTertiary)
+                        Text("\(idx)").font(XFont.nano).foregroundStyle(XColor.textTertiary)
                     }
                 }
             }
@@ -166,7 +227,7 @@ public struct MenuMetricPanel: View {
     private func gpuSegment(_ g: Double) -> some View {
         HStack(spacing: XSpacing.s) {
             XMiniRing(fraction: g, colors: XColor.gpuGauge(g), size: 34, lineWidth: 4) {
-                Text("\(Int((g * 100).rounded()))").font(.system(size: 10, weight: .bold, design: .rounded))
+                Text("\(Int((g * 100).rounded()))").font(XFont.monoMini)
                     .foregroundStyle(XColor.textPrimary)
             }
             Text("GPU").font(XFont.caption).foregroundStyle(XColor.textSecondary)
@@ -196,10 +257,10 @@ public struct MenuMetricPanel: View {
                 // 压力环：色随等级（正常绿 / 警告橙 / 危险红）。中心状态词随长语言自动缩放不换行。
                 XMiniRing(fraction: s.memoryPressureFraction, colors: pressureColors(s), size: 62, lineWidth: 7) {
                     VStack(spacing: 0) {
-                        Text(xLoc(s.memoryPressureLabel)).font(.system(size: 10, weight: .bold))
+                        Text(xLoc(s.memoryPressureLabel)).font(XFont.micro)
                             .foregroundStyle(XColor.textPrimary)
                             .lineLimit(1).minimumScaleFactor(0.5)
-                        Text(xLoc("压力")).font(.system(size: 8)).foregroundStyle(XColor.textTertiary)
+                        Text(xLoc("压力")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
                     }
                     .frame(maxWidth: 44)
                 }
@@ -315,7 +376,7 @@ public struct MenuMetricPanel: View {
     }
     private func interfaceRow(_ i: NetworkInterfaceInfo) -> some View {
         HStack(spacing: XSpacing.s) {
-            Image(systemName: i.type.icon).font(.system(size: 12)).foregroundStyle(XColor.accentTeal).frame(width: 18)
+            Image(systemName: i.type.icon).font(XFont.callout).foregroundStyle(XColor.accentTeal).frame(width: 18)
             VStack(alignment: .leading, spacing: 0) {
                 Text(i.displayName).font(XFont.caption).foregroundStyle(XColor.textPrimary).lineLimit(1)
                 if let ip = i.ipv4 ?? i.ipv6 {
@@ -342,7 +403,7 @@ public struct MenuMetricPanel: View {
                         .lineLimit(1).truncationMode(.middle)
                     Spacer()
                     Text(kind == .cpu ? String(format: "%.1f%%", p.cpuPercent) : p.memoryBytes.formattedMemory)
-                        .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
+                        .font(XFont.monoMini)
                         .foregroundStyle(XColor.textPrimary)
                 }
                 .padding(.vertical, 2).padding(.horizontal, 6)
@@ -362,7 +423,7 @@ public struct MenuMetricPanel: View {
     private func ringGauge(_ fraction: Double) -> some View {
         XMiniRing(fraction: fraction, colors: XColor.ringColors, size: 60, lineWidth: 7) {
             Text("\(Int((fraction * 100).rounded()))%")
-                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .font(XFont.monoMid)
                 .foregroundStyle(XColor.textPrimary)
         }
     }
@@ -380,7 +441,7 @@ public struct MenuMetricPanel: View {
     private func rateColumn(_ icon: String, _ color: Color, _ label: String, _ rate: Double) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: XSpacing.xs) {
-                Image(systemName: icon).font(.system(size: 11, weight: .bold)).foregroundStyle(color)
+                Image(systemName: icon).font(XFont.captionEmphasis).foregroundStyle(color)
                 Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             }
             Text(rate.formattedRate).font(XFont.monoLarge).foregroundStyle(XColor.textPrimary)
@@ -399,21 +460,24 @@ public struct MenuMetricPanel: View {
     // MARK: - 温度面板（全部传感器 + 热状态 + 风扇，对标 iStat Sensors）
 
     @ViewBuilder private func temperatureContent(_ s: SystemSnapshot) -> some View {
+        // 每帧只排一次序、SSD 均值只算一次（此前在 body 内重复排序/过滤，审计 P3 MenuPanels:472）。
+        let sortedSensors = model.sensorTemps.sorted { $0.celsius > $1.celsius }
+        let ssdAvg = avgTemp(.ssd)
         VStack(alignment: .leading, spacing: XSpacing.m) {
             // 三大代表温度：CPU / GPU / SSD（读不到的自动隐藏）
             HStack(spacing: XSpacing.l) {
                 if let c = s.cpuTemp { tempHero(xLoc("处理器"), c) }
                 if let g = s.gpuTemp { tempHero("GPU", g) }
-                if let d = avgTemp(.ssd) { tempHero(xLoc("固态硬盘"), d) }
+                if let d = ssdAvg { tempHero(xLoc("固态硬盘"), d) }
                 Spacer(minLength: 0)
                 thermalChip(s.thermal)
             }
-            if !model.sensorTemps.isEmpty {
+            if !sortedSensors.isEmpty {
                 Divider().padding(.vertical, 1)
                 // 全部命名传感器（按温度降序，滚动查看）——密度即诚意
                 ScrollView {
                     VStack(spacing: 3) {
-                        ForEach(model.sensorTemps.sorted { $0.celsius > $1.celsius }) { t in
+                        ForEach(sortedSensors) { t in
                             sensorRow(t)
                         }
                     }
@@ -448,7 +512,7 @@ public struct MenuMetricPanel: View {
             }
         }()
         return HStack(spacing: 4) {
-            Image(systemName: icon).font(.system(size: 10, weight: .semibold))
+            Image(systemName: icon).font(XFont.micro)
             Text(xLoc(level.rawValue)).font(XFont.captionEmphasis)
         }
         .foregroundStyle(color)
@@ -504,7 +568,7 @@ public struct MenuMetricPanel: View {
     /// 风扇行：编号 + 区间条（含目标刻度）+ 当前转速。
     private func fanRow(_ fan: FanInfo) -> some View {
         HStack(spacing: XSpacing.s) {
-            Image(systemName: "fan.fill").font(.system(size: 10)).foregroundStyle(XColor.accentTeal)
+            Image(systemName: "fan.fill").font(XFont.micro).foregroundStyle(XColor.accentTeal)
                 .frame(width: 14)
             Text(xLocF("风扇 %d", fan.id + 1)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 .frame(width: 60, alignment: .leading)
@@ -600,11 +664,11 @@ public struct MenuMetricPanel: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: XSpacing.s) {
                 Image(systemName: vol.isInternal ? "internaldrive.fill" : "externaldrive.fill")
-                    .font(.system(size: 10)).foregroundStyle(XColor.accentTeal)
+                    .font(XFont.micro).foregroundStyle(XColor.accentTeal)
                 Text(vol.name).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
                     .lineLimit(1).truncationMode(.middle)
-                if vol.isInternal, vol.smartStatus == "Verified" {
-                    Text("SMART").font(.system(size: 8, weight: .bold))
+                if vol.isInternal, vol.smartStatus == "正常" {
+                    Text("SMART").font(XFont.nano)
                         .foregroundStyle(XColor.success)
                         .padding(.horizontal, 4).padding(.vertical, 1.5)
                         .background(Capsule().fill(XColor.success.opacity(0.14)))

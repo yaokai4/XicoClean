@@ -94,7 +94,16 @@ public final class LiveMetricsSampler: @unchecked Sendable {
 
     public init(fs: FileSystemService = LocalFileSystemService()) { self.fs = fs }
 
-    public func sample() -> SystemSnapshot {
+    /// 采样一帧系统快照。
+    ///
+    /// `consumerVisible`：是否有在屏的详情消费者（监视 / 硬件页）。
+    /// - `true`（默认，保持既有调用方全量语义）：GPU / 温度 / 风扇 / 电池全部读取。
+    /// - `false`：菜单栏常驻循环的**稳态省电**路径——没人看时跳过昂贵读取
+    ///   （GPU 走 IOAccelerator 枚举、温度走 HID 热传感器枚举、风扇走 SMC 读键、电源走 IOPS），
+    ///   仅当对应菜单栏字形仍启用时才按需读取。字形启用状态直接读 `xico.mb.*` UserDefaults
+    ///   以保持自洽（不改 AppModel 公有 API）。风扇 / 电池无专属菜单栏字形，故仅在详情可见时读。
+    ///   被跳过的字段返回 nil（各字段本就是 Optional，UI 静默降级）。
+    public func sample(consumerVisible: Bool = true) -> SystemSnapshot {
         let cpu = sampleCPU()
         let cores = samplePerCore()
         let mem = sampleMemory()
@@ -103,9 +112,15 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         let disk = sampleDiskIO()
         let load = loadAverage()
         let cap = fs.volumeCapacity(for: FileManager.default.homeDirectoryForCurrentUser)
-        let gpu = smoothedGPU(hardware.acceleratorPerformance().utilization.map { min(1, max(0, $0 / 100)) })
-        let temp = sensors.summary()
-        let battery = batteryStatus()
+        let needGPU = consumerVisible || Self.menuGlyphEnabled("gpu", default: false)
+        let needTemp = consumerVisible || Self.menuGlyphEnabled("temp", default: false)
+        // GPU：需要则读并平滑；跳过时以 smoothedGPU(nil) 清空 EMA，避免下次恢复采样时残留陈旧值。
+        let gpu = needGPU
+            ? smoothedGPU(hardware.acceleratorPerformance().utilization.map { min(1, max(0, $0 / 100)) })
+            : smoothedGPU(nil)
+        let temp: (cpu: Double?, gpu: Double?) = needTemp ? sensors.summary() : (nil, nil)
+        let battery: (percent: Int?, charging: Bool) = consumerVisible ? batteryStatus() : (nil, false)
+        let fan: Int? = consumerVisible ? smc.fanRPM() : nil
         return SystemSnapshot(
             cpuUsage: cpu.busy, perCore: cores, cpuUser: cpu.user, cpuSystem: cpu.system,
             load1: load.0, load5: load.1, load15: load.2,
@@ -119,7 +134,15 @@ public final class LiveMetricsSampler: @unchecked Sendable {
             gpuUsage: gpu,
             cpuTemp: temp.cpu, gpuTemp: temp.gpu,
             batteryPercent: battery.percent, batteryCharging: battery.charging,
-            thermal: thermalLevel(), fanRPM: smc.fanRPM())
+            thermal: thermalLevel(), fanRPM: fan)
+    }
+
+    /// 某菜单栏字形是否启用（直接读 `xico.mb.<id>` UserDefaults，与 MenuBarController 同源）。
+    /// 未写入过该键时用传入默认值（须与 MenuBarController / SettingsView 的默认一致）。
+    private static func menuGlyphEnabled(_ id: String, default def: Bool) -> Bool {
+        let key = "xico.mb.\(id)"
+        guard UserDefaults.standard.object(forKey: key) != nil else { return def }
+        return UserDefaults.standard.bool(forKey: key)
     }
 
     // MARK: 磁盘 I/O（IOBlockStorageDriver Statistics 差分，与 iStat 同源）

@@ -1,4 +1,5 @@
 import Foundation
+import DesignSystem
 
 /// 用户级维护任务（无需 root，直接以当前用户身份执行，立即可用）
 public enum UserMaintenanceTask: String, CaseIterable, Identifiable, Sendable {
@@ -70,10 +71,15 @@ public struct MaintenanceRunner: Sendable {
                 proc.standardError = pipe
                 do {
                     try proc.run()
+                    // 先排空管道再 waitUntilExit——否则输出超过管道缓冲区时子进程会阻塞在写、
+                    // 父进程阻塞在 wait，维护任务永久挂起（与 runSystemProfiler 同样的排空顺序）。
+                    _ = try? pipe.fileHandleForReading.readToEnd()
                     proc.waitUntilExit()
                     // killall 在进程不存在时返回非 0，但维护意义上视为完成
                     let ok = proc.terminationStatus == 0 || path.hasSuffix("killall")
-                    cont.resume(returning: (ok, ok ? "完成" : "退出码 \(proc.terminationStatus)"))
+                    // 结果文案在此本地化（与 HelperProxy 一致）：视图直接 Text(msg) 展示，
+                    // 复用已翻译的「完成」/「退出码 %d」键，避免向非中文用户漏出中文。
+                    cont.resume(returning: (ok, ok ? xLoc("完成") : xLocF("退出码 %d", proc.terminationStatus)))
                 } catch {
                     cont.resume(returning: (false, error.localizedDescription))
                 }

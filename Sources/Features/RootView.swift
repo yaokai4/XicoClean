@@ -31,13 +31,15 @@ public struct RootView: View {
                     .zIndex(1)
             }
         }
-        .frame(minWidth: 1080, minHeight: 720)
+        // 最小高度降到 640：小尺寸/低分屏（如 1280×800 扣掉菜单栏+程序坞）也能完整容纳窗口；
+        // 各繁忙页（设置 / 结果操作条）内部本就带 ScrollView，可在此下限内正常滚动（审计 RootView:34 P3）。
+        .frame(minWidth: 1080, minHeight: 640)
         .animation(XMotion.crossfade, value: model.themeID)   // 换主题时整树平滑淡入（XMotion.crossfade）
         .preferredColorScheme(model.appearance.colorScheme)
         .sheet(isPresented: $model.showPricing) { PricingView(model: model) }
         .onAppear { model.startMetricsTimer() }
         .onReceive(NotificationCenter.default.publisher(for: .xicoOpenSettings)) { _ in
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+            withAnimation(XMotion.snappy) {
                 model.selection = .settings
             }
         }
@@ -55,10 +57,10 @@ struct AppearanceToggle: View {
         HStack(spacing: 2) {
             ForEach(AppAppearance.allCases) { a in
                 Button {
-                    withAnimation(.easeOut(duration: 0.2)) { appearance = a }
+                    withAnimation(XMotion.snappy) { appearance = a }
                 } label: {
                     Image(systemName: a.icon)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(XFont.captionEmphasis)
                         .frame(width: 30, height: 22)
                         // 选中段用扁平品牌染色 + 品牌色图标（呼应侧栏选中态），不再是白字彩色渐变小胶囊。
                         .foregroundStyle(appearance == a ? AnyShapeStyle(XColor.brand)
@@ -70,6 +72,8 @@ struct AppearanceToggle: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(xLoc(a.label))
+                .accessibilityAddTraits(appearance == a ? [.isButton, .isSelected] : .isButton)
             }
         }
         .padding(3)
@@ -117,7 +121,7 @@ public struct SidebarView: View {
                         .padding(.bottom, 3)
                     ForEach(modules) { meta in
                         SidebarTile(meta: meta, selected: model.selection == meta.id) {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+                            withAnimation(XMotion.snappy) {
                                 model.selection = meta.id
                             }
                         }
@@ -135,7 +139,7 @@ public struct SidebarView: View {
         HStack(spacing: XSpacing.s + 2) {
             XBrandMark(size: 34)
                 .xGlow(XColor.brand, radius: 12)
-            Text("Xico").font(.system(size: 22, weight: .bold, design: .rounded))
+            Text("Xico").font(XFont.wordmark)   // 品牌字标专用令牌（此前散落 22pt/28pt 三种写法，审计 P2）
                 .foregroundStyle(XColor.textPrimary)
                 .tracking(0.2)
             Spacer()
@@ -147,30 +151,42 @@ public struct SidebarView: View {
 
     private var diskFooter: some View {
         VStack(alignment: .leading, spacing: XSpacing.s) {
-            if let cap = model.capacity {
-                HStack {
-                    Text(xLoc("磁盘")).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
-                    Spacer()
-                    Text(xLocF("%@ 可用", cap.available.formattedBytes)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                }
-                XDiskBar(usedFraction: cap.usedFraction, label: "", height: 8)
-            }
+            // 容量来自高频采样的 MetricsFeed（AppModel 不随 tick 重发布），故这里直接观察 feed，
+            // 否则侧栏只观察 AppModel 会读到「转发但不刷新」的陈旧容量（审计 RootView:152 P3）。
+            SidebarDiskGauge(feed: model.liveMetricsFeed)
             HStack {
                 AppearanceToggle(appearance: $model.appearance)
                 Spacer()
                 Button { model.selection = .settings } label: {
                     Image(systemName: "gearshape.fill")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(XFont.bodyEmphasis)
                         .foregroundStyle(model.selection == .settings ? XColor.brand : XColor.textSecondary)
                         .frame(width: 28, height: 28)
                         .background(model.selection == .settings ? XColor.surfaceHover : .clear, in: Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(xLoc("设置"))
             }
             .padding(.top, 2)
         }
         .padding(XSpacing.m)
         .overlay(Rectangle().fill(XColor.hairline).frame(height: 1), alignment: .top)
+    }
+}
+
+/// 侧栏底部磁盘容量条——单独观察 MetricsFeed，让容量随高频采样实时更新，
+/// 而不必让整个 SidebarView 订阅 feed（避免侧栏每 tick 重排）。数据未就绪时不渲染。
+private struct SidebarDiskGauge: View {
+    @ObservedObject var feed: MetricsFeed
+    var body: some View {
+        if let cap = feed.capacity {
+            HStack {
+                Text(xLoc("磁盘")).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
+                Spacer()
+                Text(xLocF("%@ 可用", cap.available.formattedBytes)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+            }
+            XDiskBar(usedFraction: cap.usedFraction, label: "", height: 8)
+        }
     }
 }
 
@@ -187,13 +203,13 @@ struct SidebarTile: View {
                 Image(systemName: meta.systemImage)
                     // 字号/字重恒定，仅颜色随选中变化——避免选中时行高跳动。
                     // 选中态图标用品牌渐变着色（而非白底彩块），克制而有识别度。
-                    .font(.system(size: 14, weight: selected ? .semibold : .regular))
+                    .xNavIcon(selected: selected)
                     .foregroundStyle(selected ? AnyShapeStyle(XColor.brandGradient)
                                              : AnyShapeStyle(XColor.textSecondary))
                     .frame(width: 20, height: 20)
                 Text(xLoc(meta.title))
-                    // 字号恒定 13.5pt，仅字重随选中变化，杜绝选中放大导致的重排。
-                    .font(.system(size: 13.5, weight: selected ? .semibold : .medium))
+                    // 字号恒定 13.5pt（随 Dynamic Type 缩放），仅字重随选中变化，杜绝选中放大导致的重排。
+                    .xNavLabel(selected: selected)
                     .foregroundStyle(selected ? XColor.textPrimary : XColor.textSecondary)
                 Spacer(minLength: 0)
             }
@@ -259,11 +275,12 @@ struct DetailView: View {
         case .systemJunk:   ModuleScanView(model: model, moduleID: .systemJunk, intent: .trash)
         case .largeFiles:   ModuleScanView(model: model, moduleID: .largeFiles, intent: .trash)
         case .trash:        ModuleScanView(model: model, moduleID: .trash, intent: .permanent)
-        case .spaceLens:    SpaceLensView(env: model.env)
-        case .duplicates:   DuplicatesView(env: model.env)
-        case .similarImages: SimilarImagesView(env: model.env)
+        // 空间透镜 / 重复文件 / 卸载器改由 AppModel 缓存会话注入，切换侧栏再回来不丢结果（审计 P2）。
+        case .spaceLens:    SpaceLensView(model: model)
+        case .duplicates:   DuplicatesView(model: model)
+        case .similarImages: SimilarImagesView(model: model)
         case .shredder:     ShredderView(env: model.env)
-        case .uninstaller:  UninstallerView(env: model.env)
+        case .uninstaller:  UninstallerView(model: model)
         case .appUpdater:   AppUpdaterView(env: model.env)
         // 隐私已并入智能扫描；老用户持久化的选中项仍可正常打开
         case .privacy:      ModuleScanView(model: model, moduleID: .privacy, intent: .trash)
@@ -304,13 +321,14 @@ struct LicenseBanner: View {
                 .buttonStyle(XPrimaryButtonStyle())
             Button(xLoc("导入许可证")) { model.selection = .settings }
                 .buttonStyle(XSecondaryButtonStyle())
-            Button { withAnimation(.spring(response: 0.3)) { model.licenseBannerDismissed = true } } label: {
-                Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+            Button { withAnimation(XMotion.snappy) { model.licenseBannerDismissed = true } } label: {
+                Image(systemName: "xmark").font(XFont.captionEmphasis)
                     .foregroundStyle(XColor.textTertiary)
                     .frame(width: 24, height: 24)
                     .background(XColor.surfaceAlt.opacity(hover ? 1 : 0), in: Circle())
             }
             .buttonStyle(.plain).onHover { hover = $0 }
+            .accessibilityLabel(xLoc("忽略"))
         }
         .padding(XSpacing.m)
         .background(
@@ -344,13 +362,14 @@ struct PermissionBanner: View {
             Spacer()
             Button(xLoc("开启")) { model.openFullDiskAccessSettings() }
                 .buttonStyle(XPrimaryButtonStyle(compact: true))
-            Button { withAnimation(.spring(response: 0.3)) { model.permissionBannerDismissed = true } } label: {
-                Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+            Button { withAnimation(XMotion.snappy) { model.permissionBannerDismissed = true } } label: {
+                Image(systemName: "xmark").font(XFont.captionEmphasis)
                     .foregroundStyle(XColor.textTertiary)
                     .frame(width: 24, height: 24)
                     .background(XColor.surfaceAlt.opacity(hover ? 1 : 0), in: Circle())
             }
             .buttonStyle(.plain).onHover { hover = $0 }
+            .accessibilityLabel(xLoc("忽略"))
         }
         .padding(XSpacing.m)
         .background(
@@ -372,7 +391,12 @@ struct PermissionBanner: View {
 /// 「标签 · 横向进度条 · 数值」的条形行，一屏读懂整机 CPU / 内存 / GPU / 存储 / 网络 / 散热 / 电池。
 public struct MenuBarView: View {
     @ObservedObject var model: AppModel
-    public init(model: AppModel) { self.model = model }
+    /// 高频快照现归 MetricsFeed（AppModel 不再每 tick 重发布，审计 P2）——菜单栏总览须观察本 feed 才能实时更新。
+    @ObservedObject var feed: MetricsFeed
+    public init(model: AppModel) {
+        self.model = model
+        self._feed = ObservedObject(wrappedValue: model.liveMetricsFeed)
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: XSpacing.s) {
@@ -406,6 +430,7 @@ public struct MenuBarView: View {
                     .buttonStyle(XPrimaryButtonStyle(compact: true))
                 Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }
                     .buttonStyle(XSecondaryButtonStyle(compact: true))
+                    .accessibilityLabel(xLoc("退出"))
             }
             .padding(.top, 2)
         }
@@ -468,8 +493,8 @@ public struct MenuBarView: View {
                                @ViewBuilder content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: XSpacing.xs) {
-                Image(systemName: icon).font(.system(size: 10, weight: .semibold)).foregroundStyle(tint).frame(width: 14)
-                Text(title).font(.system(size: 9, weight: .bold)).tracking(0.6).textCase(.uppercase)
+                Image(systemName: icon).font(XFont.micro).foregroundStyle(tint).frame(width: 14)
+                Text(title).font(XFont.nano).tracking(0.6).textCase(.uppercase)
                     .foregroundStyle(XColor.textTertiary)
                 Spacer()
                 if !headerValue.isEmpty {
@@ -506,7 +531,7 @@ public struct MenuBarView: View {
                 Capsule()
                     .fill(LinearGradient(colors: [color.opacity(0.8), color], startPoint: .leading, endPoint: .trailing))
                     .frame(width: max(3, barW * min(max(fraction, 0), 1)), height: 5)
-                    .animation(.easeOut(duration: 0.4), value: fraction)
+                    .animation(XMotion.gauge, value: fraction)
             }
             Spacer(minLength: XSpacing.xs)
             Text(value).font(XFont.microMono).foregroundStyle(XColor.textPrimary)

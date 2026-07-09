@@ -14,18 +14,45 @@ final class IdleExit: @unchecked Sendable {
     private let timeout: TimeInterval = 90
     private var timer: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "com.xico.app.helper.idle")
+    /// 正在执行的特权操作数；>0 期间绝不空闲退出——大批特权删除或维护任务可能超过 timeout 秒，
+    /// 若此时计时器触发 exit(0)，操作会被拦腰截断（残留半删目录）。这是数据损坏级 bug。
+    private var inFlight = 0
 
     func arm() { touch() }
 
     func touch() {
+        queue.async { self.rearm() }
+    }
+
+    /// 标记一次特权操作开始：挂起空闲退出（取消计时器）。须与 endOperation 成对使用。
+    /// HelperFileRemover 位于 Shared 模块、无法反向引用本执行档里的 IdleExit（模块/层级边界：
+    /// XicoHelper import Shared，反之会造成循环依赖），因此改由助手在每个耗时 XPC 方法进出时
+    /// 挂起/重装计时器——无论操作跑多久都不会被空闲退出打断，完成后才重新计时。
+    func beginOperation() {
         queue.async {
+            self.inFlight += 1
             self.timer?.cancel()
-            let t = DispatchSource.makeTimerSource(queue: self.queue)
-            t.schedule(deadline: .now() + self.timeout)
-            t.setEventHandler { exit(0) }
-            t.resume()
-            self.timer = t
+            self.timer = nil
         }
+    }
+
+    /// 标记一次特权操作结束：所有在飞行的操作都完成后，才重新武装空闲计时。
+    func endOperation() {
+        queue.async {
+            self.inFlight = max(0, self.inFlight - 1)
+            if self.inFlight == 0 { self.rearm() }
+        }
+    }
+
+    /// 重装空闲计时器（仅当无操作在飞行时才真正计时；须在 queue 上调用）。
+    private func rearm() {
+        guard inFlight == 0 else { return }
+        timer?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + timeout)
+        t.setEventHandler { exit(0) }
+        t.resume()
+        timer = t
     }
 }
 
@@ -43,6 +70,10 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
     }
 
     func runMaintenance(_ rawTask: String, reply: @escaping (Bool, String?) -> Void) {
+        // 维护任务（如 mdutil -E 重建 Spotlight、tmutil 删本地快照）可能长于空闲 timeout——
+        // 挂起空闲退出直至任务返回，避免跑到一半被 exit(0) 截断。
+        IdleExit.shared.beginOperation()
+        defer { IdleExit.shared.endOperation() }
         guard let task = MaintenanceTask(rawValue: rawTask) else {
             Self.log.error("runMaintenance 收到未知任务: \(rawTask, privacy: .public)")
             reply(false, "未知任务"); return
@@ -60,6 +91,10 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
     }
 
     func removeProtected(paths: [String], reply: @escaping (Int64, [String]) -> Void) {
+        // 大批特权删除可能长于空闲 timeout——挂起空闲退出直至整批删完，
+        // 避免删到一半被 exit(0) 截断（残留半删目录）。
+        IdleExit.shared.beginOperation()
+        defer { IdleExit.shared.endOperation() }
         var freed: Int64 = 0
         var failures: [String] = []
         for path in paths {

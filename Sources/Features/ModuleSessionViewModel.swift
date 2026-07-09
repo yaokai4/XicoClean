@@ -60,6 +60,13 @@ public final class ModuleSessionViewModel: ObservableObject {
     /// 清理前的处置钩子（如威胁模块删 plist 前先 bootout 停用已加载 agent）
     public var beforeClean: (@Sendable ([CleanableItem]) async -> Void)?
 
+    /// 清理完成通知观察者：清理后许可闸门可能变化（例如首次清理触发的复验降级），据此重算缓存。
+    /// `nonisolated(unsafe)`：仅在 init（@MainActor）赋值一次、在 nonisolated deinit 读取一次移除，
+    /// 对象生命周期保证独占访问，Swift 6 下让 deinit 可安全触及此非 Sendable token。
+    nonisolated(unsafe) private var didCleanObserver: NSObjectProtocol?
+    /// 授权变化观察者（激活/移除/复验后重算购买闸门）——刚激活的用户立刻可清理，无需切页重建会话。
+    nonisolated(unsafe) private var licenseChangedObserver: NSObjectProtocol?
+
     public init(env: XicoEnvironment,
                 title: String,
                 intent: DeleteIntent,
@@ -68,6 +75,18 @@ public final class ModuleSessionViewModel: ObservableObject {
         self.title = title
         self.intent = intent
         self.scanProvider = scanProvider
+        let refresh: @Sendable (Notification) -> Void = { [weak self] _ in
+            Task { @MainActor in self?.refreshPurchaseGate() }
+        }
+        didCleanObserver = NotificationCenter.default.addObserver(
+            forName: .xicoDidClean, object: nil, queue: nil, using: refresh)
+        licenseChangedObserver = NotificationCenter.default.addObserver(
+            forName: .xicoLicenseChanged, object: nil, queue: nil, using: refresh)
+    }
+
+    deinit {
+        if let didCleanObserver { NotificationCenter.default.removeObserver(didCleanObserver) }
+        if let licenseChangedObserver { NotificationCenter.default.removeObserver(licenseChangedObserver) }
     }
 
     // MARK: 派生数据
@@ -83,8 +102,24 @@ public final class ModuleSessionViewModel: ObservableObject {
 
     // MARK: 扫描
 
+    /// 试用结束/许可无效时为 true：结果页仍可扫描与预览，但清理入口应替换为「购买后清理」CTA
+    /// （破坏性动作 clean/uninstall/shred 仍由 `ensureLicensed()` 严格拦截，见 clean()）。
+    ///
+    /// **缓存化（审计 P2）**：改为 @Published 存储属性，只在状态转移点重算（`start()`、扫描落到
+    /// `.results`/`.empty`、以及清理完成后的 `.xicoDidClean`），镜像 AppModel 缓存 licenseStatus 的做法。
+    /// 绝不再从 body 里读取的计算属性触发 `env.license.status()`（每次重渲染都要磁盘读 + 验签 + 落盘）。
+    @Published public private(set) var needsPurchaseToClean = false
+
+    /// 重算购买闸门（一次 status() 磁盘读 + 验签）。只在状态转移点调用，绝不在每帧 body 里调用。
+    private func refreshPurchaseGate() {
+        needsPurchaseToClean = !env.license.status().state.allowsCommercialUse
+    }
+
     public func start() {
-        guard ensureLicensed() else { return }
+        refreshPurchaseGate()
+        // 扫描与结果预览对试用到期用户开放（只读、无破坏性）——不再在此拦截，
+        // 许可校验只把守破坏性动作（见 clean()）。这样过期用户仍能看见「能清多少」，
+        // 结果页据 needsPurchaseToClean 给出「购买后清理」CTA。
         scanTask?.cancel()
         phase = .scanning
         progress = 0
@@ -97,9 +132,10 @@ public final class ModuleSessionViewModel: ObservableObject {
         scanWarning = nil
 
         let handler = makeHandler()
-        scanTask = Task {
+        scanTask = Task { [weak self] in
+            guard let self else { return }
             do {
-                let results = try await scanProvider(handler)
+                let results = try await self.scanProvider(handler)
                 var merged = results.flatMap { $0.groups }.sorted { $0.totalSize > $1.totalSize }
                 // 应用用户忽略清单：被排除的项不出现在结果里（对标 CleanMyMac 排除列表）
                 let ignore = self.env.ignoreList
@@ -107,6 +143,7 @@ public final class ModuleSessionViewModel: ObservableObject {
                 merged.removeAll { $0.items.isEmpty }
                 if Task.isCancelled { return }
                 self.groups = merged
+                self.refreshPurchaseGate()   // 落到 .results/.empty 前刷新缓存的购买闸门（审计 P2）
                 let fdaOK = self.env.permissions.hasFullDiskAccess()
                 if !merged.isEmpty {
                     self.phase = .results
@@ -185,14 +222,15 @@ public final class ModuleSessionViewModel: ObservableObject {
         statusMessage = xLoc("正在清理…")
 
         let handler = makeHandler()
-        cleanTask = Task {
+        cleanTask = Task { [weak self] in
+            guard let self else { return }
             defer { self.isCleaning = false }
             await self.beforeClean?(items)   // 例：威胁模块先 bootout 停用已加载 agent
             let normalItems = items.filter { !$0.requiresHelper }
             let privilegedItems = items.filter(\.requiresHelper)
             var reports: [CleaningReport] = []
             if !normalItems.isEmpty {
-                reports.append(await env.cleaningEngine.execute(
+                reports.append(await self.env.cleaningEngine.execute(
                     CleaningPlan(items: normalItems, intent: self.intent),
                     progress: handler
                 ))
@@ -241,6 +279,9 @@ public final class ModuleSessionViewModel: ObservableObject {
                 self.lastReport = CleaningReport(
                     removedCount: report.removedCount, reclaimedBytes: report.reclaimedBytes,
                     failures: report.failures, restorable: remaining)
+                // 同步收缩持久化历史的可恢复集，令落盘记录与内存报告一致（审计 P3）——
+                // 否则重启后历史仍以为已恢复项可再撤销，累计释放/可撤销状态虚高。
+                if let id = lastHistoryID { env.history.updateRestorable(id: id, to: remaining) }
                 self.undoFailedItems = result.failed
                 NotificationCenter.default.post(name: .xicoDidClean, object: nil)
             }

@@ -1,12 +1,21 @@
 import SwiftUI
 import AppKit
+import Darwin
 import Features
 import Domain
 import Infrastructure
 import DesignSystem
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MenuBarController?
+    /// 全应用唯一的 AppModel 实例（构造一次，显式注入 AppKit 侧 `MenuBarController` 与 SwiftUI 侧
+    /// `RootView`——见 `XicoMain`）。对抗复核 P3：此前 AppKit / SwiftUI 两层各自伸手取 `AppModel.shared`，
+    /// 所有权与初始化次序都藏在全局单例里；现由 AppDelegate 持有一个具名引用作为单一注入点，
+    /// 所有权与注入路径显式可见。`AppModel.shared` 作为便利单例保留（本属性即指向它），跨层仍是同一实例。
+    let model = AppModel.shared
+    /// 单实例独占锁，持有到进程退出（flock 随其 fd 释放）。见 applicationDidFinishLaunching 的守卫。
+    private var singletonLock: SingletonLock?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -15,6 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let lang = XLang(rawValue: String(arg.dropFirst("--lang=".count))) {
             XLocale.current = lang
         }
+        #if DEBUG
+        // 离屏渲染工具（--shots/--icon/--menubar/--glyphs/--layout）仅供 QA/调试，随
+        // ShotRenderer/IconRender/LayoutRender 一起编译进 DEBUG，绝不进发布包——
+        // 发布构建里这些 render 符号不存在，故调度分支必须同样 #if DEBUG 门控。
         if CommandLine.arguments.contains("--shots") {
             renderShots()
             NSApp.terminate(nil)
@@ -40,10 +53,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        #endif
+        // --selftest 保留在发布构建：CI 用它对发布二进制做冒烟自检。
         if CommandLine.arguments.contains("--selftest") {
             Task { let ok = await runSelfTest(); exit(ok ? 0 : 1) }
             return
         }
+        #if DEBUG
+        // 以下 QA/开发者 CLI 入口（--probe-sensors/--deepscan/--diskbench）仅供调试，
+        // 门控进 DEBUG，绝不随发布二进制分发（对齐上方 render 工具的 #if DEBUG 处置）。
         if CommandLine.arguments.contains("--probe-sensors") {
             probeSensors()
             NSApp.terminate(nil)
@@ -54,15 +72,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let svc = DeepScanner(fs: LocalFileSystemService(), safety: DefaultSafetyEngine())
             let start = Date()
             Task {
-                let lastMsg = AtomicMessage()
-                let result = try await svc.scan { p in lastMsg.set(p.message) }
-                let secs = Date().timeIntervalSince(start)
-                print(String(format: "deepscan done in %.1fs · %@", secs, lastMsg.get()))
-                for g in result.groups {
-                    print("== \(g.title): \(g.items.count) 项 · \(g.items.reduce(Int64(0)) { $0 + $1.size }.formattedBytes)")
-                    for i in g.items.prefix(5) { print("   \(i.displayName) · \(i.size.formattedBytes) · selected=\(i.isSelected)") }
+                do {
+                    let lastMsg = AtomicMessage()
+                    let result = try await svc.scan { p in lastMsg.set(p.message) }
+                    let secs = Date().timeIntervalSince(start)
+                    print(String(format: "deepscan done in %.1fs · %@", secs, lastMsg.get()))
+                    for g in result.groups {
+                        print("== \(g.title): \(g.items.count) 项 · \(g.items.reduce(Int64(0)) { $0 + $1.size }.formattedBytes)")
+                        for i in g.items.prefix(5) { print("   \(i.displayName) · \(i.size.formattedBytes) · selected=\(i.isSelected)") }
+                    }
+                    exit(0)
+                } catch {
+                    // 抛错不能被吞掉后卡死 RunLoop——如实报错并以非零码退出（对齐 --diskbench/--selftest）
+                    FileHandle.standardError.write("deepscan failed: \(error.localizedDescription)\n".data(using: .utf8)!)
+                    exit(1)
                 }
-                exit(0)
             }
             RunLoop.main.run()
         }
@@ -76,25 +100,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print(r.map { "done read=\(Int($0.readMBps)) write=\(Int($0.writeMBps)) MB/s" } ?? "failed")
             exit(r == nil ? 1 : 0)
         }
+        #endif
+        #if DEBUG
+        // 离屏实时快照工具仅供 QA/调试，随 LiveShotRenderer 一起编译进 DEBUG，绝不进发布包。
         if CommandLine.arguments.contains("--liveshots") {
             renderLiveShots()
             NSApp.terminate(nil)
             return
         }
+        #endif
         // 单实例守卫：更新替换 App 或多路径安装时旧实例可能仍在运行——两个进程会各画一套
-        // 菜单栏状态项（用户报告的「莫名冒出两个一样的监控」）。发现同 bundle 的其他实例：
-        // 激活它、退出自己，绝不并存。
+        // 菜单栏状态项（用户报告的「莫名冒出两个一样的监控」）。
+        // 仅靠「枚举同 bundle 的其他实例」在两进程近乎同时启动时会竞态：两边都看见对方便一起退出
+        // （剩 0 个）、或都没看见对方便并存（剩 2 个）。因此以 Application Support 里的一把独占
+        // flock 作权威裁决——内核原子，恰好一个进程能拿到锁；拿不到的用「更早启动 / 更小 PID」的
+        // 确定性次序挑出既有实例，激活并交棒后退出自己，绝不并存。
         if let bid = Bundle.main.bundleIdentifier, !bid.isEmpty {
-            let others = NSRunningApplication.runningApplications(withBundleIdentifier: bid)
-                .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
-            if let other = others.first {
-                other.activate()
+            let lock = SingletonLock(bundleID: bid)
+            if lock.acquire() {
+                singletonLock = lock   // 持有到进程退出
+            } else {
+                let incumbent = NSRunningApplication.runningApplications(withBundleIdentifier: bid)
+                    .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+                    .min { a, b in
+                        switch (a.launchDate, b.launchDate) {
+                        case let (da?, db?) where da != db: return da < db
+                        default: return a.processIdentifier < b.processIdentifier
+                        }
+                    }
+                incumbent?.activate()
                 NSApp.terminate(nil)
                 return
             }
         }
-        // 正常启动：用 AppKit 接管菜单栏（瞬态弹窗，自动消失 + 可在设置里编辑）
-        menuBar = MenuBarController(model: .shared)
+        // 正常启动：用 AppKit 接管菜单栏（瞬态弹窗，自动消失 + 可在设置里编辑）——注入唯一 AppModel。
+        menuBar = MenuBarController(model: model)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -115,24 +155,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 上次深链激活时刻——用于对深链激活做速率限制，抵御恶意页面反复唤起。
+    private var lastDeepLinkActivation = Date.distantPast
+
+    @MainActor
     private func handleActivationURL(_ url: URL) {
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let isActivate = (url.host == "activate") || comps?.path.contains("activate") == true
         guard isActivate,
               let key = comps?.queryItems?.first(where: { $0.name == "key" })?.value,
               !key.isEmpty else { return }
-        Task { @MainActor in
-            let model = AppModel.shared
-            model.selection = .settings
-            NSApp.activate(ignoringOtherApps: true)
-            _ = await model.activateLicense(key: key)
-        }
+        // 速率限制：两次深链激活至少间隔 3 秒，防止恶意网页用连续 xico://activate 轰炸弹窗。
+        let now = Date()
+        guard now.timeIntervalSince(lastDeepLinkActivation) > 3 else { return }
+        lastDeepLinkActivation = now
+        // 绝不静默激活来路不明的深链激活码（攻击者可构造 xico://activate?key=…）：
+        // 先激活窗口并弹窗展示激活码，要求用户显式确认后才真正激活。
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = xLoc("确认激活 Xico？")
+        alert.informativeText = xLocF("检测到来自网页的激活请求，激活码：%@\n仅在你本人刚从官网购买后再继续。", key)
+        alert.addButton(withTitle: xLoc("激活"))
+        alert.addButton(withTitle: xLoc("取消"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        model.selection = .settings
+        Task { _ = await model.activateLicense(key: key) }
     }
 }
 
 @main
 struct XicoMain: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    /// 与 `AppDelegate.model` 指向的**同一** AppModel（便利单例 `AppModel.shared`）——SwiftUI 侧由此
+    /// `@StateObject` 持有其生命周期并注入 `RootView`，AppKit 侧经 `AppDelegate` 注入 `MenuBarController`，
+    /// 两层共享一份状态。见 AppDelegate.model 的所有权说明。
     @StateObject private var model = AppModel.shared
 
     var body: some Scene {
@@ -162,4 +218,28 @@ final class AtomicMessage: @unchecked Sendable {
     private var v = ""
     func set(_ s: String) { lock.lock(); v = s; lock.unlock() }
     func get() -> String { lock.lock(); defer { lock.unlock() }; return v }
+}
+
+/// 单实例独占锁：在 Application Support 建一个锁文件并 `flock(LOCK_EX|LOCK_NB)`。
+/// 拿到锁=本进程是唯一实例；拿不到=已有实例持锁。fd 一直持有到进程退出，锁随 fd 关闭/进程结束自动释放。
+final class SingletonLock: @unchecked Sendable {
+    private var fd: Int32 = -1
+    private let path: String
+
+    init(bundleID: String) {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let dir = base.appendingPathComponent("Xico", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        path = dir.appendingPathComponent("\(bundleID).lock").path
+    }
+
+    /// 尝试独占加锁。true=本进程独占（锁文件无法创建时保守放行，绝不误杀正常启动）；false=已有实例持锁。
+    func acquire() -> Bool {
+        fd = open(path, O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else { return true }              // 建不了锁文件就别拦启动
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 { return true }
+        close(fd); fd = -1
+        return false
+    }
 }

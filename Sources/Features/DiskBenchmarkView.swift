@@ -151,6 +151,7 @@ public struct DiskBenchmarkView: View {
                     .foregroundStyle(XColor.textSecondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(xLoc("关闭"))
         }
     }
 
@@ -223,7 +224,13 @@ public struct DiskBenchmarkView: View {
                     .font(XFont.caption).foregroundStyle(XColor.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, XSpacing.l)
+            } else if standalone {
+                // 独立功能页：外层已是 ScrollView，历史行直接随外层滚动，避免同轴嵌套滚动。
+                VStack(spacing: XSpacing.s) {
+                    ForEach(vm.history) { r in historyRow(r) }
+                }
             } else {
+                // 固定高度 sheet：需要内层滚动来容纳超出的历史行。
                 ScrollView {
                     VStack(spacing: XSpacing.s) {
                         ForEach(vm.history) { r in historyRow(r) }
@@ -255,7 +262,7 @@ public struct DiskBenchmarkView: View {
     private func speedChip(_ mbps: Double, label: String, color: Color) -> some View {
         VStack(alignment: .trailing, spacing: 0) {
             Text(Self.speedText(mbps)).font(XFont.mono).foregroundStyle(color)
-            Text(label).font(.system(size: 9)).foregroundStyle(XColor.textTertiary)
+            Text(label).font(XFont.nano).foregroundStyle(XColor.textTertiary)
         }
         .padding(.horizontal, XSpacing.s).padding(.vertical, 3)
         .background(RoundedRectangle(cornerRadius: XRadius.chip, style: .continuous).fill(color.opacity(0.10)))

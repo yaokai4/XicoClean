@@ -10,7 +10,24 @@ public struct OnboardingView: View {
     public var body: some View {
         ZStack {
             AppBackground()
-            VStack(spacing: XSpacing.xl) {
+            // 包一层 ScrollView：大号 Dynamic Type / 窄矮窗口下内容可能超出可视高度，
+            // 若不可滚动会把唯一出口「开始使用」按钮裁到屏外（审计 P2）。用 GeometryReader 撑起
+            // 至少一屏高度并居中；内容超高时自然可滚动，CTA 永远可达。
+            GeometryReader { geo in
+                ScrollView {
+                    onboardingContent
+                        .padding(XSpacing.xxxl)
+                        .frame(maxWidth: .infinity, minHeight: geo.size.height)
+                        .opacity(appeared ? 1 : 0)
+                        .offset(y: appeared ? 0 : 24)
+                }
+            }
+        }
+        .onAppear { withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) { appeared = true } }
+    }
+
+    private var onboardingContent: some View {
+        VStack(spacing: XSpacing.xl) {
                 XBrandMark(size: 76)
                     .xGlow(XColor.brand, radius: 36)
                     .scaleEffect(appeared ? 1 : 0.6)
@@ -46,13 +63,7 @@ public struct OnboardingView: View {
                 Button(xLoc("开始使用")) { model.completeOnboarding() }
                     .buttonStyle(XPrimaryButtonStyle(large: true))
                     .padding(.top, XSpacing.s)
-            }
-            .padding(XSpacing.xxxl)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .opacity(appeared ? 1 : 0)
-            .offset(y: appeared ? 0 : 24)
         }
-        .onAppear { withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) { appeared = true } }
     }
 
     private func feature(_ icon: String, _ colors: [Color], _ title: String, _ sub: String) -> some View {

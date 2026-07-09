@@ -42,11 +42,17 @@ final class UninstallerModel: ObservableObject {
     }
 
     func select(_ app: InstalledApp) {
+        // 立即清空上一应用的列表——避免 A→B 快切时 B 的头部仍绑着 A 的旧文件列表，
+        // 用户此刻确认就会误删「另一应用」的文件（P2 数据安全）。
+        targets = []
         selected = app
         lastFreed = nil
         let env = self.env
+        let appID = app.id
         Task {
             let targets = await Task.detached { env.uninstaller.uninstallTargets(for: app) }.value
+            // 慢扫描回来时若选择已切走，丢弃这批陈旧结果，绝不覆盖更新选择的列表。
+            guard self.selected?.id == appID else { return }
             self.targets = targets
         }
     }
@@ -65,6 +71,10 @@ final class UninstallerModel: ObservableObject {
     @Published var licenseBlocked = false
 
     func uninstall() {
+        // 二次确认：当前展示的关联文件必须确实属于此刻选中的应用。
+        // uninstallTargets 总把应用本体（url == app.url）作为首项加入，故据此校验；
+        // 一旦对不上（快切时序错配的兜底），直接放弃本次卸载，绝不删「另一应用」的文件。
+        guard let app = selected, targets.contains(where: { $0.url == app.url }) else { return }
         let items = targets.filter(\.isSelected)
         guard !items.isEmpty else { return }
         // 卸载同样是删除操作，必须过许可证门禁（与扫描/清理一致，堵住"试用到期仍可卸载"）
@@ -76,8 +86,10 @@ final class UninstallerModel: ObservableObject {
             let report = await env.cleaningEngine.execute(CleaningPlan(items: items, intent: .trash))
             self.lastFreed = report.reclaimedBytes
             self.lastRemovedCount = report.removedCount
-            // 计入清理历史并广播刷新（此前卸载释放的空间被系统性少计）
-            env.history.record(module: xLocF("卸载 · %@", appName),
+            // 计入清理历史并广播刷新（此前卸载释放的空间被系统性少计）。
+            // 存规范中文键「卸载 · <名>」而非记录时已本地化的串——由展示层按当前语言重排前缀，
+            // 避免历史行冻结在卸载时的语言（与其他历史模块「显示时本地化」的口径一致）。
+            env.history.record(module: "卸载 · \(appName)",
                                reclaimedBytes: report.reclaimedBytes, removedCount: report.removedCount)
             NotificationCenter.default.post(name: .xicoDidClean, object: nil)
             self.working = false
@@ -93,6 +105,11 @@ public struct UninstallerView: View {
     @State private var confirmUninstall = false
     public init(env: XicoEnvironment) {
         _model = StateObject(wrappedValue: UninstallerModel(env: env))
+    }
+
+    /// 从 AppModel 注入缓存的卸载器模型：跨 tab 保留已加载的应用清单与所选残留项（审计 P2 RootView:249）。
+    public init(model appModel: AppModel) {
+        _model = StateObject(wrappedValue: appModel.uninstallerModel)
     }
 
     public var body: some View {
@@ -123,14 +140,37 @@ public struct UninstallerView: View {
                 if model.loading { XSpinner() }
             }
             searchField
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(model.filteredApps) { app in
-                        AppRow(app: app, selected: model.selected?.id == app.id) { model.select(app) }
-                    }
+            if model.loading && model.apps.isEmpty {
+                // 首次加载应用清单时，列表主体给出骨架行（而非仅头部小转圈的空白），
+                // 与监视器进程/核心列表的骨架处理一致。
+                ScrollView {
+                    XSkeletonRows(count: 10)
+                        .padding(.horizontal, XSpacing.m)
+                        .padding(.top, XSpacing.s)
                 }
-                .padding(.horizontal, XSpacing.s)
-                .padding(.bottom, XSpacing.l)
+            } else if model.filteredApps.isEmpty && !model.query.isEmpty {
+                // 搜索无命中时给出明确的空态，避免用户误以为列表加载失败。
+                VStack(spacing: XSpacing.s) {
+                    Image(systemName: "magnifyingglass")
+                        .font(XFont.title)
+                        .foregroundStyle(XColor.textTertiary)
+                    Text(xLoc("未找到匹配的应用"))
+                        .font(XFont.body)
+                        .foregroundStyle(XColor.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(XSpacing.l)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(model.filteredApps) { app in
+                            AppRow(app: app, selected: model.selected?.id == app.id) { model.select(app) }
+                        }
+                    }
+                    .padding(.horizontal, XSpacing.s)
+                    .padding(.bottom, XSpacing.l)
+                }
             }
         }
         .frame(width: 330)
@@ -140,8 +180,9 @@ public struct UninstallerView: View {
 
     private var searchField: some View {
         HStack(spacing: XSpacing.s) {
-            Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold))
+            Image(systemName: "magnifyingglass").font(XFont.callout)
                 .foregroundStyle(XColor.textTertiary)
+                .accessibilityHidden(true)
             TextField(xLoc("搜索应用"), text: $model.query)
                 .textFieldStyle(.plain)
                 .font(XFont.body)
@@ -171,6 +212,7 @@ public struct UninstallerView: View {
                 // 全选/全不选关联文件 + 实时体积——批量卸载更顺手。
                 HStack(spacing: XSpacing.s) {
                     XCheckbox(isOn: model.allTargetsSelected) { model.toggleAllTargets(!model.allTargetsSelected) }
+                        .accessibilityLabel(xLoc("全选关联文件"))
                     Text(xLoc("关联文件")).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
                     Spacer()
                     Text(xLocF("已选 %d 项 · %@", model.selectedCount, model.selectedSize.formattedBytes))

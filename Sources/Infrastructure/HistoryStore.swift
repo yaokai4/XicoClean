@@ -44,6 +44,12 @@ public final class HistoryStore: @unchecked Sendable {
     private let url: URL
     private var records: [CleaningRecord]
     private let maxRecords = 500
+    /// 私有串行队列：encode + 原子落盘在此串行执行（不占 `lock`），读者绝不被磁盘 I/O 阻塞。
+    private let ioQueue = DispatchQueue(label: "com.xico.history.persist", qos: .utility)
+    /// 单调写序号（`lock` 保护）：每次在锁内领取的快照都带一个更大的序号，用于并发写者定序。
+    private var writeSeq: UInt64 = 0
+    /// 已落盘的最新快照序号（仅在 `ioQueue` 内访问）：较旧序号的快照绝不覆盖较新的（防写盘乱序回退）。
+    private var lastWrittenSeq: UInt64 = 0
 
     /// directory 可注入（测试用临时目录，避免污染真实清理历史）；默认 Application Support/Xico。
     public init(directory: URL? = nil) {
@@ -71,13 +77,15 @@ public final class HistoryStore: @unchecked Sendable {
     public func record(module: String, reclaimedBytes: Int64, removedCount: Int,
                        restorable: [RestorableItem] = [], date: Date = Date()) -> UUID? {
         guard reclaimedBytes > 0 || removedCount > 0 else { return nil }
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         let rec = CleaningRecord(date: date, module: module,
                                  reclaimedBytes: reclaimedBytes, removedCount: removedCount,
                                  restorable: restorable)
         records.insert(rec, at: 0)
         if records.count > maxRecords { records = Array(records.prefix(maxRecords)) }
-        persist()
+        let snap = snapshotForPersist()
+        lock.unlock()
+        persist(snap)
         return rec.id
     }
 
@@ -89,20 +97,24 @@ public final class HistoryStore: @unchecked Sendable {
     /// 把某记录的 restorable 映射更新为指定子集。撤销部分失败时用来仅保留仍未恢复的项，
     /// 使这些项可重试（而非一次失败就丢掉全部重试能力）。
     public func updateRestorable(id: UUID, to items: [RestorableItem]) {
-        lock.lock(); defer { lock.unlock() }
-        guard let i = records.firstIndex(where: { $0.id == id }) else { return }
+        lock.lock()
+        guard let i = records.firstIndex(where: { $0.id == id }) else { lock.unlock(); return }
         let r = records[i]
         records[i] = CleaningRecord(id: r.id, date: r.date, module: r.module,
                                     reclaimedBytes: r.reclaimedBytes, removedCount: r.removedCount,
                                     restorable: items)
-        persist()
+        let snap = snapshotForPersist()
+        lock.unlock()
+        persist(snap)
     }
 
     /// 移除一条记录（撤销清理时回滚历史，避免「累计释放」虚高）
     public func remove(id: UUID) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         records.removeAll { $0.id == id }
-        persist()
+        let snap = snapshotForPersist()
+        lock.unlock()
+        persist(snap)
     }
 
     public func recent(_ limit: Int = 20) -> [CleaningRecord] {
@@ -118,7 +130,7 @@ public final class HistoryStore: @unchecked Sendable {
     /// 使 UI 只在真正可恢复时才展示撤销入口。`existsInTrash` 可注入用于测试。
     public func firstUndoable(within limit: Int = 3,
                               existsInTrash: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> CleaningRecord? {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         var mutated = false
         var result: CleaningRecord?
         for i in records.indices.prefix(limit) {
@@ -133,7 +145,12 @@ public final class HistoryStore: @unchecked Sendable {
             }
             if !alive.isEmpty { result = records[i]; break }
         }
-        if mutated { persist() }
+        let snap = mutated ? snapshotForPersist() : nil
+        lock.unlock()
+        // 自愈剪除后**同步**落盘：保住「firstUndoable 返回即已把剪除结果持久化」的既定契约
+        // （否则进程随后退出会丢掉剪除，已消失的项下次又被当作可撤销）。仅在真的发生剪除时才写，
+        // 频率低、体量小；序号守卫仍保证不被更旧快照回退覆盖，磁盘最终态恒为最新快照。
+        if let snap { persist(snap) }
         return result
     }
 
@@ -148,17 +165,39 @@ public final class HistoryStore: @unchecked Sendable {
     }
 
     public func clear() {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         records = []
-        persist()
+        let snap = snapshotForPersist()
+        lock.unlock()
+        persist(snap)
     }
 
-    private func persist() {
-        do {
-            let data = try JSONEncoder().encode(records)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            XicoLog.history.error("清理历史写盘失败：\(error.localizedDescription, privacy: .public)")
+    /// 调用方**已持有 `lock`**：在临界区内仅做一次廉价的数组快照并领取单调序号后即可释放锁。
+    /// 真正的 encode + 原子写盘交由 `persist(_:)` 在释放锁之后进行，读者绝不被磁盘 I/O 阻塞。
+    private func snapshotForPersist() -> (records: [CleaningRecord], seq: UInt64) {
+        writeSeq &+= 1
+        return (records, writeSeq)
+    }
+
+    /// **释放锁之后**调用：在私有串行队列上**同步**完成 encode + 原子写盘——
+    /// 「同步」保住「record/remove 返回即已落盘」的持久化语义（撤销映射不能丢），
+    /// 「串行队列 + 不占 `lock`」保住读者不被磁盘 I/O 阻塞。序号守卫使并发写者中较旧的快照
+    /// 绝不覆盖较新的（无论二者到达 ioQueue 的先后），磁盘最终态恒为最新快照。
+    /// `sync=true`（record/remove/updateRestorable/clear 等写路径）：**同步**落盘，保住
+    /// 「返回即已落盘」的持久化语义（撤销映射不能丢）。`sync=false`（firstUndoable 的读时自愈）：
+    /// **异步**落盘，读者不被磁盘 I/O 阻塞。两者都在同一私有串行队列上执行，序号守卫使较旧快照
+    /// 绝不覆盖较新的（无论到达先后），磁盘最终态恒为最新快照。
+    private func persist(_ snapshot: (records: [CleaningRecord], seq: UInt64), sync: Bool = true) {
+        let work = { [self] in
+            guard snapshot.seq > lastWrittenSeq else { return }   // 已有更新的快照落过盘：跳过陈旧写
+            do {
+                let data = try JSONEncoder().encode(snapshot.records)
+                try data.write(to: url, options: .atomic)
+                lastWrittenSeq = snapshot.seq
+            } catch {
+                XicoLog.history.error("清理历史写盘失败：\(error.localizedDescription, privacy: .public)")
+            }
         }
+        if sync { ioQueue.sync(execute: work) } else { ioQueue.async(execute: work) }
     }
 }

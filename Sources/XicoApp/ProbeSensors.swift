@@ -1,8 +1,12 @@
+#if DEBUG
 import Foundation
 import Infrastructure
 
 /// 开发用探针：验证温度/风扇/电池/存储/GPU 数据通路在本机是否真的可读。
 /// 用法：Xico --probe-sensors
+///
+/// 仅供 QA/调试，`#if DEBUG` 门控——与 ShotRenderer/IconRender/LayoutRender/LiveShotRenderer 等
+/// 四个同级离屏渲染工具处置一致，`probeSensors()` 符号绝不进发布二进制（调用点亦在 DEBUG 分支内）。
 func probeSensors() {
     let reader = SensorReader()
     let temps = reader.temperatures()
@@ -85,3 +89,4 @@ func probeSensors() {
         FileHandle.standardError.write("=== CPU 频率：不可用 ===\n".data(using: .utf8)!)
     }
 }
+#endif

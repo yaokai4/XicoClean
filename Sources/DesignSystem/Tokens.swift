@@ -73,8 +73,9 @@ public enum XColor {
 
     public static let textPrimary   = dynamic(light: 0x171A28, dark: 0xF4F6FC)
     public static let textSecondary = dynamic(light: 0x666C80, dark: 0xA4ABC2)
-    // 三级文字：旧值在白底/深底上均未达 WCAG AA（对比 <4.5:1）。加深浅色档、提亮深色档达标。
-    public static let textTertiary  = dynamic(light: 0x71778C, dark: 0x8A91A8)
+    // 三级文字：旧值在白底/深底上均未达 WCAG AA（对比 <4.5:1）。再加深浅色档到白底对比 ≥4.5:1
+    // （0x6C7286 ≈ 4.8:1），深色档 0x8A91A8 在墨底/表面上均 ≥5.4:1 已达标，保持不变。
+    public static let textTertiary  = dynamic(light: 0x6C7286, dark: 0x8A91A8)
     public static let border        = dynamic(light: 0xE5E8F1, dark: 0x2A2F44)
     public static let hairline      = dynamic(light: 0xEDEFF6, dark: 0x1D2131)
 
@@ -156,36 +157,100 @@ public enum XRadius {
 public enum XFont {
     public static let hero = Font.system(size: 54, weight: .bold, design: .rounded).monospacedDigit()
     public static let heroCompact = Font.system(size: 46, weight: .bold, design: .rounded).monospacedDigit()  // 仪表盘/详情大数字
-    public static let largeTitle = Font.system(size: 28, weight: .bold, design: .rounded)                     // 页面主标题
-    public static let title = Font.system(size: 22, weight: .semibold)                                        // 补 largeTitle↔headline 断层
-    public static let title2 = Font.system(size: 17, weight: .semibold)                                       // 卡片/区块标题
-    public static let headline = Font.system(size: 15, weight: .semibold)                                     // 行标题
-    public static let body = Font.system(size: 13, weight: .regular)
-    public static let bodyEmphasis = Font.system(size: 13, weight: .medium)
-    public static let callout = Font.system(size: 12, weight: .regular)
-    public static let caption = Font.system(size: 11, weight: .regular)
-    public static let captionEmphasis = Font.system(size: 11, weight: .semibold)
+    public static let largeTitle = Font.system(size: 28, weight: .bold, design: .rounded)                     // 页面主标题（无对应文本样式，经 xLargeTitle() 缩放）
+    // 标题/区块档位改挂相对文本样式：默认档尺寸与旧固定值一一对齐（title=22、title2=17、title3=15），
+    // 默认观感不变，放大辅助字号时随之缩放。token 名/API 全部保持稳定。
+    public static let title = Font.system(.title, design: .default).weight(.semibold)                         // 22pt · 补 largeTitle↔headline 断层
+    public static let title2 = Font.system(.title2, design: .default).weight(.semibold)                       // 17pt · 卡片/区块标题
+    public static let headline = Font.system(.title3, design: .default).weight(.semibold)                     // 15pt · 行标题
+    // 正文档位挂到相对文本样式，让文字随系统「首选正文大小」(Dynamic Type) 缩放。
+    // 选用默认磅值与旧固定值一致的样式（body=13、callout=12、subheadline=11），
+    // 默认设置下观感不变，放大辅助尺寸时整体跟随——token 名/API 全部保持稳定。
+    public static let body = Font.system(.body, design: .default)
+    public static let bodyEmphasis = Font.system(.body, design: .default).weight(.medium)
+    public static let callout = Font.system(.callout, design: .default)
+    public static let caption = Font.system(.subheadline, design: .default)
+    public static let captionEmphasis = Font.system(.subheadline, design: .default).weight(.semibold)
     public static let micro = Font.system(size: 10, weight: .medium)                                          // 唯一合法 10pt（收编所有魔法数字）
     public static let nano = Font.system(size: 9, weight: .semibold)                                           // 图例/角标最小字（收编 size:8/9）
     public static let microMono = Font.system(size: 9, weight: .semibold, design: .rounded).monospacedDigit()  // 迷你数字（菜单栏副行等）
     public static let wordmark = Font.system(size: 21, weight: .bold, design: .rounded)                        // 品牌字标「Xico」
-    public static let mono = Font.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit()
+    // 行内等宽数字挂 .body（默认 13pt）相对样式——随 Dynamic Type 缩放，默认档观感与旧固定值一致。
+    public static let mono = Font.system(.body, design: .rounded).weight(.semibold).monospacedDigit()
     public static let monoLarge = Font.system(size: 19, weight: .bold, design: .rounded).monospacedDigit()
     public static let monoHero = Font.system(size: 34, weight: .bold, design: .rounded).monospacedDigit()     // 价格/详情锚点数字
-    public static let captionMono = Font.system(size: 11, weight: .regular, design: .monospaced)              // bundleID/IPv6/MAC 等标识符
+    public static let captionMono = Font.system(.subheadline, design: .monospaced)                            // 11pt · bundleID/IPv6/MAC 等标识符
+    // 环心数字：固定磅值以稳妥贴合小环内径（不随 Dynamic Type 放大溢出）——收编散落的 size:10/11/15 圆润数字。
+    public static let monoMini = Font.system(size: 11, weight: .bold, design: .rounded).monospacedDigit()     // 迷你环中心数字（每核心/GPU 小环）
+    public static let monoMid  = Font.system(size: 15, weight: .bold, design: .rounded).monospacedDigit()     // 详情主环中心百分数（60pt 环）
+    public static let heroUnit = Font.system(size: 23, weight: .semibold, design: .rounded)                   // 环心大数字旁的单位（配 heroCompact，收编 size:23）
+    // 圆润粗体大标题（健康分标题等）——挂相对 .title 样式，默认 22pt 观感不变且随 Dynamic Type 缩放（收编 size:22）。
+    public static let titleRounded = Font.system(.title, design: .rounded).weight(.bold)
 }
 
 // MARK: - 排版样式（字体 + 字距）
 
+/// 让固定磅值的标题/大数字随「首选文本大小」(Dynamic Type) 等比缩放，同时 100% 保留默认磅值观感
+/// （@ScaledMetric 的 wrappedValue 即默认档尺寸）。用于 hero/heroCompact/largeTitle/区块标签等
+/// 没有对应文本样式、但仍应随辅助功能字号放大的字号——纯 Font.system(size:) 不随缩放。
+struct XScaledFont: ViewModifier {
+    @ScaledMetric private var size: CGFloat
+    private let weight: Font.Weight
+    private let design: Font.Design
+    private let monospacedDigit: Bool
+    private let tracking: CGFloat
+
+    init(size: CGFloat, relativeTo textStyle: Font.TextStyle, weight: Font.Weight,
+         design: Font.Design = .default, monospacedDigit: Bool = false, tracking: CGFloat = 0) {
+        _size = ScaledMetric(wrappedValue: size, relativeTo: textStyle)
+        self.weight = weight
+        self.design = design
+        self.monospacedDigit = monospacedDigit
+        self.tracking = tracking
+    }
+
+    func body(content: Content) -> some View {
+        let base = Font.system(size: size, weight: weight, design: design)
+        return content
+            .font(monospacedDigit ? base.monospacedDigit() : base)
+            .tracking(tracking)
+    }
+}
+
 public extension View {
-    func xHeroNumber() -> some View { font(XFont.hero).tracking(-0.5) }
-    func xLargeTitle() -> some View { font(XFont.largeTitle).tracking(-0.4) }
+    // hero / heroCompact / largeTitle：单行大数字与页面主标题——随 Dynamic Type 缩放，
+    // 但对单行数字版式设无障碍上限，避免放大到换行/溢出。
+    func xHeroNumber() -> some View {
+        modifier(XScaledFont(size: 54, relativeTo: .largeTitle, weight: .bold, design: .rounded,
+                             monospacedDigit: true, tracking: -0.5))
+            .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+    }
+    func xLargeTitle() -> some View {
+        modifier(XScaledFont(size: 28, relativeTo: .largeTitle, weight: .bold, design: .rounded, tracking: -0.4))
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+    }
     func xTitle() -> some View { font(XFont.title).tracking(-0.2) }
     func xHeadline() -> some View { font(XFont.headline).tracking(-0.1) }
     func xSubtitle() -> some View { font(XFont.headline).fontWeight(.regular).tracking(0.2) }   // hero 副标题（15pt regular）
-    func xHeroCompactNumber() -> some View { font(XFont.heroCompact).tracking(-0.5) }
-    func xSectionLabel() -> some View { font(.system(size: 10, weight: .bold)).tracking(1.0).textCase(.uppercase) }
+    func xHeroCompactNumber() -> some View {
+        modifier(XScaledFont(size: 46, relativeTo: .largeTitle, weight: .bold, design: .rounded,
+                             monospacedDigit: true, tracking: -0.5))
+            .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+    }
+    func xSectionLabel() -> some View {
+        modifier(XScaledFont(size: 10, relativeTo: .caption, weight: .bold, tracking: 1.0))
+            .textCase(.uppercase)
+    }
     func xNumber() -> some View { font(XFont.mono).tracking(-0.2) }
+    // 侧栏主导航标签：13.5pt 随 Dynamic Type 缩放；字重随选中变化但字号恒定，避免选中时行高跳动重排。
+    // 收编 RootView SidebarTile 里的 size:13.5 字面量（审计 RootView:199 P2）。
+    func xNavLabel(selected: Bool) -> some View {
+        modifier(XScaledFont(size: 13.5, relativeTo: .body, weight: selected ? .semibold : .medium))
+    }
+    // 侧栏主导航图标：固定 14pt（与标签同步字重），字号恒定避免选中重排。收编 size:14 字面量。
+    func xNavIcon(selected: Bool) -> some View {
+        font(.system(size: 14, weight: selected ? .semibold : .regular))
+    }
 }
 
 // MARK: - 阴影

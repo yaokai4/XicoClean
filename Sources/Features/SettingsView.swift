@@ -102,9 +102,44 @@ public struct SettingsView: View {
         } message: {
             Text(helperError ?? "")
         }
+        .confirmationDialog(xLoc("清空清理历史？"), isPresented: $confirmClearHistory, titleVisibility: .visible) {
+            Button(xLoc("清空记录（不可恢复）"), role: .destructive) {
+                model.env.history.clear()
+                reloadHistory()
+            }
+            Button(xLoc("取消"), role: .cancel) {}
+        } message: {
+            Text(xLoc("将清空全部清理历史，之后无法再从这里撤销这些清理。此操作不可恢复。"))
+        }
+        .confirmationDialog(xLoc("移除本机许可证？"), isPresented: $confirmRemoveLicense, titleVisibility: .visible) {
+            Button(xLoc("移除许可证"), role: .destructive) { removeLicense() }
+            Button(xLoc("取消"), role: .cancel) {}
+        } message: {
+            Text(xLoc("将从本机删除已安装的许可证与激活状态，需重新导入或激活才能继续使用 Pro 功能。"))
+        }
+        .confirmationDialog(xLoc("释放本机授权？"), isPresented: $confirmReleaseDevice, titleVisibility: .visible) {
+            Button(xLoc("释放此设备"), role: .destructive) { releaseThisDevice() }
+            Button(xLoc("取消"), role: .cancel) {}
+        } message: {
+            Text(xLoc("将向服务器释放本机占用的授权名额并移除本机许可证，之后需重新激活才能继续使用 Pro 功能。适合换机/换主板前腾出名额。"))
+        }
+        .confirmationDialog(xLoc("重新显示引导页？"), isPresented: $confirmReset, titleVisibility: .visible) {
+            Button(xLoc("重置"), role: .destructive) {
+                UserDefaults.standard.set(false, forKey: "xico.onboarded")
+                UserDefaults.standard.set(false, forKey: "xico.fdaDismissed")
+            }
+            Button(xLoc("取消"), role: .cancel) {}
+        } message: {
+            Text(xLoc("下次启动 Xico 时会再次展示欢迎引导页。"))
+        }
     }
 
     @State private var undoingID: UUID?
+    @State private var confirmClearHistory = false
+    @State private var confirmRemoveLicense = false
+    @State private var confirmReleaseDevice = false
+    @State private var releasingDevice = false
+    @State private var confirmReset = false
 
     private func reloadHistory() {
         history = model.env.history.recent(8)
@@ -145,15 +180,15 @@ public struct SettingsView: View {
                     }
                     Spacer()
                     if totalCleanups > 0 {
-                        Button(xLoc("清空记录")) { model.env.history.clear(); reloadHistory() }
+                        Button(xLoc("清空记录")) { confirmClearHistory = true }
                             .buttonStyle(XSecondaryButtonStyle(compact: true))
                     }
                 }
                 if !history.isEmpty {
-                    Divider().padding(.vertical, 2)
+                    Divider().padding(.vertical, XSpacing.xxs)
                     ForEach(history) { rec in
                         HStack(spacing: XSpacing.m) {
-                            Text(xLoc(rec.module)).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                            Text(moduleLabel(rec.module)).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                             Text(rec.date, format: .relative(presentation: .named))
                                 .font(XFont.caption).foregroundStyle(XColor.textTertiary)
                             Spacer()
@@ -189,7 +224,7 @@ public struct SettingsView: View {
                     Spacer()
                 }
                 if !ignored.isEmpty {
-                    Divider().padding(.vertical, 2)
+                    Divider().padding(.vertical, XSpacing.xxs)
                     ForEach(ignored, id: \.self) { path in
                         HStack(spacing: XSpacing.s) {
                             Text(path).font(XFont.caption).foregroundStyle(XColor.textSecondary)
@@ -205,6 +240,17 @@ public struct SettingsView: View {
     }
 
     private func reloadIgnored() { ignored = model.env.ignoreList.all() }
+
+    /// 历史「模块」列显示时本地化——绝大多数记录以中文字面量为稳定键，直接 xLoc 即可。
+    /// 卸载记录带动态应用名，存储为规范中文键「卸载 · <名>」，此处按显示语言重排前缀，
+    /// 使切换语言后该行随之翻译（不再冻结在记录时的语言）。
+    private func moduleLabel(_ module: String) -> String {
+        let uninstallPrefix = "卸载 · "
+        if module.hasPrefix(uninstallPrefix) {
+            return xLocF("卸载 · %@", String(module.dropFirst(uninstallPrefix.count)))
+        }
+        return xLoc(module)
+    }
 
     private var aboutCard: some View {
         XCard {
@@ -252,6 +298,8 @@ public struct SettingsView: View {
             case .upToDate:
                 updateMessage = xLocF("已是最新版本（%@）。", version)
             case let .available(info):
+                // DMG 字节完整性由 Gatekeeper/公证在安装时校验（App 不做应用内下载+sha256 逐字节比对）；
+                // appcast 里的 sha256 仅用于加固已签名的 appcast 载荷，不作为下载物的独立校验（审计 SettingsView:302）。
                 updateMessage = xLocF("发现新版本 %@，点击前往下载。", info.version)
                 NSWorkspace.shared.open(info.downloadURL)
             case let .failed(reason):
@@ -263,7 +311,7 @@ public struct SettingsView: View {
     /// 导出最近日志到用户选择的位置，便于反馈问题（不含任何自动上报）。
     private func exportDiagnostics() {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "Xico-诊断日志.txt"
+        panel.nameFieldStringValue = xLoc("Xico-诊断日志.txt")
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
         if !XicoDiagnostics.export(to: url) {
@@ -285,13 +333,8 @@ public struct SettingsView: View {
                     Spacer()
                     Button(xLoc("导入许可证")) { importLicense() }.buttonStyle(XSecondaryButtonStyle(compact: true))
                     if licenseStatus?.licenseID != nil {
-                        Button(xLoc("移除")) {
-                            model.env.license.clearLicense()
-                            licenseStatus = model.env.license.status()
-                            model.refreshLicense()
-                            licenseMessage = xLoc("已移除本机许可证。")
-                        }
-                        .buttonStyle(XSecondaryButtonStyle(compact: true))
+                        Button(xLoc("移除")) { confirmRemoveLicense = true }
+                            .buttonStyle(XSecondaryButtonStyle(compact: true))
                     }
                 }
                 HStack(spacing: XSpacing.s) {
@@ -304,11 +347,21 @@ public struct SettingsView: View {
                         .disabled(model.activating || activationKey.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 if let licenseMessage {
-                    Divider().padding(.vertical, 2)
+                    Divider().padding(.vertical, XSpacing.xxs)
                     Text(licenseMessage)
                         .font(XFont.caption)
                         .foregroundStyle(XColor.textSecondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                // 换机自助：在旧机主动向服务器释放本机席位，腾出授权名额（避免新机撞「授权台数已达上限」）。
+                if (licenseStatus ?? model.env.license.status()).licenseID != nil {
+                    Button(releasingDevice ? xLoc("释放中…") : xLoc("换机？释放此设备授权")) {
+                        confirmReleaseDevice = true
+                    }
+                    .buttonStyle(.link)
+                    .font(XFont.caption)
+                    .disabled(releasingDevice)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -345,7 +398,48 @@ public struct SettingsView: View {
                 licenseStatus = model.env.license.status()
                 licenseMessage = xLoc("激活成功，感谢支持！")
             case let .failure(err):
-                licenseMessage = err.localizedDescription
+                // 席位已满：除了服务器文案，再补一句自助恢复引导（换机用户可在旧机释放名额后重试）。
+                if case LicenseActivationError.seatLimit = err {
+                    licenseMessage = err.localizedDescription + "\n"
+                        + xLoc("换了新机器？请在旧设备的设置里点『释放此设备』腾出名额后重试，或联系我们协助。")
+                } else {
+                    licenseMessage = err.localizedDescription
+                }
+            }
+        }
+    }
+
+    /// 移除本机许可证：删除已安装的许可证文件并刷新状态。
+    /// clearLicense() 只删许可证文件，不清激活锚点——见 cross_file_note（WS license）。
+    private func removeLicense() {
+        model.env.license.clearLicense()
+        licenseStatus = model.env.license.status()
+        model.refreshLicense()
+        licenseMessage = xLoc("已移除本机许可证。")
+    }
+
+    /// 释放本机席位：换机/换主板前在旧机主动向服务器释放一个授权名额，避免迁移后撞上「授权台数已达上限」。
+    /// 成功后清除本地许可并刷新状态（与 PricingView.deactivateThisDevice 同一契约，审计 CONTRACT (d)）。
+    private func releaseThisDevice() {
+        guard let licenseID = (licenseStatus ?? model.env.license.status()).licenseID,
+              !releasingDevice else { return }
+        releasingDevice = true
+        Task {
+            defer { releasingDevice = false }
+            do {
+                try await LicenseActivationClient().deactivate(
+                    licenseId: licenseID,
+                    deviceId: DeviceIdentity.current(),
+                )
+                // 记录本机已释放：与 PricingView.deactivateThisDevice 同一契约——
+                // 否则把旧信封重新导入即可复活席位，绕过座席上限（审计 P2 SettingsView:423）。
+                model.env.license.recordReleased(licenseID: licenseID, deviceId: DeviceIdentity.current())
+                model.env.license.clearLicense()
+                licenseStatus = model.env.license.status()
+                model.refreshLicense()
+                licenseMessage = xLoc("已释放本机授权，可在新设备重新激活。")
+            } catch {
+                licenseMessage = error.localizedDescription
             }
         }
     }
@@ -359,8 +453,13 @@ public struct SettingsView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let data = try Data(contentsOf: url)
-            licenseStatus = try model.env.license.installLicense(fromEnvelopeData: data)
+            // 手动导入须启用「已释放席位」拦截，与 PricingView.importLicense 一致：
+            // 换机点了「释放本机授权」后，把旧信封重新导入不能再复活席位（须重新在线激活腾额）。
+            licenseStatus = try model.env.license.installLicense(fromEnvelopeData: data, enforceReleased: true)
             model.refreshLicense()
+            // 导入即强制在线复验，与 PricingView 导入路径一致：服务端已吊销/退款但尚未进入
+            // 本地名单的副本在导入当刻即被拦截，而非拖到下一次节流复验（审计 SettingsView:442 P3）。
+            model.revalidateLicenseOnline(force: true)
             licenseMessage = xLoc("许可证已验证并安装。")
         } catch {
             licenseStatus = model.env.license.status()
@@ -390,7 +489,7 @@ public struct SettingsView: View {
                     }
                 }
                 if let definitionsMessage {
-                    Divider().padding(.vertical, 2)
+                    Divider().padding(.vertical, XSpacing.xxs)
                     Text(definitionsMessage)
                         .font(XFont.caption)
                         .foregroundStyle(XColor.textSecondary)
@@ -427,7 +526,8 @@ public struct SettingsView: View {
             do {
                 let library = try await model.env.definitionsUpdater.refresh()
                 definitionsStatus = model.env.definitionsUpdater.status()
-                definitionsMessage = xLocF("已下载并验证规则库 v%@。重新启动 Xico 后生效。", "\(library.version)")
+                // 规则库为实时热加载：更新后无需重启，下次扫描即采用新规则（审计 SettingsView:519 P3）。
+                definitionsMessage = xLocF("已下载并验证规则库 v%@。下次扫描即生效，无需重启。", "\(library.version)")
             } catch {
                 definitionsStatus = model.env.definitionsUpdater.status()
                 definitionsMessage = error.localizedDescription
@@ -440,6 +540,7 @@ public struct SettingsView: View {
         settingRow(icon: "circle.lefthalf.filled", colors: [XColor.auroraViolet, XColor.auroraBlue],
                    title: xLoc("外观"), subtitle: xLoc("浅色 / 深色 / 跟随系统")) {
             AppearanceToggle(appearance: $model.appearance)
+                .accessibilityLabel(xLoc("外观"))
         }
     }
 
@@ -450,6 +551,7 @@ public struct SettingsView: View {
                 ForEach(XLang.allCases) { lang in Text(lang.nativeName).tag(lang) }
             }
             .labelsHidden().pickerStyle(.menu).frame(width: 160)
+            .accessibilityLabel(xLoc("语言"))
         }
     }
 
@@ -464,7 +566,7 @@ public struct SettingsView: View {
                     }
                     Spacer()
                 }
-                Divider().padding(.vertical, 2)
+                Divider().padding(.vertical, XSpacing.xxs)
                 Text(xLoc("每项都能单独切换显示方式——直接点选下方图形（图标+数值 / 仅数值 / 迷你折线 / 可视化），像 iStat 一样可视化自定义"))
                     .font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 mbMetricRow(xLoc("处理器 CPU"), icon: "cpu", tint: XColor.metricCPU[0], $mbCPU, $cpuStyle, $cpuBorder)
@@ -474,7 +576,7 @@ public struct SettingsView: View {
                 mbMetricRow(xLoc("GPU 占用"), icon: "cpu.fill", tint: XColor.metricGPU[0], $mbGPU, $gpuStyle, $gpuBorder)
                 mbMetricRow(xLoc("磁盘占用"), icon: "internaldrive", tint: XColor.metricDisk[0], $mbDisk, $diskStyle, $diskBorder)
                 mbMetricRow(xLoc("合并总览面板"), icon: "gauge.with.dots.needle.50percent", tint: XColor.textSecondary, $mbCombined, nil, nil)
-                Divider().padding(.vertical, 2)
+                Divider().padding(.vertical, XSpacing.xxs)
                 VStack(alignment: .leading, spacing: 3) {
                     toggleRow(xLoc("彩色图标"), $mbColored)
                     Text(xLoc("关：随菜单栏深浅自动黑白（推荐，克制）；开：每指标按代表色着色"))
@@ -489,6 +591,7 @@ public struct SettingsView: View {
                         Text(xLoc("省电（3 秒）")).tag(3.0)
                     }
                     .labelsHidden().pickerStyle(.menu).frame(width: 150)
+                    .accessibilityLabel(xLoc("更新频率"))
                     .onChange(of: mbInterval) { model.applyRefreshInterval($0) }
                 }
             }
@@ -499,10 +602,11 @@ public struct SettingsView: View {
     private func mbMetricRow(_ title: String, icon: String, tint: Color, _ enabled: Binding<Bool>, _ style: Binding<String>?, _ border: Binding<Bool>?) -> some View {
         VStack(spacing: 8) {
             HStack(spacing: XSpacing.s) {
-                Image(systemName: icon).font(.system(size: 12, weight: .semibold)).foregroundStyle(tint).frame(width: 18)
+                Image(systemName: icon).font(XFont.callout).foregroundStyle(tint).frame(width: 18)
                 Text(title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                 Spacer()
                 Toggle("", isOn: enabled).toggleStyle(.switch).labelsHidden()
+                    .accessibilityLabel(title)
             }
             if enabled.wrappedValue, let style = style {
                 // 图形恒定加框（框=图表坐标系，内容贴边挤满），不再提供开关。
@@ -527,6 +631,7 @@ public struct SettingsView: View {
             Text(title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
             Spacer()
             Toggle("", isOn: binding).toggleStyle(.switch).labelsHidden()
+                .accessibilityLabel(title)
         }
     }
 
@@ -543,7 +648,7 @@ public struct SettingsView: View {
                     }
                     Spacer()
                 }
-                Divider().padding(.vertical, 2)
+                Divider().padding(.vertical, XSpacing.xxs)
                 ForEach(Array(model.alertRules.enumerated()), id: \.element.id) { idx, rule in
                     alertRuleRow(idx: idx, rule: rule)
                 }
@@ -572,14 +677,16 @@ public struct SettingsView: View {
                 }
             }
             .labelsHidden().pickerStyle(.menu).frame(width: 92)
+            .accessibilityLabel(xLocF("%@ 告警阈值", xLoc(rule.metric.title)))
             Toggle("", isOn: Binding(
                 get: { rule.enabled },
                 set: { on in
                     model.alertRules[idx].enabled = on
                     model.saveAlertRules()
                 })).toggleStyle(.switch).labelsHidden()
+                .accessibilityLabel(xLocF("%@ 告警开关", xLoc(rule.metric.title)))
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, XSpacing.xxs)
     }
 
     private func thresholdOptions(for metric: AlertMetric) -> [Double] {
@@ -638,17 +745,15 @@ public struct SettingsView: View {
     private var resetCard: some View {
         settingRow(icon: "arrow.counterclockwise", colors: [XColor.textTertiary, XColor.textSecondary],
                    title: xLoc("重新显示引导页"), subtitle: xLoc("下次启动时再次展示欢迎引导")) {
-            Button(xLoc("重置")) {
-                UserDefaults.standard.set(false, forKey: "xico.onboarded")
-                UserDefaults.standard.set(false, forKey: "xico.fdaDismissed")
-            }.buttonStyle(XSecondaryButtonStyle(compact: true))
+            Button(xLoc("重置")) { confirmReset = true }
+                .buttonStyle(XSecondaryButtonStyle(compact: true))
         }
     }
 
     /// 设置分区标题：把 14 张卡片按语义分组，扫读更轻松（授权/清理/外观/监控/权限）。
     private func sectionLabel(_ title: String) -> some View {
         Text(xLoc(title))
-            .font(.system(size: 11, weight: .semibold)).tracking(0.5).textCase(.uppercase)
+            .font(XFont.captionEmphasis).tracking(0.5).textCase(.uppercase)
             .foregroundStyle(XColor.textTertiary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, XSpacing.m).padding(.leading, XSpacing.xs)
@@ -689,12 +794,12 @@ private struct MBStyleTile: View {
                     .foregroundStyle(selected ? tint : XColor.textSecondary)
                     .frame(height: 15)
                 Text(style.shortTitle)
-                    .font(.system(size: 9, weight: selected ? .semibold : .regular))
+                    .font(XFont.nano).fontWeight(selected ? .semibold : .regular)
                     .foregroundStyle(selected ? XColor.brand : XColor.textTertiary)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 7)
+            .padding(.vertical, XSpacing.s)
             .background(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
                 .fill(selected ? XColor.brand.opacity(0.12) : XColor.surfaceAlt.opacity(0.5)))
             .overlay(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
@@ -703,15 +808,16 @@ private struct MBStyleTile: View {
         }
         .buttonStyle(.plain)
         .help(style.title)
+        .accessibilityLabel(style.title)
     }
 
     /// 图形加软框——与真实字形 1:1（graph/rich 才有动态图形可框；iconValue/valueOnly 无框）。
     @ViewBuilder private func chipped<V: View>(_ content: V) -> some View {
         if framed {
             content
-                .padding(.horizontal, 2.5).padding(.vertical, 1)
-                .background(RoundedRectangle(cornerRadius: 3.5, style: .continuous).fill((selected ? tint : XColor.textSecondary).opacity(0.09)))
-                .overlay(RoundedRectangle(cornerRadius: 3.5, style: .continuous).strokeBorder((selected ? tint : XColor.textSecondary).opacity(0.3), lineWidth: 1))
+                .padding(.horizontal, XSpacing.xxs).padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: XRadius.micro, style: .continuous).fill((selected ? tint : XColor.textSecondary).opacity(0.09)))
+                .overlay(RoundedRectangle(cornerRadius: XRadius.micro, style: .continuous).strokeBorder((selected ? tint : XColor.textSecondary).opacity(0.3), lineWidth: 1))
         } else {
             content
         }
@@ -721,15 +827,15 @@ private struct MBStyleTile: View {
         switch style {
         case .iconValue:
             HStack(spacing: 2) {
-                Image(systemName: icon).font(.system(size: 9.5, weight: .semibold))
-                Text("42%").font(.system(size: 9.5, weight: .semibold, design: .rounded)).monospacedDigit()
+                Image(systemName: icon).font(XFont.nano)
+                Text("42%").font(XFont.microMono)
             }
         case .valueOnly:
-            Text("42%").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
+            Text("42%").font(XFont.microMono)
         case .graph:
             HStack(spacing: 2) {
                 chipped(MBSparkPreview())
-                Text("42%").font(.system(size: 9, weight: .semibold, design: .rounded)).monospacedDigit()
+                Text("42%").font(XFont.microMono)
             }
         case .rich:
             HStack(spacing: 2) {
@@ -739,12 +845,12 @@ private struct MBStyleTile: View {
                 } else {
                     MBPiePreview()
                 }
-                Text("42%").font(.system(size: 9, weight: .semibold, design: .rounded)).monospacedDigit()
+                Text("42%").font(XFont.microMono)
             }
         case .ring:
             HStack(spacing: 2) {
                 MBRingPreview()
-                Text("42%").font(.system(size: 9, weight: .semibold, design: .rounded)).monospacedDigit()
+                Text("42%").font(XFont.microMono)
             }
         }
     }

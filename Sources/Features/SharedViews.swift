@@ -39,7 +39,7 @@ struct ItemRowView: View {
 
     var body: some View {
         HStack(spacing: XSpacing.m) {
-            XCheckbox(isOn: item.isSelected, toggle: onToggle)
+            XCheckbox(isOn: item.isSelected, accessibilityLabel: item.displayName, toggle: onToggle)
 
             // 真实缩略图（图片/视频/PDF 等），非可视文件回退类型图标——告别灰色文字行。
             XThumbnail(url: item.url, side: 30)
@@ -50,7 +50,7 @@ struct ItemRowView: View {
                         .font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary).lineLimit(1)
                     if let note = item.note {
                         Text(xLoc(note))
-                            .font(.system(size: 9.5, weight: .semibold))
+                            .font(XFont.nano)
                             .foregroundStyle(XColor.warning)
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(XColor.warning.opacity(0.15), in: Capsule())
@@ -71,8 +71,8 @@ struct ItemRowView: View {
         }
         .padding(.horizontal, XSpacing.s)
         .padding(.vertical, 6)
-        .background(hover ? XColor.surfaceHover : .clear, in: RoundedRectangle(cornerRadius: 8))
-        .animation(.easeOut(duration: 0.15), value: hover)
+        .background(hover ? XColor.surfaceHover : .clear, in: RoundedRectangle(cornerRadius: XRadius.control))
+        .animation(XMotion.hover, value: hover)
         .onHover { hover = $0 }
         .contextMenu {
             Button(xLoc("快速查看")) { quickLook(item.url) }
@@ -135,42 +135,50 @@ struct ResultGroupCard: View {
     }
 
     private func galleryTile(_ item: CleanableItem) -> some View {
-        VStack(spacing: 4) {
-            XThumbnail(url: item.url, side: 104, corner: XRadius.tile)
-                .overlay(alignment: .topTrailing) {
-                    if item.isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 19)).foregroundStyle(.white, XColor.brand)
+        // 用 Button 承载磁贴：键盘可聚焦 + 空格/回车切换勾选（原 onTapGesture 对键盘/VoiceOver 均不可达）。
+        Button { onToggleItem(item.id) } label: {
+            VStack(spacing: 4) {
+                XThumbnail(url: item.url, side: 104, corner: XRadius.tile)
+                    .overlay(alignment: .topTrailing) {
+                        if item.isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 19)).foregroundStyle(.white, XColor.brand)
+                                .padding(5)
+                        }
+                    }
+                    .overlay(RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
+                        .strokeBorder(item.isSelected ? XColor.brand : Color.clear, lineWidth: 2))
+                    .overlay(alignment: .bottomLeading) {
+                        Text(item.size.formattedBytes)
+                            .font(XFont.nano).foregroundStyle(.white)
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(.black.opacity(0.55), in: Capsule())
                             .padding(5)
                     }
-                }
-                .overlay(RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
-                    .strokeBorder(item.isSelected ? XColor.brand : Color.clear, lineWidth: 2))
-                .overlay(alignment: .bottomLeading) {
-                    Text(item.size.formattedBytes)
-                        .font(XFont.nano).foregroundStyle(.white)
-                        .padding(.horizontal, 5).padding(.vertical, 2)
-                        .background(.black.opacity(0.55), in: Capsule())
-                        .padding(5)
-                }
-            Text(item.displayName).font(XFont.nano).foregroundStyle(XColor.textSecondary)
-                .lineLimit(1).truncationMode(.middle).frame(maxWidth: 104)
+                Text(item.displayName).font(XFont.nano).foregroundStyle(XColor.textSecondary)
+                    .lineLimit(1).truncationMode(.middle).frame(maxWidth: 104)
+            }
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
-        .onTapGesture { onToggleItem(item.id) }
+        .buttonStyle(.plain)
         .help(item.displayName)
         .contextMenu {
             Button(xLoc("快速查看")) { quickLook(item.url) }
             Button(xLoc("在 Finder 中显示")) { revealInFinder(item.url) }
             if let onIgnoreItem { Divider(); Button(xLoc("永不清理此项")) { onIgnoreItem(item.id) } }
         }
+        // 单一无障碍元素：念出「<文件名> · <大小>」并把勾选态作为 .isSelected trait 播报。
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(item.displayName)
+        .accessibilityValue(item.size.formattedBytes)
+        .accessibilityAddTraits(item.isSelected ? [.isButton, .isSelected] : .isButton)
     }
 
     var body: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.s) {
                 HStack(spacing: XSpacing.m) {
-                    XCheckbox(isOn: allSelected) { onToggleGroup(!allSelected) }
+                    XCheckbox(isOn: allSelected, accessibilityLabel: xLoc(group.title)) { onToggleGroup(!allSelected) }
                     XIconTile(systemImage: group.systemImage, colors: group.safety.gradient, size: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(xLoc(group.title)).xHeadline().foregroundStyle(XColor.textPrimary)
@@ -188,6 +196,7 @@ struct ResultGroupCard: View {
                     }
                     .buttonStyle(.plain)
                     .help(xLoc("这是什么 / 删除后会怎样"))
+                    .accessibilityLabel(xLoc("这是什么 / 删除后会怎样"))
                     .popover(isPresented: $showInfo, arrowEdge: .bottom) {
                         VStack(alignment: .leading, spacing: XSpacing.s) {
                             Text(xLoc(group.title)).xHeadline().foregroundStyle(XColor.textPrimary)
@@ -205,7 +214,7 @@ struct ResultGroupCard: View {
                     }
                     Text(group.totalSize.formattedBytes).xNumber().foregroundStyle(XColor.textPrimary)
                     Button {
-                        withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { expanded.toggle() }
+                        withAnimation(XMotion.snappy) { expanded.toggle() }
                     } label: {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 12, weight: .semibold))
@@ -215,6 +224,7 @@ struct ResultGroupCard: View {
                             .background(XColor.surfaceAlt, in: Circle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(expanded ? xLoc("收起") : xLoc("展开"))
                 }
 
                 if expanded {
@@ -235,7 +245,8 @@ struct ResultGroupCard: View {
                             // 关键：隐藏项仍会被清理。给出可点击入口让用户能审阅全部，
                             // 并明确说明"未展示项也在清理范围内"（审计 C2）。
                             Button {
-                                withAnimation(.easeOut(duration: reduceMotion ? 0 : 0.2)) { showAll = true }
+                                // 展开淡入走统一动效令牌；Reduce Motion 下不加动画（nil）。
+                                withAnimation(reduceMotion ? nil : XMotion.crossfade) { showAll = true }
                             } label: {
                                 Text(xLocF("显示全部 %d 项（其余 %d 项已勾选，将一并清理）", items.count, items.count - Self.previewCap))
                                     .font(XFont.caption).foregroundStyle(XColor.brand)
@@ -256,7 +267,7 @@ struct ResultGroupCard: View {
             if reduceMotion {
                 appeared = true   // 降低动态效果：不做交错入场位移
             } else {
-                withAnimation(.spring(response: 0.5, dampingFraction: 0.82).delay(Double(index) * 0.05)) {
+                withAnimation(XMotion.settle.delay(Double(index) * 0.05)) {
                     appeared = true
                 }
             }
@@ -290,7 +301,7 @@ struct ScanningIndicator: View {
             .background(Capsule().fill(XColor.surface.opacity(0.6)))
             .overlay(Capsule().stroke(XColor.hairline, lineWidth: 1))
             .frame(maxWidth: 440)
-            .animation(.easeOut(duration: 0.2), value: message)
+            .animation(XMotion.crossfade, value: message)
         }
     }
 }
@@ -320,7 +331,7 @@ struct TaskCompletionView: View {
                 ZStack {
                     Circle().fill(XColor.success.opacity(0.15)).frame(width: 124, height: 124)
                     Image(systemName: "checkmark")
-                        .font(.system(size: 54, weight: .bold))
+                        .font(XFont.hero)
                         .foregroundStyle(XColor.successGradient)
                 }
                 .scaleEffect(pop ? 1 : 0.3)
@@ -349,7 +360,7 @@ struct TaskCompletionView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.55)) { pop = true }
+            withAnimation(XMotion.celebrate) { pop = true }
             countUp()
         }
     }

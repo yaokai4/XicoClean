@@ -101,13 +101,6 @@ public final class XicoEnvironment: @unchecked Sendable {
         }
     }
 
-    public func isImplemented(_ id: ModuleID) -> Bool {
-        let extra: Set<ModuleID> = [.smartScan, .spaceLens, .duplicates, .similarImages,
-                                    .uninstaller, .appUpdater, .shredder, .optimization, .maintenance,
-                                    .monitor, .hardware]
-        return scanner(for: id) != nil || extra.contains(id)
-    }
-
     public func duplicatesScanner(root: URL) -> DuplicatesScanner {
         DuplicatesScanner(fs: fs, safety: safety, root: root)
     }
@@ -124,14 +117,19 @@ public final class XicoEnvironment: @unchecked Sendable {
         ShredderService(safety: safety)
     }
 
-    /// 智能扫描聚合：系统垃圾 + 隐私 + 废纸篓（含外置卷）——覆盖用户期望「一次扫全」的常见垃圾源。
-    /// 三者均为定义/位置驱动、递归精确计尺寸。仍不含全盘大文件（遍历整盘耗时长，单列为独立模块，
-    /// 避免把「清理垃圾」拖成「全盘体检」）。废纸篓项在结果里列出供审阅，删除仍需用户显式确认，
-    /// 不会一键静默清空。
+    /// 智能扫描聚合：系统垃圾 + 隐私 + 深度全盘走查——覆盖用户期望「一次扫全」的常见垃圾源。
+    /// 均为定义/位置驱动或逐文件走查、递归精确计尺寸。仍不含全盘大文件（遍历整盘耗时长，单列为
+    /// 独立模块，避免把「清理垃圾」拖成「全盘体检」）。
+    ///
+    /// **刻意排除废纸篓（对抗复核 P1 修复）**：废纸篓里的文件已被移入废纸篓，其占用是「已在回收站、
+    /// 等待清空」的状态。若智能扫描把它计入可释放并以 `.trash` intent「清理」，只会把已在废纸篓的
+    /// 文件再移动一次（无法真正清空、也不释放空间），却把这部分字节虚计入「已释放」总量。清空废纸篓
+    /// 释放空间是独立「废纸篓」模块的职责——其正确地走 `.permanent`。故此处**不**聚合 TrashScanner，
+    /// 智能扫描的可释放总量因此不再包含废纸篓字节。
     public func smartScanCoordinator() -> ScanCoordinator {
-        // 定点规则（系统垃圾/隐私/废纸篓）+ 深度全盘走查（逐文件检测残留安装包与中断下载）——
-        // 智能扫描既有「知道去哪找」的精准，也有「每个文件都看过」的全面。
-        var modules = [scanner(for: .systemJunk), scanner(for: .privacy), scanner(for: .trash)].compactMap { $0 }
+        // 定点规则（系统垃圾/隐私）+ 深度全盘走查（逐文件检测残留安装包与中断下载）——
+        // 智能扫描既有「知道去哪找」的精准，也有「每个文件都看过」的全面。废纸篓不在此列（见上）。
+        var modules = [scanner(for: .systemJunk), scanner(for: .privacy)].compactMap { $0 }
         modules.append(DeepScanner(fs: fs, safety: safety))
         return ScanCoordinator(modules: modules)
     }

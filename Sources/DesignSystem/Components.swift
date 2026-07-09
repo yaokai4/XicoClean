@@ -66,9 +66,9 @@ public struct XMetricCard: View {
                 Spacer(minLength: 0)
             }
         }
-        .shadow(color: hover ? colors[0].opacity(0.28) : .clear, radius: 18, y: 8)
+        .xGlow(colors[0], radius: 18, opacity: hover ? 0.28 : 0)
         .scaleEffect(hover ? 1.02 : 1)
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hover)
+        .animation(XMotion.snappy, value: hover)
         .onHover { hover = $0 }
     }
 }
@@ -106,8 +106,10 @@ public struct XPrimaryButtonStyle: ButtonStyle {
     public func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(large ? XFont.title : (compact ? XFont.bodyEmphasis : XFont.headline))
-            // 禁用态背景是浅色 surfaceAlt，白字会消失——改用次要文字色保证浅色模式可读
-            .foregroundStyle(enabled ? AnyShapeStyle(XColor.onAccent) : AnyShapeStyle(XColor.textTertiary))
+            // 禁用态背景是浅色 surfaceAlt，白字会消失——改用次要文字色保证浅色模式可读。
+            // 用 textSecondary（而非更淡的 textTertiary）：禁用标签仍是「载重文字」，
+            // 需在 surfaceAlt 上稳过 WCAG AA（≥4.5:1）；textTertiary 贴近下限，留给纯装饰性说明。
+            .foregroundStyle(enabled ? AnyShapeStyle(XColor.onAccent) : AnyShapeStyle(XColor.textSecondary))
             .padding(.horizontal, large ? XSpacing.xxl : (compact ? XSpacing.m : XSpacing.xl))
             .padding(.vertical, large ? XSpacing.l : (compact ? XSpacing.s : XSpacing.m))
             .background(
@@ -126,7 +128,7 @@ public struct XPrimaryButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .shadow(color: enabled ? XColor.brand.opacity(0.16) : .clear,
                     radius: configuration.isPressed ? 4 : 8, y: 4)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+            .animation(XMotion.snappy, value: configuration.isPressed)
     }
 }
 
@@ -143,7 +145,7 @@ public struct XSecondaryButtonStyle: ButtonStyle {
             .overlay(Capsule().strokeBorder(XColor.border, lineWidth: 1))
             .opacity(configuration.isPressed ? 0.8 : 1)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+            .animation(XMotion.snappy, value: configuration.isPressed)
     }
 }
 
@@ -167,7 +169,7 @@ public struct XDiskBar: View {
                         .fill(LinearGradient(colors: XColor.gauge(usedFraction),
                                              startPoint: .leading, endPoint: .trailing))
                         .frame(width: max(height, geo.size.width * min(max(usedFraction, 0), 1)))
-                        .animation(.spring(response: 0.6, dampingFraction: 0.85), value: usedFraction)
+                        .animation(XMotion.gauge, value: usedFraction)
                 }
             }
             .frame(height: height)

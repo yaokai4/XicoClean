@@ -74,7 +74,7 @@ public struct XRingGauge<Center: View>: View {
                             style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                     .xGlow(colors.first!, radius: 14)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.5), value: progress)
+                    .animation(reduceMotion ? nil : XMotion.gauge, value: progress)
             }
 
             if spinning {
@@ -127,7 +127,7 @@ public struct XMiniRing<Center: View>: View {
                 .stroke(AngularGradient(gradient: Gradient(colors: colors + [colors[0]]), center: .center),
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-                .animation(.easeInOut(duration: 0.5), value: fraction)
+                .animation(XMotion.gauge, value: fraction)
             center
         }
         .frame(width: size, height: size)

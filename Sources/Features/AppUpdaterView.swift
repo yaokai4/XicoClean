@@ -89,7 +89,10 @@ public struct AppUpdaterView: View {
                 }
                 Spacer()
                 if let dl = app.downloadURL {
-                    Button(xLoc("下载")) { NSWorkspace.shared.open(dl) }.buttonStyle(XPrimaryButtonStyle(compact: true))
+                    // 如实标注：本按钮打开发布页/下载链接，由用户自行下载安装（非 App 内静默更新，审计 P3）。
+                    Button(xLoc("前往下载")) { NSWorkspace.shared.open(dl) }
+                        .buttonStyle(XPrimaryButtonStyle(compact: true))
+                        .accessibilityLabel(xLocF("前往下载 %@", app.name))
                 }
             }
         }

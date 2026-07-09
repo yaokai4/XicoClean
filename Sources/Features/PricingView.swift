@@ -24,6 +24,12 @@ public struct PricingView: View {
     @State private var importError: String?
     @State private var importedOK = false
     @State private var activationKey = ""
+    /// 席位已满：激活返回 seat_limit 时置真，展开「在旧设备释放授权」的自助恢复引导（审计 CONTRACT (d)）。
+    @State private var seatLimitHit = false
+    /// 正在停用本机席位。
+    @State private var deactivating = false
+    /// 停用成功后的提示文案。
+    @State private var deactivateNote: String?
 
     public init(model: AppModel) { self.model = model }
 
@@ -78,6 +84,7 @@ public struct PricingView: View {
                     .frame(width: 28, height: 28).background(XColor.surfaceAlt, in: Circle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(xLoc("关闭"))
         }
         .padding(.horizontal, XSpacing.xl).padding(.top, XSpacing.l).padding(.bottom, XSpacing.m)
     }
@@ -115,7 +122,7 @@ public struct PricingView: View {
                 if plan.highlighted { XBadge(xLoc("推荐"), color: XColor.brand) }
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(plan.price).font(.system(size: 30, weight: .bold, design: .rounded)).foregroundStyle(XColor.textPrimary)
+                Text(plan.price).font(XFont.monoHero).foregroundStyle(XColor.textPrimary)
                 Text(plan.period).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             }
             XBadge(plan.devices, color: XColor.accentTeal)
@@ -123,7 +130,7 @@ public struct PricingView: View {
             VStack(alignment: .leading, spacing: XSpacing.s) {
                 ForEach(plan.features, id: \.self) { f in
                     HStack(alignment: .top, spacing: XSpacing.s) {
-                        Image(systemName: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(XColor.success)
+                        Image(systemName: "checkmark.circle.fill").font(XFont.body).foregroundStyle(XColor.success)
                         Text(f).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                         Spacer(minLength: 0)
                     }
@@ -170,13 +177,53 @@ public struct PricingView: View {
             if let e = importError {
                 Text(e).font(XFont.caption).foregroundStyle(XColor.danger).multilineTextAlignment(.center)
             }
+            if seatLimitHit {
+                Text(xLoc("授权台数已满。换了新机器？请在旧设备上点『释放本机授权』腾出名额后重试，或联系我们协助。"))
+                    .font(XFont.caption).foregroundStyle(XColor.warning).multilineTextAlignment(.center)
+            }
+            if isCurrentlyLicensed {
+                Button(deactivating ? xLoc("释放中…") : xLoc("换机？释放本机授权")) { deactivateThisDevice() }
+                    .buttonStyle(.link).font(XFont.caption)
+                    .disabled(deactivating)
+                // 如实说明「释放」的后果与边界（审计 PricingView P2）：释放只腾出服务器席位并清除本机许可，
+                // 不能撤销已下载到本机的签名许可副本本身；下次联网复验时服务器据设备席位状态给出（已签名的）结论。
+                Text(xLoc("释放后本机立即退出 Pro 并回到试用/受限，服务器席位随之腾出供新设备激活；请仅在本机不再使用本应用时释放。"))
+                    .font(XFont.nano).foregroundStyle(XColor.textTertiary).multilineTextAlignment(.center)
+            }
+            if let note = deactivateNote {
+                Text(note).font(XFont.caption).foregroundStyle(XColor.success).multilineTextAlignment(.center)
+            }
+            privacyDisclosure
         }
+    }
+
+    private var isCurrentlyLicensed: Bool {
+        if case .licensed = model.licenseStatus?.state { return true }
+        return false
+    }
+
+    /// 设备标识采集的如实披露（审计 DeviceIdentity P3）：激活/复验会上送本机设备标识以绑定授权台数。
+    private var privacyDisclosure: some View {
+        VStack(spacing: XSpacing.xxs) {
+            Text(xLoc("激活与复验会上送本机设备标识以绑定授权台数，不含姓名/邮箱。"))
+                .font(XFont.nano).foregroundStyle(XColor.textTertiary).multilineTextAlignment(.center)
+            Button(xLoc("隐私政策")) { NSWorkspace.shared.open(Self.privacyURL()) }
+                .buttonStyle(.link).font(XFont.nano)
+        }
+        .padding(.top, XSpacing.xs)
+    }
+
+    private static func privacyURL() -> URL {
+        if let s = Bundle.main.object(forInfoDictionaryKey: "XicoPrivacyURL") as? String,
+           let u = URL(string: s) { return u }
+        return URL(string: "https://mac.xicoai.com/privacy")!
     }
 
     private func activateKey() {
         let key = activationKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty, !model.activating else { return }
         importError = nil
+        seatLimitHit = false
         Task {
             let result = await model.activateLicense(key: key)
             switch result {
@@ -185,6 +232,35 @@ public struct PricingView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { dismiss() }
             case let .failure(err):
                 importError = err.localizedDescription
+                // 席位已满：展开自助恢复引导（换机用户可在旧机释放授权名额后重试）。
+                if case LicenseActivationError.seatLimit = err { withAnimation { seatLimitHit = true } }
+            }
+        }
+    }
+
+    /// 停用本机席位：换机/换主板前在旧机主动释放一个授权名额，避免迁移后撞上「授权台数已达上限」。
+    /// 成功即清除本地许可并刷新状态。审计 CONTRACT (d)。
+    private func deactivateThisDevice() {
+        guard let licenseID = model.licenseStatus?.licenseID, !deactivating else { return }
+        deactivating = true
+        importError = nil
+        deactivateNote = nil
+        Task {
+            defer { deactivating = false }
+            do {
+                try await LicenseActivationClient().deactivate(
+                    licenseId: licenseID,
+                    deviceId: DeviceIdentity.current(),
+                )
+                // 落「本机已释放此席位」标记（审计 P2）：仅删许可文件不足以真正释放——
+                // 用户可保存旧信封在停用后手动重导入把席位吹回来。此标记令后续手动重导入被拒，
+                // 直到一次成功的在线激活（服务端重新盖章席位）清除它。
+                model.env.license.recordReleased(licenseID: licenseID, deviceId: DeviceIdentity.current())
+                model.env.license.clearLicense()
+                model.refreshLicense()
+                withAnimation { deactivateNote = xLoc("已释放本机授权，可在新设备重新激活。") }
+            } catch {
+                importError = error.localizedDescription
             }
         }
     }
@@ -199,7 +275,7 @@ public struct PricingView: View {
     }
     private func trustItem(_ icon: String, _ text: String) -> some View {
         HStack(spacing: XSpacing.xs) {
-            Image(systemName: icon).font(.system(size: 11)).foregroundStyle(XColor.textTertiary)
+            Image(systemName: icon).font(XFont.caption).foregroundStyle(XColor.textTertiary)
             Text(text).font(XFont.caption).foregroundStyle(XColor.textTertiary)
         }
     }
@@ -225,8 +301,13 @@ public struct PricingView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let data = try Data(contentsOf: url)
-            _ = try model.env.license.installLicense(fromEnvelopeData: data)
+            // 手动导入信封（无服务端 round-trip）：enforceReleased 拒绝「本机已释放席位又重导入旧文件」
+            // 复活席位的绕过（审计 P2）；正常导入不受影响，在线激活会清除释放标记。
+            _ = try model.env.license.installLicense(fromEnvelopeData: data, enforceReleased: true)
             model.refreshLicense()
+            // 导入即触发一次强制在线复验：服务端已吊销/退款但尚未进入本地名单的副本，
+            // 在导入当刻即被拦截，而非拖到下一次 72h 节流复验才失效（审计 PricingView P3）。
+            model.revalidateLicenseOnline(force: true)
             withAnimation { importedOK = true }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { dismiss() }
         } catch {

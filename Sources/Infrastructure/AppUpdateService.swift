@@ -58,11 +58,28 @@ public struct AppUpdateService: Sendable {
         }
     }
 
+    /// appcast 响应体上限：正常 appcast 仅数十 KB，设 4 MB 硬顶防超大响应拖垮内存。
+    /// 复用 UpdateChecker.maxFeedBytes 作为单一来源，避免两处上限漂移。
+    private static let maxFeedBytes = UpdateChecker.maxFeedBytes
+
+    private static func isHTTPS(_ url: URL?) -> Bool {
+        url?.scheme?.lowercased() == "https"
+    }
+
     private static func check(_ c: AppUpdateCandidate, session: URLSession) async -> AppUpdateCandidate? {
-        guard let feed = c.feedURL else { return nil }
-        guard let (data, _) = try? await session.data(from: feed),
-              let latest = UpdateChecker.parseLatest(data) else { return nil }
+        // 只信任 https 的第三方更新源：非 https（明文/file/异常 scheme）一律不联网抓取，
+        // 杜绝把 Info.plist 里的任意 SUFeedURL 变成一次 SSRF 式的对外扇出。
+        guard let feed = c.feedURL, isHTTPS(feed) else { return nil }
+        // 流式带上限抓取：一旦超过 maxFeedBytes 立即中断（抛错→try? 吞掉返回 nil），
+        // 不再先把整个响应体缓冲进内存再判断大小，避免超大/慢速响应拖垮内存。
+        guard let (data, response) = try? await UpdateChecker.boundedData(
+            from: feed, session: session, limit: Self.maxFeedBytes) else { return nil }
+        // 跟随重定向后最终落点仍须为 https（防 https→http 降级或跳到异常 scheme）。
+        if let final = response.url, !isHTTPS(final) { return nil }
+        guard let latest = UpdateChecker.parseLatest(data) else { return nil }
         guard UpdateChecker.isVersion(latest.version, newerThan: c.currentVersion) else { return c }
+        // 下载地址必须为 https，否则绝不作为「可更新」呈现——非 https 下载视为不可信，只保留当前版本。
+        guard isHTTPS(latest.downloadURL) else { return c }
         var out = c
         out.latestVersion = latest.version
         out.downloadURL = latest.downloadURL
