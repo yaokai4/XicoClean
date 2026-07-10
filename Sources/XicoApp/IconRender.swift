@@ -4,11 +4,12 @@ import DesignSystem
 import Features
 import Infrastructure
 
-// 离屏图标/菜单栏/字形渲染脚手架（QA/调试专用）绝不随发布包出货，整体 #if DEBUG 门控，
-// 对齐 ShotRenderer/LayoutRender；调度入口（XicoApp.swift 的 --icon/--menubar/--glyphs 分支）需同样 #if DEBUG 门控。
-#if DEBUG
-
 /// 渲染 1024×1024 App 图标主图到 /tmp/xico-icon/icon-master.png。用法：Xico --icon
+///
+/// **有意保留在发布构建**：这是「生成 App 自身图标」的**打包期构建工具**（make_app.sh 打包时调用），
+/// 与面向用户的 QA 截图脚手架（renderMenuBar/renderGlyphs/renderShots/renderLayout，仍 #if DEBUG）不同。
+/// 若也门控进 DEBUG，release 打包时 `Xico --icon` 会因分支被编译掉而落入 GUI 启动、令 make_app 卡死。
+/// 体量极小（仅一个 XAppIcon 视图 + ImageRenderer），作为构建工具驻留发布二进制可接受。
 @MainActor
 func renderIcon() {
     let dir = URL(fileURLWithPath: "/tmp/xico-icon")
@@ -23,6 +24,9 @@ func renderIcon() {
         FileHandle.standardError.write("icon rendered to \(dir.path)/icon-master.png\n".data(using: .utf8)!)
     }
 }
+
+// 以下菜单栏/字形离屏截图脚手架纯 QA/调试专用，绝不随发布包出货，整体 #if DEBUG 门控。
+#if DEBUG
 
 /// 渲染菜单栏状态面板（含真实采样数据）到 /tmp/xico-icon/menubar.png。用法：Xico --menubar
 @MainActor

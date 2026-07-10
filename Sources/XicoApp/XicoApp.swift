@@ -24,17 +24,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let lang = XLang(rawValue: String(arg.dropFirst("--lang=".count))) {
             XLocale.current = lang
         }
+        // --icon 是打包期「生成 App 自身图标」的构建工具（make_app.sh 调用），发布构建亦可用——
+        // 必须放在 #if DEBUG 之外，否则 release 下 renderIcon 被编译掉、此分支落入 GUI 启动令打包卡死。
+        if CommandLine.arguments.contains("--icon") {
+            renderIcon()
+            NSApp.terminate(nil)
+            return
+        }
         #if DEBUG
-        // 离屏渲染工具（--shots/--icon/--menubar/--glyphs/--layout）仅供 QA/调试，随
+        // 以下离屏截图工具（--shots/--menubar/--glyphs/--layout）仅供 QA/调试，随
         // ShotRenderer/IconRender/LayoutRender 一起编译进 DEBUG，绝不进发布包——
         // 发布构建里这些 render 符号不存在，故调度分支必须同样 #if DEBUG 门控。
         if CommandLine.arguments.contains("--shots") {
             renderShots()
-            NSApp.terminate(nil)
-            return
-        }
-        if CommandLine.arguments.contains("--icon") {
-            renderIcon()
             NSApp.terminate(nil)
             return
         }
