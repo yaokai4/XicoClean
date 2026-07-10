@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Infrastructure
 import DesignSystem
 import Shared
@@ -41,6 +42,35 @@ private struct NetTopSection: View {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
             }
         }
+    }
+}
+
+/// 用户/系统双色堆叠直方条（iStat 式 CPU 历史）：底层=用户（冷蓝），顶层=系统（玫红）。
+private struct StackedCPUBars: View {
+    let user: [Double]
+    let system: [Double]
+    var body: some View {
+        Canvas { ctx, size in
+            let u = Array(user.suffix(60))
+            let sys = Array(system.suffix(60))
+            let n = min(u.count, sys.count)
+            guard n > 0 else { return }
+            let gap: CGFloat = 1
+            let barW = max(1, (size.width - CGFloat(n - 1) * gap) / CGFloat(n))
+            let userColor = XColor.ring(2), sysColor = XColor.ring(0)
+            for i in 0..<n {
+                let x = CGFloat(i) * (barW + gap)
+                let uh = size.height * CGFloat(min(max(u[u.count - n + i], 0), 1))
+                let sh = size.height * CGFloat(min(max(sys[sys.count - n + i], 0), 1))
+                // 用户段（底）
+                ctx.fill(Path(CGRect(x: x, y: size.height - uh, width: barW, height: uh)),
+                         with: .color(userColor.opacity(0.9)))
+                // 系统段（叠在用户之上）
+                ctx.fill(Path(CGRect(x: x, y: size.height - uh - sh, width: barW, height: sh)),
+                         with: .color(sysColor.opacity(0.9)))
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -267,8 +297,27 @@ public struct MenuMetricPanel: View {
                 Spacer()
                 windowPicker
             }
-            historyChart(feed.rings.cpu, colors: XColor.ringColors, height: 40)
-                .accessibilityLabel(xLoc("处理器占用历史曲线"))
+            // 实时窗：用户/系统双色堆叠条（iStat 招牌视图——一眼分清负载来源）；
+            // 15 分/1 时窗：总占用折线（桶均值没有用户/系统拆分，诚实退回单线）。
+            if window == .live, feed.cpuUserHistory.count > 1 {
+                StackedCPUBars(user: feed.cpuUserHistory, system: feed.cpuSysHistory)
+                    .frame(height: 40)
+                    .accessibilityLabel(xLoc("处理器占用历史曲线"))
+            } else {
+                historyChart(feed.rings.cpu, colors: XColor.ringColors, height: 40)
+                    .accessibilityLabel(xLoc("处理器占用历史曲线"))
+            }
+            HStack(spacing: XSpacing.m) {
+                HStack(spacing: 3) {
+                    Circle().fill(XColor.ring(2)).frame(width: 6, height: 6)
+                    Text(xLoc("用户")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                }
+                HStack(spacing: 3) {
+                    Circle().fill(XColor.ring(0)).frame(width: 6, height: 6)
+                    Text(xLoc("系统")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                }
+                Spacer()
+            }
             processList(model.topByCPU, kind: .cpu)
         }
     }
@@ -341,11 +390,17 @@ public struct MenuMetricPanel: View {
         VStack(alignment: .leading, spacing: XSpacing.m) {
             HStack(spacing: XSpacing.l) {
                 // 压力环：色随等级（正常绿 / 警告橙 / 危险红）。中心状态词随长语言自动缩放不换行。
-                XMiniRing(fraction: s.memoryPressureFraction, colors: pressureColors(s), size: 62, lineWidth: 7) {
+                XMiniRing(fraction: s.pressureFractionPreferred, colors: pressureColors(s), size: 62, lineWidth: 7) {
                     VStack(spacing: 0) {
-                        Text(xLoc(s.memoryPressureLabel)).font(XFont.micro)
-                            .foregroundStyle(XColor.textPrimary)
-                            .lineLimit(1).minimumScaleFactor(0.5)
+                        // 连续压力值（kern.memorystatus_level，与 iStat 同源）优先显示百分数。
+                        if let pct = s.memoryPressurePercent {
+                            Text("\(Int((pct * 100).rounded()))%").font(XFont.monoMini)
+                                .foregroundStyle(XColor.textPrimary)
+                        } else {
+                            Text(xLoc(s.memoryPressureLabel)).font(XFont.micro)
+                                .foregroundStyle(XColor.textPrimary)
+                                .lineLimit(1).minimumScaleFactor(0.5)
+                        }
                         Text(xLoc("压力")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
                     }
                     .frame(maxWidth: 44)
@@ -366,8 +421,9 @@ public struct MenuMetricPanel: View {
             memLegendRow(xLoc("应用内存"), s.memoryApp, XColor.memApp)
             memLegendRow(xLoc("联动内存"), s.memoryWired, XColor.memWired)
             memLegendRow(xLoc("已压缩"), s.memoryCompressed, XColor.memCompressed)
-            memLegendRow(xLoc("缓存文件"), s.memoryCached, XColor.memCached)
-            memLegendRow(xLoc("可用"), memoryFree(s), XColor.memFree)
+            memLegendRow(xLoc("可用"), memoryFree(s) + s.memoryCached, XColor.memFree)
+            Text(xLocF("可用中含 %@ 缓存文件，系统随取随回收", s.memoryCached.formattedMemory))
+                .font(XFont.nano).foregroundStyle(XColor.textTertiary)
             Divider().padding(.vertical, 1)
             HStack(spacing: XSpacing.l) {
                 metricChip(xLoc("换入分页"), s.pageIns.formattedBytes)
@@ -381,11 +437,11 @@ public struct MenuMetricPanel: View {
 
     private func memSegmentBar(_ s: SystemSnapshot) -> some View {
         let total = max(1.0, Double(s.memoryTotal))
+        // 缓存不再画成「占用段」——缓存随取随回收，计入可用（iStat/活动监视器同口径）。
         return XSegmentBar(segments: [
             .init(id: 0, fraction: Double(s.memoryApp) / total,        color: XColor.memApp),
             .init(id: 1, fraction: Double(s.memoryWired) / total,      color: XColor.memWired),
             .init(id: 2, fraction: Double(s.memoryCompressed) / total, color: XColor.memCompressed),
-            .init(id: 3, fraction: Double(s.memoryCached) / total,     color: XColor.memCached),
         ], height: 9)
     }
 
@@ -487,6 +543,13 @@ public struct MenuMetricPanel: View {
             ForEach(shown) { p in
                 let frac = kind == .cpu ? min(p.cpuPercent / 100, 1) : Double(p.memoryBytes) / Double(maxMem)
                 HStack(spacing: XSpacing.s) {
+                    // App 图标（学 iStat：进程行带图标一眼认出是谁）；后台进程无图标时用齿轮。
+                    if let icon = NSRunningApplication(processIdentifier: p.id)?.icon {
+                        Image(nsImage: icon).resizable().frame(width: 15, height: 15)
+                    } else {
+                        Image(systemName: "gearshape.fill").font(XFont.nano)
+                            .foregroundStyle(XColor.textTertiary).frame(width: 15)
+                    }
                     Text(p.name).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                         .lineLimit(1).truncationMode(.middle)
                     Spacer()

@@ -29,6 +29,8 @@ public struct SystemSnapshot: Sendable {
     public let swapUsed: Int64
     public let swapTotal: Int64
     public let memoryPressure: Int      // 1=正常 2=警告 4=危险（kern.memorystatus_vm_pressure_level）
+    /// 连续内存压力 0...1（= 1 - kern.memorystatus_level/100，与 iStat 同源口径）；sysctl 不可用为 nil。
+    public let memoryPressurePercent: Double?
     public let pageIns: Int64           // 累计换入字节
     public let pageOuts: Int64          // 累计换出字节
     public let diskFree: Int64
@@ -54,6 +56,8 @@ public struct SystemSnapshot: Sendable {
     public var memoryPressureFraction: Double {
         switch memoryPressure { case 4: return 0.9; case 2: return 0.6; default: return 0.25 }
     }
+    /// 压力环/菜单栏优先用连续值（读得到 kern.memorystatus_level 时），否则退回三档近似。
+    public var pressureFractionPreferred: Double { memoryPressurePercent ?? memoryPressureFraction }
     public var memoryPressureLabel: String {
         switch memoryPressure { case 4: return "危险"; case 2: return "警告"; default: return "正常" }
     }
@@ -129,7 +133,8 @@ public final class LiveMetricsSampler: @unchecked Sendable {
             memoryUsed: mem.used, memoryTotal: mem.total,
             memoryApp: mem.app, memoryWired: mem.wired, memoryCompressed: mem.compressed, memoryCached: mem.cached,
             swapUsed: swap.used, swapTotal: swap.total,
-            memoryPressure: memoryPressureLevel(), pageIns: mem.pageIns, pageOuts: mem.pageOuts,
+            memoryPressure: memoryPressureLevel(), memoryPressurePercent: memoryStatusPressurePercent(),
+            pageIns: mem.pageIns, pageOuts: mem.pageOuts,
             diskFree: cap?.available ?? 0, diskTotal: cap?.total ?? 0,
             netDownBytesPerSec: net.down, netUpBytesPerSec: net.up,
             diskReadBytesPerSec: disk.read, diskWriteBytesPerSec: disk.write,
@@ -307,6 +312,17 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         var level: Int32 = 1
         var size = MemoryLayout<Int32>.size
         return sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nil, 0) == 0 ? Int(level) : 1
+    }
+
+    /// 连续内存压力（0...1）：kern.memorystatus_level 是「距危险还剩多少可用度」的百分数（100=充裕），
+    /// 压力 = 1 - level/100——与 iStat/memory_pressure 工具同源。读不到返回 nil（UI 退回三档近似）。
+    private func memoryStatusPressurePercent() -> Double? {
+        var level: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard sysctlbyname("kern.memorystatus_level", &level, &size, nil, 0) == 0, level >= 0, level <= 100 else {
+            return nil
+        }
+        return Double(100 - level) / 100
     }
 
     private func sampleSwap() -> (used: Int64, total: Int64) {

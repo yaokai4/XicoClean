@@ -272,10 +272,8 @@ public struct HardwareView: View {
         // 活指标：CPU 实时频率（P/E 簇）与开机信息——档案不止是静态铭牌。
         // 频率取自共享 MetricsEngine（视图 onAppear 已 retain），与监视页复用同一次 DVFS 采样。
         if let p = engine.cpuFreqP, p > 0 {
-            out.append(SpecItem(id: "freqp", label: xLoc("性能核频率"), value: freqText(p), copyValue: nil))
         }
         if let e = engine.cpuFreqE, e > 0 {
-            out.append(SpecItem(id: "freqe", label: xLoc("能效核频率"), value: freqText(e), copyValue: nil))
         }
         if let boot = vm.bootDate {
             out.append(SpecItem(id: "uptime", label: xLoc("开机时长"),

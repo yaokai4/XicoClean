@@ -948,6 +948,20 @@ public struct SettingsView: View {
                     }
                 }
             }
+            // 内存口径（P8）：压力（kern.memorystatus_level，与 iStat 菜单栏一致，默认）/ 占用（已用÷总量）。
+            if item.id == "memory" {
+                HStack(spacing: XSpacing.xs) {
+                    Text(xLoc("口径")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Picker("", selection: Binding(
+                        get: { UserDefaults.standard.string(forKey: "xico.mb.memory.metric") ?? "pressure" },
+                        set: { UserDefaults.standard.set($0, forKey: "xico.mb.memory.metric") })) {
+                        Text(xLoc("压力（同 iStat）")).tag("pressure")
+                        Text(xLoc("占用")).tag("used")
+                    }
+                    .labelsHidden().pickerStyle(.menu).fixedSize()
+                    .accessibilityLabel(xLoc("口径"))
+                }
+            }
             if item.id != "combined" {
                 HStack(spacing: XSpacing.l) {
                     HStack(spacing: XSpacing.xs) {

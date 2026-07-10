@@ -20,6 +20,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     /// 面板打开期间监听「面板之外」的鼠标点击，点到别处即关闭。
     /// `.transient` 在 accessory（菜单栏）App 里对「点其他 App」不总生效，故显式补一层监听。
     private var outsideClickMonitor: Any?
+    /// 本进程内的点击监听：全局监听收不到自家事件（点 Xico 主窗口/设置页时面板不关，P8 bug 修复）。
+    /// 例外：点面板自身与任一状态项按钮不关（状态项点击由 handleClick 负责开/关/切换）。
+    private var insideClickMonitor: Any?
     /// 上一次 `xico.mb.*` 配置快照——UserDefaults.didChange 是全局广播，
     /// 仅当菜单栏相关键真的变了才重建，避免任意无关写入都触发全量重建（审计 P3）。
     private var lastMBDefaults: [String: String] = [:]
@@ -197,8 +200,14 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         switch id {
         case "cpu":      return MenuBarGlyph.cpu(fraction: s?.cpuUsage ?? 0,
                                                  history: model.cpuHistory, style: style, colored: colored)
-        case "memory":   return MenuBarGlyph.memory(fraction: s?.memoryUsedFraction ?? 0,
-                                                    history: model.memHistory, style: style, colored: colored)
+        case "memory":
+            // 口径（P8 修正）：默认「压力」（kern.memorystatus_level 连续值，与 iStat 菜单栏一致）；
+            // 可在设置里切回「占用」。压力读不到时自动退回占用。
+            let usePressure = UserDefaults.standard.string(forKey: "xico.mb.memory.metric") != "used"
+            let memFraction = usePressure ? (s?.memoryPressurePercent ?? s?.memoryUsedFraction ?? 0)
+                                          : (s?.memoryUsedFraction ?? 0)
+            return MenuBarGlyph.memory(fraction: memFraction,
+                                       history: model.memHistory, style: style, colored: colored)
         case "network":  return MenuBarGlyph.network(down: s?.netDownBytesPerSec ?? 0,
                                                      up: s?.netUpBytesPerSec ?? 0,
                                                      history: netNormHistory(), style: style, colored: colored)
@@ -343,12 +352,29 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         ) { [weak self] _ in
             self?.popover.performClose(nil)
         }
+        // 本地监听：点本进程的任何窗口（主窗口/设置页/钉住面板）→ 也关闭（与 iStat 一致，
+        // 点任何地方都能收起面板）。点面板自身或状态项按钮除外。
+        insideClickMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] event in
+            guard let self, self.popover.isShown else { return event }
+            let panelWindow = self.popover.contentViewController?.view.window
+            let statusWindows = self.statusItems.values.compactMap { $0.button?.window }
+            if event.window === panelWindow { return event }                       // 面板内交互
+            if statusWindows.contains(where: { $0 === event.window }) { return event }  // 状态项自己管开关
+            self.popover.performClose(nil)
+            return event
+        }
     }
 
     private func removeOutsideClickMonitor() {
         if let m = outsideClickMonitor {
             NSEvent.removeMonitor(m)
             outsideClickMonitor = nil
+        }
+        if let m = insideClickMonitor {
+            NSEvent.removeMonitor(m)
+            insideClickMonitor = nil
         }
     }
 

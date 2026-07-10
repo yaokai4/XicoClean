@@ -1052,3 +1052,8 @@
 "热压力非正常时系统已在降频，减负或改善散热" = "When thermal state isn't nominal, macOS is already throttling — reduce load or improve cooling";
 "SMART 告警意味着硬件风险，请立即备份数据" = "A SMART warning means hardware risk — back up your data immediately";
 "部分选中" = "Partially selected";
+
+/* P8 · 用户反馈修正（内存口径/面板细化） */
+"口径" = "Metric";
+"压力（同 iStat）" = "Pressure (like iStat)";
+"可用中含 %@ 缓存文件，系统随取随回收" = "Available includes %@ of cached files — reclaimed instantly when needed";

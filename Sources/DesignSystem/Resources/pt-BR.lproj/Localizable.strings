@@ -1052,3 +1052,8 @@
 "热压力非正常时系统已在降频，减负或改善散热" = "Quando o estado térmico não é normal, o macOS já está limitando — reduza a carga ou melhore a refrigeração";
 "SMART 告警意味着硬件风险，请立即备份数据" = "Um alerta SMART indica risco de hardware — faça backup imediatamente";
 "部分选中" = "Parcialmente selecionado";
+
+/* P8 · 用户反馈修正（内存口径/面板细化） */
+"口径" = "Métrica";
+"压力（同 iStat）" = "Pressão (como o iStat)";
+"可用中含 %@ 缓存文件，系统随取随回收" = "Disponível inclui %@ de arquivos em cache — recuperados na hora quando necessário";

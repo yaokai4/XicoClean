@@ -54,6 +54,9 @@ public enum AppAppearance: String, CaseIterable, Identifiable, Sendable {
 public final class MetricsFeed: ObservableObject {
     // 滚动历史（用于菜单栏折线图）
     @Published public var cpuHistory: [Double] = []
+    // 用户/系统拆分历史（P8：CPU 面板堆叠条的数据源，与 cpuHistory 同节拍同容量）
+    @Published public var cpuUserHistory: [Double] = []
+    @Published public var cpuSysHistory: [Double] = []
     @Published public var memHistory: [Double] = []
     @Published public var gpuHistory: [Double] = []
     @Published public var netDownHistory: [Double] = []
@@ -395,6 +398,8 @@ public final class AppModel: ObservableObject {
         feed.capacity = sample.capacity
         if let info = sample.macInfo { macInfo = info }
         push(&feed.cpuHistory, s.cpuUsage)
+        push(&feed.cpuUserHistory, s.cpuUser)
+        push(&feed.cpuSysHistory, s.cpuSystem)
         push(&feed.memHistory, s.memoryUsedFraction)
         push(&feed.gpuHistory, s.gpuUsage ?? 0)
         push(&feed.netDownHistory, s.netDownBytesPerSec)
