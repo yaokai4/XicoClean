@@ -1149,3 +1149,34 @@
 "系统自管 purgeable" = "Eliminabile gestito dal sistema";
 "缓存只为加速重复操作而存在，删除后应用会按需自动重建。已排除 Homebrew/包管理器与浏览器等由专项规则管理的目录。" = "Le cache esistono solo per velocizzare operazioni ripetute; le app le ricreano su richiesta. Esclusi i percorsi Homebrew/gestori di pacchetti e browser, gestiti da regole dedicate.";
 "部分已释放空间可能被 APFS 本地快照暂存，系统通常会在 24 小时内自动归还；也可在「维护」页立即瘦身快照。" = "Parte dello spazio liberato può restare temporaneamente nelle istantanee locali APFS; il sistema lo restituisce di solito entro 24 ore. Puoi anche snellire subito le istantanee dalla pagina Manutenzione.";
+
+/* docs/14 · 磁盘测速引擎 v2（对标超越 Blackmagic，2026-07-11） */
+"就绪 · 完整基准约需 20 秒" = "Pronto · il benchmark completo richiede circa 20 s";
+"顺序写入测试中…" = "Test di scrittura sequenziale…";
+"顺序读取测试中…" = "Test di lettura sequenziale…";
+"随机读 4K" = "Lettura casuale 4K";
+"随机写 4K" = "Scrittura casuale 4K";
+"随机读 4K · 深队列" = "Lettura casuale 4K · coda profonda";
+"随机写 4K · 深队列" = "Scrittura casuale 4K · coda profonda";
+"测试目标：" = "Destinazione:";
+"系统卷" = "Volume di sistema";
+"恢复系统卷" = "Ripristina volume di sistema";
+"更换测试卷…" = "Cambia disco di destinazione…";
+"选择要测速的磁盘（其上任意可写文件夹）" = "Scegli il disco da testare (una cartella scrivibile su di esso)";
+"随机 4K 性能（系统响应手感的决定项）" = "Prestazioni 4K casuali (ciò che determina la reattività percepita)";
+"随机读 · 单队列" = "Lettura casuale · QD1";
+"随机写 · 单队列" = "Scrittura casuale · QD1";
+"随机读 · 深队列 ×32" = "Lettura casuale · QD32";
+"随机写 · 深队列 ×32" = "Scrittura casuale · QD32";
+"平均 %.0f µs" = "media %.0f µs";
+"测试文件 %@" = "File di test %@";
+"首秒写入爆发 %@（SLC 缓存效应，持续值更真实）" = "Burst di scrittura iniziale %@ (effetto cache SLC — il valore sostenuto è quello vero)";
+"写入全程稳定 · 无明显缓存爆发" = "Scrittura stabile per tutta la durata · nessun burst di cache rilevante";
+"落盘刷新 %.2fs（未计入吞吐，单列诚实展示）" = "Flush completo sul supporto %.2fs (escluso dal throughput, mostrato a parte per onestà)";
+"方法：64MB 块 ×2 并发顺序 + 4K 随机 · F_NOCACHE 直读介质 · 不可压缩数据" = "Metodo: blocchi sequenziali da 64 MB ×2 in parallelo + 4K casuale · F_NOCACHE diretto sul supporto · dati incomprimibili";
+"视频工作流适配（录制 = 写 · 回放 = 读）" = "Idoneità workflow video (registrazione = scrittura · riproduzione = lettura)";
+"格式" = "Formato";
+"写" = "S";
+"读" = "L";
+"✓ 稳（实测 ≥ 码率 ×1.2）· ⚠ 边缘（刚好够，掉帧风险）· ✗ 不足。码率参考：Apple ProRes 白皮书 2022 / Blackmagic RAW 官方公式。" = "✓ solido (misurato ≥ bitrate ×1,2) · ⚠ al limite (appena sufficiente, rischio frame persi) · ✗ insufficiente. Bitrate: Apple ProRes White Paper 2022 / formula ufficiale Blackmagic RAW.";
+"需要 %.0f MB/s" = "Richiede %.0f MB/s";

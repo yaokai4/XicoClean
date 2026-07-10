@@ -1149,3 +1149,34 @@
 "系统自管 purgeable" = "Purgable gestionado por el sistema";
 "缓存只为加速重复操作而存在，删除后应用会按需自动重建。已排除 Homebrew/包管理器与浏览器等由专项规则管理的目录。" = "Las cachés solo existen para acelerar operaciones repetidas; las apps las regeneran bajo demanda. Se excluyen los directorios de Homebrew/gestores de paquetes y navegadores, regidos por reglas específicas.";
 "部分已释放空间可能被 APFS 本地快照暂存，系统通常会在 24 小时内自动归还；也可在「维护」页立即瘦身快照。" = "Parte del espacio liberado puede quedar retenido temporalmente en instantáneas locales de APFS; el sistema suele devolverlo en 24 horas. También puedes reducir las instantáneas ahora desde Mantenimiento.";
+
+/* docs/14 · 磁盘测速引擎 v2（对标超越 Blackmagic，2026-07-11） */
+"就绪 · 完整基准约需 20 秒" = "Listo · la prueba completa tarda unos 20 s";
+"顺序写入测试中…" = "Prueba de escritura secuencial…";
+"顺序读取测试中…" = "Prueba de lectura secuencial…";
+"随机读 4K" = "Lectura aleatoria 4K";
+"随机写 4K" = "Escritura aleatoria 4K";
+"随机读 4K · 深队列" = "Lectura aleatoria 4K · cola profunda";
+"随机写 4K · 深队列" = "Escritura aleatoria 4K · cola profunda";
+"测试目标：" = "Destino:";
+"系统卷" = "Volumen del sistema";
+"恢复系统卷" = "Restablecer al volumen del sistema";
+"更换测试卷…" = "Cambiar disco de destino…";
+"选择要测速的磁盘（其上任意可写文件夹）" = "Elige el disco a probar (cualquier carpeta con escritura en él)";
+"随机 4K 性能（系统响应手感的决定项）" = "Rendimiento 4K aleatorio (lo que determina la respuesta percibida)";
+"随机读 · 单队列" = "Lectura aleatoria · QD1";
+"随机写 · 单队列" = "Escritura aleatoria · QD1";
+"随机读 · 深队列 ×32" = "Lectura aleatoria · QD32";
+"随机写 · 深队列 ×32" = "Escritura aleatoria · QD32";
+"平均 %.0f µs" = "prom. %.0f µs";
+"测试文件 %@" = "Archivo de prueba %@";
+"首秒写入爆发 %@（SLC 缓存效应，持续值更真实）" = "Ráfaga de escritura inicial %@ (efecto caché SLC: el valor sostenido es el real)";
+"写入全程稳定 · 无明显缓存爆发" = "Escritura estable en todo el recorrido · sin ráfagas de caché notables";
+"落盘刷新 %.2fs（未计入吞吐，单列诚实展示）" = "Vaciado completo al medio %.2fs (excluido del rendimiento, mostrado aparte por honestidad)";
+"方法：64MB 块 ×2 并发顺序 + 4K 随机 · F_NOCACHE 直读介质 · 不可压缩数据" = "Método: bloques secuenciales de 64 MB ×2 en paralelo + 4K aleatorio · F_NOCACHE directo al medio · datos incompresibles";
+"视频工作流适配（录制 = 写 · 回放 = 读）" = "Aptitud para flujo de vídeo (grabar = escribir · reproducir = leer)";
+"格式" = "Formato";
+"写" = "E";
+"读" = "L";
+"✓ 稳（实测 ≥ 码率 ×1.2）· ⚠ 边缘（刚好够，掉帧风险）· ✗ 不足。码率参考：Apple ProRes 白皮书 2022 / Blackmagic RAW 官方公式。" = "✓ sólido (medido ≥ tasa ×1,2) · ⚠ justo (riesgo de fotogramas perdidos) · ✗ insuficiente. Tasas: Apple ProRes White Paper 2022 / fórmula oficial de Blackmagic RAW.";
+"需要 %.0f MB/s" = "Requiere %.0f MB/s";

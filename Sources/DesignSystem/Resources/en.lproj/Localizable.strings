@@ -1149,3 +1149,34 @@
 "系统自管 purgeable" = "System-managed purgeable";
 "缓存只为加速重复操作而存在，删除后应用会按需自动重建。已排除 Homebrew/包管理器与浏览器等由专项规则管理的目录。" = "Caches exist only to speed up repeat operations; apps rebuild them on demand. Homebrew/package-manager and browser directories governed by dedicated rules are excluded.";
 "部分已释放空间可能被 APFS 本地快照暂存，系统通常会在 24 小时内自动归还；也可在「维护」页立即瘦身快照。" = "Some freed space may be held temporarily by APFS local snapshots; the system usually returns it within 24 hours. You can also thin snapshots now from the Maintenance page.";
+
+/* docs/14 · 磁盘测速引擎 v2（对标超越 Blackmagic，2026-07-11） */
+"就绪 · 完整基准约需 20 秒" = "Ready · full benchmark takes about 20s";
+"顺序写入测试中…" = "Sequential write test…";
+"顺序读取测试中…" = "Sequential read test…";
+"随机读 4K" = "Random read 4K";
+"随机写 4K" = "Random write 4K";
+"随机读 4K · 深队列" = "Random read 4K · deep queue";
+"随机写 4K · 深队列" = "Random write 4K · deep queue";
+"测试目标：" = "Target:";
+"系统卷" = "System volume";
+"恢复系统卷" = "Reset to system volume";
+"更换测试卷…" = "Change Target Disk…";
+"选择要测速的磁盘（其上任意可写文件夹）" = "Choose the disk to benchmark (any writable folder on it)";
+"随机 4K 性能（系统响应手感的决定项）" = "Random 4K performance (what system responsiveness actually feels like)";
+"随机读 · 单队列" = "Random read · QD1";
+"随机写 · 单队列" = "Random write · QD1";
+"随机读 · 深队列 ×32" = "Random read · QD32";
+"随机写 · 深队列 ×32" = "Random write · QD32";
+"平均 %.0f µs" = "avg %.0f µs";
+"测试文件 %@" = "Test file %@";
+"首秒写入爆发 %@（SLC 缓存效应，持续值更真实）" = "First-second write burst %@ (SLC cache effect — the sustained figure is the truthful one)";
+"写入全程稳定 · 无明显缓存爆发" = "Write steady throughout · no significant cache burst";
+"落盘刷新 %.2fs（未计入吞吐，单列诚实展示）" = "Full flush to media %.2fs (excluded from throughput, shown separately for honesty)";
+"方法：64MB 块 ×2 并发顺序 + 4K 随机 · F_NOCACHE 直读介质 · 不可压缩数据" = "Method: sequential 64MB blocks ×2 concurrent + random 4K · F_NOCACHE direct-to-media · incompressible data";
+"视频工作流适配（录制 = 写 · 回放 = 读）" = "Video workflow fit (record = write · playback = read)";
+"格式" = "Format";
+"写" = "W";
+"读" = "R";
+"✓ 稳（实测 ≥ 码率 ×1.2）· ⚠ 边缘（刚好够，掉帧风险）· ✗ 不足。码率参考：Apple ProRes 白皮书 2022 / Blackmagic RAW 官方公式。" = "✓ solid (measured ≥ data rate ×1.2) · ⚠ marginal (barely enough, dropped-frame risk) · ✗ insufficient. Data rates: Apple ProRes White Paper 2022 / official Blackmagic RAW formula.";
+"需要 %.0f MB/s" = "Requires %.0f MB/s";

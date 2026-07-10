@@ -94,13 +94,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             RunLoop.main.run()
         }
         if CommandLine.arguments.contains("--diskbench") {
-            // 磁盘测速引擎自检：真实写读一轮，打印结果（验证 F_NOCACHE 路径与清理）。
+            // 磁盘测速引擎自检：完整基准（SEQ QD2 + RND4K 矩阵），打印全指标（验证 v2 引擎与清理）。
             let svc = DiskBenchmarkService()
             let r = svc.run(device: "selftest") { p in
-                if case .writing(let m) = p { FileHandle.standardError.write("w \(Int(m)) MB/s\n".data(using: .utf8)!) }
-                if case .reading(let m) = p { FileHandle.standardError.write("r \(Int(m)) MB/s\n".data(using: .utf8)!) }
+                switch p {
+                case .writing(let m): FileHandle.standardError.write("w \(Int(m)) MB/s\n".data(using: .utf8)!)
+                case .reading(let m): FileHandle.standardError.write("r \(Int(m)) MB/s\n".data(using: .utf8)!)
+                case .random(let stage, let iops):
+                    FileHandle.standardError.write("\(stage) \(Int(iops)) IOPS\n".data(using: .utf8)!)
+                default: break
+                }
             }
-            print(r.map { "done read=\(Int($0.readMBps)) write=\(Int($0.writeMBps)) MB/s" } ?? "failed")
+            if let r {
+                print("done seq: read=\(Int(r.readMBps)) write=\(Int(r.writeMBps)) MB/s"
+                      + (r.burstWriteMBps.map { " burst=\(Int($0))" } ?? "")
+                      + (r.flushSeconds.map { String(format: " flush=%.2fs", $0) } ?? ""))
+                print("rnd4k QD1: read=\(Int(r.rnd4kReadIOPS ?? 0)) IOPS avg=\(Int(r.rnd4kReadAvgUS ?? 0))µs p99=\(Int(r.rnd4kReadP99US ?? 0))µs · write=\(Int(r.rnd4kWriteIOPS ?? 0)) IOPS avg=\(Int(r.rnd4kWriteAvgUS ?? 0))µs")
+                print("rnd4k QD32: read=\(Int(r.rnd4kQD32ReadIOPS ?? 0)) IOPS · write=\(Int(r.rnd4kQD32WriteIOPS ?? 0)) IOPS")
+            } else {
+                print("failed")
+            }
             exit(r == nil ? 1 : 0)
         }
         #endif
