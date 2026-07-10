@@ -164,36 +164,25 @@ public struct MenuMetricPanel: View {
             }
 
             Divider().padding(.vertical, 2)
-            // 快捷操作：释放内存 + 快速清理（智能扫描），与「打开监视器」并列。
-            HStack(spacing: XSpacing.s) {
-                Button { freeMemory() } label: {
+            // 轻页脚（P9 减负）：面板专注监控数据本身——快捷操作只保留「打开监视器」文字链
+            // 与退出，不再在每个面板塞「释放内存/快速清理」大按钮。
+            HStack {
+                Button { openMonitor() } label: {
                     HStack(spacing: XSpacing.xs) {
-                        Image(systemName: "memorychip")
-                        Text(freeingMemory ? xLoc("释放中…") : xLoc("释放内存"))
-                    }.frame(maxWidth: .infinity)
+                        Image(systemName: "waveform.path.ecg")
+                        Text(xLoc("打开监视器"))
+                    }
+                    .font(XFont.captionEmphasis)
+                    .foregroundStyle(XColor.brand)
                 }
-                .buttonStyle(XSecondaryButtonStyle(compact: true))
-                .disabled(freeingMemory)
-                .accessibilityLabel(xLoc("释放内存"))
-                Button { openSmartScan() } label: {
-                    HStack(spacing: XSpacing.xs) {
-                        Image(systemName: "sparkles")
-                        Text(xLoc("快速清理"))
-                    }.frame(maxWidth: .infinity)
+                .buttonStyle(.plain)
+                Spacer()
+                Button { NSApp.terminate(nil) } label: {
+                    Image(systemName: "power").font(XFont.captionEmphasis)
+                        .foregroundStyle(XColor.textTertiary)
                 }
-                .buttonStyle(XSecondaryButtonStyle(compact: true))
-                .accessibilityLabel(xLoc("快速清理"))
-            }
-            if let note = freeMemNote {
-                Text(note).font(XFont.caption).foregroundStyle(XColor.textTertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            HStack(spacing: XSpacing.s) {
-                Button { openMonitor() } label: { Text(xLoc("打开监视器")).frame(maxWidth: .infinity) }
-                    .buttonStyle(XPrimaryButtonStyle(compact: true))
-                Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }
-                    .buttonStyle(XSecondaryButtonStyle(compact: true))
-                    .accessibilityLabel(xLoc("退出"))
+                .buttonStyle(.plain)
+                .accessibilityLabel(xLoc("退出"))
             }
         }
         .padding(XSpacing.m)

@@ -424,7 +424,6 @@ public struct SettingsView: View {
                         Text(licenseSubtitle).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     Spacer()
-                    Button(xLoc("导入许可证")) { importLicense() }.buttonStyle(XSecondaryButtonStyle(compact: true))
                     if licenseStatus?.licenseID != nil {
                         Button(xLoc("移除")) { confirmRemoveLicense = true }
                             .buttonStyle(XSecondaryButtonStyle(compact: true))

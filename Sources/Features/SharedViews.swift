@@ -281,9 +281,17 @@ struct ScanningIndicator: View {
     let bytes: Int64
     let message: String
     var progress: Double? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         VStack(spacing: XSpacing.xl) {
-            XScanOrb(value: bytes.formattedBytes, label: xLoc("已发现"), size: 300, progress: progress)
+            ZStack {
+                // 运行氛围（P9）：声呐脉冲环 + 缓旋极光辉光——只在扫描期间存在，
+                // 随视图消失即停；Reduce Motion 下完全不画。
+                if !reduceMotion {
+                    ScanAmbience(size: 300)
+                }
+                XScanOrb(value: bytes.formattedBytes, label: xLoc("已发现"), size: 300, progress: progress)
+            }
             // 状态胶囊：脉冲点 + 正在扫描的位置（等宽、居中截断）+ 确定性进度百分比
             HStack(spacing: XSpacing.s) {
                 XLiveDot()
@@ -303,6 +311,46 @@ struct ScanningIndicator: View {
             .frame(maxWidth: 440)
             .animation(XMotion.crossfade, value: message)
         }
+    }
+}
+
+/// 扫描氛围层：三道错相「声呐」脉冲环（从 orb 边缘扩散淡出）+ 两团缓慢环绕的品牌辉光。
+/// 生命周期与扫描视图一致（TimelineView 随视图销毁即停，符合「动画必须停表」铁律）。
+private struct ScanAmbience: View {
+    let size: CGFloat
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30)) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            Canvas { ctx, canvasSize in
+                let c = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
+                let base = size / 2 - 10
+                // 声呐脉冲：周期 2.4s、三道错相 1/3；从 orb 边缘扩散到 1.35 倍处淡出。
+                let brand = XThemeStore.shared.current.accent
+                for i in 0..<3 {
+                    let phase = (t / 2.4 + Double(i) / 3).truncatingRemainder(dividingBy: 1)
+                    let r = base * (1 + 0.35 * phase)
+                    let alpha = 0.22 * (1 - phase)
+                    let rect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
+                    ctx.stroke(Path(ellipseIn: rect), with: .color(brand.opacity(alpha)), lineWidth: 1.5)
+                }
+                // 两团环绕辉光：慢速对转，半径极大、透明度极低——氛围而非焦点。
+                let ring = XThemeStore.shared.current.ring
+                for (i, speed) in [0.05, -0.035].enumerated() {
+                    let ang = t * speed * 2 * .pi
+                    let gx = c.x + cos(ang) * base * 0.9
+                    let gy = c.y + sin(ang) * base * 0.9
+                    let color = ring[i % max(ring.count, 1)]
+                    let grad = Gradient(colors: [color.opacity(0.10), .clear])
+                    ctx.fill(Path(ellipseIn: CGRect(x: gx - 120, y: gy - 120, width: 240, height: 240)),
+                             with: .radialGradient(grad, center: CGPoint(x: gx, y: gy),
+                                                   startRadius: 0, endRadius: 120))
+                }
+            }
+        }
+        .frame(width: size * 1.5, height: size * 1.5)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 

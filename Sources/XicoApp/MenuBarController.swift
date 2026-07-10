@@ -5,33 +5,33 @@ import Features
 import Infrastructure
 import DesignSystem
 
-/// 用 AppKit 接管菜单栏：NSStatusItem + 单个瞬态 NSPopover。
-/// 解决 MenuBarExtra(.window) 面板「点开后不会自动消失/多个堆叠」的问题，
-/// 并支持在「设置」里实时编辑显示哪些项（像 iStat 一样可自定义）。
+/// 用 AppKit 接管菜单栏：NSStatusItem + 无箭头「玻璃卡片」浮窗（P9 弃用 NSPopover 尖角样式）。
+/// 支持在「设置」里实时编辑显示哪些项（像 iStat 一样可自定义）。
 ///
-/// P3 升级：字形渲染换血为 CG 直绘（见 MenuBarGlyph）、真 · 合并项（多迷你图并排）、
-/// 电池项、项目可排序（xico.mb.order）、每项独立刷新率、面板可钉住为浮动小窗。
+/// P3 升级：字形渲染 CG 直绘（见 MenuBarGlyph）、真 · 合并项、电池项、项目排序（xico.mb.order）、
+/// 每项独立刷新率、面板可钉住为浮动小窗。
+/// P9 升级：点击面板 = 独立无边框卡片窗（圆角 16 + 系统玻璃材质，macOS 26 走原生
+/// NSGlassEffectView）——与现代菜单栏工具一致的卡片式展示，无 popover 尖角。
 @MainActor
-final class MenuBarController: NSObject, NSPopoverDelegate {
+final class MenuBarController: NSObject {
     private let model: AppModel
     private var statusItems: [String: NSStatusItem] = [:]
-    private let popover = NSPopover()
     private var cancellables = Set<AnyCancellable>()
-    /// 面板打开期间监听「面板之外」的鼠标点击，点到别处即关闭。
-    /// `.transient` 在 accessory（菜单栏）App 里对「点其他 App」不总生效，故显式补一层监听。
+    /// 点击面板（卡片窗）。同一时间至多一个；再次点同一图标关闭，点其他图标切换。
+    private var cardPanel: NSPanel?
+    private var cardPanelID: String?
+    /// 面板外点击监听（全局 = 其他 App / 桌面；本地 = 本进程窗口）+ Esc 关闭。
     private var outsideClickMonitor: Any?
-    /// 本进程内的点击监听：全局监听收不到自家事件（点 Xico 主窗口/设置页时面板不关，P8 bug 修复）。
-    /// 例外：点面板自身与任一状态项按钮不关（状态项点击由 handleClick 负责开/关/切换）。
     private var insideClickMonitor: Any?
-    /// 上一次 `xico.mb.*` 配置快照——UserDefaults.didChange 是全局广播，
-    /// 仅当菜单栏相关键真的变了才重建，避免任意无关写入都触发全量重建（审计 P3）。
+    private var escKeyMonitor: Any?
+    /// 上一次 `xico.mb.*` 配置快照——仅菜单栏相关键变化才重建（审计 P3）。
     private var lastMBDefaults: [String: String] = [:]
     /// 每项上次真正重绘的时刻——每项独立刷新率（P3·M7）的跳拍依据。
     private var lastImageUpdate: [String: Date] = [:]
     /// 钉住的浮动面板（P3·M5）：id → NSPanel。钉住期间保持详情采样。
     private var pinnedPanels: [String: NSPanel] = [:]
 
-    /// 各项：UserDefaults 键 + 默认是否显示。默认顺序（用户可在设置里拖拽重排，存 xico.mb.order）。
+    /// 各项：UserDefaults 键 + 默认是否显示。默认顺序（用户可在设置里重排，存 xico.mb.order）。
     private let config: [(id: String, key: String, def: Bool)] = [
         ("network", "xico.mb.network", true),
         ("disk",    "xico.mb.disk",    false),
@@ -46,22 +46,18 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     init(model: AppModel) {
         self.model = model
         super.init()
-        popover.behavior = .transient        // 点击外部自动关闭
-        popover.animates = true
-        popover.delegate = self              // popoverDidClose → 清理点击监听
 
         model.startMetricsTimer()            // 即使主窗口未开，菜单栏也持续刷新
         lastMBDefaults = Self.mbDefaultsSnapshot()
         rebuild()
 
-        // 指标变化 → 刷新图标（liveSnapshot 已从 AppModel 迁入 MetricsFeed，改订阅 feed）
+        // 指标变化 → 刷新图标
         model.liveMetricsFeed.$liveSnapshot
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.updateImages() }
             .store(in: &cancellables)
 
         // 设置里的开关变化 → 重建菜单栏项（实时增删）。
-        // 先比对 xico.mb.* 快照：无关键（如其它偏好写入）变化时直接 no-op，不重建。
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .debounce(for: .milliseconds(150), scheduler: RunLoop.main)
             .sink { [weak self] _ in
@@ -87,8 +83,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         UserDefaults.standard.object(forKey: key) == nil ? def : UserDefaults.standard.bool(forKey: key)
     }
 
-    /// 用户排序（设置页拖拽，左→右显示顺序）；未重排过则用 config 默认顺序。
-    /// 新增的项（老版本存的 order 里没有）追加到末尾，绝不因升级而消失。
+    /// 用户排序（左→右显示顺序）；新增项自动补到末尾，绝不因升级而消失。
     private func orderedIDs() -> [String] {
         let all = config.map(\.id)
         guard let saved = UserDefaults.standard.string(forKey: "xico.mb.order")?
@@ -98,23 +93,20 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         return known + missing
     }
 
-    /// 按设置增删 NSStatusItem。顺序或集合变化 → 整体重排（按用户顺序倒序插入：
-    /// AppKit 后插入者靠左，故「显示顺序左→右」= 倒序 add）。
+    /// 按设置增删 NSStatusItem。顺序或集合变化 → 整体重排（倒序插入 = 视觉左→右）。
     private func rebuild() {
         let desired = orderedIDs().filter { id in
             guard let c = config.first(where: { $0.id == id }) else { return false }
             return isEnabled(c.key, default: c.def)
         }
         let currentOrder = Array(statusItems.keys)
-
-        // 集合相同且无顺序诉求差异时走增量；否则全量重排。
         let needFullRebuild = Set(desired) != Set(currentOrder)
             || UserDefaults.standard.string(forKey: "xico.mb.order") != nil
 
         if needFullRebuild {
             for (_, item) in statusItems { NSStatusBar.system.removeStatusItem(item) }
             statusItems.removeAll()
-            for id in desired.reversed() {   // 倒序插入 → 视觉左→右 = 用户顺序
+            for id in desired.reversed() {
                 let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
                 item.button?.target = self
                 item.button?.action = #selector(handleClick(_:))
@@ -124,7 +116,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                 statusItems[id] = item
             }
         }
-        lastImageUpdate.removeAll()   // 重建后全部立即重绘一次
+        lastImageUpdate.removeAll()
         updateImages(force: true)
     }
 
@@ -152,7 +144,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     @objc private func quit() { NSApp.terminate(nil) }
 
-    /// 每项独立刷新率（秒）。未设置 → 跟随全局采样节拍（返回 nil = 每 tick 都刷）。
+    /// 每项独立刷新率（秒）。未设置 → 跟随全局采样节拍。
     private func itemInterval(_ id: String) -> Double? {
         let v = UserDefaults.standard.double(forKey: "xico.mb.\(id).interval")
         return v > 0 ? v : nil
@@ -162,7 +154,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         let s = model.liveSnapshot
         let now = Date()
         for (id, item) in statusItems {
-            // 每项跳拍：设定了独立刷新率的项，距上次重绘不足间隔则跳过本 tick（P3·M7）。
             if !force, let interval = itemInterval(id), let last = lastImageUpdate[id],
                now.timeIntervalSince(last) < interval - 0.05 {
                 continue
@@ -172,8 +163,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
     }
 
-    /// 每项独立的显示样式（像 iStat：CPU 用直方图、网络用折线…各自不同）。
-    /// 优先读 `xico.mb.<id>.style`；未设置时用该项的默认样式（须与设置页 @AppStorage 默认一致）。
+    /// 每项独立的显示样式；未设置时用该项默认（与设置页 @AppStorage 默认一致）。
     private func defaultStyle(for id: String) -> MenuBarStyle {
         switch id {
         case "cpu", "memory", "gpu": return .rich
@@ -186,7 +176,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
            let st = MenuBarStyle(rawValue: s) { return st }
         return defaultStyle(for: id)
     }
-    /// 每项独立的彩色开关。优先 `xico.mb.<id>.colored`，回退全局 `xico.mb.colored`，再回退单色。
+    /// 每项独立的彩色开关。优先 `xico.mb.<id>.colored`，回退全局 `xico.mb.colored`。
     private func colored(for id: String) -> Bool {
         if UserDefaults.standard.object(forKey: "xico.mb.\(id).colored") != nil {
             return UserDefaults.standard.bool(forKey: "xico.mb.\(id).colored")
@@ -201,8 +191,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         case "cpu":      return MenuBarGlyph.cpu(fraction: s?.cpuUsage ?? 0,
                                                  history: model.cpuHistory, style: style, colored: colored)
         case "memory":
-            // 口径（P8 修正）：默认「压力」（kern.memorystatus_level 连续值，与 iStat 菜单栏一致）；
-            // 可在设置里切回「占用」。压力读不到时自动退回占用。
+            // 口径（P8）：默认「压力」（kern.memorystatus_level 连续值，与 iStat 菜单栏一致）；
+            // 可在设置切回「占用」。压力读不到时自动退回占用。
             let usePressure = UserDefaults.standard.string(forKey: "xico.mb.memory.metric") != "used"
             let memFraction = usePressure ? (s?.memoryPressurePercent ?? s?.memoryUsedFraction ?? 0)
                                           : (s?.memoryUsedFraction ?? 0)
@@ -223,8 +213,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
     }
 
-    /// 真 · 合并项（P3·M1）：按 `xico.mb.combined.<id>` 勾选构建槽位（默认 cpu+memory+network），
-    /// 每槽位用该指标的紧凑可视化；`xico.mb.combined.values` 开关控制是否随图形显示数值。
+    /// 真 · 合并项（P3·M1）：按 `xico.mb.combined.<id>` 勾选构建槽位（默认 cpu+memory+network）。
     private func combinedSlots(_ s: SystemSnapshot?) -> [MenuCombinedSlot] {
         let showValues = isEnabled("xico.mb.combined.values", default: false)
         var slots: [MenuCombinedSlot] = []
@@ -261,9 +250,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         return slots
     }
 
-    /// 网络折线归一化：绘制**总吞吐（下行 + 上行）**，以同一「下行+上行」峰值为基准归一。
-    /// 此前只画下行，上行流量在菜单栏折线里完全不可见（审计 P3 MenuBarController:178）；
-    /// 现按样本逐点相加，令上行也计入折线高度。两序列长度不齐时以较短尾部对齐，避免错位。
+    /// 网络折线归一化：总吞吐（下行+上行），同基准归一。
     private func netNormHistory() -> [Double] {
         let down = model.netDownHistory
         let up = model.netUpHistory
@@ -274,58 +261,97 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     @objc private func handleClick(_ sender: NSStatusBarButton) {
-        // 右键（或按住 Control 左键）→ 上下文菜单
+        // 右键（或 Control 左键）→ 上下文菜单
         if let event = NSApp.currentEvent,
            event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
             if let item = statusItems.first(where: { $0.value.button === sender })?.value {
                 let menu = contextMenu()
                 item.menu = menu
-                item.button?.performClick(nil)   // 弹出菜单
-                item.menu = nil                  // 立即摘除，恢复左键打开面板
+                item.button?.performClick(nil)
+                item.menu = nil
             }
             return
         }
         guard let id = sender.identifier?.rawValue else { return }
-        // 已钉住的面板：点图标把它带到前台，不再开重复 popover。
+        // 已钉住的面板：点图标带到前台。
         if let pinned = pinnedPanels[id] {
             pinned.makeKeyAndOrderFront(nil)
             return
         }
-        let sameOpen = popover.isShown && popover.contentViewController?.identifier?.rawValue == id
-        if popover.isShown { popover.performClose(nil) }
-        if sameOpen { return }                       // 再次点同一项 → 关闭
-        showPopover(id: id, from: sender)
+        // 再次点同一项 → 关闭；点其他项 → 切换。
+        if cardPanel != nil, cardPanelID == id {
+            closeCardPanel()
+            return
+        }
+        closeCardPanel()
+        showCardPanel(id: id, from: sender)
     }
 
-    private func showPopover(id: String, from button: NSStatusBarButton) {
-        let host = NSHostingController(rootView: AnyView(panel(for: id, pinned: false)))
-        host.identifier = NSUserInterfaceItemIdentifier(id)
-        popover.contentViewController = host
-        let fitting = host.view.fittingSize
-        popover.contentSize = NSSize(width: fitting.width > 0 ? fitting.width : 280,
-                                     height: fitting.height > 0 ? fitting.height : 360)
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        popover.contentViewController?.view.window?.makeKey()
-        installOutsideClickMonitor()
-        // 弹窗打开即算「详情消费者可见」：即便无前台主窗口，也让 AppModel 恢复温度/风扇/GPU 等详情采样
-        // （审计 P1 回归——此前该标志无人置位，常驻菜单栏弹窗里的详情面板会停采）。
+    // MARK: 无箭头玻璃卡片浮窗（P9：替代 NSPopover 尖角）
+
+    /// 可成为 key 的无边框面板（borderless 默认不能 key；Esc 与键盘交互需要）。
+    private final class KeyableCardPanel: NSPanel {
+        override var canBecomeKey: Bool { true }
+    }
+
+    private func showCardPanel(id: String, from button: NSStatusBarButton) {
+        let host = NSHostingController(rootView: AnyView(MenuCardContainer { self.panelContent(for: id, pinned: false) }))
+        let panel = KeyableCardPanel(contentViewController: host)
+        panel.styleMask = [.borderless, .nonactivatingPanel, .fullSizeContentView]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true            // 系统按内容形状投影（圆角卡片影）
+        panel.level = .popUpMenu
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isMovableByWindowBackground = false
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+
+        // 定位：状态项按钮正下方 6pt，水平居中并夹在屏幕可见区内。
+        let size = host.view.fittingSize
+        let w = max(size.width, 300), h = max(size.height, 200)
+        panel.setContentSize(NSSize(width: w, height: h))
+        if let btnWindow = button.window {
+            let btnFrame = btnWindow.convertToScreen(button.convert(button.bounds, to: nil))
+            let screen = btnWindow.screen ?? NSScreen.main
+            let visible = screen?.visibleFrame ?? .zero
+            var x = btnFrame.midX - w / 2
+            x = min(max(x, visible.minX + 8), visible.maxX - w - 8)
+            let y = btnFrame.minY - 6 - h
+            panel.setFrameOrigin(NSPoint(x: x, y: y))
+        }
+        panel.makeKeyAndOrderFront(nil)
+        cardPanel = panel
+        cardPanelID = id
+        installDismissMonitors()
+        // 卡片打开即算「详情消费者可见」：恢复温度/风扇/GPU 等详情采样。
         model.metricsDetailConsumerVisible = true
     }
 
-    // MARK: 钉住面板（P3·M5：popover 转独立浮动小窗，可拖动、跨重启记忆位置）
+    private func closeCardPanel() {
+        removeDismissMonitors()
+        cardPanel?.orderOut(nil)
+        cardPanel = nil
+        cardPanelID = nil
+        // 钉住的浮窗仍在时保持详情采样，否则回稳态省电。
+        if pinnedPanels.isEmpty { model.metricsDetailConsumerVisible = false }
+    }
+
+    // MARK: 钉住面板（P3·M5：卡片转常驻浮动小窗，可拖动、跨重启记忆位置）
 
     private func pin(id: String) {
-        popover.performClose(nil)
+        closeCardPanel()
         if let existing = pinnedPanels[id] {
             existing.makeKeyAndOrderFront(nil)
             return
         }
-        let host = NSHostingController(rootView: AnyView(panel(for: id, pinned: true)))
-        let panel = NSPanel(contentViewController: host)
-        panel.styleMask = [.titled, .closable, .fullSizeContentView, .nonactivatingPanel, .utilityWindow]
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.isMovableByWindowBackground = true
+        let host = NSHostingController(rootView: AnyView(MenuCardContainer { self.panelContent(for: id, pinned: true) }))
+        let panel = KeyableCardPanel(contentViewController: host)
+        panel.styleMask = [.borderless, .nonactivatingPanel, .fullSizeContentView]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isMovableByWindowBackground = true   // 钉住版可整卡拖动
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.setFrameAutosaveName("xico.mb.pin.\(id)")
@@ -337,57 +363,42 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         model.metricsDetailConsumerVisible = true
     }
 
-    private func unpin(id: String) {
-        pinnedPanels[id]?.close()
-        // 收尾在 windowWillClose 统一处理（点关闭按钮也走那里）。
-    }
+    // MARK: 关闭手势（点外部 / 点本进程其他窗口 / Esc）
 
-    // MARK: 点击面板之外即关闭（补齐 .transient 在菜单栏 App 里的漏网）
-
-    private func installOutsideClickMonitor() {
-        removeOutsideClickMonitor()
-        // 全局监听：点其他 App 的窗口 / 桌面 → 关闭面板。
+    private func installDismissMonitors() {
+        removeDismissMonitors()
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { [weak self] _ in
-            self?.popover.performClose(nil)
+            Task { @MainActor in self?.closeCardPanel() }
         }
-        // 本地监听：点本进程的任何窗口（主窗口/设置页/钉住面板）→ 也关闭（与 iStat 一致，
-        // 点任何地方都能收起面板）。点面板自身或状态项按钮除外。
         insideClickMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { [weak self] event in
-            guard let self, self.popover.isShown else { return event }
-            let panelWindow = self.popover.contentViewController?.view.window
+            guard let self, let card = self.cardPanel else { return event }
             let statusWindows = self.statusItems.values.compactMap { $0.button?.window }
-            if event.window === panelWindow { return event }                       // 面板内交互
-            if statusWindows.contains(where: { $0 === event.window }) { return event }  // 状态项自己管开关
-            self.popover.performClose(nil)
+            if event.window === card { return event }                                    // 卡片内交互
+            if statusWindows.contains(where: { $0 === event.window }) { return event }   // 状态项自己管开关
+            self.closeCardPanel()
             return event
         }
-    }
-
-    private func removeOutsideClickMonitor() {
-        if let m = outsideClickMonitor {
-            NSEvent.removeMonitor(m)
-            outsideClickMonitor = nil
-        }
-        if let m = insideClickMonitor {
-            NSEvent.removeMonitor(m)
-            insideClickMonitor = nil
+        escKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard let self, self.cardPanel != nil, event.keyCode == 53 else { return event }   // 53 = Esc
+            self.closeCardPanel()
+            return nil
         }
     }
 
-    /// 面板关闭（点外部、再次点同项、Esc 等任意途径）→ 摘除监听，避免泄漏与误触发。
-    func popoverDidClose(_ notification: Notification) {
-        removeOutsideClickMonitor()
-        // 详情消费者随弹窗关闭而消失，恢复常驻低耗采样（仅图标折线所需的 cpu/mem/net/gpu）。
-        // 防切换面板竞态：切面板时会先 performClose 再立即 show，此刻 isShown 已为 true → 保持置位不误清。
-        // 钉住的浮窗仍在时也保持详情采样。
-        if !popover.isShown && pinnedPanels.isEmpty { model.metricsDetailConsumerVisible = false }
+    private func removeDismissMonitors() {
+        for m in [outsideClickMonitor, insideClickMonitor, escKeyMonitor] {
+            if let m { NSEvent.removeMonitor(m) }
+        }
+        outsideClickMonitor = nil
+        insideClickMonitor = nil
+        escKeyMonitor = nil
     }
 
-    @ViewBuilder private func panel(for id: String, pinned: Bool) -> some View {
+    @ViewBuilder private func panelContent(for id: String, pinned: Bool) -> some View {
         let metric: MenuMetric? = {
             switch id {
             case "cpu": return .cpu
@@ -404,8 +415,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             MenuMetricPanel(model: model, metric: metric,
                             onPin: pinned ? nil : { [weak self] in self?.pin(id: id) })
         } else {
-            // 合并总览保持系统总览面板。
-            MenuBarView(model: model)
+            MenuBarView(model: model)   // 合并总览
         }
     }
 }
@@ -418,6 +428,40 @@ extension MenuBarController: NSWindowDelegate {
               let raw = win.identifier?.rawValue, raw.hasPrefix("pin.") else { return }
         let id = String(raw.dropFirst("pin.".count))
         pinnedPanels[id] = nil
-        if !popover.isShown && pinnedPanels.isEmpty { model.metricsDetailConsumerVisible = false }
+        if cardPanel == nil && pinnedPanels.isEmpty { model.metricsDetailConsumerVisible = false }
     }
+}
+
+// MARK: - 玻璃卡片容器（macOS 26 原生 Liquid Glass；低版本系统 vibrancy 弹窗材质）
+
+private struct MenuCardContainer<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content
+            .background(GlassCardBackground())
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+            )
+    }
+}
+
+/// 卡片玻璃底：macOS 26 用原生 NSGlassEffectView（真 Liquid Glass 折射），
+/// 低版本回退 NSVisualEffectView 弹窗材质（vibrancy 玻璃）。
+private struct GlassCardBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = 16
+            return glass
+        }
+        let v = NSVisualEffectView()
+        v.material = .popover
+        v.blendingMode = .behindWindow
+        v.state = .active
+        return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }

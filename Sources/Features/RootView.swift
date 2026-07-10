@@ -101,15 +101,9 @@ public struct SidebarView: View {
             }
             diskFooter
         }
-        .background(
-            // 真 vibrancy 侧栏（P1 材质层）：behindWindow 透出桌面壁纸，与 Finder/系统设置同质感；
-            // 上面压一层极淡 sidebar 色统一品牌冷调。右缘发丝线保留。
-            // Reduce Transparency 时 NSVisualEffectView 自动退化为实底，无需分支。
-            VisualEffectBackground(material: .sidebar, blending: .behindWindow)
-                .overlay(XColor.sidebar.opacity(0.35))
-                .overlay(Rectangle().fill(XColor.hairline).frame(width: 1), alignment: .trailing)
-                .ignoresSafeArea()
-        )
+        // 不再自绘侧栏背景（P9 用户反馈：tint 压出来的灰调难看）——完全交给
+        // NavigationSplitView 的系统侧栏材质：macOS 26 上就是原生 Liquid Glass，
+        // 低版本是系统 vibrancy，与 Finder/系统设置逐帧一致。
     }
 
     private var navList: some View {
