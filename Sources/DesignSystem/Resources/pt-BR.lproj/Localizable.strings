@@ -1058,3 +1058,12 @@
 "压力（同 iStat）" = "Pressão (como o iStat)";
 "可用中含 %@ 缓存文件，系统随取随回收" = "Disponível inclui %@ de arquivos em cache — recuperados na hora quando necessário";
 "扫描整个磁盘" = "Escanear o disco inteiro";
+"隐藏空间" = "Espaço oculto";
+"系统快照、可清除空间与无权限读取的部分——卷已用量与可见明细之差" = "Snapshots do sistema, espaço purgável e itens sem permissão de leitura — a diferença entre o uso do volume e os itens visíveis";
+"多个小项的合计视图" = "Visão combinada de muitos itens pequenos";
+"进入" = "Abrir";
+"正在深入扫描…" = "Escaneando mais fundo…";
+"%d 个项目 · 单击选中 · 再击进入" = "%d itens · Clique para selecionar · Clique de novo para abrir";
+"%d 个项目 · 点文件夹进入 · 点文件选中" = "%d itens · Clique numa pasta para abrir · Clique num arquivo para selecionar";
+"管理授权" = "Gerenciar licença";
+"许可证无效 · 请重新激活" = "Licença inválida · Ative novamente";

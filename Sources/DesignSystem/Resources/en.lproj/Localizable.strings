@@ -1058,3 +1058,12 @@
 "压力（同 iStat）" = "Pressure (like iStat)";
 "可用中含 %@ 缓存文件，系统随取随回收" = "Available includes %@ of cached files — reclaimed instantly when needed";
 "扫描整个磁盘" = "Scan Entire Disk";
+"隐藏空间" = "Hidden Space";
+"系统快照、可清除空间与无权限读取的部分——卷已用量与可见明细之差" = "System snapshots, purgeable space, and items Xico can't read — the gap between volume usage and visible items";
+"多个小项的合计视图" = "A combined view of many small items";
+"进入" = "Open";
+"正在深入扫描…" = "Scanning deeper…";
+"%d 个项目 · 单击选中 · 再击进入" = "%d items · Click to select · Click again to open";
+"%d 个项目 · 点文件夹进入 · 点文件选中" = "%d items · Click a folder to open · Click a file to select";
+"管理授权" = "Manage License";
+"许可证无效 · 请重新激活" = "License invalid · Please activate again";

@@ -15,8 +15,6 @@ public struct SettingsView: View {
     @State private var definitionsMessage: String?
     @State private var definitionsUpdating = false
     @State private var licenseStatus: LicenseStatus?
-    @State private var licenseMessage: String?
-    @State private var activationKey = ""
     // 菜单栏（P3 IA 重组：预设 → 项目列表（排序+开关）→ 逐项详情 → 全局）。
     // 僵尸键清理：全局 xico.mb.style 与逐项 .border 键已废除（控制器早已不读，
     // 「看起来能调、实际半瘫」比不能调更伤信任——P3·M8）。
@@ -45,7 +43,6 @@ public struct SettingsView: View {
                     aboutCard
 
                     sectionLabel("授权与更新")
-                    licenseCard
                     definitionsCard
 
                     sectionLabel("清理")
@@ -95,18 +92,6 @@ public struct SettingsView: View {
         } message: {
             Text(xLoc("将清空全部清理历史，之后无法再从这里撤销这些清理。此操作不可恢复。"))
         }
-        .confirmationDialog(xLoc("移除本机许可证？"), isPresented: $confirmRemoveLicense, titleVisibility: .visible) {
-            Button(xLoc("移除许可证"), role: .destructive) { removeLicense() }
-            Button(xLoc("取消"), role: .cancel) {}
-        } message: {
-            Text(xLoc("将从本机删除已安装的许可证与激活状态，需重新导入或激活才能继续使用 Pro 功能。"))
-        }
-        .confirmationDialog(xLoc("释放本机授权？"), isPresented: $confirmReleaseDevice, titleVisibility: .visible) {
-            Button(xLoc("释放此设备"), role: .destructive) { releaseThisDevice() }
-            Button(xLoc("取消"), role: .cancel) {}
-        } message: {
-            Text(xLoc("将向服务器释放本机占用的授权名额并移除本机许可证，之后需重新激活才能继续使用 Pro 功能。适合换机/换主板前腾出名额。"))
-        }
         .confirmationDialog(xLoc("重新显示引导页？"), isPresented: $confirmReset, titleVisibility: .visible) {
             Button(xLoc("重置"), role: .destructive) {
                 UserDefaults.standard.set(false, forKey: "xico.onboarded")
@@ -120,9 +105,6 @@ public struct SettingsView: View {
 
     @State private var undoingID: UUID?
     @State private var confirmClearHistory = false
-    @State private var confirmRemoveLicense = false
-    @State private var confirmReleaseDevice = false
-    @State private var releasingDevice = false
     @State private var confirmReset = false
 
     private func reloadHistory() {
@@ -343,12 +325,21 @@ public struct SettingsView: View {
         return xLoc(module)
     }
 
+    /// 关于卡：信息区在上、操作区收进底部一行（工具类靠左、付费主行动靠右）——
+    /// 不再把三个按钮垂直挤在右上角（用户反馈：升级 Pro 与导出诊断日志贴得太近）。
+    /// Pro 入口常显：未激活 =「升级 Pro」主按钮；已激活 =「管理授权」次按钮
+    ///（商业授权卡已删，这里是授权状态/换机释放的唯一入口，绝不能只在未激活时出现）。
     private var aboutCard: some View {
         XCard {
             HStack(spacing: XSpacing.l) {
                 XBrandMark(size: 56)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Xico").xLargeTitle().foregroundStyle(XColor.textPrimary)
+                    HStack(spacing: XSpacing.s) {
+                        Text("Xico").xLargeTitle().foregroundStyle(XColor.textPrimary)
+                        if licenseAllowsUse, case .licensed = (licenseStatus ?? model.env.license.status()).state {
+                            XBadge("Pro", color: XColor.brand)
+                        }
+                    }
                     Text(xLoc("macOS 系统清理 · 磁盘管理 · 性能优化")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     Text(xLocF("版本 %@", version)).font(XFont.caption).foregroundStyle(XColor.textTertiary)
                     HStack(spacing: XSpacing.s) {
@@ -360,15 +351,20 @@ public struct SettingsView: View {
                     }
                 }
                 Spacer()
-                VStack(spacing: XSpacing.xs) {
-                    Button(checkingUpdate ? xLoc("检查中…") : xLoc("检查更新")) { checkForUpdate() }
-                        .buttonStyle(XSecondaryButtonStyle(compact: true)).disabled(checkingUpdate)
-                    if !licenseAllowsUse {
-                        Button(xLoc("升级 Pro")) { model.showPricing = true }
-                            .buttonStyle(XPrimaryButtonStyle(compact: true))
-                    }
-                    Button(xLoc("导出诊断日志")) { exportDiagnostics() }
+            }
+            Divider().overlay(XColor.hairline).padding(.vertical, XSpacing.xs)
+            HStack(spacing: XSpacing.m) {
+                Button(checkingUpdate ? xLoc("检查中…") : xLoc("检查更新")) { checkForUpdate() }
+                    .buttonStyle(XSecondaryButtonStyle(compact: true)).disabled(checkingUpdate)
+                Button(xLoc("导出诊断日志")) { exportDiagnostics() }
+                    .buttonStyle(XSecondaryButtonStyle(compact: true))
+                Spacer()
+                if licenseAllowsUse {
+                    Button(xLoc("管理授权")) { model.showPricing = true }
                         .buttonStyle(XSecondaryButtonStyle(compact: true))
+                } else {
+                    Button(xLoc("升级 Pro")) { model.showPricing = true }
+                        .buttonStyle(XPrimaryButtonStyle(compact: true))
                 }
             }
             if let msg = updateMessage {
@@ -412,155 +408,8 @@ public struct SettingsView: View {
         }
     }
 
-    private var licenseCard: some View {
-        XCard {
-            VStack(alignment: .leading, spacing: XSpacing.s) {
-                HStack(spacing: XSpacing.m) {
-                    XIconTile(systemImage: licenseIcon,
-                              colors: licenseAllowsUse ? [XColor.accentTeal, XColor.success] : [XColor.warning, XColor.accentPink],
-                              size: 36)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(xLoc("商业授权")).xHeadline().foregroundStyle(XColor.textPrimary)
-                        Text(licenseSubtitle).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                    }
-                    Spacer()
-                    if licenseStatus?.licenseID != nil {
-                        Button(xLoc("移除")) { confirmRemoveLicense = true }
-                            .buttonStyle(XSecondaryButtonStyle(compact: true))
-                    }
-                }
-                // 已激活后不再摆激活输入框（与状态行重复，P8 用户反馈）；未激活才显示。
-                if !licenseAllowsUse {
-                    HStack(spacing: XSpacing.s) {
-                        TextField(xLoc("输入 18 位激活码"), text: $activationKey)
-                            .textFieldStyle(.roundedBorder)
-                            .disabled(model.activating)
-                            .onSubmit { activateKey() }
-                        Button(model.activating ? xLoc("激活中…") : xLoc("激活")) { activateKey() }
-                            .buttonStyle(XPrimaryButtonStyle(compact: true))
-                            .disabled(model.activating || activationKey.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                }
-                if let licenseMessage {
-                    Divider().padding(.vertical, XSpacing.xxs)
-                    Text(licenseMessage)
-                        .font(XFont.caption)
-                        .foregroundStyle(XColor.textSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                // 换机自助：在旧机主动向服务器释放本机席位，腾出授权名额（避免新机撞「授权台数已达上限」）。
-                if (licenseStatus ?? model.env.license.status()).licenseID != nil {
-                    Button(releasingDevice ? xLoc("释放中…") : xLoc("换机？释放此设备授权")) {
-                        confirmReleaseDevice = true
-                    }
-                    .buttonStyle(.link)
-                    .font(XFont.caption)
-                    .disabled(releasingDevice)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-        }
-    }
-
     private var licenseAllowsUse: Bool {
         (licenseStatus ?? model.env.license.status()).state.allowsCommercialUse
-    }
-
-    private var licenseIcon: String {
-        switch (licenseStatus ?? model.env.license.status()).state {
-        case .licensed: return "checkmark.seal.fill"
-        case .trial: return "timer"
-        case .expired, .invalid: return "exclamationmark.triangle.fill"
-        }
-    }
-
-    private var licenseSubtitle: String {
-        switch (licenseStatus ?? model.env.license.status()).state {
-        case let .licensed(name, _): return xLocF("已激活 · %@", name)
-        case let .trial(days):       return xLocF("试用中 · 剩余 %d 天", days)
-        case .expired:               return xLoc("试用已结束 · 升级后继续使用清理与优化")
-        case .invalid:               return xLoc("许可证无效 · 请重新导入")
-        }
-    }
-
-    private func activateKey() {
-        let key = activationKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, !model.activating else { return }
-        Task {
-            let result = await model.activateLicense(key: key)
-            switch result {
-            case .success:
-                licenseStatus = model.env.license.status()
-                licenseMessage = xLoc("激活成功，感谢支持！")
-            case let .failure(err):
-                // 席位已满：除了服务器文案，再补一句自助恢复引导（换机用户可在旧机释放名额后重试）。
-                if case LicenseActivationError.seatLimit = err {
-                    licenseMessage = err.localizedDescription + "\n"
-                        + xLoc("换了新机器？请在旧设备的设置里点『释放此设备』腾出名额后重试，或联系我们协助。")
-                } else {
-                    licenseMessage = err.localizedDescription
-                }
-            }
-        }
-    }
-
-    /// 移除本机许可证：删除已安装的许可证文件并刷新状态。
-    /// clearLicense() 只删许可证文件，不清激活锚点——见 cross_file_note（WS license）。
-    private func removeLicense() {
-        model.env.license.clearLicense()
-        licenseStatus = model.env.license.status()
-        model.refreshLicense()
-        licenseMessage = xLoc("已移除本机许可证。")
-    }
-
-    /// 释放本机席位：换机/换主板前在旧机主动向服务器释放一个授权名额，避免迁移后撞上「授权台数已达上限」。
-    /// 成功后清除本地许可并刷新状态（与 PricingView.deactivateThisDevice 同一契约，审计 CONTRACT (d)）。
-    private func releaseThisDevice() {
-        guard let licenseID = (licenseStatus ?? model.env.license.status()).licenseID,
-              !releasingDevice else { return }
-        releasingDevice = true
-        Task {
-            defer { releasingDevice = false }
-            do {
-                try await LicenseActivationClient().deactivate(
-                    licenseId: licenseID,
-                    deviceId: DeviceIdentity.current(),
-                )
-                // 记录本机已释放：与 PricingView.deactivateThisDevice 同一契约——
-                // 否则把旧信封重新导入即可复活席位，绕过座席上限（审计 P2 SettingsView:423）。
-                model.env.license.recordReleased(licenseID: licenseID, deviceId: DeviceIdentity.current())
-                model.env.license.clearLicense()
-                licenseStatus = model.env.license.status()
-                model.refreshLicense()
-                licenseMessage = xLoc("已释放本机授权，可在新设备重新激活。")
-            } catch {
-                licenseMessage = error.localizedDescription
-            }
-        }
-    }
-
-    private func importLicense() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.json, .data]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let data = try Data(contentsOf: url)
-            // 手动导入须启用「已释放席位」拦截，与 PricingView.importLicense 一致：
-            // 换机点了「释放本机授权」后，把旧信封重新导入不能再复活席位（须重新在线激活腾额）。
-            licenseStatus = try model.env.license.installLicense(fromEnvelopeData: data, enforceReleased: true)
-            model.refreshLicense()
-            // 导入即强制在线复验，与 PricingView 导入路径一致：服务端已吊销/退款但尚未进入
-            // 本地名单的副本在导入当刻即被拦截，而非拖到下一次节流复验（审计 SettingsView:442 P3）。
-            model.revalidateLicenseOnline(force: true)
-            licenseMessage = xLoc("许可证已验证并安装。")
-        } catch {
-            licenseStatus = model.env.license.status()
-            model.refreshLicense()
-            licenseMessage = error.localizedDescription
-        }
     }
 
     private var definitionsCard: some View {

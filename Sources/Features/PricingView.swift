@@ -9,21 +9,28 @@ struct PricingPlan: Identifiable {
     let id: String
     let name: String
     let price: String
+    /// 划线原价（有折扣时），与官网购买页同步展示。
+    let compareAt: String?
+    /// 折扣百分比（如 71 = -71%）。
+    let discount: Int?
     let period: String
     let devices: String
     let features: [String]
     let highlighted: Bool
 }
 
-/// 会员 / 升级页（以 sheet 呈现）。展示试用状态、买断分层、功能对照，
-/// 「立即购买」打开可配置的结账地址（Info.plist 的 XicoPurchaseURL，附 plan 参数），
-/// 「导入许可证」用于购买后激活。买断制 + 本地隐私是与 CleanMyMac 订阅制的差异化卖点。
+/// 会员 / 升级页（以 sheet 呈现）。展示试用状态、买断分层、功能对照。
+/// 价格与官网实时同步（ProPricingClient：官网定价 API → geo 币种+价目表 → 缓存回退），
+/// 「立即购买」打开官网购买页（Info.plist 的 XicoPurchaseURL，附 plan 参数），
+/// 购买后用 18 位激活码解锁。买断制 + 本地隐私是与 CleanMyMac 订阅制的差异化卖点。
 public struct PricingView: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var importError: String?
     @State private var importedOK = false
     @State private var activationKey = ""
+    /// 与官网同步的实时价格：先渲染缓存/兜底值，onAppear 拉取后无感刷新。
+    @State private var pricing: ProPricing = ProPricingClient.cachedOrDefault()
     /// 席位已满：激活返回 seat_limit 时置真，展开「在旧设备释放授权」的自助恢复引导（审计 CONTRACT (d)）。
     @State private var seatLimitHit = false
     /// 正在停用本机席位。
@@ -35,13 +42,21 @@ public struct PricingView: View {
 
     private var plans: [PricingPlan] {
         [
-            PricingPlan(id: "personal", name: xLoc("个人版"), price: "¥ 128", period: xLoc("一次买断"),
+            PricingPlan(id: "personal", name: xLoc("个人版"),
+                        price: pricing.label(pricing.personal),
+                        compareAt: pricing.compareAtLabel(pricing.personal),
+                        discount: pricing.discountPercent(pricing.personal),
+                        period: xLoc("一次买断"),
                         devices: xLoc("1 台 Mac"),
                         features: [xLoc("全部清理与优化功能"), xLoc("iStat 级实时监控"),
                                    xLoc("Sensei 级硬件健康"), xLoc("清理历史与一键撤销"),
                                    xLoc("规则库与安全更新"), xLoc("大版本内免费升级")],
                         highlighted: false),
-            PricingPlan(id: "family", name: xLoc("家庭版"), price: "¥ 218", period: xLoc("一次买断"),
+            PricingPlan(id: "family", name: xLoc("家庭版"),
+                        price: pricing.label(pricing.family),
+                        compareAt: pricing.compareAtLabel(pricing.family),
+                        discount: pricing.discountPercent(pricing.family),
+                        period: xLoc("一次买断"),
                         devices: xLoc("最多 5 台 Mac"),
                         features: [xLoc("个人版全部功能"), xLoc("家庭 5 台共享授权"),
                                    xLoc("优先邮件支持"), xLoc("抢先体验新功能")],
@@ -69,6 +84,10 @@ public struct PricingView: View {
             }
         }
         .frame(width: 760, height: 720)
+        .task {
+            // 与官网同步实时价格（同一套按 IP 定币种的口径）；失败静默保持缓存/兜底值。
+            pricing = await ProPricingClient.fetch()
+        }
     }
 
     private var header: some View {
@@ -110,7 +129,7 @@ public struct PricingView: View {
         case let .licensed(name, _): return xLocF("已激活 · %@", name)
         case let .trial(days): return xLocF("试用中 · 剩余 %d 天", days)
         case .expired: return xLoc("试用已结束 · 升级后继续使用清理与优化")
-        case .invalid: return xLoc("许可证无效 · 请重新导入")
+        case .invalid: return xLoc("许可证无效 · 请重新激活")
         }
     }
 
@@ -123,9 +142,20 @@ public struct PricingView: View {
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(plan.price).font(XFont.monoHero).foregroundStyle(XColor.textPrimary)
+                    .contentTransition(.numericText())
+                // 划线原价 + 折扣徽章：与官网购买页同步展示（有折扣时才出现）。
+                if let compareAt = plan.compareAt {
+                    Text(compareAt).font(XFont.callout).foregroundStyle(XColor.textTertiary)
+                        .strikethrough(true, color: XColor.textTertiary)
+                }
                 Text(plan.period).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             }
-            XBadge(plan.devices, color: XColor.accentTeal)
+            HStack(spacing: XSpacing.s) {
+                XBadge(plan.devices, color: XColor.accentTeal)
+                if let discount = plan.discount {
+                    XBadge("-\(discount)%", color: XColor.accentPink)
+                }
+            }
             Divider().overlay(XColor.hairline)
             VStack(alignment: .leading, spacing: XSpacing.s) {
                 ForEach(plan.features, id: \.self) { f in
@@ -169,8 +199,6 @@ public struct PricingView: View {
                     .buttonStyle(XPrimaryButtonStyle(compact: true))
                     .disabled(model.activating || activationKey.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            Button(xLoc("或导入许可证文件")) { importLicense() }
-                .buttonStyle(.link).font(XFont.caption)
             if importedOK {
                 Text(xLoc("激活成功，感谢支持！")).font(XFont.caption).foregroundStyle(XColor.success)
             }
@@ -291,27 +319,4 @@ public struct PricingView: View {
         NSWorkspace.shared.open(url)
     }
 
-    private func importLicense() {
-        importError = nil
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.allowedContentTypes = []
-        panel.prompt = xLoc("导入")
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let data = try Data(contentsOf: url)
-            // 手动导入信封（无服务端 round-trip）：enforceReleased 拒绝「本机已释放席位又重导入旧文件」
-            // 复活席位的绕过（审计 P2）；正常导入不受影响，在线激活会清除释放标记。
-            _ = try model.env.license.installLicense(fromEnvelopeData: data, enforceReleased: true)
-            model.refreshLicense()
-            // 导入即触发一次强制在线复验：服务端已吊销/退款但尚未进入本地名单的副本，
-            // 在导入当刻即被拦截，而非拖到下一次 72h 节流复验才失效（审计 PricingView P3）。
-            model.revalidateLicenseOnline(force: true)
-            withAnimation { importedOK = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { dismiss() }
-        } catch {
-            importError = error.localizedDescription
-        }
-    }
 }
