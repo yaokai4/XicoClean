@@ -120,6 +120,9 @@ public struct MenuMetricPanel: View {
     let metric: MenuMetric
     /// 钉住为浮动小窗（P3·M5，由 MenuBarController 提供；已钉住的实例传 nil 隐藏按钮）。
     let onPin: (() -> Void)?
+    /// 关闭钉住浮窗（仅钉住实例传入）。无边框窗没有系统关闭钮——没有它钉住窗就成了
+    /// 永远关不掉的「幽灵卡片」（用户实测踩坑）。
+    let onClose: (() -> Void)?
     /// 快速释放内存的进行/结果状态（本面板内联反馈，不弹窗）。
     @State private var freeingMemory = false
     @State private var freeMemNote: String?
@@ -128,11 +131,13 @@ public struct MenuMetricPanel: View {
 
     private var window: HistoryWindow { HistoryWindow(rawValue: windowRaw) ?? .live }
 
-    public init(model: AppModel, metric: MenuMetric, onPin: (() -> Void)? = nil) {
+    public init(model: AppModel, metric: MenuMetric, onPin: (() -> Void)? = nil,
+                onClose: (() -> Void)? = nil) {
         self.model = model
         self._feed = ObservedObject(wrappedValue: model.liveMetricsFeed)
         self.metric = metric
         self.onPin = onPin
+        self.onClose = onClose
     }
 
     public var body: some View {
@@ -154,6 +159,17 @@ public struct MenuMetricPanel: View {
                     .buttonStyle(.plain)
                     .help(xLoc("钉住为浮动窗口"))
                     .accessibilityLabel(xLoc("钉住为浮动窗口"))
+                }
+                if let onClose {
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark")
+                            .font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
+                            .frame(width: 22, height: 22)
+                            .background(XColor.surfaceAlt.opacity(0.6), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(xLoc("关闭"))
+                    .accessibilityLabel(xLoc("关闭"))
                 }
             }
 

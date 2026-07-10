@@ -290,8 +290,10 @@ final class MenuBarController: NSObject {
     // MARK: 无箭头玻璃卡片浮窗（P9：替代 NSPopover 尖角）
 
     /// 可成为 key 的无边框面板（borderless 默认不能 key；Esc 与键盘交互需要）。
+    /// cancelOperation = Esc 兜底：即使事件监视器失效（引用错位等异常态），键窗自己也能关。
     private final class KeyableCardPanel: NSPanel {
         override var canBecomeKey: Bool { true }
+        override func cancelOperation(_ sender: Any?) { close() }
     }
 
     private func showCardPanel(id: String, from button: NSStatusBarButton) {
@@ -306,6 +308,10 @@ final class MenuBarController: NSObject {
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
+        // 关闭体系的第一防线：identifier 供孤儿清扫辨认；delegate 供失焦即关（见
+        // windowDidResignKey）——与 NSPopover 同源的机制，不依赖事件监视器。
+        panel.identifier = NSUserInterfaceItemIdentifier("card.\(id)")
+        panel.delegate = self
 
         // 定位：状态项按钮正下方 6pt，水平居中并夹在屏幕可见区内。
         let size = host.view.fittingSize
@@ -330,9 +336,17 @@ final class MenuBarController: NSObject {
 
     private func closeCardPanel() {
         removeDismissMonitors()
-        cardPanel?.orderOut(nil)
+        // 先断引用再收窗：orderOut 可能同步触发 windowDidResignKey → 重入本方法，
+        // 引用已清空时重入是无害空转。
+        let panel = cardPanel
         cardPanel = nil
         cardPanelID = nil
+        panel?.orderOut(nil)
+        // 孤儿清扫：任何仍在屏上的卡片窗一并收起——即使引用因任何异常丢失
+        //（用户实测过「卡片永远关不掉」，根因就是引用与屏上窗口脱钩后监视器全部失效）。
+        for w in NSApp.windows where (w.identifier?.rawValue.hasPrefix("card.") ?? false) && w.isVisible {
+            w.orderOut(nil)
+        }
         // 钉住的浮窗仍在时保持详情采样，否则回稳态省电。
         if pinnedPanels.isEmpty { model.metricsDetailConsumerVisible = false }
     }
@@ -340,6 +354,7 @@ final class MenuBarController: NSObject {
     // MARK: 钉住面板（P3·M5：卡片转常驻浮动小窗，可拖动、跨重启记忆位置）
 
     private func pin(id: String) {
+        let cardFrame = cardPanel?.frame   // 关卡片前记下位置：首钉落位用
         closeCardPanel()
         if let existing = pinnedPanels[id] {
             existing.makeKeyAndOrderFront(nil)
@@ -354,10 +369,19 @@ final class MenuBarController: NSObject {
         panel.isMovableByWindowBackground = true   // 钉住版可整卡拖动
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.setFrameAutosaveName("xico.mb.pin.\(id)")
         panel.isReleasedWhenClosed = false
+        // NSPanel 默认失活即隐藏——不关掉的话，用户一切走别的 App「常驻」小窗就凭空消失、
+        // 切回来又自己冒出（幽灵卡片的另一半根因，对抗审查实机复现）。
+        panel.hidesOnDeactivate = false
         panel.delegate = self
         panel.identifier = NSUserInterfaceItemIdentifier("pin.\(id)")
+        panel.setFrameAutosaveName("xico.mb.pin.\(id)")
+        // 首次钉住没有记忆位置时，NSWindow 默认落在屏幕左下角 (0,0)——看起来像
+        // 「点了图钉面板直接消失」。落到刚才卡片的位置，钉住读作「卡片转常驻」。
+        if UserDefaults.standard.string(forKey: "NSWindow Frame xico.mb.pin.\(id)") == nil,
+           let f = cardFrame {
+            panel.setFrameOrigin(f.origin)
+        }
         pinnedPanels[id] = panel
         panel.makeKeyAndOrderFront(nil)
         model.metricsDetailConsumerVisible = true
@@ -367,10 +391,16 @@ final class MenuBarController: NSObject {
 
     private func installDismissMonitors() {
         removeDismissMonitors()
+        // 代际守卫：本方法在 cardPanel 赋值后调用。主线程停顿（扫描等）时全局事件可能
+        // 迟到——排队的关闭 Task 只允许关「自己那一代」的卡片，不得误杀刚切换打开的新卡。
+        let owner = cardPanel
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { [weak self] _ in
-            Task { @MainActor in self?.closeCardPanel() }
+            Task { @MainActor in
+                guard let self, self.cardPanel === owner else { return }
+                self.closeCardPanel()
+            }
         }
         insideClickMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
@@ -384,6 +414,9 @@ final class MenuBarController: NSObject {
         }
         escKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self, self.cardPanel != nil, event.keyCode == 53 else { return event }   // 53 = Esc
+            // 键窗是钉住面板时放行——由面板自己的 cancelOperation 关闭钉住窗，而非误关卡片。
+            if let kw = NSApp.keyWindow, kw !== self.cardPanel,
+               kw.identifier?.rawValue.hasPrefix("pin.") == true { return event }
             self.closeCardPanel()
             return nil
         }
@@ -413,21 +446,41 @@ final class MenuBarController: NSObject {
         }()
         if let metric {
             MenuMetricPanel(model: model, metric: metric,
-                            onPin: pinned ? nil : { [weak self] in self?.pin(id: id) })
+                            onPin: pinned ? nil : { [weak self] in self?.pin(id: id) },
+                            onClose: pinned ? { [weak self] in self?.closePinned(id: id) } : nil)
         } else {
             MenuBarView(model: model)   // 合并总览
         }
     }
+
+    /// 关闭钉住面板（✕ 按钮/Esc）。close() 走 windowWillClose → 清引用、必要时恢复稳态采样。
+    private func closePinned(id: String) {
+        pinnedPanels[id]?.close()
+    }
 }
 
-// MARK: 钉住浮窗关闭 → 清引用、必要时恢复稳态采样
+// MARK: 窗口委托：失焦即关（卡片）+ 关闭清引用（钉住/卡片兜底）
 
 extension MenuBarController: NSWindowDelegate {
+    /// 卡片窗失去 key → 立即关闭。这是与 NSPopover(.transient) 同源的可靠机制：
+    /// 点击本进程其他窗口、其他 App、切换 App 都会触发，不依赖事件监视器。
+    /// 钉住面板同样会经过这里，但只有 cardPanel 命中判定——钉住窗失焦本就该常驻。
+    func windowDidResignKey(_ notification: Notification) {
+        guard let win = notification.object as? NSWindow, win === cardPanel else { return }
+        closeCardPanel()
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard let win = notification.object as? NSWindow,
-              let raw = win.identifier?.rawValue, raw.hasPrefix("pin.") else { return }
-        let id = String(raw.dropFirst("pin.".count))
-        pinnedPanels[id] = nil
+              let raw = win.identifier?.rawValue else { return }
+        if raw.hasPrefix("pin.") {
+            pinnedPanels[String(raw.dropFirst("pin.".count))] = nil
+        } else if raw.hasPrefix("card."), win === cardPanel {
+            // 卡片被 close() 关掉（Esc 兜底路径等）：同步清引用与监视器。
+            removeDismissMonitors()
+            cardPanel = nil
+            cardPanelID = nil
+        }
         if cardPanel == nil && pinnedPanels.isEmpty { model.metricsDetailConsumerVisible = false }
     }
 }
