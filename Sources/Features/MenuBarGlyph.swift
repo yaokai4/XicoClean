@@ -97,7 +97,7 @@ public enum MenuBarGlyph {
         return cachedImage(id: "cpu", signature: sig) {
             let p = palette(colored: colored, tint: XColor.metricCPU)
             switch style {
-            case .rich:  return compose([.histogram(history, track: border), .gap(3.5), .value(value)], p)
+            case .rich:  return compose([.histogram(history, chip: border), .gap(3.5), .value(value)], p)
             case .ring:  return compose([.ring(fraction), .gap(3), .value(value)], p)
             case .graph: return graphOrIcon("cpu", value: value, history: history, border: border, p)
             case .valueOnly: return compose([.value(value)], p)
@@ -130,7 +130,7 @@ public enum MenuBarGlyph {
             let p = palette(colored: colored, tint: XColor.metricNetwork)
             var elems: [Elem] = []
             if style == .graph, history.count >= 2 {
-                elems += [.sparkline(history, track: border), .gap(3.5)]
+                elems += [.sparkline(history, chip: border), .gap(3.5)]
             }
             elems.append(.netRows(down: down.compactRate, up: up.compactRate))
             return compose(elems, p)
@@ -161,7 +161,8 @@ public enum MenuBarGlyph {
         let value = "\(pct(fraction))%"
         let sig = signature(style: style, colored: colored, border: border, value: value)
         return cachedImage(id: "disk", signature: sig) {
-            let p = palette(colored: colored, tint: XColor.metricDisk)
+            // 彩色模式独立色相（评审修正）：极光首色与 CPU 同为蓝 227° → 改琥珀。
+            let p = palette(colored: colored, tint: [XColor.warning])
             switch style {
             case .rich:  return compose([.pie(fraction), .gap(3), .value(value)], p)
             case .ring:  return compose([.ring(fraction), .gap(3), .value(value)], p)
@@ -177,13 +178,15 @@ public enum MenuBarGlyph {
         let sig = signature(style: style, colored: colored, border: border, value: value,
                             history: style == .graph ? history : nil)
         return cachedImage(id: "gpu", signature: sig) {
-            let p = palette(colored: colored, tint: XColor.metricGPU)
+            // 彩色模式独立色相（评审修正）：面板极光渐变首色与内存同为紫 261°——
+            // 菜单栏一眼认指标是彩色模式唯一意义，GPU 改品红拉开 ≥35°。
+            let p = palette(colored: colored, tint: [XColor.accentPink])
             switch style {
             case .rich:  return compose([.pie(fraction), .gap(3), .value(value)], p)
             case .ring:  return compose([.ring(fraction), .gap(3), .value(value)], p)
-            case .graph: return graphOrIcon("cpu.fill", value: value, history: history, border: border, p)
+            case .graph: return graphOrIcon("display", value: value, history: history, border: border, p)
             case .valueOnly: return compose([.value(value)], p)
-            case .iconValue: return compose([.symbol("cpu.fill", 12.5, .semibold), .gap(3), .value(value)], p)
+            case .iconValue: return compose([.symbol("display", 12.5, .semibold), .gap(3), .value(value)], p)
             }
         }
     }
@@ -222,7 +225,7 @@ public enum MenuBarGlyph {
                 if i > 0 { elems += [.gap(5), .separator, .gap(5)]; tints += [[], [], []] }   // 占位一一对应
                 let vizElem: Elem
                 switch slot.viz {
-                case .histogram(let h): vizElem = .histogram(h, track: true)
+                case .histogram(let h): vizElem = .histogram(h, chip: true)
                 case .pie(let f):       vizElem = .pie(f)
                 case .ring(let f):      vizElem = .ring(f)
                 case .net(let d, let u): vizElem = .netRows(down: d, up: u)
@@ -244,7 +247,7 @@ public enum MenuBarGlyph {
     /// graph 样式：有历史画折线（框=图表坐标系），无历史退化为图标——不画空框。
     private static func graphOrIcon(_ icon: String, value: String, history: [Double], border: Bool, _ p: GlyphPalette) -> NSImage {
         if history.count >= 2 {
-            return compose([.sparkline(history, track: border), .gap(3.5), .value(value)], p)
+            return compose([.sparkline(history, chip: border), .gap(3.5), .value(value)], p)
         }
         return compose([.symbol(icon, 12.5, .semibold), .gap(3), .value(value)], p)
     }
@@ -268,15 +271,16 @@ public enum MenuBarGlyph {
     // MARK: - 元素模型与排版
 
     /// 字形 = 一串水平元素。宽度先量后画，全部在 18pt 高度内垂直居中。
-    /// P10 语言：图形一律「裸绘」——不再套软框（chip），直方图的坐标系由每根条背后的
-    /// 淡轨道承担、折线由基线发丝承担。菜单栏这个尺寸上，框只会让图形显得笨重。
+    /// P10R2 语言（用户钦点方向）：图表回归「软框」——圆角边框即坐标系，但描边与内容
+    /// 都要浓而脆（上一版 0.36 描边 + 低透明条被实测嫌「太淡」）；条形用圆角胶囊、
+    /// 数字大单位小、电池自绘——这些保留。
     enum Elem {
         case symbol(String, CGFloat, NSFont.Weight)   // SF Symbol：名称 + 磅值 + 字重
         case value(String)                            // 12.5pt 数字 + 9pt 小单位（%/°）共基线
         case smallValue(String)                       // 9pt 圆润等宽半粗（合并项槽位值）
         case netRows(down: String, up: String)        // ▲/▼ 两行速率，数字右对齐齐平
-        case sparkline([Double], track: Bool)         // 36×15 渐变面积折线（track=基线发丝）
-        case histogram([Double], track: Bool)         // 34×15 圆角条直方图（track=满高淡轨道）
+        case sparkline([Double], chip: Bool)          // 渐变面积折线（chip=入软框）
+        case histogram([Double], chip: Bool)          // 圆角条直方图（chip=入软框）
         case pie(Double)                              // 14pt 饼盘
         case ring(Double)                             // 13pt 圆环
         case battery(level: Int, charging: Bool)      // 自绘电池壳+电芯（+镂空闪电）
@@ -286,13 +290,17 @@ public enum MenuBarGlyph {
 
     static let glyphHeight: CGFloat = 18
 
-    // 直方图排版常量：10 根 2.5pt 圆角条 + 1pt 间距 = 34pt 整宽（@2x 落整数像素）。
+    // 直方图排版常量：10 根 2.5pt 圆角条 + 1pt 间距 = 34pt 内容宽（@2x 落整数像素）。
     private static let histBars = 10
     private static let histBarW: CGFloat = 2.5
     private static let histGap: CGFloat = 1
     private static let histWidth: CGFloat = 34
     private static let sparkWidth: CGFloat = 36
     private static let batteryWidth: CGFloat = 22.5   // 20 壳 + 0.75 隙 + 1.75 电极帽
+    // 软框：内容左右各 2pt 内边距；16.5pt 高、4.5pt 圆角、1pt 描边。
+    private static let chipPad: CGFloat = 2
+    private static let chipRadius: CGFloat = 4.5
+    private static let chipRect = CGRect(x: 0, y: 0.75, width: 0, height: 16.5)
 
     /// 数值与单位分离："52%"→("52","%")、"44°"→("44","°")。单位画小一号才精致。
     private static func unitSplit(_ s: String) -> (num: String, unit: String?) {
@@ -334,8 +342,8 @@ public enum MenuBarGlyph {
             let f = valueFont(9)
             let arrow: CGFloat = 5 + 2   // 实心三角 + 间距
             return ceil(arrow + max(textSize(up, font: f).width, textSize(down, font: f).width))
-        case .sparkline:  return sparkWidth
-        case .histogram:  return histWidth
+        case .sparkline(_, let chip): return sparkWidth + (chip ? chipPad * 2 : 0)
+        case .histogram(_, let chip): return histWidth + (chip ? chipPad * 2 : 0)
         case .pie:        return 14
         case .ring:       return 15
         case .battery:    return batteryWidth
@@ -399,14 +407,30 @@ public enum MenuBarGlyph {
             // 两行：上行在上、下行在下；数字右对齐使两行尾缘齐平（表格式的整齐）。
             drawNetRow(text: up, up: true, x: x, elemWidth: w, rowCenterY: 13.1, font: f, color: p.fg, ctx: ctx)
             drawNetRow(text: down, up: false, x: x, elemWidth: w, rowCenterY: 4.9, font: f, color: p.fg, ctx: ctx)
-        case .sparkline(let values, let track):
-            drawSparkline(values, in: CGRect(x: x, y: 1.5, width: sparkWidth, height: 15),
-                          color: p.fg, baseline: track, ctx: ctx)
-        case .histogram(let values, let track):
-            drawHistogram(values, in: CGRect(x: x, y: 1.5, width: histWidth, height: 15),
-                          color: p.fg, track: track, ctx: ctx)
+        case .sparkline(let values, let chip):
+            if chip {
+                let box = CGRect(x: x, y: chipRect.minY, width: sparkWidth + chipPad * 2, height: chipRect.height)
+                drawChip(box, color: p.fg, ctx: ctx)
+                drawSparkline(values, in: CGRect(x: box.minX + chipPad, y: box.minY + 1.25,
+                                                 width: sparkWidth, height: box.height - 3),
+                              color: p.fg, baseline: false, ctx: ctx)
+            } else {
+                drawSparkline(values, in: CGRect(x: x, y: 1.5, width: sparkWidth, height: 15),
+                              color: p.fg, baseline: true, ctx: ctx)
+            }
+        case .histogram(let values, let chip):
+            if chip {
+                let box = CGRect(x: x, y: chipRect.minY, width: histWidth + chipPad * 2, height: chipRect.height)
+                drawChip(box, color: p.fg, ctx: ctx)
+                drawHistogram(values, in: CGRect(x: box.minX + chipPad, y: box.minY + 1.75,
+                                                 width: histWidth, height: box.height - 3.5),
+                              color: p.fg, track: false, ctx: ctx)
+            } else {
+                drawHistogram(values, in: CGRect(x: x, y: 1.5, width: histWidth, height: 15),
+                              color: p.fg, track: true, ctx: ctx)
+            }
         case .pie(let f):
-            drawPie(f, in: CGRect(x: x, y: 2, width: 14, height: 14), color: p.fg, ctx: ctx)
+            drawPie(f, in: CGRect(x: x + 0.25, y: 2.25, width: 13.5, height: 13.5), color: p.fg, ctx: ctx)
         case .ring(let f):
             drawRing(f, in: CGRect(x: x + 1, y: 2.5, width: 13, height: 13), color: p.fg, ctx: ctx)
         case .battery(let level, let charging):
@@ -465,8 +489,22 @@ public enum MenuBarGlyph {
         drawText(text, font: font, color: color, x: x + elemWidth - s.width, centerY: rowCenterY)
     }
 
-    /// 迷你折线（30 样本）：渐变面积（顶浓底透）+ 1.5pt 圆帽折线 + 基线发丝。
-    /// 基线即图表地平线，取代旧外框。
+    /// 软框：圆角边框即图表坐标系。描边 0.55 + 淡底 0.07——比旧版（0.36）浓一档，
+    /// 在浅/深菜单栏下都清晰立体（用户实测嫌旧框「太淡」）。
+    private static func drawChip(_ rect: CGRect, color: NSColor, ctx: CGContext) {
+        ctx.addPath(CGPath(roundedRect: rect, cornerWidth: chipRadius, cornerHeight: chipRadius, transform: nil))
+        ctx.setFillColor(color.withAlphaComponent(0.07).cgColor)
+        ctx.fillPath()
+        // strokeBorder 语义：描边完全在框内 → 内缩半线宽。
+        let inset = rect.insetBy(dx: 0.5, dy: 0.5)
+        ctx.addPath(CGPath(roundedRect: inset, cornerWidth: chipRadius - 0.5, cornerHeight: chipRadius - 0.5, transform: nil))
+        ctx.setStrokeColor(color.withAlphaComponent(0.55).cgColor)
+        ctx.setLineWidth(1)
+        ctx.strokePath()
+    }
+
+    /// 迷你折线（30 样本）：渐变面积（顶浓底透）+ 1.5pt 圆帽折线；裸绘时带基线发丝
+    ///（入框时框底即地平线）。
     private static func drawSparkline(_ values: [Double], in rect: CGRect, color: NSColor,
                                       baseline: Bool, ctx: CGContext) {
         let v = Array(values.suffix(30))
@@ -475,8 +513,10 @@ public enum MenuBarGlyph {
             ctx.setFillColor(color.withAlphaComponent(0.28).cgColor)
             ctx.fill(CGRect(x: rect.minX, y: rect.minY - 1, width: rect.width, height: 1))
         }
+        // 首末点向内缩 0.75pt：圆帽端不与软框描边融接（评审修正）。
+        let plotX = rect.minX + 0.75, plotW = rect.width - 1.5
         let pts: [CGPoint] = v.enumerated().map { i, val in
-            CGPoint(x: rect.minX + rect.width * CGFloat(i) / CGFloat(v.count - 1),
+            CGPoint(x: plotX + plotW * CGFloat(i) / CGFloat(v.count - 1),
                     y: rect.minY + rect.height * CGFloat(min(max(val, 0), 1)) * 0.9 + 0.5)
         }
         // 渐变面积：单色多一层纵深，模板模式下 alpha 渐变照常生效。
@@ -489,8 +529,8 @@ public enum MenuBarGlyph {
         ctx.closePath()
         ctx.clip()
         if let grad = CGGradient(colorsSpace: nil,
-                                 colors: [color.withAlphaComponent(0.30).cgColor,
-                                          color.withAlphaComponent(0.03).cgColor] as CFArray,
+                                 colors: [color.withAlphaComponent(0.38).cgColor,
+                                          color.withAlphaComponent(0.10).cgColor] as CFArray,
                                  locations: [0, 1]) {
             ctx.drawLinearGradient(grad,
                                    start: CGPoint(x: rect.midX, y: rect.maxY),
@@ -503,7 +543,7 @@ public enum MenuBarGlyph {
         ctx.move(to: pts[0])
         for pt in pts.dropFirst() { ctx.addLine(to: pt) }
         ctx.setStrokeColor(color.cgColor)
-        ctx.setLineWidth(1.5)
+        ctx.setLineWidth(1.4)
         ctx.setLineCap(.round)
         ctx.setLineJoin(.round)
         ctx.strokePath()
@@ -527,14 +567,14 @@ public enum MenuBarGlyph {
             ctx.setFillColor(color.withAlphaComponent(0.13).cgColor)
             ctx.fillPath()
         }
-        // 右对齐（最新样本贴右缘）。
+        // 右对齐（最新样本贴右缘）。条形近实色（0.82 起跳）——低透明条实测「太淡」。
         var x = rect.maxX - CGFloat(v.count) * histBarW - CGFloat(v.count - 1) * histGap
         for val in v {
             let f = min(max(val, 0), 1)
-            let h = max(histBarW, rect.height * CGFloat(f))
+            let h = max(4, rect.height * CGFloat(f))   // 最低 4pt：短刻度而非圆点（评审修正）
             ctx.addPath(CGPath(roundedRect: CGRect(x: x, y: rect.minY, width: histBarW, height: h),
                                cornerWidth: r, cornerHeight: r, transform: nil))
-            ctx.setFillColor(color.withAlphaComponent(0.62 + 0.38 * f).cgColor)
+            ctx.setFillColor(color.withAlphaComponent(0.82 + 0.18 * f).cgColor)
             ctx.fillPath()
             x += histBarW + histGap
         }
@@ -544,7 +584,7 @@ public enum MenuBarGlyph {
     private static func drawPie(_ fraction: Double, in rect: CGRect, color: NSColor, ctx: CGContext) {
         let c = CGPoint(x: rect.midX, y: rect.midY)
         let r = rect.width / 2
-        ctx.setFillColor(color.withAlphaComponent(0.18).cgColor)
+        ctx.setFillColor(color.withAlphaComponent(0.24).cgColor)
         ctx.fillEllipse(in: rect)
         let f = max(0.02, min(fraction, 1))
         ctx.beginPath()
@@ -554,16 +594,16 @@ public enum MenuBarGlyph {
         ctx.closePath()
         ctx.setFillColor(color.cgColor)
         ctx.fillPath()
-        ctx.setStrokeColor(color.withAlphaComponent(0.4).cgColor)
+        ctx.setStrokeColor(color.withAlphaComponent(0.45).cgColor)
         ctx.setLineWidth(1)
         ctx.strokeEllipse(in: rect.insetBy(dx: 0.5, dy: 0.5))
     }
 
-    /// 迷你圆环：2pt 淡轨 0.22 + 圆帽进度弧。
+    /// 迷你圆环：2pt 淡轨 0.32 + 圆帽进度弧。
     private static func drawRing(_ fraction: Double, in rect: CGRect, color: NSColor, ctx: CGContext) {
         let c = CGPoint(x: rect.midX, y: rect.midY)
         let r = (rect.width - 2) / 2
-        ctx.setStrokeColor(color.withAlphaComponent(0.22).cgColor)
+        ctx.setStrokeColor(color.withAlphaComponent(0.32).cgColor)
         ctx.setLineWidth(2)
         ctx.strokeEllipse(in: rect.insetBy(dx: 1, dy: 1))
         let f = max(0.02, min(fraction, 1))
@@ -583,19 +623,19 @@ public enum MenuBarGlyph {
         // 壳：1pt 描边完全在框内（内缩半线宽），2.75pt 圆角。
         ctx.addPath(CGPath(roundedRect: body.insetBy(dx: 0.5, dy: 0.5),
                            cornerWidth: 2.75, cornerHeight: 2.75, transform: nil))
-        ctx.setStrokeColor(color.withAlphaComponent(0.5).cgColor)
+        ctx.setStrokeColor(color.withAlphaComponent(0.55).cgColor)
         ctx.setLineWidth(1)
         ctx.strokePath()
         // 电极帽
-        ctx.addPath(CGPath(roundedRect: CGRect(x: body.maxX + 0.75, y: body.midY - 1.75, width: 1.75, height: 3.5),
+        ctx.addPath(CGPath(roundedRect: CGRect(x: body.maxX + 0.5, y: body.midY - 2.25, width: 1.75, height: 4.5),
                            cornerWidth: 0.85, cornerHeight: 0.85, transform: nil))
-        ctx.setFillColor(color.withAlphaComponent(0.5).cgColor)
+        ctx.setFillColor(color.withAlphaComponent(0.55).cgColor)
         ctx.fillPath()
         // 电芯
         let inset = body.insetBy(dx: 2, dy: 2)
-        let w = max(1.5, inset.width * CGFloat(min(max(level, 0), 100)) / 100)
+        let w = max(2.5, inset.width * CGFloat(min(max(level, 0), 100)) / 100)
         ctx.addPath(CGPath(roundedRect: CGRect(x: inset.minX, y: inset.minY, width: w, height: inset.height),
-                           cornerWidth: 1.5, cornerHeight: 1.5, transform: nil))
+                           cornerWidth: 1.1, cornerHeight: 1.1, transform: nil))
         ctx.setFillColor(color.cgColor)
         ctx.fillPath()
         // 充电闪电：镂空 halo + 实画。
@@ -610,6 +650,7 @@ public enum MenuBarGlyph {
                 ctx.setBlendMode(.destinationOut)
                 ctx.setFillColor(NSColor.black.cgColor)
                 ctx.fill(halo)
+                ctx.fill(halo)   // 蒙版边缘半透明，双擦逼近全透明缝（评审修正）
                 ctx.restoreGState()
                 drawTinted(bolt, in: r, color: color, ctx: ctx)
             }

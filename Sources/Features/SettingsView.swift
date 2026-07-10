@@ -670,7 +670,7 @@ public struct SettingsView: View {
                    tint: XColor.metricNetwork[0], defOn: true, defStyle: .graph,
                    styles: [.iconValue, .valueOnly, .graph, .rich]),
             MBItem(id: "disk", title: xLoc("磁盘占用"), icon: "internaldrive",
-                   tint: XColor.metricDisk[0], defOn: false, defStyle: .iconValue,
+                   tint: XColor.warning, defOn: false, defStyle: .iconValue,
                    styles: [.iconValue, .valueOnly, .rich, .ring]),
             MBItem(id: "temp", title: xLoc("处理器温度"), icon: "thermometer.medium",
                    tint: XColor.warning, defOn: false, defStyle: .iconValue,
@@ -678,8 +678,8 @@ public struct SettingsView: View {
             MBItem(id: "battery", title: xLoc("电池"), icon: "battery.100percent",
                    tint: XColor.success, defOn: false, defStyle: .iconValue,
                    styles: [.iconValue, .valueOnly, .ring]),
-            MBItem(id: "gpu", title: xLoc("GPU 占用"), icon: "cpu.fill",
-                   tint: XColor.metricGPU[0], defOn: false, defStyle: .rich,
+            MBItem(id: "gpu", title: xLoc("GPU 占用"), icon: "display",
+                   tint: XColor.accentPink, defOn: false, defStyle: .rich,
                    styles: [.iconValue, .valueOnly, .graph, .rich, .ring]),
             MBItem(id: "memory", title: xLoc("内存"), icon: "memorychip",
                    tint: XColor.metricMemory[0], defOn: true, defStyle: .rich,
@@ -1178,6 +1178,16 @@ private struct MBStyleTile: View {
         .accessibilityLabel(style.title)
     }
 
+    /// 软框（与真实字形 1:1，P10R2）：描边 0.55 + 淡底 0.07。
+    @ViewBuilder private func chipped<V: View>(_ content: V) -> some View {
+        content
+            .padding(.horizontal, 3).padding(.vertical, 1.5)
+            .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill((selected ? tint : XColor.textSecondary).opacity(0.07)))
+            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .strokeBorder((selected ? tint : XColor.textSecondary).opacity(0.55), lineWidth: 1))
+    }
+
     @ViewBuilder private var preview: some View {
         switch style {
         case .iconValue:
@@ -1189,14 +1199,14 @@ private struct MBStyleTile: View {
             Text("42%").font(XFont.microMono)
         case .graph:
             HStack(spacing: 2) {
-                MBSparkPreview()
+                chipped(MBSparkPreview())
                 Text("42%").font(XFont.microMono)
             }
         case .rich:
             HStack(spacing: 2) {
-                // 与真实字形一致（P10 裸绘）：CPU=轨道直方图，内存/GPU/磁盘=饼盘
+                // 与真实字形一致：CPU=软框直方图，内存/GPU/磁盘=饼盘
                 if icon == "cpu" {
-                    MBHistoPreview()
+                    chipped(MBHistoPreview())
                 } else {
                     MBPiePreview()
                 }
@@ -1268,16 +1278,13 @@ private struct MBSparkPreview: View {
 private struct MBHistoPreview: View {
     private let bars: [Double] = [0.4, 0.7, 0.45, 0.9, 0.55, 0.8, 0.5]
     var body: some View {
-        // 与真实字形同语言：圆角条 + 每根条背后的满高淡轨道（不再套外框）。
+        // 与真实字形同语言：软框内近实色圆角条（框即坐标系）。
         HStack(alignment: .bottom, spacing: 1) {
             ForEach(Array(bars.enumerated()), id: \.offset) { _, v in
-                ZStack(alignment: .bottom) {
-                    Capsule().opacity(0.14).frame(width: 2.5, height: 12)
-                    Capsule().opacity(0.62 + 0.38 * v)
-                        .frame(width: 2.5, height: max(2.5, 12 * CGFloat(v)))
-                }
+                Capsule().opacity(0.82 + 0.18 * v)
+                    .frame(width: 2.5, height: max(2.5, 10 * CGFloat(v)))
             }
         }
-        .frame(width: 23.5, height: 12, alignment: .bottom)
+        .frame(width: 23.5, height: 10, alignment: .bottom)
     }
 }
