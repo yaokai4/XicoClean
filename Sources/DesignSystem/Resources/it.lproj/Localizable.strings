@@ -1067,3 +1067,15 @@
 "%d 个项目 · 点文件夹进入 · 点文件选中" = "%d elementi · Clic su una cartella per aprire · Clic su un file per selezionare";
 "管理授权" = "Gestisci licenza";
 "许可证无效 · 请重新激活" = "Licenza non valida · Riattivala";
+
+"希可 Mac 清理" = "Xico";
+
+"诊断日志" = "Log diagnostici";
+"导出最近运行日志，便于反馈问题（不含任何自动上报）" = "Esporta i log recenti per segnalare problemi (nessun invio automatico).";
+"导出" = "Esporta";
+"立即购买 · %@" = "Acquista %@";
+"立即购买 %@" = "Acquista %@";
+"%@ · %@" = "%@ · %@";
+"已激活" = "Attivato";
+"本机设备" = "Questo dispositivo";
+"已激活的设备可在官网后台查询与管理。" = "I dispositivi attivati possono essere visualizzati e gestiti nella console del sito.";

@@ -464,8 +464,9 @@ public final class AppModel: ObservableObject {
     }
 
     private static let lastOnlineCheckKey = "xico.license.lastOnlineCheck"
-    /// 复验节流：3 天问一次服务器就够了。
-    private static let onlineCheckInterval: TimeInterval = 72 * 3600
+    /// 复验节流：每半个月（15 天）向官网同步一次授权状态即可——足够及时收敛吊销/退款，
+    /// 又不打扰离线用户。断网/超时一律保持现状，绝不因为一次联网失败影响正版。
+    private static let onlineCheckInterval: TimeInterval = 15 * 86_400
 
     /// 在线复验（吊销即失效）：已授权 **或复验逾期(lapsed)** 时每 ≥72h 向官网确认许可证状态。
     /// 「疑罪从无」——只有服务器明确回答 revoked/refunded 才清除本地许可；

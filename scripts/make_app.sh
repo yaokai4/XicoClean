@@ -8,6 +8,20 @@ CONFIG="${1:-release}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# 构建配置（许可公钥 / 各类 URL 等）持久化在 gitignore 的 scripts/build.env，
+# 避免「忘记 export XICO_LICENSE_PUBLIC_KEYS」而打出「无法验签任何许可」的坏包——
+# 这正是 0.3.0 b83「输入官网激活码显示无效」的根因（Info.plist 里根本没有公钥）。
+# 已在环境里显式导出的同名变量优先级更高（build.env 只补空缺，不覆盖）。
+if [ -f "$ROOT/scripts/build.env" ]; then
+  # shellcheck disable=SC1090,SC1091
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in ''|\#*) continue ;; esac
+    _k="${_line%%=*}"
+    if [ -z "$(eval "printf '%s' \"\${$_k:-}\"")" ]; then export "$_line"; fi
+  done < "$ROOT/scripts/build.env"
+  echo "▶︎ 已加载 scripts/build.env（仅补齐未导出的变量）"
+fi
+
 # iCloud 同步产生的冲突副本（"* 2.swift" 等）会导致重复声明编译失败。
 # 发布脚本只检测并失败，不自动删除源码；需要时显式运行 scripts/clean_conflicts.sh。
 if find Sources Tests \( -name "* [0-9].swift" -o -name "* [0-9].json" \) -print -quit | grep -q .; then
@@ -41,6 +55,27 @@ append_info_string() {
     printf '    <key>%s</key><string>%s</string>\n' "$key" "$(xml_escape "$value")"
   fi
 }
+
+# 许可公钥自检（fail-fast，在昂贵的通用构建之前）：没有它，App 无法离线验签官网签发的
+# 许可信封，任何激活码都会显示「无效」。因此 release 构建必须带上；确需打不含验签的调试包时
+# 显式设 XICO_ALLOW_UNVERIFIED_LICENSE=1。值格式：keyID:base64公钥（keyID 须与官网
+# XICO_LICENSE_KEY_ID 一致，公钥须由官网 XICO_LICENSE_PRIVATE_KEY 派生——见 scripts/print_license_pubkey.mjs）。
+LICKEYS="${XICO_LICENSE_PUBLIC_KEYS:-}"
+if [ -z "$LICKEYS" ]; then
+  if [ "$CONFIG" = "release" ] && [ "${XICO_ALLOW_UNVERIFIED_LICENSE:-0}" != "1" ]; then
+    echo "✗ 未设置 XICO_LICENSE_PUBLIC_KEYS——打出的包无法验签任何许可，激活必然显示「无效」。"
+    echo "  修复：在 scripts/build.env 写入 XICO_LICENSE_PUBLIC_KEYS=<keyID>:<base64公钥>"
+    echo "       （用 scripts/print_license_pubkey.mjs 从官网私钥派生；必须与生产环境同一对密钥）。"
+    echo "  确需打无验签调试包：XICO_ALLOW_UNVERIFIED_LICENSE=1 scripts/make_app.sh $CONFIG"
+    exit 1
+  fi
+  echo "⚠︎ XICO_LICENSE_PUBLIC_KEYS 为空：本包无法验签许可，激活会失败（仅供无授权调试）。"
+elif ! printf '%s' "$LICKEYS" | grep -q ':'; then
+  echo "✗ XICO_LICENSE_PUBLIC_KEYS 格式应为 keyID:base64公钥（缺少冒号）：$LICKEYS"
+  exit 1
+else
+  echo "▶︎ 许可公钥已就绪：keyID=${LICKEYS%%:*}"
+fi
 
 # Universal Binary（arm64 + x86_64），让 Intel 与 Apple Silicon 都能运行
 ARCHS="--arch arm64 --arch x86_64"

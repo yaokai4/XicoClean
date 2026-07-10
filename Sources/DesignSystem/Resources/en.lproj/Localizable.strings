@@ -1067,3 +1067,15 @@
 "%d 个项目 · 点文件夹进入 · 点文件选中" = "%d items · Click a folder to open · Click a file to select";
 "管理授权" = "Manage License";
 "许可证无效 · 请重新激活" = "License invalid · Please activate again";
+
+"希可 Mac 清理" = "Xico";
+
+"诊断日志" = "Diagnostic Logs";
+"导出最近运行日志，便于反馈问题（不含任何自动上报）" = "Export recent logs to help report issues (no automatic reporting).";
+"导出" = "Export";
+"立即购买 · %@" = "Buy %@";
+"立即购买 %@" = "Buy %@";
+"%@ · %@" = "%@ · %@";
+"已激活" = "Activated";
+"本机设备" = "This device";
+"已激活的设备可在官网后台查询与管理。" = "Activated devices can be viewed and managed in the website console.";

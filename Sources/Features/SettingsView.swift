@@ -63,6 +63,7 @@ public struct SettingsView: View {
                     sectionLabel("权限与系统")
                     permissionCard
                     helperCard
+                    diagnosticsCard
                     resetCard
                 }
                 .padding(XSpacing.xl)
@@ -325,52 +326,60 @@ public struct SettingsView: View {
         return xLoc(module)
     }
 
-    /// 关于卡：信息区在上、操作区收进底部一行（工具类靠左、付费主行动靠右）——
-    /// 不再把三个按钮垂直挤在右上角（用户反馈：升级 Pro 与导出诊断日志贴得太近）。
-    /// Pro 入口常显：未激活 =「升级 Pro」主按钮；已激活 =「管理授权」次按钮
-    ///（商业授权卡已删，这里是授权状态/换机释放的唯一入口，绝不能只在未激活时出现）。
+    /// 关于卡：产品信息在左，主行动（检查更新 + 升级 Pro / 管理授权）紧贴其右——
+    /// 不再有分隔横线，也不再把「导出诊断日志」挤在产品信息旁（用户反馈：横线多余、诊断日志应另放）。
+    /// 诊断日志已下沉到「权限与系统 · 诊断日志」卡。Pro 入口常显：未激活 =「升级 Pro」主按钮；
+    /// 已激活 =「管理授权」次按钮（这里是授权状态/换机释放的唯一入口，绝不能只在未激活时出现）。
     private var aboutCard: some View {
         XCard {
-            HStack(spacing: XSpacing.l) {
-                XBrandMark(size: 56)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: XSpacing.s) {
-                        Text("Xico").xLargeTitle().foregroundStyle(XColor.textPrimary)
-                        if licenseAllowsUse, case .licensed = (licenseStatus ?? model.env.license.status()).state {
-                            XBadge("Pro", color: XColor.brand)
+            VStack(spacing: XSpacing.m) {
+                HStack(alignment: .top, spacing: XSpacing.l) {
+                    XBrandMark(size: 56)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: XSpacing.s) {
+                            Text(xLoc("希可 Mac 清理")).xLargeTitle().foregroundStyle(XColor.textPrimary)
+                            if licenseAllowsUse, case .licensed = (licenseStatus ?? model.env.license.status()).state {
+                                XBadge("Pro", color: XColor.brand)
+                            }
+                        }
+                        Text(xLoc("macOS 系统清理 · 磁盘管理 · 性能优化")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        Text(xLocF("版本 %@", version)).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                        HStack(spacing: XSpacing.s) {
+                            Button(xLoc("隐私政策")) { NSWorkspace.shared.open(URL(string: "https://mac.xicoai.com/security")!) }
+                                .buttonStyle(.link).font(XFont.caption)
+                            Text("·").foregroundStyle(XColor.textTertiary)
+                            Button(xLoc("许可协议")) { NSWorkspace.shared.open(URL(string: "https://xicoai.com/terms")!) }
+                                .buttonStyle(.link).font(XFont.caption)
                         }
                     }
-                    Text(xLoc("macOS 系统清理 · 磁盘管理 · 性能优化")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                    Text(xLocF("版本 %@", version)).font(XFont.caption).foregroundStyle(XColor.textTertiary)
-                    HStack(spacing: XSpacing.s) {
-                        Button(xLoc("隐私政策")) { NSWorkspace.shared.open(URL(string: "https://mac.xicoai.com/security")!) }
-                            .buttonStyle(.link).font(XFont.caption)
-                        Text("·").foregroundStyle(XColor.textTertiary)
-                        Button(xLoc("许可协议")) { NSWorkspace.shared.open(URL(string: "https://xicoai.com/terms")!) }
-                            .buttonStyle(.link).font(XFont.caption)
+                    Spacer()
+                    // 主行动紧贴产品信息右侧：付费主行动在上、检查更新在下。
+                    VStack(alignment: .trailing, spacing: XSpacing.s) {
+                        if licenseAllowsUse {
+                            Button(xLoc("管理授权")) { model.showPricing = true }
+                                .buttonStyle(XSecondaryButtonStyle(compact: true))
+                        } else {
+                            Button(xLoc("升级 Pro")) { model.showPricing = true }
+                                .buttonStyle(XPrimaryButtonStyle(compact: true))
+                        }
+                        Button(checkingUpdate ? xLoc("检查中…") : xLoc("检查更新")) { checkForUpdate() }
+                            .buttonStyle(XSecondaryButtonStyle(compact: true)).disabled(checkingUpdate)
                     }
                 }
-                Spacer()
-            }
-            Divider().overlay(XColor.hairline).padding(.vertical, XSpacing.xs)
-            HStack(spacing: XSpacing.m) {
-                Button(checkingUpdate ? xLoc("检查中…") : xLoc("检查更新")) { checkForUpdate() }
-                    .buttonStyle(XSecondaryButtonStyle(compact: true)).disabled(checkingUpdate)
-                Button(xLoc("导出诊断日志")) { exportDiagnostics() }
-                    .buttonStyle(XSecondaryButtonStyle(compact: true))
-                Spacer()
-                if licenseAllowsUse {
-                    Button(xLoc("管理授权")) { model.showPricing = true }
-                        .buttonStyle(XSecondaryButtonStyle(compact: true))
-                } else {
-                    Button(xLoc("升级 Pro")) { model.showPricing = true }
-                        .buttonStyle(XPrimaryButtonStyle(compact: true))
+                if let msg = updateMessage {
+                    Text(msg).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            if let msg = updateMessage {
-                Text(msg).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+        }
+    }
+
+    /// 诊断日志卡（从关于卡下沉至「权限与系统」）：导出最近运行日志便于反馈，绝无自动上报。
+    private var diagnosticsCard: some View {
+        settingRow(icon: "doc.text.magnifyingglass", colors: [XColor.textTertiary, XColor.textSecondary],
+                   title: xLoc("诊断日志"), subtitle: xLoc("导出最近运行日志，便于反馈问题（不含任何自动上报）")) {
+            Button(xLoc("导出")) { exportDiagnostics() }
+                .buttonStyle(XSecondaryButtonStyle(compact: true))
         }
     }
 

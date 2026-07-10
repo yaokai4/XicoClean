@@ -8,3 +8,6 @@ build/
 # stray nested clone (not part of this repo)
 XicoClean/
 dist/
+
+# 打包机密（许可公钥等），见 scripts/build.env.example
+scripts/build.env

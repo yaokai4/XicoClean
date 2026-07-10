@@ -29,6 +29,8 @@ public struct PricingView: View {
     @State private var importError: String?
     @State private var importedOK = false
     @State private var activationKey = ""
+    /// 当前选中的买断方案（可点卡选择，驱动底部「立即购买」）。默认个人版。
+    @State private var selectedPlanID = "personal"
     /// 与官网同步的实时价格：先渲染缓存/兜底值，onAppear 拉取后无感刷新。
     @State private var pricing: ProPricing = ProPricingClient.cachedOrDefault()
     /// 席位已满：激活返回 seat_limit 时置真，展开「在旧设备释放授权」的自助恢复引导（审计 CONTRACT (d)）。
@@ -71,11 +73,18 @@ public struct PricingView: View {
                 header
                 ScrollView {
                     VStack(spacing: XSpacing.l) {
-                        trialPill
-                        HStack(alignment: .top, spacing: XSpacing.l) {
-                            ForEach(plans) { plan in planCard(plan) }
+                        if isCurrentlyLicensed {
+                            // 已激活：只显示「已激活的样子」——授权状态 + 本机设备 + 换机释放，
+                            // 不再出现方案卡与「立即购买」付款入口（用户反馈）。
+                            activatedView
+                        } else {
+                            trialPill
+                            HStack(alignment: .top, spacing: XSpacing.l) {
+                                ForEach(plans) { plan in planCard(plan) }
+                            }
+                            purchaseCTA
+                            importRow
                         }
-                        importRow
                         trustLine
                     }
                     .padding(XSpacing.xl)
@@ -133,57 +142,135 @@ public struct PricingView: View {
         }
     }
 
+    /// 可选择的方案卡：整卡可点，选中态描品牌边 + 左上单选圆点填充。
+    /// 购买行动收敛到卡片下方的单个「立即购买」CTA（作用于选中方案），比每卡各自一个按钮更清晰。
     private func planCard(_ plan: PricingPlan) -> some View {
-        VStack(alignment: .leading, spacing: XSpacing.m) {
-            HStack {
-                Text(plan.name).xHeadline().foregroundStyle(XColor.textPrimary)
-                Spacer()
-                if plan.highlighted { XBadge(xLoc("推荐"), color: XColor.brand) }
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(plan.price).font(XFont.monoHero).foregroundStyle(XColor.textPrimary)
-                    .contentTransition(.numericText())
-                // 划线原价 + 折扣徽章：与官网购买页同步展示（有折扣时才出现）。
-                if let compareAt = plan.compareAt {
-                    Text(compareAt).font(XFont.callout).foregroundStyle(XColor.textTertiary)
-                        .strikethrough(true, color: XColor.textTertiary)
+        let selected = selectedPlanID == plan.id
+        return Button {
+            withAnimation(XMotion.snappy) { selectedPlanID = plan.id }
+        } label: {
+            VStack(alignment: .leading, spacing: XSpacing.m) {
+                HStack(spacing: XSpacing.s) {
+                    // 单选指示：选中填充品牌色，未选空心。
+                    Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                        .font(XFont.body).foregroundStyle(selected ? XColor.brand : XColor.textTertiary)
+                        .accessibilityHidden(true)
+                    Text(plan.name).xHeadline().foregroundStyle(XColor.textPrimary)
+                    Spacer()
+                    if plan.highlighted { XBadge(xLoc("推荐"), color: XColor.brand) }
                 }
-                Text(plan.period).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-            }
-            HStack(spacing: XSpacing.s) {
-                XBadge(plan.devices, color: XColor.accentTeal)
-                if let discount = plan.discount {
-                    XBadge("-\(discount)%", color: XColor.accentPink)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(plan.price).font(XFont.monoHero).foregroundStyle(XColor.textPrimary)
+                        .contentTransition(.numericText())
+                    // 划线原价 + 折扣徽章：与官网购买页同步展示（有折扣时才出现）。
+                    if let compareAt = plan.compareAt {
+                        Text(compareAt).font(XFont.callout).foregroundStyle(XColor.textTertiary)
+                            .strikethrough(true, color: XColor.textTertiary)
+                    }
+                    Text(plan.period).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 }
-            }
-            Divider().overlay(XColor.hairline)
-            VStack(alignment: .leading, spacing: XSpacing.s) {
-                ForEach(plan.features, id: \.self) { f in
-                    HStack(alignment: .top, spacing: XSpacing.s) {
-                        Image(systemName: "checkmark.circle.fill").font(XFont.body).foregroundStyle(XColor.success)
-                        Text(f).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                        Spacer(minLength: 0)
+                HStack(spacing: XSpacing.s) {
+                    XBadge(plan.devices, color: XColor.accentTeal)
+                    if let discount = plan.discount {
+                        XBadge("-\(discount)%", color: XColor.accentPink)
+                    }
+                }
+                Divider().overlay(XColor.hairline)
+                VStack(alignment: .leading, spacing: XSpacing.s) {
+                    ForEach(plan.features, id: \.self) { f in
+                        HStack(alignment: .top, spacing: XSpacing.s) {
+                            Image(systemName: "checkmark.circle.fill").font(XFont.body).foregroundStyle(XColor.success)
+                            Text(f).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                            Spacer(minLength: 0)
+                        }
                     }
                 }
             }
-            Spacer(minLength: XSpacing.s)
-            Button {
-                openCheckout(plan: plan.id)
-            } label: {
-                Text(xLoc("立即购买")).frame(maxWidth: .infinity)
-            }
-            .buttonStyle(XPrimaryButtonStyle())
+            .padding(XSpacing.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
+                    .fill(selected ? XColor.brand.opacity(0.06) : XColor.surface)
+                    .overlay(RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
+                        .strokeBorder(selected ? XColor.brand : XColor.border,
+                                      lineWidth: selected ? 2 : 1))
+            )
+            .xCardShadow()
+            .contentShape(RoundedRectangle(cornerRadius: XRadius.card, style: .continuous))
         }
-        .padding(XSpacing.l)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
-                .fill(XColor.surface)
-                .overlay(RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
-                    .strokeBorder(plan.highlighted ? XColor.brand.opacity(0.6) : XColor.border,
-                                  lineWidth: plan.highlighted ? 2 : 1))
-        )
-        .xCardShadow()
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityLabel(xLocF("%@ · %@", plan.name, plan.price))
+    }
+
+    /// 底部主 CTA：购买当前选中的方案。名称随选择实时变化，让「选中→购买」一目了然。
+    private var purchaseCTA: some View {
+        let plan = plans.first { $0.id == selectedPlanID } ?? plans[0]
+        return Button {
+            openCheckout(plan: plan.id)
+        } label: {
+            Text(xLocF("立即购买 · %@", plan.name)).frame(maxWidth: .infinity)
+        }
+        .buttonStyle(XPrimaryButtonStyle())
+        .accessibilityLabel(xLocF("立即购买 %@", plan.name))
+    }
+
+    /// 已激活视图：授权状态 + 本机设备 + 换机释放。取代付款方案卡，让「已激活」一眼可辨。
+    private var activatedView: some View {
+        VStack(spacing: XSpacing.l) {
+            VStack(alignment: .leading, spacing: XSpacing.m) {
+                HStack(spacing: XSpacing.m) {
+                    XIconTile(systemImage: "checkmark.seal.fill", colors: [XColor.success, XColor.accentTeal], size: 44)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: XSpacing.s) {
+                            Text(xLoc("已激活")).xHeadline().foregroundStyle(XColor.textPrimary)
+                            XBadge("Pro", color: XColor.brand)
+                        }
+                        if let st = model.licenseStatus {
+                            Text(st.summary).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        }
+                    }
+                    Spacer()
+                }
+                Divider().overlay(XColor.hairline)
+                HStack(spacing: XSpacing.m) {
+                    Image(systemName: "laptopcomputer").font(XFont.body).foregroundStyle(XColor.brand).frame(width: 22)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(xLoc("本机设备")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        Text(AppModel.neutralDeviceLabel()).font(XFont.body).foregroundStyle(XColor.textPrimary)
+                    }
+                    Spacer()
+                    XBadge(xLoc("已授权"), color: XColor.success)
+                }
+                Text(xLoc("已激活的设备可在官网后台查询与管理。"))
+                    .font(XFont.nano).foregroundStyle(XColor.textTertiary)
+            }
+            .padding(XSpacing.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
+                    .fill(XColor.surface)
+                    .overlay(RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
+                        .strokeBorder(XColor.success.opacity(0.4), lineWidth: 1))
+            )
+            .xCardShadow()
+
+            VStack(spacing: XSpacing.s) {
+                Button(deactivating ? xLoc("释放中…") : xLoc("换机？释放本机授权")) { deactivateThisDevice() }
+                    .buttonStyle(XSecondaryButtonStyle(compact: true))
+                    .disabled(deactivating)
+                Text(xLoc("释放后本机立即退出 Pro 并回到试用/受限，服务器席位随之腾出供新设备激活；请仅在本机不再使用本应用时释放。"))
+                    .font(XFont.nano).foregroundStyle(XColor.textTertiary).multilineTextAlignment(.center)
+                if let note = deactivateNote {
+                    Text(note).font(XFont.caption).foregroundStyle(XColor.success).multilineTextAlignment(.center)
+                }
+                if let e = importError {
+                    Text(e).font(XFont.caption).foregroundStyle(XColor.danger).multilineTextAlignment(.center)
+                }
+            }
+            privacyDisclosure
+        }
     }
 
     private var importRow: some View {
@@ -208,18 +295,6 @@ public struct PricingView: View {
             if seatLimitHit {
                 Text(xLoc("授权台数已满。换了新机器？请在旧设备上点『释放本机授权』腾出名额后重试，或联系我们协助。"))
                     .font(XFont.caption).foregroundStyle(XColor.warning).multilineTextAlignment(.center)
-            }
-            if isCurrentlyLicensed {
-                Button(deactivating ? xLoc("释放中…") : xLoc("换机？释放本机授权")) { deactivateThisDevice() }
-                    .buttonStyle(.link).font(XFont.caption)
-                    .disabled(deactivating)
-                // 如实说明「释放」的后果与边界（审计 PricingView P2）：释放只腾出服务器席位并清除本机许可，
-                // 不能撤销已下载到本机的签名许可副本本身；下次联网复验时服务器据设备席位状态给出（已签名的）结论。
-                Text(xLoc("释放后本机立即退出 Pro 并回到试用/受限，服务器席位随之腾出供新设备激活；请仅在本机不再使用本应用时释放。"))
-                    .font(XFont.nano).foregroundStyle(XColor.textTertiary).multilineTextAlignment(.center)
-            }
-            if let note = deactivateNote {
-                Text(note).font(XFont.caption).foregroundStyle(XColor.success).multilineTextAlignment(.center)
             }
             privacyDisclosure
         }
