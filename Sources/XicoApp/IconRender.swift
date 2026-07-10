@@ -84,6 +84,9 @@ func renderGlyphs() {
         let cpu = MenuBarGlyph.cpu(fraction: 0.62, history: cpuH, style: style)
         let mem = MenuBarGlyph.memory(fraction: 0.71, history: cpuH, style: style)
         let net = MenuBarGlyph.network(down: 1_250_000, up: 386_000, history: netH, style: style)
+        let temp = MenuBarGlyph.temperature(celsius: 44, style: style)
+        let bat = MenuBarGlyph.battery(percent: 83, charging: true, style: style)
+        let bat2 = MenuBarGlyph.battery(percent: 27, charging: false, style: style)
         // 真 · 合并项：CPU 直方 + 内存饼盘 + 网络双行（默认预设的缩影）
         let comb = MenuBarGlyph.combined(slots: [
             MenuCombinedSlot(viz: .histogram(cpuH), tint: XColor.metricCPU),
@@ -95,7 +98,7 @@ func renderGlyphs() {
             Image(nsImage: img).renderingMode(.template).foregroundStyle(dark ? .white : .black)
         }
         let view = HStack(spacing: 18) {
-            tinted(cpu); tinted(mem); tinted(net); tinted(comb)
+            tinted(cpu); tinted(mem); tinted(net); tinted(temp); tinted(bat); tinted(bat2); tinted(comb)
         }
         .padding(.horizontal, 18).padding(.vertical, 4)
         .background(dark ? Color(white: 0.15) : Color(white: 0.96))
@@ -111,6 +114,8 @@ func renderGlyphs() {
     strip(dark: true, style: .valueOnly, "glyphs-valueonly.png")
     strip(dark: true, style: .graph, "glyphs-graph.png")
     strip(dark: true, style: .ring, "glyphs-ring.png")
+    strip(dark: true, style: .rich, "glyphs-rich.png")
+    strip(dark: false, style: .rich, "glyphs-rich-light.png")
 
     // 彩色模式 + 全部新指标（温度/磁盘/GPU），对标 iStat 彩色菜单栏
     func coloredStrip(dark: Bool, _ name: String) {

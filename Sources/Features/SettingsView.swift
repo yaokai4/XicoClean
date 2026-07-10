@@ -943,7 +943,7 @@ public struct SettingsView: View {
                 let styleBinding = mbStyleBinding(item)
                 HStack(spacing: 6) {
                     ForEach(item.styles, id: \.rawValue) { st in
-                        MBStyleTile(style: st, tint: item.tint, icon: item.icon, framed: true,
+                        MBStyleTile(style: st, tint: item.tint, icon: item.icon,
                                     selected: styleBinding.wrappedValue == st.rawValue) {
                             withAnimation(XMotion.snappy) { styleBinding.wrappedValue = st.rawValue }
                         }
@@ -1151,7 +1151,6 @@ private struct MBStyleTile: View {
     let style: MenuBarStyle
     let tint: Color
     let icon: String
-    var framed: Bool = false
     let selected: Bool
     let action: () -> Void
 
@@ -1179,18 +1178,6 @@ private struct MBStyleTile: View {
         .accessibilityLabel(style.title)
     }
 
-    /// 图形加软框——与真实字形 1:1（graph/rich 才有动态图形可框；iconValue/valueOnly 无框）。
-    @ViewBuilder private func chipped<V: View>(_ content: V) -> some View {
-        if framed {
-            content
-                .padding(.horizontal, XSpacing.xxs).padding(.vertical, 1)
-                .background(RoundedRectangle(cornerRadius: XRadius.micro, style: .continuous).fill((selected ? tint : XColor.textSecondary).opacity(0.09)))
-                .overlay(RoundedRectangle(cornerRadius: XRadius.micro, style: .continuous).strokeBorder((selected ? tint : XColor.textSecondary).opacity(0.3), lineWidth: 1))
-        } else {
-            content
-        }
-    }
-
     @ViewBuilder private var preview: some View {
         switch style {
         case .iconValue:
@@ -1202,14 +1189,14 @@ private struct MBStyleTile: View {
             Text("42%").font(XFont.microMono)
         case .graph:
             HStack(spacing: 2) {
-                chipped(MBSparkPreview())
+                MBSparkPreview()
                 Text("42%").font(XFont.microMono)
             }
         case .rich:
             HStack(spacing: 2) {
-                // 与真实字形一致:CPU=直方图入框,内存/GPU/磁盘=裸露饼盘
+                // 与真实字形一致（P10 裸绘）：CPU=轨道直方图，内存/GPU/磁盘=饼盘
                 if icon == "cpu" {
-                    chipped(MBHistoPreview())
+                    MBHistoPreview()
                 } else {
                     MBPiePreview()
                 }
@@ -1227,9 +1214,9 @@ private struct MBStyleTile: View {
 private struct MBPiePreview: View {
     var body: some View {
         ZStack {
-            Circle().opacity(0.22)
+            Circle().opacity(0.18)
             MBPieSector(fraction: 0.42)
-            Circle().stroke(lineWidth: 1).opacity(0.5)
+            Circle().stroke(lineWidth: 1).opacity(0.4)
         }
         .frame(width: 12, height: 12)
     }
@@ -1251,7 +1238,7 @@ private struct MBPieSector: Shape {
 private struct MBRingPreview: View {
     var body: some View {
         ZStack {
-            Circle().stroke(lineWidth: 1.8).opacity(0.38)
+            Circle().stroke(lineWidth: 1.8).opacity(0.22)
             Circle().trim(from: 0, to: 0.42)
                 .stroke(style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
                 .rotationEffect(.degrees(-90))
@@ -1281,13 +1268,16 @@ private struct MBSparkPreview: View {
 private struct MBHistoPreview: View {
     private let bars: [Double] = [0.4, 0.7, 0.45, 0.9, 0.55, 0.8, 0.5]
     var body: some View {
-        HStack(alignment: .bottom, spacing: 1.5) {
+        // 与真实字形同语言：圆角条 + 每根条背后的满高淡轨道（不再套外框）。
+        HStack(alignment: .bottom, spacing: 1) {
             ForEach(Array(bars.enumerated()), id: \.offset) { _, v in
-                RoundedRectangle(cornerRadius: 0.5)
-                    .opacity(0.4 + 0.6 * v)
-                    .frame(width: 2, height: max(2, 12 * CGFloat(v)))
+                ZStack(alignment: .bottom) {
+                    Capsule().opacity(0.14).frame(width: 2.5, height: 12)
+                    Capsule().opacity(0.62 + 0.38 * v)
+                        .frame(width: 2.5, height: max(2.5, 12 * CGFloat(v)))
+                }
             }
         }
-        .frame(width: 22, height: 12, alignment: .bottom)
+        .frame(width: 23.5, height: 12, alignment: .bottom)
     }
 }
