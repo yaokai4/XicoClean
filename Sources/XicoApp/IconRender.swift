@@ -79,6 +79,8 @@ func renderGlyphs() {
 
     let cpuH = (0..<16).map { (i: Int) -> Double in 0.4 + 0.3 * sin(Double(i) * 0.6) }
     let netH = (0..<16).map { (i: Int) -> Double in 0.3 + 0.4 * abs(sin(Double(i) * 0.5)) }
+    // 高负载历史（0.72–1.0）：验证满高适配——柱/线 100% 时必须顶到软框内壁。
+    let hotH = (0..<16).map { (i: Int) -> Double in 0.72 + 0.28 * abs(sin(Double(i) * 0.8)) }
     func strip(dark: Bool, style: MenuBarStyle, _ name: String) {
         NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         let cpu = MenuBarGlyph.cpu(fraction: 0.62, history: cpuH, style: style)
@@ -116,6 +118,26 @@ func renderGlyphs() {
     strip(dark: true, style: .ring, "glyphs-ring.png")
     strip(dark: true, style: .rich, "glyphs-rich.png")
     strip(dark: false, style: .rich, "glyphs-rich-light.png")
+
+    // 高负载条：CPU 88% 直方图 + 折线，检查满高。
+    func hotStrip(_ name: String) {
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        let hist = MenuBarGlyph.cpu(fraction: 0.88, history: hotH, style: .rich)
+        let spark = MenuBarGlyph.gpu(fraction: 0.94, history: hotH, style: .graph)
+        let view = HStack(spacing: 18) {
+            Image(nsImage: hist).renderingMode(.template).foregroundStyle(.white)
+            Image(nsImage: spark).renderingMode(.template).foregroundStyle(.white)
+        }
+        .padding(.horizontal, 18).padding(.vertical, 4)
+        .background(Color(white: 0.15))
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 3
+        if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: dir.appendingPathComponent(name))
+        }
+    }
+    hotStrip("glyphs-hot.png")
 
     // 彩色模式 + 全部新指标（温度/磁盘/GPU），对标 iStat 彩色菜单栏
     func coloredStrip(dark: Bool, _ name: String) {

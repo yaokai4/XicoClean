@@ -409,22 +409,36 @@ public enum MenuBarGlyph {
             drawNetRow(text: down, up: false, x: x, elemWidth: w, rowCenterY: 4.9, font: f, color: p.fg, ctx: ctx)
         case .sparkline(let values, let chip):
             if chip {
+                // 满高适配（用户钦点）：内容裁剪进内圆角框，面积贴住内壁底、
+                // 100% 峰值顶到内壁顶（留 0.75pt 给 1.4pt 线帽不压描边）。
                 let box = CGRect(x: x, y: chipRect.minY, width: sparkWidth + chipPad * 2, height: chipRect.height)
                 drawChip(box, color: p.fg, ctx: ctx)
-                drawSparkline(values, in: CGRect(x: box.minX + chipPad, y: box.minY + 1.25,
-                                                 width: sparkWidth, height: box.height - 3),
+                let inner = box.insetBy(dx: 1, dy: 1)
+                ctx.saveGState()
+                ctx.addPath(CGPath(roundedRect: inner, cornerWidth: chipRadius - 1, cornerHeight: chipRadius - 1, transform: nil))
+                ctx.clip()
+                drawSparkline(values, in: CGRect(x: box.minX + chipPad, y: inner.minY,
+                                                 width: sparkWidth, height: inner.height - 0.75),
                               color: p.fg, baseline: false, ctx: ctx)
+                ctx.restoreGState()
             } else {
-                drawSparkline(values, in: CGRect(x: x, y: 1.5, width: sparkWidth, height: 15),
+                drawSparkline(values, in: CGRect(x: x, y: 1.5, width: sparkWidth, height: 14),
                               color: p.fg, baseline: true, ctx: ctx)
             }
         case .histogram(let values, let chip):
             if chip {
+                // 满高适配（用户钦点）：柱子基线与边框内壁底齐平（方底）、100% 顶到内壁顶。
+                // 与系统电池同法：内容裁剪进内圆角框，角上的端柱由圆角弧自然裁形。
                 let box = CGRect(x: x, y: chipRect.minY, width: histWidth + chipPad * 2, height: chipRect.height)
                 drawChip(box, color: p.fg, ctx: ctx)
-                drawHistogram(values, in: CGRect(x: box.minX + chipPad, y: box.minY + 1.75,
-                                                 width: histWidth, height: box.height - 3.5),
-                              color: p.fg, track: false, ctx: ctx)
+                let inner = box.insetBy(dx: 1, dy: 1)
+                ctx.saveGState()
+                ctx.addPath(CGPath(roundedRect: inner, cornerWidth: chipRadius - 1, cornerHeight: chipRadius - 1, transform: nil))
+                ctx.clip()
+                drawHistogram(values, in: CGRect(x: box.minX + chipPad, y: inner.minY,
+                                                 width: histWidth, height: inner.height),
+                              color: p.fg, track: false, flushBottom: true, ctx: ctx)
+                ctx.restoreGState()
             } else {
                 drawHistogram(values, in: CGRect(x: x, y: 1.5, width: histWidth, height: 15),
                               color: p.fg, track: true, ctx: ctx)
@@ -515,9 +529,10 @@ public enum MenuBarGlyph {
         }
         // 首末点向内缩 0.75pt：圆帽端不与软框描边融接（评审修正）。
         let plotX = rect.minX + 0.75, plotW = rect.width - 1.5
+        // 满量程映射：100% 就该到 rect 顶（头部余量由调用方的 rect 控制，不再打 9 折）。
         let pts: [CGPoint] = v.enumerated().map { i, val in
             CGPoint(x: plotX + plotW * CGFloat(i) / CGFloat(v.count - 1),
-                    y: rect.minY + rect.height * CGFloat(min(max(val, 0), 1)) * 0.9 + 0.5)
+                    y: rect.minY + rect.height * CGFloat(min(max(val, 0), 1)))
         }
         // 渐变面积：单色多一层纵深，模板模式下 alpha 渐变照常生效。
         ctx.saveGState()
@@ -550,10 +565,11 @@ public enum MenuBarGlyph {
         ctx.restoreGState()
     }
 
-    /// 迷你直方图（iStat 语法）：10 根 2.5pt 圆角条右对齐；每个条位背后铺一条 0.13
-    /// 透明度的满高「轨道」——轨道即坐标系。低值也保底一颗圆点，图形永远完整。
+    /// 迷你直方图（iStat 语法）：10 根 2.5pt 圆角条右对齐。
+    /// flushBottom（入框满高模式）：柱体向下多画一个圆角半径、由外层圆角裁剪压平——
+    /// 柱底与边框内壁严丝合缝（方底）、柱顶保留圆角，100% 顶到内壁顶。
     private static func drawHistogram(_ values: [Double], in rect: CGRect, color: NSColor,
-                                      track: Bool, ctx: CGContext) {
+                                      track: Bool, flushBottom: Bool = false, ctx: CGContext) {
         let v = Array(values.suffix(histBars))
         guard !v.isEmpty else { return }
         let r = histBarW / 2
@@ -572,7 +588,9 @@ public enum MenuBarGlyph {
         for val in v {
             let f = min(max(val, 0), 1)
             let h = max(4, rect.height * CGFloat(f))   // 最低 4pt：短刻度而非圆点（评审修正）
-            ctx.addPath(CGPath(roundedRect: CGRect(x: x, y: rect.minY, width: histBarW, height: h),
+            let barY = flushBottom ? rect.minY - r : rect.minY
+            let barH = flushBottom ? h + r : h
+            ctx.addPath(CGPath(roundedRect: CGRect(x: x, y: barY, width: histBarW, height: barH),
                                cornerWidth: r, cornerHeight: r, transform: nil))
             ctx.setFillColor(color.withAlphaComponent(0.82 + 0.18 * f).cgColor)
             ctx.fillPath()
