@@ -9,6 +9,10 @@ import AppKit
 final class SpaceLensModel: ObservableObject {
     @Published var root: DiskNode?
     @Published var stack: [DiskNode] = []
+    /// 当前选中项（DaisyDisk 式：单击任意环段/图例行——含文件——先选中看详情，再击进入）。
+    @Published var selected: DiskNode?
+    /// 深层「粒度边界」目录的现场子扫描进行中（钻取时的短暂状态，UI 显示轻提示）。
+    @Published var isExpanding = false
     @Published var isScanning = false
     /// 是否已完成过一次扫描——用于区分「尚未扫描（引导页）」与「扫描完但空/无权限（空状态）」。
     @Published var didScan = false
@@ -25,6 +29,9 @@ final class SpaceLensModel: ObservableObject {
 
     private let env: XicoEnvironment
     private var task: Task<Void, Never>?
+    /// 扫描代际：换根/重扫递增。旧扫描被取消后仍可能有迟到的进度/结果回调，
+    /// 一律凭代际闸拒收——否则旧任务的 ~200GB 计数会踩掉新扫描刚清零的进度（审查确认）。
+    private var scanGeneration = 0
 
     /// 收集篮（两段式删除）。随会话缓存共存亡——切侧栏 tab 再回来，篮里的东西还在。
     lazy var basket: BasketModel = BasketModel(
@@ -40,6 +47,12 @@ final class SpaceLensModel: ObservableObject {
 
     var current: DiskNode? { stack.last ?? root }
 
+    /// 深层明细的现场子扫描器：粒度比首扫细得多（256KB 起建文件节点），
+    /// 子树体量小、bulk 读取快，钻到哪里扫到哪里——每个文件夹/文件都能看到。
+    private lazy var detailScanner = DiskTreeScanner(fs: env.fs, maxChildrenPerNode: 64,
+                                                     minVisibleFraction: 1.0 / 360.0,
+                                                     minFileNodeBytes: 128 * 1024)
+
     /// 当前视图根的家族色相：钻取后整个子树锚定其「扫描根下一级祖先」的色相（nil = 在扫描根，彩虹分配）。
     var familyHue: Color? {
         guard let first = stack.first, let i = topHueIndex[first.id] else { return nil }
@@ -48,6 +61,8 @@ final class SpaceLensModel: ObservableObject {
 
     func scan() {
         task?.cancel()
+        scanGeneration += 1
+        let generation = scanGeneration
         isScanning = true
         didScan = false
         scannedBytes = 0
@@ -57,16 +72,18 @@ final class SpaceLensModel: ObservableObject {
         let target = scanRoot
         let handler: ProgressHandler = { [weak self] p in
             Task { @MainActor in
-                self?.scannedBytes = p.bytesFound
-                if !p.message.isEmpty { self?.scanMessage = p.message }
+                // 代际闸 + 单调不回退：旧扫描的迟到进度、并发线程的乱序进度都不会让数字倒着跳。
+                guard let self, self.scanGeneration == generation else { return }
+                self.scannedBytes = max(self.scannedBytes, p.bytesFound)
+                if !p.message.isEmpty { self.scanMessage = p.message }
             }
         }
         task = Task {
             let tree = await env.diskTreeScanner.scan(target, progress: handler)
-            if Task.isCancelled { return }
+            if Task.isCancelled || self.scanGeneration != generation { return }
             self.root = tree
-            // 锚定色相分配：与 SunburstView 的「大小降序 → ring(i)」口径一致，扫描时定格。
-            let sorted = tree.children.sorted { $0.size > $1.size }
+            // 锚定色相分配：与 SunburstView 的展示序（真实条目降序在前、聚合段钉尾）一致，扫描时定格。
+            let sorted = SunburstView.displayOrder(tree.children)
             self.topHueIndex = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($0.element.id, $0.offset) })
             self.isScanning = false
             self.didScan = true
@@ -78,12 +95,122 @@ final class SpaceLensModel: ObservableObject {
         isScanning = false
     }
 
-    func drill(into node: DiskNode) {
-        guard node.isDirectory, !node.children.isEmpty else { return }
-        stack.append(node)
+    func select(_ node: DiskNode?) {
+        selected = node
+    }
+
+    /// 进入目录。深层「粒度边界」节点（isDirectory 但首扫未建子节点）先现场子扫描、
+    /// 嫁接明细再进入——空间透镜由此可无限钻取（DaisyDisk 口径）。
+    /// `animatedBy`：宿主的「绽放」动画包装（现场扫描完成后的异步入栈也要走它）。
+    func drill(into node: DiskNode, animatedBy animate: @escaping (@escaping () -> Void) -> Void = { $0() }) {
+        guard node.isDirectory, !node.isAggregate else { return }
+        selected = nil
+        if node.children.isEmpty {
+            expandThenDrill(node, animatedBy: animate)
+        } else {
+            enter(node, animatedBy: animate)
+        }
+    }
+
+    /// 进入节点的统一收口：面包屑补全整条祖先链（深层环段直跳也不断链）+
+    /// 单链自动下钻（唯一非聚合子目录占比 ≥99% 时直落到有内容的层级——
+    /// 「旁边只有一个文件夹」的空壳层不值得停留）+ 背景细化当前层明细。
+    private func enter(_ node: DiskNode, animatedBy animate: @escaping (@escaping () -> Void) -> Void) {
+        var path = ancestors(of: node)
+        if path.first?.id == root?.id { path.removeFirst() }   // root 是隐含栈底，不入栈
+        path.append(node)
+        var cursor = node
+        var hops = 0
+        while hops < 16, let sole = soleDominantChild(of: cursor) {
+            path.append(sole)
+            cursor = sole
+            hops += 1
+        }
+        let landing = cursor
+        animate { self.stack = path }
+        refineIfCoarse(landing)
+    }
+
+    /// 单链判定：唯一的非聚合子项是个有明细的目录、且占本层 ≥99% → 值得直落。
+    private func soleDominantChild(of node: DiskNode) -> DiskNode? {
+        let real = node.children.filter { !$0.isAggregate }
+        guard real.count == 1, let only = real.first,
+              only.isDirectory, !only.children.isEmpty,
+              node.size > 0, Double(only.size) / Double(node.size) >= 0.99 else { return nil }
+        return only
+    }
+
+    /// 进入的层级若还是「粗粒度」（带灰色聚合桶）且体量不大（≤5GB），后台细化扫描
+    ///（128KB 粒度）就地嫁接——灰桶溶解成真实条目，「每一个文件都能查看到」。
+    /// 大目录不细化（等用户继续往下钻，越深越小，自然落入阈值内）。
+    private func refineIfCoarse(_ node: DiskNode) {
+        guard !isExpanding,
+              node.size <= 5 << 30,
+              node.children.contains(where: { $0.isAggregate }) else { return }
+        isExpanding = true
+        let generation = scanGeneration
+        let scanner = detailScanner
+        let url = node.url
+        Task { [weak self] in
+            let fresh = await scanner.scan(url)
+            guard let self else { return }
+            self.isExpanding = false
+            guard self.scanGeneration == generation, !Task.isCancelled else { return }
+            guard !fresh.children.isEmpty else { return }
+            self.objectWillChange.send()
+            let delta = node.adoptChildren(from: fresh)
+            if delta != 0 {
+                for ancestor in self.ancestors(of: node) { ancestor.adjustSize(by: delta) }
+            }
+        }
+    }
+
+    /// 现场子扫描 + 嫁接 + 进入。代际闸：扫描期间用户若重扫/换根，旧树的嫁接与入栈一律作废。
+    private func expandThenDrill(_ node: DiskNode,
+                                 animatedBy animate: @escaping (@escaping () -> Void) -> Void) {
+        guard !isExpanding else { return }
+        isExpanding = true
+        let generation = scanGeneration
+        let scanner = detailScanner
+        let url = node.url
+        Task { [weak self] in
+            let fresh = await scanner.scan(url)
+            guard let self else { return }
+            self.isExpanding = false
+            guard self.scanGeneration == generation, !Task.isCancelled else { return }
+            guard !fresh.children.isEmpty else { return }   // 真空目录/无权限：原地不动
+            self.objectWillChange.send()
+            let delta = node.adoptChildren(from: fresh)
+            if delta != 0 {
+                for ancestor in self.ancestors(of: node) { ancestor.adjustSize(by: delta) }
+            }
+            self.enter(node, animatedBy: animate)
+        }
+    }
+
+    /// 祖先链（root…直接父级），按 URL 前缀自根下行——嫁接后的尺寸差沿链回填，
+    /// 保持每一层「children 之和 ≤ size」（环形几何不溢出的前提）。
+    private func ancestors(of node: DiskNode) -> [DiskNode] {
+        guard let root, root.id != node.id else { return [] }
+        var chain: [DiskNode] = []
+        var cursor = root
+        let targetPath = node.url.path
+        descend: while cursor.id != node.id {
+            chain.append(cursor)
+            for child in cursor.children where !child.isAggregate {
+                if child.id == node.id { break descend }
+                if targetPath == child.url.path || targetPath.hasPrefix(child.url.path + "/") {
+                    cursor = child
+                    continue descend
+                }
+            }
+            return []   // 路径链断裂（不应发生）：放弃回填，宁可总量略偏也不误改无关节点
+        }
+        return chain
     }
 
     func pop(to index: Int) {
+        selected = nil
         if index < 0 { stack = [] } else { stack = Array(stack.prefix(index + 1)) }
     }
 
@@ -168,6 +295,8 @@ final class SpaceLensModel: ObservableObject {
             if let error {
                 failures.append("\(node.name)（\(error)）")
             } else {
+                // 已知近似：硬链接文件按首见路径全额计量，删除其一并不真正释放磁盘
+                //（其余链接仍持有数据）——与 Finder「显示文件大小」同口径，不为罕见病例引入链接表查询。
                 freed += node.size
                 pruneFromTree(node)
             }
@@ -214,6 +343,17 @@ public struct SpaceLensView: View {
             change()
         } else {
             withAnimation(XMotion.settle) { change() }
+        }
+    }
+
+    /// 单击激活（环段/图例行/瓦片统一语义，DaisyDisk 口径的分型响应）：
+    /// 文件夹 → 直接绽放进入（谁都不想点两次才能进，薄外环段二次点击还容易点偏）；
+    /// 文件/聚合段 → 选中看详情卡（文件本就无处可进，选中即是它的「打开」）。
+    private func activate(_ child: DiskNode) {
+        if child.isDirectory && !child.isAggregate {
+            model.drill(into: child, animatedBy: blossom)
+        } else {
+            withAnimation(XMotion.hover) { model.select(child) }
         }
     }
 
@@ -321,16 +461,19 @@ public struct SpaceLensView: View {
             Group {
                 if viz == "blocks" {
                     TreemapView(node: node,
+                                selectedID: model.selected?.id,
                                 onTrash: { child in model.trash(child) },
                                 onCollect: { child in model.basket.add(child) },
                                 denyReason: { model.denyReason(for: $0) }) { child in
-                        blossom { model.drill(into: child) }
+                        activate(child)
                     }
                         .padding(XSpacing.xl)
                 } else {
                     SunburstView(node: node,
-                                 onDrill: { child in blossom { model.drill(into: child) } },
+                                 selected: model.selected,
+                                 onActivate: { child in activate(child) },
                                  onUp: model.stack.isEmpty ? nil : { blossom { model.pop(to: model.stack.count - 2) } },
+                                 onDeselect: { withAnimation(XMotion.hover) { model.select(nil) } },
                                  onTrash: { child in model.trash(child) },
                                  onCollect: { child in model.basket.add(child) },
                                  denyReason: { model.denyReason(for: $0) },
@@ -338,6 +481,20 @@ public struct SpaceLensView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .top) {
+                if model.isExpanding {
+                    HStack(spacing: XSpacing.s) {
+                        ProgressView().controlSize(.small)
+                        Text(xLoc("正在深入扫描…")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    }
+                    .padding(.horizontal, XSpacing.m).padding(.vertical, 6)
+                    .background(Capsule().fill(XColor.surface.opacity(0.9)))
+                    .overlay(Capsule().stroke(XColor.hairline, lineWidth: 1))
+                    .padding(.top, XSpacing.s)
+                    .transition(.opacity)
+                }
+            }
+            .animation(XMotion.crossfade, value: model.isExpanding)
         } else if model.didScan {
             emptyResult
         } else {

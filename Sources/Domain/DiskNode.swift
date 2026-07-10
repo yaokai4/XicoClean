@@ -47,9 +47,28 @@ public final class DiskNode: Identifiable, @unchecked Sendable {
         self.isAggregate = isAggregate
     }
 
+    /// 展示相就地嫁接：深层「粒度边界」目录被钻取时，把现场子扫描的结果挂到本节点
+    ///（children 全量替换、size 以新扫描为准），返回尺寸差值供祖先链回填——
+    /// 空间透镜由此可无限钻取到每一个文件夹/文件（DaisyDisk 口径），而首扫内存仍有界。
+    /// `@MainActor` 隔离：与 pruneSubtree/adjustSize 同为展示相主 actor 单写的合法写路径。
+    @MainActor
+    @discardableResult
+    public func adoptChildren(from scanned: DiskNode) -> Int64 {
+        let delta = scanned.size - size
+        children = scanned.children
+        size = scanned.size
+        return delta
+    }
+
+    /// 展示相祖先链回填：嫁接引起的尺寸差沿祖先链同步，保持「各层 children 之和 ≤ size」。
+    @MainActor
+    public func adjustSize(by delta: Int64) {
+        size = max(0, size + delta)
+    }
+
     /// 展示相就地剪枝：从本子树中移除 `id` 匹配的节点，并把其占用沿祖先链回收，返回释放字节。
-    /// `@MainActor` 隔离——这是构建完成后**唯一**被认可的写入路径，编译器保证仅在主 actor 上发生，
-    /// 与后台构建相时间不重叠。删除某项成功后由 SpaceLens 调用（`DiskNode` 为引用类型，就地更新）。
+    /// `@MainActor` 隔离——与 adoptChildren/adjustSize 并列的展示相合法写路径，编译器保证仅在
+    /// 主 actor 上发生，与后台构建相时间不重叠。删除某项成功后由 SpaceLens 调用（引用类型就地更新）。
     @MainActor
     @discardableResult
     public func pruneSubtree(removingID id: UUID) -> Int64 {

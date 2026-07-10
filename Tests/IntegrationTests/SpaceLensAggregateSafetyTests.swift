@@ -35,8 +35,11 @@ final class SpaceLensAggregateSafetyTests: XCTestCase {
         for bucket in buckets {
             XCTAssertTrue(bucket.isAggregate)
             // 危险点固化：桶复用父目录 URL——正因如此绝不可删，必须靠 isAggregate 拦截（审计 P0）。
-            XCTAssertEqual(bucket.url, dir,
+            // 与树根 URL 比对而非传入的 dir：扫描器用 realpath 解析根路径（/var → /private/var），
+            // 拼写可能变化，但「桶 URL == 父节点 URL」这一危险性质不变。
+            XCTAssertEqual(bucket.url, tree.url,
                            "聚合桶复用父目录 URL；若允许删除即误删整个文件夹")
+            XCTAssertEqual(bucket.url.resolvingSymlinksInPath().path, dir.resolvingSymlinksInPath().path)
             XCTAssertTrue(bucket.name == "其他文件" || bucket.name == "其他")
         }
     }

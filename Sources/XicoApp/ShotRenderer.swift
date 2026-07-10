@@ -27,7 +27,7 @@ func renderShots() {
         ("07-spacelens",       AnyView(SunburstView(node: synthDiskTree()) { _ in })),
         // 钻取态：家族色相锚定（整个子树 = ring(1) 家族的明度阶）+「其他」聚合弧可见。
         ("08-spacelens-drilled", AnyView(SunburstView(node: synthDiskTree().children[0],
-                                                      onDrill: { _ in },
+                                                      onActivate: { _ in },
                                                       onUp: {},
                                                       familyHue: XColor.ring(1))))
     ]

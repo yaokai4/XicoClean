@@ -6,6 +6,8 @@ import DesignSystem
 /// 简化的二分切割 treemap：面积正比于占用大小，点击目录方块可钻取。
 struct TreemapView: View {
     let node: DiskNode
+    /// 当前选中项 id（宿主状态）：瓦片描边高亮，与环形图同一套「单击选中、再击进入」语义。
+    let selectedID: UUID?
     let onSelect: (DiskNode) -> Void
     /// 就地把某项移到废纸篓（可恢复）。nil 表示宿主未提供该能力。
     let onTrash: ((DiskNode) -> Void)?
@@ -18,11 +20,13 @@ struct TreemapView: View {
     @State private var trashDeny: String?
 
     init(node: DiskNode,
+         selectedID: UUID? = nil,
          onTrash: ((DiskNode) -> Void)? = nil,
          onCollect: ((DiskNode) -> Void)? = nil,
          denyReason: ((URL) -> String?)? = nil,
          onSelect: @escaping (DiskNode) -> Void) {
         self.node = node
+        self.selectedID = selectedID
         self.onTrash = onTrash
         self.onCollect = onCollect
         self.denyReason = denyReason
@@ -67,16 +71,19 @@ struct TreemapView: View {
     }
 
     private func tile(_ child: DiskNode, frame: CGRect) -> some View {
-        let color = Self.color(for: child.name)
+        // 聚合瓦片（其他/隐藏空间）用中性灰——与环形图口径一致，数据色相只留给真实条目。
+        let color = child.isAggregate ? XColor.idle : Self.color(for: child.name)
         let onTile = Self.readableText(on: color)   // 依瓦片亮度选白/深字，浅色主题下不再白字糊白底（审计 P2）
-        let isHover = hovered == child.id
+        let isSelected = selectedID == child.id
+        let isHover = hovered == child.id || isSelected
         let showLabel = frame.width > 64 && frame.height > 34
         return Button { onSelect(child) } label: {
             RoundedRectangle(cornerRadius: XRadius.chip, style: .continuous)
                 .fill(color.opacity(isHover ? 0.95 : 0.78))
                 .overlay(
                     RoundedRectangle(cornerRadius: XRadius.chip, style: .continuous)
-                        .strokeBorder(onTile.opacity(0.28), lineWidth: 1)
+                        .strokeBorder(isSelected ? Color.white.opacity(0.9) : onTile.opacity(0.28),
+                                      lineWidth: isSelected ? 2 : 1)
                 )
                 .overlay(alignment: .topLeading) {
                     if showLabel {
@@ -90,7 +97,7 @@ struct TreemapView: View {
                 }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(child.name)，\(child.size.formattedBytes)")
+        .accessibilityLabel("\(xLoc(child.name))，\(child.size.formattedBytes)")
         .accessibilityAddTraits(.isButton)
         .frame(width: max(2, frame.width - 3), height: max(2, frame.height - 3))
         // 可见的「移到废纸篓」入口：不再只藏在右键菜单里。常显但克制（悬停/聚焦时加亮），
@@ -114,8 +121,8 @@ struct TreemapView: View {
         }
         .offset(x: frame.minX, y: frame.minY)
         .onHover { hovered = $0 ? child.id : nil }
-        .help("\(child.name) — \(child.size.formattedBytes)")
-        .draggable(child.url)   // 拖进收集篮（basket 是 dropDestination）
+        .help("\(xLoc(child.name)) — \(child.size.formattedBytes)")
+        .draggableUnlessAggregate(child)   // 拖进收集篮（basket 是 dropDestination）；聚合节点不可拖
         .contextMenu {
             Button(xLoc("在 Finder 中显示")) { NSWorkspace.shared.activateFileViewerSelecting([child.url]) }
             Button(xLoc("快速查看")) { quickLook(child.url) }

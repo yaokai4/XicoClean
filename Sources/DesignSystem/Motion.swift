@@ -64,8 +64,11 @@ public struct XScanOrb: View {
 
     private var centerLabel: some View {
         // 等宽数字裸刷新（不做逐位滚动，避免「永远过渡中」发虚），平滑攀升、清晰不糊。
+        // 单行 + 自适应缩字：「116.09 GB」再长也不折行（折行会把单位挤到第二行，观感破碎）。
         VStack(spacing: 6) {
             Text(value).xHeroNumber().foregroundStyle(XColor.textPrimary)
+                .lineLimit(1).minimumScaleFactor(0.5)
+                .frame(maxWidth: size * 0.72)
             Text(label).font(XFont.body).foregroundStyle(XColor.textSecondary).tracking(0.3)
         }
     }

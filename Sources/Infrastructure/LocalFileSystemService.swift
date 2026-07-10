@@ -24,7 +24,8 @@ public struct LocalFileSystemService: FileSystemService {
     }
 
     public func allocatedSize(of url: URL) -> Int64 {
-        let keys: Set<URLResourceKey> = [.isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey]
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isVolumeKey,
+                                         .totalFileAllocatedSizeKey, .fileSizeKey]
         guard let rv = try? url.resourceValues(forKeys: keys) else { return 0 }
 
         if rv.isDirectory == true {
@@ -39,7 +40,12 @@ public struct LocalFileSystemService: FileSystemService {
                 // 每 256 项检查一次取消，用户点「取消」后立刻返回已累计值，不再空转占死线程。
                 seen += 1
                 if seen & 0xFF == 0 && Task.isCancelled { return total }
-                guard let r = try? f.resourceValues(forKeys: keys), r.isDirectory != true else { continue }
+                guard let r = try? f.resourceValues(forKeys: keys) else { continue }
+                if r.isDirectory == true {
+                    // 绝不跨入子挂载点：挂载在此的其它卷不属于本目录的占用。
+                    if r.isVolume == true { en.skipDescendants() }
+                    continue
+                }
                 total += Int64(r.totalFileAllocatedSize ?? r.fileSize ?? 0)
             }
             return total
@@ -100,7 +106,7 @@ public struct LocalFileSystemService: FileSystemService {
         AsyncStream { continuation in
             let task = Task.detached(priority: .utility) {
                 // 仅取逻辑大小（大文件/重复文件够用），省去 totalFileAllocatedSize 的额外开销
-                let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey,
+                let keys: [URLResourceKey] = [.isDirectoryKey, .isVolumeKey, .fileSizeKey,
                                               .contentModificationDateKey, .contentAccessDateKey]
                 guard let en = self.fm.enumerator(at: url,
                                                   includingPropertiesForKeys: keys,
@@ -117,6 +123,12 @@ public struct LocalFileSystemService: FileSystemService {
                     if Task.isCancelled { break }
                     guard let rv = try? fileURL.resourceValues(forKeys: Set(keys)) else { continue }
                     let isDir = rv.isDirectory ?? false
+                    // 绝不跨入子挂载点（/System/Volumes/Data、外接盘、网络盘）：
+                    // firmlink 入口已计一次，跨入即整卷重复计数（512GB 盘扫出 1.79TB 的元凶之一）。
+                    if isDir && rv.isVolume == true {
+                        en.skipDescendants()
+                        continue
+                    }
                     if isDir && pruneDirs.contains(fileURL.lastPathComponent) {
                         en.skipDescendants()
                         continue

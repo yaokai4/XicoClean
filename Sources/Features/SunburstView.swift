@@ -17,6 +17,20 @@ import AppKit
 //    同级以家族内明度区分，返回时颜色可追。
 // 4. 删除红线只有一条——预检走宿主注入的 denyReason（env.safety），不再自建规则实例。
 
+extension View {
+    /// 拖拽守卫：合成聚合节点（「其他」/「其他文件」/「隐藏空间」）复用父目录/卷根 URL，
+    /// 拖进收集篮会被 findNode 解析成**真实的父目录乃至扫描根**——等于把整个文件夹装进删除篮
+    /// （审计 P0 wrong-target deletion 的拖拽变体）。聚合节点一律不可拖。
+    @ViewBuilder
+    func draggableUnlessAggregate(_ node: DiskNode) -> some View {
+        if node.isAggregate {
+            self
+        } else {
+            self.draggable(node.url)
+        }
+    }
+}
+
 /// 一个扇段（环上的一段弧）。
 private struct Arc: Identifiable {
     /// ForEach 稳定键：真实节点用 node.id；「其他」聚合弧用 父id#other——跨层级 diff 的基石。
@@ -65,9 +79,14 @@ private struct RingSector: Shape {
 
 public struct SunburstView: View {
     let node: DiskNode
-    let onDrill: (DiskNode) -> Void
+    /// 当前选中项（宿主状态）：环段与图例行高亮、中心显示其详情、图例顶部出详情卡。
+    let selected: DiskNode?
+    /// 单击激活（宿主决定语义：未选中 → 选中；已选中的目录 → 进入）。文件与目录一视同仁。
+    let onActivate: (DiskNode) -> Void
     /// 点击中心返回上一级（DaisyDisk 式手势）；nil 表示已在顶层。
     let onUp: (() -> Void)?
+    /// 取消选中（点中心/按 ESC）。nil = 宿主无选中状态。
+    let onDeselect: (() -> Void)?
     /// 就地把某项移到废纸篓（可恢复）。nil 表示宿主未提供该能力。
     let onTrash: ((DiskNode) -> Void)?
     /// 加入收集篮（两段式删除的第一段）。nil 表示宿主未提供。
@@ -79,15 +98,19 @@ public struct SunburstView: View {
     let familyHue: Color?
 
     public init(node: DiskNode,
-                onDrill: @escaping (DiskNode) -> Void,
+                selected: DiskNode? = nil,
+                onActivate: @escaping (DiskNode) -> Void,
                 onUp: (() -> Void)? = nil,
+                onDeselect: (() -> Void)? = nil,
                 onTrash: ((DiskNode) -> Void)? = nil,
                 onCollect: ((DiskNode) -> Void)? = nil,
                 denyReason: ((URL) -> String?)? = nil,
                 familyHue: Color? = nil) {
         self.node = node
-        self.onDrill = onDrill
+        self.selected = selected
+        self.onActivate = onActivate
         self.onUp = onUp
+        self.onDeselect = onDeselect
         self.onTrash = onTrash
         self.onCollect = onCollect
         self.denyReason = denyReason
@@ -120,7 +143,24 @@ public struct SunburstView: View {
         return arcCache.arcs
     }
 
-    private let maxDepth = 4
+    private let maxDepth = 5
+
+    /// 各环宽度权重（内环宽、外环渐窄）——DaisyDisk 式层级景深：越深的细节占越少径向空间，
+    /// 五环也不拥挤。
+    private static let ringWeights: [CGFloat] = [1.0, 0.92, 0.80, 0.66, 0.54]
+
+    /// 依权重预算各环的（内径，外径）。
+    private static func ringRadii(hole: CGFloat, center: CGFloat) -> [(inner: CGFloat, outer: CGFloat)] {
+        let unit = (center - hole) / ringWeights.reduce(0, +)
+        var radii: [(CGFloat, CGFloat)] = []
+        var inner = hole
+        for w in ringWeights {
+            let outer = inner + unit * w
+            radii.append((inner, outer))
+            inner = outer
+        }
+        return radii
+    }
 
     /// 环形图专用高饱和调色板（深浅色同值）：DaisyDisk 式鲜明色轮——
     /// 主题 ring 色阶是为「背景上的点缀」调的淡彩，铺满整环会发灰发水；数据图要的是果敢的色相。
@@ -147,6 +187,25 @@ public struct SunburstView: View {
         return Self.vividPalette[((i % Self.vividPalette.count) + Self.vividPalette.count) % Self.vividPalette.count]
     }
 
+    /// DaisyDisk 式展示序：真实条目按大小降序在前，聚合段（其他/隐藏空间）钉在尾部——
+    /// 环与图例共用同一口径，色相按「真实条目的序号」分配（聚合段恒为中性灰，不占色相）。
+    static func displayOrder(_ children: [DiskNode]) -> [DiskNode] {
+        children.sorted { a, b in
+            if a.isAggregate != b.isAggregate { return !a.isAggregate }
+            return a.size > b.size
+        }
+    }
+
+    /// 聚合段的中性灰（与「其他」碎片弧同款）——数据色相只留给真实目录/文件。
+    private static var aggregateColor: Color { XColor.idle.opacity(0.45) }
+
+    /// 聚合段的解释文案（图例悬停提示）：隐藏空间 ≠ 其他小项。
+    private static func aggregateHelp(_ node: DiskNode) -> String {
+        node.name == "隐藏空间"
+            ? xLoc("系统快照、可清除空间与无权限读取的部分——卷已用量与可见明细之差")
+            : xLoc("多个小项的合计视图")
+    }
+
     public var body: some View {
         HStack(alignment: .center, spacing: XSpacing.xl) {
             GeometryReader { geo in
@@ -161,6 +220,7 @@ public struct SunburstView: View {
                 .frame(maxHeight: .infinity, alignment: .top)   // 撑满高度，让图例列表可滚动展开
         }
         .padding(XSpacing.l)
+        .onExitCommand { onDeselect?() }   // ESC 取消选中
         .onChange(of: node.id) { hovered = nil; otherPopoverKey = nil }   // 换层后清掉陈旧悬停/浮层
         .confirmationDialog(xLoc("移到废纸篓"),
                             isPresented: Binding(get: { pendingTrash != nil },
@@ -194,10 +254,10 @@ public struct SunburstView: View {
     private func ring(arcs: [Arc], side: CGFloat) -> some View {
         let center = side / 2
         let hole = side * 0.20            // 中心圆半径
-        let ringW = (center - hole) / CGFloat(maxDepth)
+        let radii = Self.ringRadii(hole: hole, center: center)
         return ZStack {
             ForEach(arcs) { arc in
-                arcButton(arc, hole: hole, ringW: ringW)
+                arcButton(arc, radii: radii)
             }
             centerLabel(hole: hole)
         }
@@ -209,36 +269,38 @@ public struct SunburstView: View {
     }
 
     @ViewBuilder
-    private func arcButton(_ arc: Arc, hole: CGFloat, ringW: CGFloat) -> some View {
-        let inner = hole + CGFloat(arc.depth - 1) * ringW
-        let outer = inner + ringW - 1.5   // 环间留 1.5pt 缝
-        let isHot = hovered?.id == arc.node.id && !arc.isOther
+    private func arcButton(_ arc: Arc, radii: [(inner: CGFloat, outer: CGFloat)]) -> some View {
+        let band = radii[min(max(arc.depth - 1, 0), radii.count - 1)]
+        let inner = band.inner
+        let outer = band.outer - 1.5   // 环间留 1.5pt 缝
+        let isSelected = selected?.id == arc.node.id && !arc.isOther
+        let isHot = (hovered?.id == arc.node.id && !arc.isOther) || isSelected
         // 同族高亮：悬停某段时，它与它的祖先/子孙（同色相路径）保持满亮，其余变淡——
         // 一眼看清「这块空间从哪来、往哪去」。「其他」聚合弧不参与家族判定。
         let dimmed = hovered != nil && !isHot && (arc.isOther || !isRelated(arc.node, to: hovered))
-        let drillable = !arc.isOther && arc.node.isDirectory && !arc.node.children.isEmpty
-        // 每段弧封装为 .plain Button：可被 Tab 聚焦、空格/回车触发钻取，并向 VoiceOver
-        // 报出「名称·大小·占比」——键盘与读屏用户获得与鼠标悬停/点击等价的操作路径。
+        // 每段弧封装为 .plain Button：可被 Tab 聚焦、空格/回车触发，并向 VoiceOver
+        // 报出「名称·大小·占比」。单击激活（选中/进入由宿主决断）——文件与目录一视同仁，
+        // 每一段都点得动（DaisyDisk 口径）。
         Button {
             if arc.isOther {
                 otherPopoverKey = arc.key
-            } else if drillable {
-                onDrill(arc.node)
+            } else {
+                onActivate(arc.node)
             }
         } label: {
             RingSector(start: arc.start + 0.25, end: arc.end - 0.25, inner: inner, outer: outer)
                 .fill(arc.color.opacity(isHot ? 1 : depthOpacity(arc.depth) * (dimmed ? 0.35 : 1)))
                 .overlay(
                     RingSector(start: arc.start + 0.25, end: arc.end - 0.25, inner: inner, outer: outer)
-                        .stroke(Color.white.opacity(isHot ? 0.9 : 0.0), lineWidth: 1.5)
+                        .stroke(Color.white.opacity(isHot ? 0.9 : 0.0), lineWidth: isSelected ? 2 : 1.5)
                 )
                 .shadow(color: isHot ? arc.color.opacity(0.55) : .clear, radius: isHot ? 10 : 0)
         }
         .buttonStyle(.plain)
-        .contentShape(RingSector(start: arc.start, end: arc.end, inner: inner, outer: outer))
+        .contentShape(RingSector(start: arc.start, end: arc.end, inner: inner, outer: band.outer))
         .onHover { if $0 { hovered = arc.node } else if hovered?.id == arc.node.id { hovered = nil } }
         .help(arc.isOther ? xLocF("其他 %d 项", arc.otherItems.count) + " · \(arc.node.size.formattedBytes)"
-                          : "\(arc.node.name) · \(arc.node.size.formattedBytes)")
+                          : "\(xLoc(arc.node.name)) · \(arc.node.size.formattedBytes)")
         .animation(XMotion.hover, value: hovered?.id)
         .accessibilityLabel(arcLabel(arc))
         .accessibilityAddTraits(.isButton)
@@ -314,7 +376,7 @@ public struct SunburstView: View {
         if arc.isOther {
             return xLocF("其他 %d 项", arc.otherItems.count) + "，\(arc.node.size.formattedBytes)"
         }
-        let base = xLocF("%@，%@", arc.node.name, arc.node.size.formattedBytes)
+        let base = xLocF("%@，%@", xLoc(arc.node.name), arc.node.size.formattedBytes)
         guard node.size > 0 else { return base }
         let pct = Int((Double(arc.node.size) / Double(node.size) * 100).rounded())
         return "\(base) · \(pct)%"
@@ -328,17 +390,22 @@ public struct SunburstView: View {
     }
 
     private func centerLabel(hole: CGFloat) -> some View {
-        let shown = hovered ?? node
-        // 悬停子目录时，中心显示其占父目录的比例（图标 + %，无需本地化文案）。
+        // 中心优先级：悬停 > 选中 > 当前目录——选中后移开鼠标，中心仍锚着选中项（DaisyDisk 口径）。
+        let shown = hovered ?? selected ?? node
         let sharePct: Int? = {
-            guard let h = hovered, h.id != node.id, node.size > 0 else { return nil }
-            return Int((Double(h.size) / Double(node.size) * 100).rounded())
+            guard shown.id != node.id, node.size > 0 else { return nil }
+            return Int((Double(shown.size) / Double(node.size) * 100).rounded())
         }()
-        let canGoUp = onUp != nil && hovered == nil
+        let canGoUp = onUp != nil && hovered == nil && selected == nil
         // 中心盘也是一个 .plain Button：可被 Tab 聚焦、空格/回车触发「返回上一级」，
         // 与鼠标点击中心等价——键盘/读屏用户不再无路可上。
         return Button {
-            onUp?()
+            // 有选中时，点中心 = 取消选中（DaisyDisk 惯例）；无选中才是返回上一级。
+            if selected != nil {
+                onDeselect?()
+            } else {
+                onUp?()
+            }
         } label: {
         ZStack {
             // 中心盘：给数字一块「表盘」底座，悬停上一级时点亮
@@ -385,7 +452,7 @@ public struct SunburstView: View {
     // MARK: 图例（最大的文件夹）
 
     private var legend: some View {
-        let sorted = node.children.sorted { $0.size > $1.size }
+        let sorted = Self.displayOrder(node.children)
         let total = max(node.size, 1)
         return VStack(alignment: .leading, spacing: XSpacing.s) {
             HStack {
@@ -394,26 +461,101 @@ public struct SunburstView: View {
                 Spacer()
                 Text(node.size.formattedBytes).font(XFont.mono).foregroundStyle(XColor.textSecondary)
             }
-            Text(xLocF("%d 个项目 · 点击色块或环钻取", node.children.count))
+            Text(xLocF("%d 个项目 · 点文件夹进入 · 点文件选中", node.children.count))
                 .font(XFont.caption).foregroundStyle(XColor.textTertiary)
             Divider().padding(.vertical, 2)
             // 全部条目可滚动（不再截断到 14 项）——大目录也能逐项审阅。
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(sorted.enumerated()), id: \.element.id) { i, child in
-                        legendRow(child, color: paletteColor(i),
+                        legendRow(child, color: child.isAggregate ? Self.aggregateColor : paletteColor(i),
                                   fraction: Double(child.size) / Double(total))
                     }
                 }
             }
+            if let sel = selected {
+                selectionCard(sel)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
         }
+        .animation(XMotion.hover, value: selected?.id)
+    }
+
+    // MARK: 选中详情卡（DaisyDisk 式：选中任意环段/行——含文件——即出详情与操作）
+
+    @ViewBuilder
+    private func selectionCard(_ sel: DiskNode) -> some View {
+        let pct = node.size > 0 ? Int((Double(sel.size) / Double(node.size) * 100).rounded()) : 0
+        let drillable = sel.isDirectory && !sel.isAggregate
+        VStack(alignment: .leading, spacing: XSpacing.s) {
+            HStack(spacing: XSpacing.s) {
+                Image(systemName: sel.isAggregate ? "square.stack.3d.up"
+                                                  : (sel.isDirectory ? "folder.fill" : "doc.fill"))
+                    .font(XFont.caption).foregroundStyle(XColor.brand)
+                Text(xLoc(sel.name)).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Text(sel.size.formattedBytes).font(XFont.mono).foregroundStyle(XColor.textSecondary)
+                Text("\(pct)%").font(XFont.captionEmphasis).foregroundStyle(XColor.brand).monospacedDigit()
+            }
+            if sel.isAggregate {
+                // 聚合段（其他/隐藏空间）：只解释，不给文件级操作（URL 是父目录，动它即误伤）。
+                Text(Self.aggregateHelp(sel))
+                    .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(sel.url.path)
+                    .font(XFont.captionMono).foregroundStyle(XColor.textTertiary)
+                    .lineLimit(1).truncationMode(.middle)
+                HStack(spacing: XSpacing.s) {
+                    if drillable {
+                        Button {
+                            onActivate(sel)   // 已选中 → 宿主语义 = 进入
+                        } label: {
+                            Label(xLoc("进入"), systemImage: "arrow.down.forward.circle")
+                        }
+                        .buttonStyle(XPrimaryButtonStyle(compact: true))
+                    }
+                    Button { NSWorkspace.shared.activateFileViewerSelecting([sel.url]) } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .buttonStyle(XSecondaryButtonStyle(compact: true))
+                    .help(xLoc("在 Finder 中显示"))
+                    Button { quickLook(sel.url) } label: {
+                        Image(systemName: "eye")
+                    }
+                    .buttonStyle(XSecondaryButtonStyle(compact: true))
+                    .help(xLoc("快速查看"))
+                    if onCollect != nil {
+                        Button { onCollect?(sel) } label: {
+                            Image(systemName: "basket")
+                        }
+                        .buttonStyle(XSecondaryButtonStyle(compact: true))
+                        .help(xLoc("加入收集篮"))
+                    }
+                    Spacer()
+                    if onTrash != nil {
+                        Button(role: .destructive) { requestTrash(sel) } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(XSecondaryButtonStyle(compact: true))
+                        .help(xLoc("移到废纸篓"))
+                    }
+                }
+            }
+        }
+        .padding(XSpacing.m)
+        .background(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
+            .fill(XColor.surface.opacity(0.85)))
+        .overlay(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
+            .stroke(XColor.hairline, lineWidth: 1))
     }
 
     private func legendRow(_ child: DiskNode, color: Color, fraction: Double) -> some View {
-        let isHot = hovered?.id == child.id
-        let drillable = child.isDirectory && !child.children.isEmpty
+        let isSelected = selected?.id == child.id
+        let isHot = hovered?.id == child.id || isSelected
         return Button {
-            if drillable { onDrill(child) }
+            onActivate(child)
         } label: {
             HStack(spacing: XSpacing.s) {
                 RoundedRectangle(cornerRadius: XRadius.micro).fill(color).frame(width: 11, height: 11)
@@ -428,6 +570,12 @@ public struct SunburstView: View {
                             .font(XFont.caption).foregroundStyle(isHot ? color : XColor.textTertiary).monospacedDigit()
                         Text(child.size.formattedBytes).font(XFont.caption).foregroundStyle(XColor.textSecondary).monospacedDigit()
                             .frame(minWidth: 64, alignment: .trailing)
+                        // 「可进入」余量提示：文件夹行尾常驻小箭头（悬停加亮）——点击即进的视觉承诺。
+                        if child.isDirectory && !child.isAggregate {
+                            Image(systemName: "chevron.right")
+                                .font(XFont.nano)
+                                .foregroundStyle(isHot ? XColor.textSecondary : XColor.textTertiary.opacity(0.6))
+                        }
                     }
                     // 占比条
                     GeometryReader { g in
@@ -441,13 +589,16 @@ public struct SunburstView: View {
             }
             .padding(.vertical, 5).padding(.horizontal, XSpacing.s)
             .background(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
-                .fill(isHot ? XColor.surfaceHover : Color.clear))
+                .fill(isSelected ? XColor.brand.opacity(0.10) : (isHot ? XColor.surfaceHover : Color.clear)))
+            .overlay(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
+                .stroke(isSelected ? XColor.brand.opacity(0.35) : Color.clear, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { if $0 { hovered = child } else if hovered?.id == child.id { hovered = nil } }
-        .accessibilityLabel(xLocF("%@，%@", child.name, child.size.formattedBytes))
-        .draggable(child.url)   // 拖进收集篮（basket 是 dropDestination）
+        .help(child.isAggregate ? Self.aggregateHelp(child) : "")
+        .accessibilityLabel(xLocF("%@，%@", xLoc(child.name), child.size.formattedBytes))
+        .draggableUnlessAggregate(child)   // 拖进收集篮（basket 是 dropDestination）；聚合节点不可拖
         .contextMenu {
             Button(xLoc("在 Finder 中显示")) { NSWorkspace.shared.activateFileViewerSelecting([child.url]) }
             // 合成聚合桶（「其他」）不给收集/删除入口——复用父目录 URL，删之即误删整个文件夹（审计 P0）。
@@ -479,7 +630,7 @@ public struct SunburstView: View {
             var otherSpan: Double = 0
             var otherItems: [DiskNode] = []
             var otherBytes: Int64 = 0
-            for (i, child) in n.children.sorted(by: { $0.size > $1.size }).enumerated() {
+            for (i, child) in Self.displayOrder(n.children).enumerated() {
                 let childSpan = span * Double(child.size) / Double(total)
                 if childSpan < 0.5 {
                     // 深层碎片直接留白（DaisyDisk 亦然）——只有第 1 层才聚合成「其他」段，
@@ -492,7 +643,7 @@ public struct SunburstView: View {
                     continue
                 }
                 let cStart = a, cEnd = a + childSpan
-                let color = hue ?? paletteColor(i)
+                let color = child.isAggregate ? Self.aggregateColor : (hue ?? paletteColor(i))
                 out.append(Arc(key: child.id.uuidString, node: child, depth: depth,
                                start: cStart, end: cEnd, color: color,
                                isOther: false, otherItems: []))
@@ -522,7 +673,8 @@ public struct SunburstView: View {
         case 1: return 1.0
         case 2: return 0.90
         case 3: return 0.80
-        default: return 0.70
+        case 4: return 0.70
+        default: return 0.62
         }
     }
 }
