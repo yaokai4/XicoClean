@@ -61,6 +61,18 @@ public struct XSpeedGauge: View {
                     .offset(y: -size * 0.40)
                     .rotationEffect(.degrees(135 + 90 + 270 * f))
             }
+            // 刻度数值标注（P5·H4）：0 / 1/4 / 1/2 / 3/4 / 满量程——量程自适应对用户可见，
+            // 3000 MB/s 到底在表盘哪个位置一眼有数。只标 5 处，避免小表盘拥挤。
+            ForEach(0..<5, id: \.self) { i in
+                let f = Double(i) / 4.0
+                let angle = Angle.degrees(135 + 90 + 270 * f)
+                Text(tickText(maxValue * f))
+                    .font(.system(size: size * 0.055, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(XColor.textTertiary)
+                    .offset(x: -sin(angle.radians) * size * -0.315,
+                            y: cos(angle.radians) * size * -0.315)
+            }
             // 中心读数
             VStack(spacing: 2) {
                 Text(centerText)
@@ -77,7 +89,7 @@ public struct XSpeedGauge: View {
         }
         .frame(width: size, height: size)
         .opacity(active ? 1 : 0.45)
-        .animation(.easeOut(duration: 0.2), value: active)
+        .animation(XMotion.hover, value: active)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
         .accessibilityValue("\(Int(value.rounded())) MB/s")
@@ -85,6 +97,13 @@ public struct XSpeedGauge: View {
 
     private var centerText: String {
         value >= 1 ? String(format: "%.0f", value) : "0"
+    }
+
+    /// 刻度标注：≥1000 用 "2K/4K" 缩写省空间，0 恒为 "0"。
+    private func tickText(_ v: Double) -> String {
+        if v <= 0 { return "0" }
+        if v >= 1000 { return String(format: v.truncatingRemainder(dividingBy: 1000) == 0 ? "%.0fK" : "%.1fK", v / 1000) }
+        return String(format: "%.0f", v)
     }
 }
 

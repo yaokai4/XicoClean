@@ -6,6 +6,7 @@ public struct XCard<Content: View>: View {
     private let content: Content
     private let padding: CGFloat
     private let elevated: Bool
+    @Environment(\.colorScheme) private var scheme
     public init(padding: CGFloat = XSpacing.l, elevated: Bool = true, @ViewBuilder content: () -> Content) {
         self.padding = padding
         self.elevated = elevated
@@ -16,18 +17,29 @@ public struct XCard<Content: View>: View {
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
+                // 暗色高程双通道：surface 随 z 轴提亮（黑影在墨底上不可见，提亮才是主信号）；
+                // 浅色恒白、层级由阴影承担。
                 RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
-                    .fill(XColor.surface)
+                    .fill(XColor.surface(at: elevated ? .raised : .resting))
                     .overlay(
-                        // 顶部极淡高光，增加立体感
+                        // 顶部受光面：暗色用白高光；浅色下白高光是 no-op（白底），
+                        // 改用极淡的顶部内衬阴影制造纸面纵深。
                         RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
-                            .fill(LinearGradient(colors: [.white.opacity(0.06), .clear],
-                                                 startPoint: .top, endPoint: .center))
+                            .fill(LinearGradient(
+                                colors: scheme == .dark ? [.white.opacity(XAlpha.hairline), .clear]
+                                                        : [.black.opacity(0.02), .clear],
+                                startPoint: .top, endPoint: .center))
                     )
             )
             .overlay(
+                // 描边：暗色改「内侧 1px 高光」（上亮下暗，受光的实物边缘）；浅色保持暗描边。
                 RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
-                    .strokeBorder(XColor.border.opacity(0.6), lineWidth: 1)
+                    .strokeBorder(
+                        scheme == .dark
+                            ? AnyShapeStyle(LinearGradient(colors: [.white.opacity(0.09), .white.opacity(0.02)],
+                                                           startPoint: .top, endPoint: .bottom))
+                            : AnyShapeStyle(XColor.border.opacity(0.6)),
+                        lineWidth: 1)
             )
             .modifier(ConditionalCardShadow(enabled: elevated))
     }
@@ -66,10 +78,8 @@ public struct XMetricCard: View {
                 Spacer(minLength: 0)
             }
         }
-        .xGlow(colors[0], radius: 18, opacity: hover ? 0.28 : 0)
-        .scaleEffect(hover ? 1.02 : 1)
-        .animation(XMotion.snappy, value: hover)
-        .onHover { hover = $0 }
+        // P7 统一卡片悬停物理：与 XStatCard 同走 hoverLift（此前 xGlow+scale 与上浮两派并存）。
+        .hoverLift(2)
     }
 }
 
@@ -87,8 +97,8 @@ public struct XBadge: View {
             .font(XFont.captionEmphasis)
             .foregroundStyle(color)
             .padding(.horizontal, XSpacing.s)
-            .padding(.vertical, 3)
-            .background(color.opacity(0.15), in: Capsule())
+            .padding(.vertical, XSpacing.xs)   // P7：上网格（原 3pt 离网魔数）
+            .background(color.opacity(XAlpha.tint), in: Capsule())
     }
 }
 
@@ -104,31 +114,50 @@ public struct XPrimaryButtonStyle: ButtonStyle {
         self.compact = compact
     }
     public func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(large ? XFont.title : (compact ? XFont.bodyEmphasis : XFont.headline))
-            // 禁用态背景是浅色 surfaceAlt，白字会消失——改用次要文字色保证浅色模式可读。
-            // 用 textSecondary（而非更淡的 textTertiary）：禁用标签仍是「载重文字」，
-            // 需在 surfaceAlt 上稳过 WCAG AA（≥4.5:1）；textTertiary 贴近下限，留给纯装饰性说明。
-            .foregroundStyle(enabled ? AnyShapeStyle(XColor.onAccent) : AnyShapeStyle(XColor.textSecondary))
-            .padding(.horizontal, large ? XSpacing.xxl : (compact ? XSpacing.m : XSpacing.xl))
-            .padding(.vertical, large ? XSpacing.l : (compact ? XSpacing.s : XSpacing.m))
-            .background(
-                enabled ? AnyShapeStyle(XColor.brandGradient) : AnyShapeStyle(XColor.surfaceAlt),
-                in: Capsule()
-            )
-            .overlay(
-                // 顶部高光收敛：更哑光、少「塑料光泽」，像原生 macOS 按钮而非糖果
-                Capsule()
-                    .fill(LinearGradient(colors: [.white.opacity(enabled ? 0.13 : 0), .clear],
-                                         startPoint: .top, endPoint: .center))
-                    .allowsHitTesting(false)
-            )
-            .overlay(Capsule().strokeBorder(.white.opacity(enabled ? 0.14 : 0), lineWidth: 1))
-            .opacity(configuration.isPressed ? 0.85 : 1)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .shadow(color: enabled ? XColor.brand.opacity(0.16) : .clear,
-                    radius: configuration.isPressed ? 4 : 8, y: 4)
-            .animation(XMotion.snappy, value: configuration.isPressed)
+        PrimaryBody(configuration: configuration, enabled: enabled, large: large, compact: compact)
+    }
+
+    /// 内部承载 hover/focus 状态（P7：Mac 指针环境下按钮必须有悬停反馈 + 键盘焦点环）。
+    private struct PrimaryBody: View {
+        let configuration: Configuration
+        let enabled: Bool
+        let large: Bool
+        let compact: Bool
+        @State private var hover = false
+        @Environment(\.isFocused) private var focused
+
+        var body: some View {
+            configuration.label
+                .font(large ? XFont.title : (compact ? XFont.bodyEmphasis : XFont.headline))
+                // 禁用态背景是浅色 surfaceAlt，白字会消失——改用次要文字色保证浅色模式可读。
+                // 用 textSecondary（而非更淡的 textTertiary）：禁用标签仍是「载重文字」，
+                // 需在 surfaceAlt 上稳过 WCAG AA（≥4.5:1）；textTertiary 贴近下限，留给纯装饰性说明。
+                .foregroundStyle(enabled ? AnyShapeStyle(XColor.onAccent) : AnyShapeStyle(XColor.textSecondary))
+                .padding(.horizontal, large ? XSpacing.xxl : (compact ? XSpacing.m : XSpacing.xl))
+                .padding(.vertical, large ? XSpacing.l : (compact ? XSpacing.s : XSpacing.m))
+                .background(
+                    enabled ? AnyShapeStyle(XColor.brandGradient) : AnyShapeStyle(XColor.surfaceAlt),
+                    in: Capsule()
+                )
+                .overlay(
+                    // 顶部高光收敛：更哑光、少「塑料光泽」，像原生 macOS 按钮而非糖果
+                    Capsule()
+                        .fill(LinearGradient(colors: [.white.opacity(enabled ? 0.13 : 0), .clear],
+                                             startPoint: .top, endPoint: .center))
+                        .allowsHitTesting(false)
+                )
+                .overlay(Capsule().strokeBorder(.white.opacity(enabled ? 0.14 : 0), lineWidth: 1))
+                // 键盘焦点环：2px 品牌描边（与侧栏焦点环同语言）。
+                .overlay(Capsule().strokeBorder(focused ? XColor.brand : .clear, lineWidth: 2).padding(-3))
+                .brightness(hover && enabled && !configuration.isPressed ? 0.05 : 0)
+                .opacity(configuration.isPressed ? 0.85 : 1)
+                .scaleEffect(configuration.isPressed ? 0.97 : 1)
+                .shadow(color: enabled ? XColor.brand.opacity(hover ? 0.24 : 0.16) : .clear,
+                        radius: configuration.isPressed ? 4 : (hover ? 10 : 8), y: 4)
+                .animation(XMotion.snappy, value: configuration.isPressed)
+                .animation(XMotion.hover, value: hover)
+                .onHover { hover = $0 }
+        }
     }
 }
 
@@ -136,16 +165,167 @@ public struct XSecondaryButtonStyle: ButtonStyle {
     var compact: Bool
     public init(compact: Bool = false) { self.compact = compact }
     public func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(compact ? XFont.bodyEmphasis : XFont.headline)
-            .foregroundStyle(XColor.textPrimary)
-            .padding(.horizontal, compact ? XSpacing.m : XSpacing.xl)
-            .padding(.vertical, compact ? XSpacing.s : XSpacing.m)
-            .background(XColor.surfaceAlt, in: Capsule())
-            .overlay(Capsule().strokeBorder(XColor.border, lineWidth: 1))
-            .opacity(configuration.isPressed ? 0.8 : 1)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(XMotion.snappy, value: configuration.isPressed)
+        SecondaryBody(configuration: configuration, compact: compact)
+    }
+
+    private struct SecondaryBody: View {
+        let configuration: Configuration
+        let compact: Bool
+        @State private var hover = false
+        @Environment(\.isFocused) private var focused
+
+        var body: some View {
+            configuration.label
+                .font(compact ? XFont.bodyEmphasis : XFont.headline)
+                .foregroundStyle(XColor.textPrimary)
+                .padding(.horizontal, compact ? XSpacing.m : XSpacing.xl)
+                .padding(.vertical, compact ? XSpacing.s : XSpacing.m)
+                .background(hover ? XColor.surfaceHover : XColor.surfaceAlt, in: Capsule())
+                .overlay(Capsule().strokeBorder(XColor.border, lineWidth: 1))
+                .overlay(Capsule().strokeBorder(focused ? XColor.brand : .clear, lineWidth: 2).padding(-3))
+                .opacity(configuration.isPressed ? 0.8 : 1)
+                .scaleEffect(configuration.isPressed ? 0.97 : 1)
+                .animation(XMotion.snappy, value: configuration.isPressed)
+                .animation(XMotion.hover, value: hover)
+                .onHover { hover = $0 }
+        }
+    }
+}
+
+/// 危险动作专属按钮（删除/粉碎）：danger 渐变实底 + 白字——清理类应用最高危动作的专属语义，
+/// 与主/次按钮一眼可辨。约定：标签必须用具体动词（「删除 23 项」而非「确定」）。
+public struct XDestructiveButtonStyle: ButtonStyle {
+    var compact: Bool
+    public init(compact: Bool = false) { self.compact = compact }
+    public func makeBody(configuration: Configuration) -> some View {
+        DestructiveBody(configuration: configuration, compact: compact)
+    }
+
+    private struct DestructiveBody: View {
+        let configuration: Configuration
+        let compact: Bool
+        @State private var hover = false
+        @Environment(\.isFocused) private var focused
+
+        var body: some View {
+            configuration.label
+                .font(compact ? XFont.bodyEmphasis : XFont.headline)
+                .foregroundStyle(XColor.onAccent)
+                .padding(.horizontal, compact ? XSpacing.m : XSpacing.xl)
+                .padding(.vertical, compact ? XSpacing.s : XSpacing.m)
+                .background(
+                    LinearGradient(colors: [XColor.danger, XColor.accentPink],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    in: Capsule()
+                )
+                .overlay(Capsule().strokeBorder(focused ? XColor.danger : .clear, lineWidth: 2).padding(-3))
+                .brightness(hover && !configuration.isPressed ? 0.05 : 0)
+                .opacity(configuration.isPressed ? 0.85 : 1)
+                .scaleEffect(configuration.isPressed ? 0.97 : 1)
+                .shadow(color: XColor.danger.opacity(hover ? 0.28 : 0.20), radius: configuration.isPressed ? 4 : 8, y: 4)
+                .animation(XMotion.snappy, value: configuration.isPressed)
+                .animation(XMotion.hover, value: hover)
+                .onHover { hover = $0 }
+        }
+    }
+}
+
+// MARK: - 分段控件（自绘胶囊，统一取代系统 .segmented）
+
+/// 自绘胶囊分段控件：物理与 AppearanceToggle 一致（选中段 = 品牌淡染 + 品牌色前景）。
+/// 全应用同一种分段语言，替换散落的系统 `.segmented` Picker。
+public struct XSegmentedControl<T: Hashable>: View {
+    public struct Option {
+        public let tag: T
+        public let icon: String?
+        public let label: String?
+        public let a11y: String
+        public init(tag: T, icon: String? = nil, label: String? = nil, a11y: String) {
+            self.tag = tag
+            self.icon = icon
+            self.label = label
+            self.a11y = a11y
+        }
+    }
+    @Binding var selection: T
+    let options: [Option]
+    public init(selection: Binding<T>, options: [Option]) {
+        _selection = selection
+        self.options = options
+    }
+    public var body: some View {
+        HStack(spacing: 2) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, opt in
+                let active = selection == opt.tag
+                Button {
+                    withAnimation(XMotion.snappy) { selection = opt.tag }
+                } label: {
+                    HStack(spacing: 4) {
+                        if let icon = opt.icon { Image(systemName: icon).font(XFont.captionEmphasis) }
+                        if let label = opt.label { Text(label).font(XFont.captionEmphasis) }
+                    }
+                    .frame(minWidth: 30, minHeight: 22)
+                    .padding(.horizontal, opt.label == nil ? 0 : XSpacing.s)
+                    .foregroundStyle(active ? AnyShapeStyle(XColor.brand) : AnyShapeStyle(XColor.textSecondary))
+                    .background(Capsule().fill(active ? AnyShapeStyle(XColor.brand.opacity(XAlpha.tint))
+                                                      : AnyShapeStyle(Color.clear)))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(opt.a11y)
+                .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .padding(3)
+        .background(XColor.surfaceAlt.opacity(0.6), in: Capsule())
+        .overlay(Capsule().strokeBorder(XColor.border.opacity(0.6), lineWidth: 1))
+    }
+}
+
+// MARK: - Toast（非模态轻提示）
+
+/// 底部浮动 toast：非模态、自动消失，用于「已拦截 / 已完成」类轻反馈——
+/// 取代打断式 alert 的场景（删除类拒收提示等）。
+public struct XToastPresenter: ViewModifier {
+    @Binding var message: String?
+    let icon: String
+    let tint: Color
+    @State private var dismissTask: Task<Void, Never>?
+    public func body(content: Content) -> some View {
+        content.overlay(alignment: .bottom) {
+            if let message {
+                HStack(spacing: XSpacing.s) {
+                    Image(systemName: icon).font(XFont.bodyEmphasis).foregroundStyle(tint)
+                    Text(message).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                }
+                .padding(.horizontal, XSpacing.l).padding(.vertical, XSpacing.m)
+                .xFloatingGlassCapsule()
+                .xElevation(.overlay)
+                .padding(.bottom, XSpacing.xxl)
+                .frame(maxWidth: 520)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .onAppear {
+                    dismissTask?.cancel()
+                    dismissTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 3_200_000_000)
+                        guard !Task.isCancelled else { return }
+                        withAnimation(XMotion.crossfade) { self.message = nil }
+                    }
+                }
+                .accessibilityLabel(message)
+            }
+        }
+        .animation(XMotion.settle, value: message)
+    }
+}
+
+public extension View {
+    /// 挂一个自动消失的 toast（绑定非 nil 即显示，3.2s 后自动清空）。
+    func xToast(_ message: Binding<String?>,
+                icon: String = "exclamationmark.triangle.fill",
+                tint: Color = XColor.warning) -> some View {
+        modifier(XToastPresenter(message: message, icon: icon, tint: tint))
     }
 }
 
@@ -193,7 +373,7 @@ public struct XActionBar<Trailing: View>: View {
     }
     public var body: some View {
         HStack(spacing: XSpacing.l) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: XSpacing.xxs) {
                 Text(title).font(XFont.headline).foregroundStyle(XColor.textPrimary)
                 Text(subtitle).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             }
@@ -202,8 +382,46 @@ public struct XActionBar<Trailing: View>: View {
         }
         .padding(.horizontal, XSpacing.xl)
         .padding(.vertical, XSpacing.l)
-        .background(.ultraThinMaterial)
+        .xSurface(.thin)   // 浮层材质走令牌（导航层专属；内容卡片仍是不透明 surface）
         .overlay(Rectangle().fill(XColor.hairline).frame(height: 1), alignment: .top)
+    }
+}
+
+// MARK: - 分区卡（uppercase 小标 + 图标 + 内容槽）
+
+/// 统一的「分区卡」容器：扁平染色图标块 + 大写细纹小标 + 任意内容。
+/// 收编 HardwareView.HardwareCard 与菜单栏总览 card() 两套私有实现（P5·H5）——
+/// 同一种卡头语言，硬件页、菜单栏面板、后续新页面共用。
+public struct XSectionCard<Content: View, Trailing: View>: View {
+    let icon: String
+    let title: String
+    let iconColors: [Color]
+    let trailing: Trailing
+    let content: Content
+
+    public init(icon: String, title: String, iconColors: [Color] = XColor.brandGradientColors,
+                @ViewBuilder trailing: () -> Trailing = { EmptyView() },
+                @ViewBuilder content: () -> Content) {
+        self.icon = icon
+        self.title = title
+        self.iconColors = iconColors
+        self.trailing = trailing()
+        self.content = content()
+    }
+
+    public var body: some View {
+        XCard {
+            VStack(alignment: .leading, spacing: XSpacing.m) {
+                HStack(spacing: XSpacing.s) {
+                    XIconTile(systemImage: icon, colors: iconColors, size: 28, flat: true)
+                    Text(title).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
+                        .textCase(.uppercase).tracking(0.6)
+                    Spacer()
+                    trailing
+                }
+                content
+            }
+        }
     }
 }
 

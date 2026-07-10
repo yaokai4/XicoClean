@@ -55,14 +55,14 @@ public struct XRingGauge<Center: View>: View {
                 .stroke(XColor.surfaceAlt, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
 
             // 幽灵渐变环：未填充处也透出一丝品牌色，更通透高级。
-            // 浅色底上 0.12 几乎不可见，按配色方案给到 0.22 保住轨道轮廓。
+            // 浅色底上 ghost 档几乎不可见，按配色方案给到 dim 档保住轨道轮廓。
             Circle()
                 .stroke(AngularGradient(colors: colors + [colors.first!], center: .center),
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .opacity(colorScheme == .light ? 0.22 : 0.12)
+                .opacity(colorScheme == .light ? XAlpha.dim : XAlpha.ghost)
 
             Circle()
-                .fill(RadialGradient(colors: [colors.first!.opacity(0.16), .clear],
+                .fill(RadialGradient(colors: [colors.first!.opacity(XAlpha.tint), .clear],
                                      center: .center, startRadius: 0, endRadius: size / 2))
                 .padding(lineWidth)
 
@@ -93,13 +93,20 @@ public struct XRingGauge<Center: View>: View {
         .accessibilityLabel(a11yLabel ?? "")
         .accessibilityValue("\(Int((max(0, min(progress, 1)) * 100).rounded()))%")
         .onAppear { restartSpin() }
-        .onChange(of: spinning) { _ in restartSpin() }
+        .onChange(of: spinning) { restartSpin() }
     }
 
     private func restartSpin() {
-        spin = false
+        // 显式事务复位：repeatForever 不会被普通赋值可靠取消，反复开关会叠加动画（P4 复核）。
+        // 先在禁动画事务里归零，再于下一个 runloop 重新起转，确保复位与新动画不合并。
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) { spin = false }
         guard spinning, !reduceMotion else { return }   // Reduce Motion 下不做无限旋转
-        withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { spin = true }
+        DispatchQueue.main.async {
+            guard spinning else { return }
+            withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { spin = true }
+        }
     }
 }
 
@@ -185,7 +192,7 @@ public struct XSegmentBar: View {
                                 .frame(width: max(0, w * min(max(seg.fraction, 0), 1)))
                         }
                     }
-                    .animation(.spring(response: 0.6, dampingFraction: 0.85), value: segments.map(\.fraction))
+                    .animation(XMotion.settle, value: segments.map(\.fraction))
                 }
                 .clipShape(Capsule())
         }
@@ -213,7 +220,7 @@ public struct XIconTile: View {
         let shape = RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
         return Group {
             if flat {
-                shape.fill((colors.first ?? XColor.brand).opacity(0.14))
+                shape.fill((colors.first ?? XColor.brand).opacity(XAlpha.tint))
                     .frame(width: size, height: size)
                     .overlay(
                         Image(systemName: systemImage)
@@ -274,7 +281,7 @@ public struct XHeaderBar<Trailing: View>: View {
     }
     public var body: some View {
         HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: XSpacing.xs) {
                 Text(title).xTitle().foregroundStyle(XColor.textPrimary)
                 if !subtitle.isEmpty {
                     Text(subtitle).font(XFont.callout).foregroundStyle(XColor.textSecondary)

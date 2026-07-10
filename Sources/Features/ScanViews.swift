@@ -6,11 +6,17 @@ import Infrastructure
 import DesignSystem
 
 /// 扫描会话外壳：idle 由调用方自定义，其余阶段共享。
+/// P4：扫描/结果态带模块身份（图标+名称，深层流程不迷路）；scanning→results 用
+/// matchedGeometryEffect 让「扫描 orb 收拢为结果页汇总环」（签名时刻 S3），替代纯 crossfade 硬切。
 struct SessionScaffold<Idle: View>: View {
     @ObservedObject var vm: ModuleSessionViewModel
     let cleanButtonTitle: String
+    /// 模块图标（扫描态章头 + 结果页汇总环中心）。
+    var moduleIcon: String = "sparkles"
     @ViewBuilder var idle: () -> Idle
     @State private var confirmPermanent = false
+    @Namespace private var scanNS
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -23,7 +29,8 @@ struct SessionScaffold<Idle: View>: View {
             case let .failed(message): failedView(message)
             }
         }
-        .animation(XMotion.crossfade, value: vm.phase)
+        // S3：settle 弹簧驱动相位切换——orb 帧连续收拢到汇总环（Reduce Motion 退回 crossfade）。
+        .animation(reduceMotion ? XMotion.crossfade : XMotion.settle, value: vm.phase)
         .alert(xLoc("部分项目未能恢复"), isPresented: $vm.undoFailedAlert) {
             Button(xLoc("在废纸篓中显示")) { vm.revealUndoFailuresInTrash() }
             Button(xLoc("好"), role: .cancel) {}
@@ -73,7 +80,16 @@ struct SessionScaffold<Idle: View>: View {
 
     private var scanningView: some View {
         VStack(spacing: XSpacing.xl) {
+            // 模块身份章头：深层流程不再「不知道自己在哪个模块」（P4·C3）。
+            HStack(spacing: XSpacing.s) {
+                Image(systemName: moduleIcon).font(XFont.captionEmphasis).foregroundStyle(XColor.brand)
+                Text(xLoc(vm.title)).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
+            }
+            .padding(.horizontal, XSpacing.m).padding(.vertical, 5)
+            .background(Capsule().fill(XColor.brand.opacity(XAlpha.ghost)))
+            .overlay(Capsule().stroke(XColor.hairline, lineWidth: 1))
             ScanningIndicator(bytes: vm.progressBytes, message: vm.statusMessage, progress: vm.progress > 0 ? vm.progress : nil)
+                .matchedGeometryEffect(id: "scanOrb", in: scanNS)   // S3 的「源」：扫描 orb
             Button(xLoc("取消")) { vm.cancel() }.buttonStyle(XSecondaryButtonStyle())
                 .keyboardShortcut(.cancelAction)
         }
@@ -81,10 +97,17 @@ struct SessionScaffold<Idle: View>: View {
     }
 
     private var resultsView: some View {
+        ScrollViewReader { proxy in
         VStack(spacing: 0) {
-            SummaryHeader(total: vm.totalReclaimable, selected: vm.selectedSize,
+            SummaryHeader(moduleIcon: moduleIcon, moduleTitle: vm.title,
+                          total: vm.totalReclaimable, selected: vm.selectedSize,
                           count: vm.selectedCount, itemCount: vm.totalItemCount,
-                          onRescan: { vm.start() })
+                          groups: vm.groups.map { ($0.id, $0.title, $0.totalSize) },
+                          morphNS: reduceMotion ? nil : scanNS,
+                          onRescan: { vm.start() },
+                          onTapGroup: { id in
+                              withAnimation(XMotion.settle) { proxy.scrollTo(id, anchor: .top) }
+                          })
             if let warning = vm.scanWarning {
                 HStack(spacing: XSpacing.s) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(XColor.warning)
@@ -110,6 +133,7 @@ struct SessionScaffold<Idle: View>: View {
                             onToggleGroup: { vm.setGroup(group.id, selected: $0) },
                             onToggleItem: { vm.toggleItem(groupID: group.id, itemID: $0) },
                             onIgnoreItem: { vm.ignore(groupID: group.id, itemID: $0) })
+                            .id(group.id)   // 构成条点击滚动锚点
                     }
                 }
                 .padding(XSpacing.xl)
@@ -140,6 +164,7 @@ struct SessionScaffold<Idle: View>: View {
                 }
             }
         }
+        }   // ScrollViewReader
         .confirmationDialog(confirmTitle, isPresented: $confirmPermanent, titleVisibility: .visible) {
             Button(confirmButtonTitle, role: .destructive) { vm.clean() }
             Button(xLoc("取消"), role: .cancel) {}
@@ -192,29 +217,96 @@ struct SessionScaffold<Idle: View>: View {
 }
 
 struct SummaryHeader: View {
+    /// P4·C3/C4：模块身份（汇总环中心图标 + 名称）+ 按组构成条（点击段落滚动到对应组）。
+    var moduleIcon: String = "sparkles"
+    var moduleTitle: String = ""
     let total: Int64
     let selected: Int64
     let count: Int
     let itemCount: Int
+    /// 构成条数据：(组 id, 组名, 字节)。空则不画构成条（兼容旧调用方）。
+    var groups: [(id: String, title: String, bytes: Int64)] = []
+    /// S3 收拢动画的命名空间（扫描 orb → 本汇总环）；nil = 不参与形变。
+    var morphNS: Namespace.ID?
     let onRescan: () -> Void
+    var onTapGroup: ((String) -> Void)?
+
     var body: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(xLocF("共发现 %d 项 · 可清理", itemCount)).font(XFont.caption).foregroundStyle(XColor.textSecondary).tracking(0.2)
-                Text(total.formattedBytes).xLargeTitle().foregroundStyle(XColor.textPrimary)
+        VStack(spacing: XSpacing.s) {
+            HStack(alignment: .center, spacing: XSpacing.l) {
+                // S3 的「宿」：扫描 orb 收拢为这枚汇总环（中心 = 模块图标）。
+                summaryRing
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: XSpacing.xs) {
+                        if !moduleTitle.isEmpty {
+                            Text(xLoc(moduleTitle)).font(XFont.captionEmphasis).foregroundStyle(XColor.brand).tracking(0.2)
+                            Text("·").font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                        }
+                        Text(xLocF("共发现 %d 项 · 可清理", itemCount)).font(XFont.caption).foregroundStyle(XColor.textSecondary).tracking(0.2)
+                    }
+                    Text(total.formattedBytes).xLargeTitle().foregroundStyle(XColor.textPrimary)
+                        .contentTransition(.numericText())
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(xLocF("已选 %d 项", count)).font(XFont.caption).foregroundStyle(XColor.textSecondary).tracking(0.2)
+                    Text(selected.formattedBytes).xTitle().foregroundStyle(XColor.brand)
+                        .contentTransition(.numericText())
+                }
+                Button { onRescan() } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.plain).foregroundStyle(XColor.textSecondary)
+                    .padding(.leading, XSpacing.m)
+                    .accessibilityLabel(xLoc("重新扫描"))
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(xLocF("已选 %d 项", count)).font(XFont.caption).foregroundStyle(XColor.textSecondary).tracking(0.2)
-                Text(selected.formattedBytes).xTitle().foregroundStyle(XColor.brand)
-            }
-            Button { onRescan() } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.plain).foregroundStyle(XColor.textSecondary)
-                .padding(.leading, XSpacing.m)
-                .accessibilityLabel(xLoc("重新扫描"))
+            if groups.count > 1 { compositionBar }
         }
         .padding(.horizontal, XSpacing.xl)
         .padding(.vertical, XSpacing.l)
+    }
+
+    @ViewBuilder private var summaryRing: some View {
+        let ring = XMiniRing(fraction: total > 0 ? Double(selected) / Double(total) : 0,
+                             colors: XColor.brandGradientColors, size: 52, lineWidth: 5) {
+            Image(systemName: moduleIcon)
+                .font(XFont.bodyEmphasis)
+                .foregroundStyle(XColor.brandGradient)
+        }
+        if let morphNS {
+            ring.matchedGeometryEffect(id: "scanOrb", in: morphNS)
+        } else {
+            ring
+        }
+    }
+
+    /// 按组构成条：一条读懂「可清理的都是什么」；点击段落/图例滚动到对应组（P4·C4）。
+    private var compositionBar: some View {
+        let top = groups.sorted { $0.bytes > $1.bytes }
+        let denom = max(total, 1)
+        return VStack(alignment: .leading, spacing: XSpacing.xs) {
+            XSegmentBar(segments: Array(top.prefix(6)).enumerated().map { i, g in
+                .init(id: i, fraction: Double(g.bytes) / Double(denom), color: XColor.ring(i))
+            }, height: 6)
+            // 图例胶囊：点击滚动到组。超过 6 组只列前 6（余量并入轨道底色，诚实不假聚合）。
+            HStack(spacing: XSpacing.s) {
+                ForEach(Array(top.prefix(6).enumerated()), id: \.element.id) { i, g in
+                    Button {
+                        onTapGroup?(g.id)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Circle().fill(XColor.ring(i)).frame(width: 6, height: 6)
+                            Text(xLoc(g.title)).font(XFont.micro).foregroundStyle(XColor.textSecondary)
+                                .lineLimit(1)
+                            Text("\(Int((Double(g.bytes) / Double(denom) * 100).rounded()))%")
+                                .font(XFont.micro).foregroundStyle(XColor.textTertiary).monospacedDigit()
+                        }
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(xLocF("%@，%@", g.title, g.bytes.formattedBytes))
+                }
+                Spacer(minLength: 0)
+            }
+        }
     }
 }
 
@@ -281,17 +373,21 @@ struct ModuleIdleHero: View {
 public struct SmartScanView: View {
     private let env: XicoEnvironment
     @ObservedObject private var vm: ModuleSessionViewModel
+    /// 高频数据源（温度/SMART 子项取自这里；读不到即「暂无数据」，诚实降权）。
+    @ObservedObject private var feed: MetricsFeed
     @State private var capacity: VolumeCapacity?
     @State private var metrics: SystemMetrics?
     @State private var appeared = false
+    @State private var showHealthDetail = false
 
     public init(model: AppModel) {
         self.env = model.env
         self.vm = model.smartScanSession   // 缓存的智能扫描会话，切换不丢结果
+        self._feed = ObservedObject(wrappedValue: model.liveMetricsFeed)
     }
 
     public var body: some View {
-        SessionScaffold(vm: vm, cleanButtonTitle: xLoc("清理")) { dashboard }
+        SessionScaffold(vm: vm, cleanButtonTitle: xLoc("清理"), moduleIcon: "sparkles") { dashboard }
             .onAppear {
                 refresh()
                 withAnimation(XMotion.settle) { appeared = true }
@@ -346,11 +442,47 @@ public struct SmartScanView: View {
         }
     }
 
+    /// 可解释健康分（P6·1）：五子项加权，全部可点开溯源；不可用子项如实标注并降权。
+    private var healthDetail: HealthScore {
+        let thermalState = ProcessInfo.processInfo.thermalState
+        let thermalLevel: Int = {
+            switch thermalState {
+            case .nominal: return 0
+            case .fair: return 1
+            case .serious: return 2
+            default: return 3
+            }
+        }()
+        let thermalText: String = {
+            switch thermalState {
+            case .nominal: return xLoc("正常")
+            case .fair: return xLoc("偏高")
+            case .serious: return xLoc("严重")
+            default: return xLoc("临界")
+            }
+        }()
+        // SMART：只统计内置卷；详情采样未跑过（列表为空）时如实 nil。
+        let internals = feed.storageVolumes.filter(\.isInternal)
+        let smartHealthy: Bool? = internals.isEmpty ? nil
+            : internals.allSatisfy { $0.smartStatus == "Verified" || $0.smartStatus == "已验证" }
+        return HealthScore.compute(
+            diskFreeFraction: capacity.map { max(0, 1 - $0.usedFraction) },
+            diskFreeText: capacity.map { xLocF("%@ 可用", $0.available.formattedBytes) } ?? "—",
+            memoryUsedFraction: metrics?.memoryUsedFraction,
+            memoryText: metrics.map { "\(Int($0.memoryUsedFraction * 100))%" } ?? "—",
+            cpuTempCelsius: feed.liveSnapshot?.cpuTemp,
+            thermalLevel: thermalLevel,
+            thermalText: thermalText,
+            smartAllHealthy: smartHealthy,
+            smartText: internals.isEmpty ? xLoc("打开硬件页后计入") : (smartHealthy == true ? xLoc("全部正常") : xLoc("有告警")))
+    }
+
     private var dashboard: some View {
         let disk = capacity?.usedFraction ?? 0
         let free = max(0, 1 - disk)
         let mem = metrics?.memoryUsedFraction ?? 0
-        let health = healthScore(disk: disk, mem: mem)
+        let detail = healthDetail
+        let health = detail.total
         return VStack(spacing: XSpacing.xl) {
             healthHeader(score: health)
 
@@ -374,8 +506,18 @@ public struct SmartScanView: View {
                             fraction: disk, colors: XColor.gauge(disk))
                 XMetricCard(value: "\(Int(mem * 100))%", label: xLoc("内存占用"),
                             fraction: mem, colors: XColor.gauge(mem))
-                XMetricCard(value: "\(health)", label: xLoc("健康评分"),
-                            fraction: Double(health) / 100, colors: healthColors(health))
+                // 健康评分可点开溯源（P6·1）：每一分都能看到来自哪个子项、原始值是什么。
+                Button {
+                    showHealthDetail = true
+                } label: {
+                    XMetricCard(value: "\(health)", label: xLoc("健康评分"),
+                                fraction: Double(health) / 100, colors: healthColors(health))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(xLocF("健康评分 %d，点按查看构成", health))
+                .popover(isPresented: $showHealthDetail, arrowEdge: .bottom) {
+                    HealthBreakdownView(score: detail)
+                }
             }
             .frame(maxWidth: 600)
 
@@ -448,6 +590,60 @@ public struct SmartScanView: View {
     }
 }
 
+/// 健康分构成浮层（P6·1）：逐子项列出 当前值 / 得分 / 打分口径 / 改善建议——
+/// 每一分都可溯源，「诚实指标」铁律的展示面。
+private struct HealthBreakdownView: View {
+    let score: HealthScore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
+            HStack {
+                Text(xLoc("健康评分构成")).font(XFont.headline).foregroundStyle(XColor.textPrimary)
+                Spacer()
+                Text("\(score.total)").font(XFont.monoLarge).foregroundStyle(XColor.brand)
+            }
+            Divider()
+            ForEach(score.components) { comp in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text(xLoc(comp.titleKey)).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                        Text("\(Int(comp.weight * 100))%").font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                        Spacer()
+                        Text(comp.valueText).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        if let s = comp.score {
+                            Text("\(s)").font(XFont.mono)
+                                .foregroundStyle(s >= 80 ? XColor.success : (s >= 50 ? XColor.warning : XColor.danger))
+                                .frame(minWidth: 30, alignment: .trailing)
+                        } else {
+                            Text(xLoc("暂无数据")).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                        }
+                    }
+                    if let s = comp.score {
+                        GeometryReader { g in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(XColor.surfaceAlt)
+                                Capsule().fill(s >= 80 ? XColor.success : (s >= 50 ? XColor.warning : XColor.danger))
+                                    .frame(width: max(3, g.size.width * CGFloat(s) / 100))
+                            }
+                        }
+                        .frame(height: 4)
+                    }
+                    Text(xLoc(comp.basisKey) + " · " + xLoc(comp.adviceKey))
+                        .font(XFont.micro).foregroundStyle(XColor.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 2)
+            }
+            Divider()
+            Text(xLoc("分数只反映机器当前状态，与是否运行过扫描无关。数据不可用的子项不计分。"))
+                .font(XFont.micro).foregroundStyle(XColor.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(XSpacing.l)
+        .frame(width: 380)
+    }
+}
+
 /// 线程安全地收集失败模块名（并发扫描期写、主线程读）。
 final class FailureBox: @unchecked Sendable {
     private let lock = NSLock()
@@ -511,7 +707,8 @@ public struct ModuleScanView: View {
     }
 
     public var body: some View {
-        SessionScaffold(vm: vm, cleanButtonTitle: intent == .permanent ? xLoc("清空") : xLoc("清理")) {
+        SessionScaffold(vm: vm, cleanButtonTitle: intent == .permanent ? xLoc("清空") : xLoc("清理"),
+                        moduleIcon: meta?.systemImage ?? "magnifyingglass") {
             ModuleIdleHero(
                 icon: meta?.systemImage ?? "magnifyingglass",
                 colors: XColor.brandGradientColors,

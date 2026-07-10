@@ -24,7 +24,12 @@ func renderShots() {
         ("04-optimization",    AnyView(OptimizationView(env: env))),
         ("05-maintenance",     AnyView(MaintenanceView(env: env))),
         ("06-privacy-idle",    AnyView(ModuleScanView(model: model, moduleID: .privacy, intent: .trash))),
-        ("07-spacelens",       AnyView(SunburstView(node: synthDiskTree()) { _ in }))
+        ("07-spacelens",       AnyView(SunburstView(node: synthDiskTree()) { _ in })),
+        // 钻取态：家族色相锚定（整个子树 = ring(1) 家族的明度阶）+「其他」聚合弧可见。
+        ("08-spacelens-drilled", AnyView(SunburstView(node: synthDiskTree().children[0],
+                                                      onDrill: { _ in },
+                                                      onUp: {},
+                                                      familyHue: XColor.ring(1))))
     ]
 
     for scheme in [ColorScheme.dark, .light] {

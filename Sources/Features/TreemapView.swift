@@ -2,7 +2,6 @@ import SwiftUI
 import AppKit
 import Domain
 import DesignSystem
-import Shared
 
 /// 简化的二分切割 treemap：面积正比于占用大小，点击目录方块可钻取。
 struct TreemapView: View {
@@ -10,15 +9,23 @@ struct TreemapView: View {
     let onSelect: (DiskNode) -> Void
     /// 就地把某项移到废纸篓（可恢复）。nil 表示宿主未提供该能力。
     let onTrash: ((DiskNode) -> Void)?
+    /// 加入收集篮（两段式删除的第一段）。nil 表示宿主未提供。
+    let onCollect: ((DiskNode) -> Void)?
+    /// 删除红线预检（统一走宿主的 env.safety）——返回拒绝原因，nil = 放行。
+    let denyReason: ((URL) -> String?)?
     @State private var hovered: UUID?
     @State private var pendingTrash: DiskNode?
     @State private var trashDeny: String?
 
     init(node: DiskNode,
          onTrash: ((DiskNode) -> Void)? = nil,
+         onCollect: ((DiskNode) -> Void)? = nil,
+         denyReason: ((URL) -> String?)? = nil,
          onSelect: @escaping (DiskNode) -> Void) {
         self.node = node
         self.onTrash = onTrash
+        self.onCollect = onCollect
+        self.denyReason = denyReason
         self.onSelect = onSelect
     }
 
@@ -49,11 +56,10 @@ struct TreemapView: View {
         }
     }
 
-    /// 右键「移到废纸篓」入口：先按删除红线（XicoSafetyRules）自检，命中即拒绝并说明原因；
-    /// 放行才弹出二次确认。真正的回收动作由宿主的 onTrash 走 NSWorkspace.recycle（可恢复）。
+    /// 右键「移到废纸篓」入口：先走**全应用统一的删除红线**（宿主注入的 env.safety）自检，
+    /// 命中即拒绝并说明原因；放行才弹出二次确认。真正的回收动作由宿主的 onTrash 复检后执行。
     private func requestTrash(_ item: DiskNode) {
-        let rules = XicoSafetyRules(home: FileManager.default.homeDirectoryForCurrentUser)
-        if let reason = rules.denyReason(for: item.url) {
+        if let reason = denyReason?(item.url) {
             trashDeny = reason
         } else {
             pendingTrash = item
@@ -109,9 +115,15 @@ struct TreemapView: View {
         .offset(x: frame.minX, y: frame.minY)
         .onHover { hovered = $0 ? child.id : nil }
         .help("\(child.name) — \(child.size.formattedBytes)")
+        .draggable(child.url)   // 拖进收集篮（basket 是 dropDestination）
         .contextMenu {
             Button(xLoc("在 Finder 中显示")) { NSWorkspace.shared.activateFileViewerSelecting([child.url]) }
             Button(xLoc("快速查看")) { quickLook(child.url) }
+            if onCollect != nil, !child.isAggregate {
+                Button { onCollect?(child) } label: {
+                    Label(xLoc("加入收集篮"), systemImage: "basket")
+                }
+            }
             if onTrash != nil, !child.isAggregate {
                 Divider()
                 Button(role: .destructive) { requestTrash(child) } label: {

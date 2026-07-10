@@ -50,13 +50,13 @@ func renderLiveShots() {
     netVM.stop()
 
     // 用 ocean 主题渲染一张监视页，验证主题切换真实生效
-    XThemeStore.current = .ocean
+    XThemeStore.shared.current = .ocean
     renderPage(name: "16-monitor-ocean", view: AnyView(MonitorView(env: env)),
                size: CGSize(width: 1120, height: 820), dir: dir, scheme: .dark)
-    XThemeStore.current = .sunset
+    XThemeStore.shared.current = .sunset
     renderPage(name: "17-hardware-sunset", view: AnyView(HardwareView(env: env)),
                size: CGSize(width: 1120, height: 820), dir: dir, scheme: .dark)
-    XThemeStore.current = .aurora
+    XThemeStore.shared.current = .aurora
 
     // 监视页 · CPU 标签（每核心历史热力图 + 传感器中心）——验证 R1 / R5。
     UserDefaults.standard.set("heat", forKey: "xico.monitor.coreViz")

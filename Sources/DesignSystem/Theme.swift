@@ -64,10 +64,15 @@ public struct XTheme: Identifiable, Equatable, Sendable {
     public static func byID(_ id: String) -> XTheme { all.first { $0.id == id } ?? aurora }
 }
 
-/// 当前主题的全局持有者。XColor 的品牌色读它；切换时更新此值并触发根视图重渲。
+/// 当前主题的全局持有者（@Observable）。XColor 的品牌色读它——SwiftUI 在 body 求值期间
+/// 读到 `shared.current` 即自动登记观察依赖，切主题时**只有真正用到主题色的视图**重渲，
+/// 不再需要根视图整树重建 hack。
 ///
-/// 不变式：仅在主线程读写（SwiftUI 视图渲染读、设置页切换写），故用 nonisolated(unsafe)
-/// 免除 actor 隔离——与 SwiftUI 的主线程渲染模型一致，无跨线程竞态。
-public enum XThemeStore {
-    nonisolated(unsafe) public static var current: XTheme = .aurora
+/// 不变式：仅在主线程读写（SwiftUI 视图渲染读、设置页切换写、菜单栏绘制读）——与 SwiftUI
+/// 的主线程渲染模型一致，无跨线程竞态，故 @unchecked Sendable 安全。
+@Observable
+public final class XThemeStore: @unchecked Sendable {
+    public static let shared = XThemeStore()
+    public var current: XTheme = .aurora
+    private init() {}
 }

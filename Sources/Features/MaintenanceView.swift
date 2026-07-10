@@ -39,6 +39,7 @@ public struct MaintenanceView: View {
                         }
                     }
                     ForEach(UserMaintenanceTask.allCases) { task in userCard(task) }
+                    ICloudEvictCard()
 
                     sectionLabel(xLoc("需要管理员权限"))
                     if status != .installed { helperBanner }
@@ -130,6 +131,8 @@ public struct MaintenanceView: View {
         }
     }
 
+    // 占位锚点（iCloud 驱逐卡定义见文件尾 ICloudEvictCard）。
+
     private func rootCard(_ task: MaintenanceTask) -> some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.s) {
@@ -205,3 +208,83 @@ public struct MaintenanceView: View {
         }
     }
 }
+
+// MARK: - iCloud 本地副本驱逐卡（P6·4：云清理第一期，语义 = 驱逐非删除）
+
+/// 释放 iCloud Drive 已下载文件的本地副本：文件完整保留在云端、可随时重新下载——
+/// 因此不进删除管线、不经废纸篓。UI 全程明说「文件仍在云端」。
+private struct ICloudEvictCard: View {
+
+    @State private var summary: ICloudScanSummary?
+    @State private var scanning = false
+    @State private var evicting = false
+    @State private var result: String?
+    @State private var unavailable = false
+
+    var body: some View {
+        if unavailable {
+            EmptyView()   // 未启用 iCloud Drive：整卡隐藏，不给不可用的入口
+        } else {
+            XCard {
+                VStack(alignment: .leading, spacing: XSpacing.s) {
+                    HStack(spacing: XSpacing.m) {
+                        XIconTile(systemImage: "icloud.and.arrow.up", colors: [XColor.ringPeri, XColor.accentTeal], size: 34)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(xLoc("释放 iCloud 本地副本")).xHeadline().foregroundStyle(XColor.textPrimary)
+                            Text(xLoc("移除已下载文件的本机缓存，文件完整保留在 iCloud，可随时重新下载"))
+                                .font(XFont.caption).foregroundStyle(XColor.textSecondary).lineLimit(2)
+                        }
+                        Spacer()
+                        if scanning || evicting {
+                            XSpinner()
+                        } else if let summary, !summary.items.isEmpty {
+                            Button(xLocF("释放 %@", summary.totalBytes.formattedBytes)) { evict() }
+                                .buttonStyle(XPrimaryButtonStyle(compact: true))
+                        } else {
+                            Button(xLoc("扫描")) { scan() }.buttonStyle(XSecondaryButtonStyle(compact: true))
+                        }
+                    }
+                    if let summary, !summary.items.isEmpty {
+                        Text(xLocF("找到 %d 个已下载的 iCloud 文件（≥1 MB）· 驱逐不会删除云端文件", summary.items.count))
+                            .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                    }
+                    if let result {
+                        Text(result).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func scan() {
+        guard !scanning else { return }
+        scanning = true
+        result = nil
+        Task { @MainActor in
+            let s = await Task.detached(priority: .userInitiated) { iCloudGlobalEvictor.scan() }.value
+            scanning = false
+            if let s {
+                summary = s
+                if s.items.isEmpty { result = xLoc("没有可驱逐的本地副本——本机没有占空间的已下载 iCloud 文件。") }
+            } else {
+                unavailable = true   // 未启用 iCloud Drive
+            }
+        }
+    }
+
+    private func evict() {
+        guard let items = summary?.items, !items.isEmpty, !evicting else { return }
+        evicting = true
+        Task { @MainActor in
+            let r = await Task.detached(priority: .userInitiated) { iCloudGlobalEvictor.evict(items) }.value
+            evicting = false
+            summary = nil
+            result = r.failures.isEmpty
+                ? xLocF("已释放 %@ 本地空间，文件仍在 iCloud 云端。", r.freed.formattedBytes)
+                : xLocF("已释放 %@；%d 项未能驱逐（可能正被使用）。", r.freed.formattedBytes, r.failures.count)
+        }
+    }
+}
+
+/// 文件级驱逐器实例（ICloudEvictor 为 Sendable 类；避免 @MainActor View 的静态属性隔离限制）。
+private let iCloudGlobalEvictor = ICloudEvictor()

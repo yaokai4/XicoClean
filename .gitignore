@@ -7,3 +7,4 @@ build/
 
 # stray nested clone (not part of this repo)
 XicoClean/
+dist/

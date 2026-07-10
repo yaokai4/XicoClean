@@ -147,6 +147,7 @@ public final class ModuleSessionViewModel: ObservableObject {
                 let fdaOK = self.env.permissions.hasFullDiskAccess()
                 if !merged.isEmpty {
                     self.phase = .results
+                    XSound.play(.scanDone)   // 签名音效①：扫描完成（P4）
                     // 有结果也要如实告知是否「已扫全」：未授 FDA 时，多数受保护位置根本没被扫到，
                     // 用户看到的只是冰山一角——用横幅明说，避免误以为「扫完就这么点」。
                     var warnings: [String] = []
@@ -163,6 +164,7 @@ public final class ModuleSessionViewModel: ObservableObject {
                 } else {
                     self.scanWarning = self.postScanWarning?()
                     self.phase = .empty
+                    XSound.play(.scanDone)
                 }
             } catch is CancellationError {
                 // 用户取消：保持 cancel() 设定的状态
@@ -251,6 +253,7 @@ public final class ModuleSessionViewModel: ObservableObject {
                                                     removedCount: report.removedCount,
                                                     restorable: self.intent == .trash ? report.restorable : [])
             self.phase = .finished
+            XSound.play(.cleanDone)   // 签名音效②：清理完成（P4）
             if report.reclaimedBytes > 0 {
                 Notifier.notifyCleaningDone(reclaimed: report.reclaimedBytes.formattedBytes,
                                             count: report.removedCount)

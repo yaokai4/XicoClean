@@ -17,33 +17,17 @@ public struct SettingsView: View {
     @State private var licenseStatus: LicenseStatus?
     @State private var licenseMessage: String?
     @State private var activationKey = ""
-    @AppStorage("xico.mb.cpu") private var mbCPU = true
-    @AppStorage("xico.mb.memory") private var mbMemory = true
-    @AppStorage("xico.mb.network") private var mbNetwork = true
-    @AppStorage("xico.mb.combined") private var mbCombined = false
-    @AppStorage("xico.mb.style") private var mbStyle = MenuBarStyle.iconValue.rawValue
+    // 菜单栏（P3 IA 重组：预设 → 项目列表（排序+开关）→ 逐项详情 → 全局）。
+    // 僵尸键清理：全局 xico.mb.style 与逐项 .border 键已废除（控制器早已不读，
+    // 「看起来能调、实际半瘫」比不能调更伤信任——P3·M8）。
     @AppStorage("xico.mb.interval") private var mbInterval = 2.0
-    @AppStorage("xico.mb.temp") private var mbTemp = false
-    @AppStorage("xico.mb.disk") private var mbDisk = false
-    @AppStorage("xico.mb.gpu") private var mbGPU = false
     // 默认单色（模板图，随菜单栏深浅自动黑/白）——克制、像 Sensei/iStat 默认那样不刺眼。
     // 彩虹极光留给点开后的详情面板与 App 内部。想要彩色菜单栏的用户可自行打开。
     @AppStorage("xico.mb.colored") private var mbColored = false
-    // 每项独立的显示样式（像 iStat：各指标可各自切换 图标+数值 / 仅数值 / 迷你图 / 可视化）。
-    // 默认给一套克制但有信息量的组合：CPU/GPU 用可视化、网络用迷你折线、其余用图标+数值。
-    @AppStorage("xico.mb.cpu.style")     private var cpuStyle    = MenuBarStyle.rich.rawValue
-    @AppStorage("xico.mb.memory.style")  private var memStyle    = MenuBarStyle.rich.rawValue
-    @AppStorage("xico.mb.network.style") private var netStyle    = MenuBarStyle.graph.rawValue
-    @AppStorage("xico.mb.temp.style")    private var tempStyle   = MenuBarStyle.iconValue.rawValue
-    @AppStorage("xico.mb.gpu.style")     private var gpuStyle    = MenuBarStyle.rich.rawValue
-    @AppStorage("xico.mb.disk.style")    private var diskStyle   = MenuBarStyle.iconValue.rawValue
-    // 每项独立的「图形加框」开关（只圈动态图形，数值永远在框外）。
-    // 默认按图形类型校准：图表区图形（CPU 直方图 / 网络折线）加框；环/条裸露更干净（对齐 Sensei）。
-    @AppStorage("xico.mb.cpu.border")     private var cpuBorder  = true
-    @AppStorage("xico.mb.memory.border")  private var memBorder  = false
-    @AppStorage("xico.mb.network.border") private var netBorder  = true
-    @AppStorage("xico.mb.gpu.border")     private var gpuBorder  = false
-    @AppStorage("xico.mb.disk.border")    private var diskBorder = false
+    @AppStorage("xico.mb.order") private var mbOrderCSV = ""
+    @AppStorage("xico.mb.combined.values") private var mbCombinedValues = false
+    /// 展开逐项详情的条目（同一时间只展开一个——渐进披露，防设置迷宫）。
+    @State private var mbExpanded: String?
 
     public init(model: AppModel) { self.model = model }
 
@@ -65,11 +49,13 @@ public struct SettingsView: View {
                     definitionsCard
 
                     sectionLabel("清理")
+                    safetyPromiseCard
                     historyCard
                     ignoreListCard
 
                     sectionLabel("外观")
                     appearanceCard
+                    soundCard
                     languageCard
                     ThemePickerCard(selectedID: Binding(
                         get: { model.themeID },
@@ -167,6 +153,61 @@ public struct SettingsView: View {
         }
     }
 
+    // MARK: 安全承诺（P4·C7：把最强的一层「说」出来——信任叙事产品化，对标 CleanMyMac Safety Database）
+
+    private var safetyPromiseCard: some View {
+        XCard {
+            VStack(alignment: .leading, spacing: XSpacing.s) {
+                HStack(spacing: XSpacing.m) {
+                    XIconTile(systemImage: "checkmark.shield.fill", colors: [XColor.success, XColor.accentTeal], size: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(xLoc("安全承诺")).xHeadline().foregroundStyle(XColor.textPrimary)
+                        Text(xLoc("每一次删除都要过三道闸，这是 Xico 的底线")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    }
+                    Spacer()
+                }
+                Divider().padding(.vertical, XSpacing.xxs)
+                promiseLine("nosign", XColor.danger,
+                            xLoc("永不触碰红线"),
+                            xLoc("系统关键路径、凭证与密钥（如 ~/.ssh、~/.aws）、云盘配置——规则库直接拒绝，无一例外"))
+                promiseLine("checkmark.seal", XColor.brand,
+                            xLoc("三道独立校验"),
+                            xLoc("界面预检 → 安全引擎复检 → 特权助手删除前再复校，三处共用同一套规则库"))
+                promiseLine("arrow.uturn.backward.circle", XColor.success,
+                            xLoc("默认可撤销"),
+                            xLoc("清理默认移入废纸篓、一键放回原位；彻底删除永远单独确认"))
+                promiseLine("icloud.slash", XColor.textSecondary,
+                            xLoc("数据不出本机"),
+                            xLoc("扫描结果、清理历史、统计数据全部本地存储，绝不上传"))
+            }
+        }
+    }
+
+    private func promiseLine(_ icon: String, _ tint: Color, _ title: String, _ detail: String) -> some View {
+        HStack(alignment: .top, spacing: XSpacing.s) {
+            Image(systemName: icon).font(XFont.callout).foregroundStyle(tint).frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                Text(detail).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+    }
+
+    // MARK: 界面音效（三个签名音效的总开关）
+
+    @AppStorage("xico.sound.enabled") private var soundEnabled = true
+
+    private var soundCard: some View {
+        settingRow(icon: "speaker.wave.2", colors: [XColor.ringMint, XColor.accentTeal],
+                   title: xLoc("界面音效"), subtitle: xLoc("扫描完成 / 清理完成 / 删除执行的轻量提示音；跟随系统「界面声音」偏好")) {
+            Toggle("", isOn: $soundEnabled).toggleStyle(.switch).labelsHidden()
+                .accessibilityLabel(xLoc("界面音效"))
+        }
+    }
+
     private var historyCard: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.s) {
@@ -183,6 +224,16 @@ public struct SettingsView: View {
                         Button(xLoc("清空记录")) { confirmClearHistory = true }
                             .buttonStyle(XSecondaryButtonStyle(compact: true))
                     }
+                }
+                // 价值账本（P6·2）：近 6 个月释放空间的月度条——「Xico 为你做了什么」一眼可见。
+                // 数据源 = 既有清理历史（唯一事实源，无新增持久化）；纯本地，绝不上传。
+                if totalCleanups > 0 {
+                    ledgerBars
+                    if let fun = spaceFunLine(totalReclaimed) {
+                        Text(fun).font(XFont.caption).foregroundStyle(XColor.brand)
+                    }
+                    Text(xLoc("这些数据从不离开你的 Mac。"))
+                        .font(XFont.micro).foregroundStyle(XColor.textTertiary)
                 }
                 if !history.isEmpty {
                     Divider().padding(.vertical, XSpacing.xxs)
@@ -206,6 +257,48 @@ public struct SettingsView: View {
                 }
             }
         }
+    }
+
+    /// 近 6 个月的月度释放条形（按清理记录聚合；空月画基线点，诚实呈现「没清理」）。
+    private var ledgerBars: some View {
+        let cal = Calendar.current
+        let now = Date()
+        // 月锚点：本月起往前 6 个月。
+        let months: [Date] = (0..<6).reversed().compactMap {
+            cal.date(byAdding: .month, value: -$0, to: cal.dateInterval(of: .month, for: now)?.start ?? now)
+        }
+        let all = model.env.history.recent(10_000)
+        let byMonth: [Date: Int64] = months.reduce(into: [:]) { acc, m in
+            let next = cal.date(byAdding: .month, value: 1, to: m) ?? m
+            acc[m] = all.filter { $0.date >= m && $0.date < next }.reduce(0) { $0 + $1.reclaimedBytes }
+        }
+        let maxV = max(byMonth.values.max() ?? 1, 1)
+        let fmt: DateFormatter = {
+            let f = DateFormatter()
+            f.locale = XLocale.swiftUILocale
+            f.setLocalizedDateFormatFromTemplate("MMM")
+            return f
+        }()
+        return HStack(alignment: .bottom, spacing: XSpacing.m) {
+            ForEach(months, id: \.self) { m in
+                let v = byMonth[m] ?? 0
+                VStack(spacing: 3) {
+                    Text(v > 0 ? v.formattedBytes : "—")
+                        .font(XFont.nano).foregroundStyle(v > 0 ? XColor.textSecondary : XColor.textTertiary)
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                    Capsule()
+                        .fill(v > 0 ? AnyShapeStyle(LinearGradient(colors: [XColor.accentTeal, XColor.success],
+                                                                   startPoint: .bottom, endPoint: .top))
+                                    : AnyShapeStyle(XColor.idle.opacity(0.4)))
+                        .frame(height: v > 0 ? max(6, 44 * CGFloat(Double(v) / Double(maxV))) : 3)
+                        .frame(maxWidth: .infinity)
+                    Text(fmt.string(from: m)).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(fmt.string(from: m)) · \(v.formattedBytes)")
+            }
+        }
+        .padding(.top, XSpacing.xs)
     }
 
     @State private var ignored: [String] = []
@@ -555,6 +648,98 @@ public struct SettingsView: View {
         }
     }
 
+    // MARK: 菜单栏（P3 IA：预设 → 项目列表（排序+开关）→ 逐项详情 → 全局；四层渐进披露防设置迷宫）
+
+    /// 菜单栏项元数据（顺序 = 默认显示顺序左→右，与 MenuBarController.config 对齐）。
+    private struct MBItem: Identifiable {
+        let id: String
+        let title: String
+        let icon: String
+        let tint: Color
+        let defOn: Bool
+        let defStyle: MenuBarStyle
+        /// 该项可选的样式集合（网络/温度无占比 → 无圆环；电池/温度无图表 → 无迷你图/可视化；合并项无样式）。
+        let styles: [MenuBarStyle]
+    }
+
+    private var mbItems: [MBItem] {
+        [
+            MBItem(id: "network", title: xLoc("网络速度"), icon: "antenna.radiowaves.left.and.right",
+                   tint: XColor.metricNetwork[0], defOn: true, defStyle: .graph,
+                   styles: [.iconValue, .valueOnly, .graph, .rich]),
+            MBItem(id: "disk", title: xLoc("磁盘占用"), icon: "internaldrive",
+                   tint: XColor.metricDisk[0], defOn: false, defStyle: .iconValue,
+                   styles: [.iconValue, .valueOnly, .rich, .ring]),
+            MBItem(id: "temp", title: xLoc("处理器温度"), icon: "thermometer.medium",
+                   tint: XColor.warning, defOn: false, defStyle: .iconValue,
+                   styles: [.iconValue, .valueOnly]),
+            MBItem(id: "battery", title: xLoc("电池"), icon: "battery.100percent",
+                   tint: XColor.success, defOn: false, defStyle: .iconValue,
+                   styles: [.iconValue, .valueOnly, .ring]),
+            MBItem(id: "gpu", title: xLoc("GPU 占用"), icon: "cpu.fill",
+                   tint: XColor.metricGPU[0], defOn: false, defStyle: .rich,
+                   styles: [.iconValue, .valueOnly, .graph, .rich, .ring]),
+            MBItem(id: "memory", title: xLoc("内存"), icon: "memorychip",
+                   tint: XColor.metricMemory[0], defOn: true, defStyle: .rich,
+                   styles: [.iconValue, .valueOnly, .graph, .rich, .ring]),
+            MBItem(id: "cpu", title: xLoc("处理器 CPU"), icon: "cpu",
+                   tint: XColor.metricCPU[0], defOn: true, defStyle: .rich,
+                   styles: [.iconValue, .valueOnly, .graph, .rich, .ring]),
+            MBItem(id: "combined", title: xLoc("合并项（多迷你图并排）"), icon: "gauge.with.dots.needle.50percent",
+                   tint: XColor.textSecondary, defOn: false, defStyle: .rich, styles: []),
+        ]
+    }
+
+    /// 用户顺序（左→右）；新增项自动补到末尾。
+    private var mbOrder: [String] {
+        let all = mbItems.map(\.id)
+        let saved = mbOrderCSV.split(separator: ",").map(String.init).filter { all.contains($0) }
+        guard !saved.isEmpty else { return all }
+        return saved + all.filter { !saved.contains($0) }
+    }
+
+    private func moveMB(_ id: String, up: Bool) {
+        var order = mbOrder
+        guard let i = order.firstIndex(of: id) else { return }
+        let j = up ? i - 1 : i + 1
+        guard j >= 0, j < order.count else { return }
+        order.swapAt(i, j)
+        withAnimation(XMotion.snappy) { mbOrderCSV = order.joined(separator: ",") }
+    }
+
+    // UserDefaults 直连绑定（@AppStorage 无法表达「每项动态键」与三态）。
+    private func mbBool(_ key: String, default def: Bool) -> Binding<Bool> {
+        Binding(get: { UserDefaults.standard.object(forKey: key) == nil ? def : UserDefaults.standard.bool(forKey: key) },
+                set: { UserDefaults.standard.set($0, forKey: key) })
+    }
+    private func mbStyleBinding(_ item: MBItem) -> Binding<String> {
+        Binding(get: { UserDefaults.standard.string(forKey: "xico.mb.\(item.id).style") ?? item.defStyle.rawValue },
+                set: { UserDefaults.standard.set($0, forKey: "xico.mb.\(item.id).style") })
+    }
+    /// 三态彩色：global（跟随全局开关）/ mono / colored。
+    private func mbColorBinding(_ id: String) -> Binding<String> {
+        let key = "xico.mb.\(id).colored"
+        return Binding(get: {
+            guard UserDefaults.standard.object(forKey: key) != nil else { return "global" }
+            return UserDefaults.standard.bool(forKey: key) ? "colored" : "mono"
+        }, set: { v in
+            switch v {
+            case "colored": UserDefaults.standard.set(true, forKey: key)
+            case "mono":    UserDefaults.standard.set(false, forKey: key)
+            default:        UserDefaults.standard.removeObject(forKey: key)
+            }
+        })
+    }
+    /// 每项独立刷新率：0 = 跟随全局节拍。
+    private func mbIntervalBinding(_ id: String) -> Binding<Double> {
+        let key = "xico.mb.\(id).interval"
+        return Binding(get: { UserDefaults.standard.double(forKey: key) },
+                       set: { v in
+                           if v <= 0 { UserDefaults.standard.removeObject(forKey: key) }
+                           else { UserDefaults.standard.set(v, forKey: key) }
+                       })
+    }
+
     private var menuBarCard: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.s) {
@@ -562,21 +747,31 @@ public struct SettingsView: View {
                     XIconTile(systemImage: "menubar.rectangle", colors: XColor.metricCPU, size: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(xLoc("菜单栏状态项")).xHeadline().foregroundStyle(XColor.textPrimary)
-                        Text(xLoc("选择常驻菜单栏显示哪些实时监控（可多选）")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        Text(xLoc("一键预设开箱即好看；想细调再逐项展开")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     Spacer()
                 }
                 Divider().padding(.vertical, XSpacing.xxs)
-                Text(xLoc("每项都能单独切换显示方式——直接点选下方图形（图标+数值 / 仅数值 / 迷你折线 / 可视化），像 iStat 一样可视化自定义"))
-                    .font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                mbMetricRow(xLoc("处理器 CPU"), icon: "cpu", tint: XColor.metricCPU[0], $mbCPU, $cpuStyle, $cpuBorder)
-                mbMetricRow(xLoc("内存"), icon: "memorychip", tint: XColor.metricMemory[0], $mbMemory, $memStyle, $memBorder)
-                mbMetricRow(xLoc("网络速度"), icon: "antenna.radiowaves.left.and.right", tint: XColor.metricNetwork[0], $mbNetwork, $netStyle, $netBorder)
-                mbMetricRow(xLoc("处理器温度"), icon: "thermometer.medium", tint: XColor.warning, $mbTemp, $tempStyle, nil)
-                mbMetricRow(xLoc("GPU 占用"), icon: "cpu.fill", tint: XColor.metricGPU[0], $mbGPU, $gpuStyle, $gpuBorder)
-                mbMetricRow(xLoc("磁盘占用"), icon: "internaldrive", tint: XColor.metricDisk[0], $mbDisk, $diskStyle, $diskBorder)
-                mbMetricRow(xLoc("合并总览面板"), icon: "gauge.with.dots.needle.50percent", tint: XColor.textSecondary, $mbCombined, nil, nil)
+
+                // 第一层：一键预设（真实字形缩影预览）。
+                HStack(spacing: XSpacing.s) {
+                    mbPresetCard(xLoc("极简"), desc: xLoc("单一合并项 · 单色"), preview: presetPreviewMinimal) { applyPreset("minimal") }
+                    mbPresetCard(xLoc("性能"), desc: xLoc("CPU + 内存 + GPU"), preview: presetPreviewPerformance) { applyPreset("performance") }
+                    mbPresetCard(xLoc("全景"), desc: xLoc("五项常驻 · 彩色"), preview: presetPreviewPanorama) { applyPreset("panorama") }
+                }
+
                 Divider().padding(.vertical, XSpacing.xxs)
+
+                // 第二层：项目列表（排序 + 开关）；第三层：点行展开逐项详情。
+                ForEach(Array(mbOrder.enumerated()), id: \.element) { idx, id in
+                    if let item = mbItems.first(where: { $0.id == id }) {
+                        mbItemRow(item, index: idx, count: mbOrder.count)
+                    }
+                }
+
+                Divider().padding(.vertical, XSpacing.xxs)
+
+                // 第四层：全局。
                 VStack(alignment: .leading, spacing: 3) {
                     toggleRow(xLoc("彩色图标"), $mbColored)
                     Text(xLoc("关：随菜单栏深浅自动黑白（推荐，克制）；开：每指标按代表色着色"))
@@ -592,38 +787,195 @@ public struct SettingsView: View {
                     }
                     .labelsHidden().pickerStyle(.menu).frame(width: 150)
                     .accessibilityLabel(xLoc("更新频率"))
-                    .onChange(of: mbInterval) { model.applyRefreshInterval($0) }
+                    .onChange(of: mbInterval) { model.applyRefreshInterval(mbInterval) }
                 }
             }
         }
     }
 
-    /// 单个菜单栏指标行：图标 + 开关 +（开启时）可视化样式选择器（点选图形，非文字下拉）+ 加框开关。
-    private func mbMetricRow(_ title: String, icon: String, tint: Color, _ enabled: Binding<Bool>, _ style: Binding<String>?, _ border: Binding<Bool>?) -> some View {
-        VStack(spacing: 8) {
+    // MARK: 预设卡（真实字形渲染的缩影，点击一键应用；应用后仍可逐项微调）
+
+    private static let mbDemoHist: [Double] = [0.3, 0.5, 0.4, 0.7, 0.6, 0.8, 0.5, 0.9, 0.7, 0.6, 0.8, 0.7, 0.62]
+
+    private var presetPreviewMinimal: NSImage {
+        MenuBarGlyph.combined(slots: [
+            MenuCombinedSlot(viz: .histogram(Self.mbDemoHist), tint: XColor.metricCPU),
+            MenuCombinedSlot(viz: .pie(0.71), tint: XColor.metricMemory),
+            MenuCombinedSlot(viz: .net(down: "1.2M", up: "386K"), tint: XColor.metricNetwork),
+        ])
+    }
+    private var presetPreviewPerformance: NSImage {
+        MenuBarGlyph.combined(slots: [
+            MenuCombinedSlot(viz: .histogram(Self.mbDemoHist), tint: XColor.metricCPU, value: "62%"),
+            MenuCombinedSlot(viz: .pie(0.71), tint: XColor.metricMemory, value: "71%"),
+            MenuCombinedSlot(viz: .pie(0.26), tint: XColor.metricGPU, value: "26%"),
+        ])
+    }
+    private var presetPreviewPanorama: NSImage {
+        MenuBarGlyph.combined(slots: [
+            MenuCombinedSlot(viz: .histogram(Self.mbDemoHist), tint: XColor.metricCPU),
+            MenuCombinedSlot(viz: .pie(0.71), tint: XColor.metricMemory),
+            MenuCombinedSlot(viz: .net(down: "1.2M", up: "386K"), tint: XColor.metricNetwork),
+            MenuCombinedSlot(viz: .text("44°"), tint: [XColor.warning]),
+            MenuCombinedSlot(viz: .pie(0.39), tint: XColor.metricDisk),
+        ])
+    }
+
+    private func mbPresetCard(_ title: String, desc: String, preview: NSImage, apply: @escaping () -> Void) -> some View {
+        Button(action: apply) {
+            VStack(spacing: 5) {
+                Image(nsImage: preview)
+                    .renderingMode(.template)
+                    .foregroundStyle(XColor.textPrimary)
+                    .frame(height: 18)
+                    .scaleEffect(0.9)
+                Text(title).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
+                Text(desc).font(XFont.nano).foregroundStyle(XColor.textTertiary).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, XSpacing.s)
+            .background(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
+                .fill(XColor.surfaceAlt.opacity(0.5)))
+            .overlay(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
+                .strokeBorder(XColor.border, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title + " · " + desc)
+    }
+
+    /// 一键预设：写一组 xico.mb.* 键，MenuBarController 经 defaults 快照比对自动重建。
+    private func applyPreset(_ name: String) {
+        let d = UserDefaults.standard
+        let allIDs = mbItems.map(\.id)
+        func enable(_ ids: [String]) {
+            for id in allIDs { d.set(ids.contains(id), forKey: "xico.mb.\(id)") }
+        }
+        switch name {
+        case "minimal":
+            enable(["combined"])
+            for id in allIDs { d.removeObject(forKey: "xico.mb.combined.\(id)") }   // 恢复默认 cpu+mem+net
+            mbColored = false
+        case "performance":
+            enable(["cpu", "memory", "gpu"])
+            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.cpu.style")
+            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.memory.style")
+            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.gpu.style")
+            mbColored = false
+        default:   // panorama
+            enable(["cpu", "memory", "network", "temp", "disk"])
+            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.cpu.style")
+            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.memory.style")
+            d.set(MenuBarStyle.graph.rawValue, forKey: "xico.mb.network.style")
+            mbColored = true
+        }
+        withAnimation(XMotion.snappy) { mbExpanded = nil }
+    }
+
+    // MARK: 项目行（开关 + 上下排序 + 展开逐项详情）
+
+    private func mbItemRow(_ item: MBItem, index: Int, count: Int) -> some View {
+        let enabled = mbBool("xico.mb.\(item.id)", default: item.defOn)
+        let expanded = mbExpanded == item.id
+        return VStack(spacing: 8) {
             HStack(spacing: XSpacing.s) {
-                Image(systemName: icon).font(XFont.callout).foregroundStyle(tint).frame(width: 18)
-                Text(title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                // 排序（上/下移，键盘可达——比裸拖拽更可靠、可无障碍）。
+                VStack(spacing: 0) {
+                    Button { moveMB(item.id, up: true) } label: {
+                        Image(systemName: "chevron.up").font(XFont.nano)
+                    }.buttonStyle(.plain).disabled(index == 0)
+                        .accessibilityLabel(xLocF("上移 %@", item.title))
+                    Button { moveMB(item.id, up: false) } label: {
+                        Image(systemName: "chevron.down").font(XFont.nano)
+                    }.buttonStyle(.plain).disabled(index == count - 1)
+                        .accessibilityLabel(xLocF("下移 %@", item.title))
+                }
+                .foregroundStyle(XColor.textTertiary)
+                Image(systemName: item.icon).font(XFont.callout).foregroundStyle(item.tint).frame(width: 18)
+                Text(item.title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                if enabled.wrappedValue {
+                    Button {
+                        withAnimation(XMotion.snappy) { mbExpanded = expanded ? nil : item.id }
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(xLocF("展开 %@ 详情", item.title))
+                }
                 Spacer()
                 Toggle("", isOn: enabled).toggleStyle(.switch).labelsHidden()
-                    .accessibilityLabel(title)
+                    .accessibilityLabel(item.title)
             }
-            if enabled.wrappedValue, let style = style {
-                // 图形恒定加框（框=图表坐标系，内容贴边挤满），不再提供开关。
-                // 网络(双向速率)/温度(非占比)没有单一占比,不提供圆环样式
-                let hasFraction = !(icon == "antenna.radiowaves.left.and.right" || icon == "thermometer.medium")
-                HStack(spacing: 6) {
-                    ForEach(MenuBarStyle.allCases.filter { hasFraction || !$0.needsFraction }, id: \.rawValue) { st in
-                        MBStyleTile(style: st, tint: tint, icon: icon, framed: true,
-                                    selected: style.wrappedValue == st.rawValue) {
-                            withAnimation(XMotion.snappy) { style.wrappedValue = st.rawValue }
-                        }
-                    }
-                }
-                .padding(.leading, XSpacing.l + 6)
+            if enabled.wrappedValue, expanded {
+                mbItemDetail(item)
+                    .padding(.leading, XSpacing.xl + 2)
+                    .transition(.opacity)
             }
         }
         .padding(.vertical, 1)
+    }
+
+    /// 第三层：逐项详情（样式磁贴 + 彩色三态 + 独立刷新率；合并项 = 子项勾选 + 显示数值）。
+    @ViewBuilder private func mbItemDetail(_ item: MBItem) -> some View {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
+            if item.id == "combined" {
+                Text(xLoc("包含哪些指标（用各指标自己的紧凑图形）"))
+                    .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                ForEach(mbItems.filter { $0.id != "combined" }) { sub in
+                    HStack {
+                        Image(systemName: sub.icon).font(XFont.caption).foregroundStyle(sub.tint).frame(width: 16)
+                        Text(sub.title).font(XFont.body).foregroundStyle(XColor.textPrimary)
+                        Spacer()
+                        Toggle("", isOn: mbBool("xico.mb.combined.\(sub.id)",
+                                                default: ["cpu", "memory", "network"].contains(sub.id)))
+                            .toggleStyle(.switch).labelsHidden().controlSize(.mini)
+                            .accessibilityLabel(sub.title)
+                    }
+                }
+                toggleRow(xLoc("图形旁显示数值"), $mbCombinedValues)
+            } else if !item.styles.isEmpty {
+                let styleBinding = mbStyleBinding(item)
+                HStack(spacing: 6) {
+                    ForEach(item.styles, id: \.rawValue) { st in
+                        MBStyleTile(style: st, tint: item.tint, icon: item.icon, framed: true,
+                                    selected: styleBinding.wrappedValue == st.rawValue) {
+                            withAnimation(XMotion.snappy) { styleBinding.wrappedValue = st.rawValue }
+                        }
+                    }
+                }
+            }
+            if item.id != "combined" {
+                HStack(spacing: XSpacing.l) {
+                    HStack(spacing: XSpacing.xs) {
+                        Text(xLoc("颜色")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        Picker("", selection: mbColorBinding(item.id)) {
+                            Text(xLoc("跟随全局")).tag("global")
+                            Text(xLoc("单色")).tag("mono")
+                            Text(xLoc("彩色")).tag("colored")
+                        }
+                        .labelsHidden().pickerStyle(.menu).fixedSize()
+                        .accessibilityLabel(xLoc("颜色"))
+                    }
+                    HStack(spacing: XSpacing.xs) {
+                        Text(xLoc("刷新")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        Picker("", selection: mbIntervalBinding(item.id)) {
+                            Text(xLoc("跟随全局")).tag(0.0)
+                            Text("1s").tag(1.0)
+                            Text("2s").tag(2.0)
+                            Text("3s").tag(3.0)
+                            Text("5s").tag(5.0)
+                        }
+                        .labelsHidden().pickerStyle(.menu).fixedSize()
+                        .accessibilityLabel(xLoc("刷新"))
+                    }
+                    Spacer()
+                }
+            }
+        }
     }
 
     private func toggleRow(_ title: String, _ binding: Binding<Bool>) -> some View {

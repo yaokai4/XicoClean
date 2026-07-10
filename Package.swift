@@ -5,7 +5,9 @@ let package = Package(
     name: "Xico",
     defaultLocalization: "zh-Hans",
     platforms: [
-        .macOS(.v13)
+        // v14 起步：@Observable 主题架构、KeyframeAnimator/PhaseAnimator、symbolEffect 均需 macOS 14+。
+        // （2026 年商业产品的合理支持窗口：当前系统 26，向下支持 3 个大版本。）
+        .macOS(.v14)
     ],
     products: [
         .executable(name: "Xico", targets: ["XicoApp"]),

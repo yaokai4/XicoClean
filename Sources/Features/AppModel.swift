@@ -83,6 +83,8 @@ public final class MetricsFeed: ObservableObject {
     @Published public var liveSnapshot: SystemSnapshot?
     @Published public var capacity: VolumeCapacity?
     @Published public var storageVolumes: [StorageHealth] = []
+    /// 分层历史（实时 / 10s 桶 / 60s 桶）——菜单栏面板折线的三挡时间窗数据源（P3·M4）。
+    @Published public var rings = MetricRings()
 
     public init() {}
 }
@@ -177,7 +179,7 @@ public final class AppModel: ObservableObject {
     /// 当前主题 ID（极光/深海/暖阳/终端/品红/石墨）。切换即时应用到全局配色。
     @Published public var themeID: String = XTheme.aurora.id {
         didSet {
-            XThemeStore.current = XTheme.byID(themeID)
+            XThemeStore.shared.current = XTheme.byID(themeID)
             UserDefaults.standard.set(themeID, forKey: "xico.themeID")
         }
     }
@@ -294,7 +296,7 @@ public final class AppModel: ObservableObject {
         if let tid = UserDefaults.standard.string(forKey: "xico.themeID") {
             themeID = tid
         }
-        XThemeStore.current = XTheme.byID(themeID)   // 启动即应用已保存主题
+        XThemeStore.shared.current = XTheme.byID(themeID)   // 启动即应用已保存主题
         XLocale.load()                               // 载入已保存语言
         language = XLocale.current
         alertRules = env.alertRuleStore.load()
@@ -347,7 +349,10 @@ public final class AppModel: ObservableObject {
         // 菜单栏图标常驻但无弹窗/主窗口时（steady state）：只采图标折线所需的 cpu/mem/net/gpu 快照，
         // 跳过全进程枚举 + 传感器/风扇/磁盘健康/频率等昂贵详情采样（审计 P2）。有消费者可见时全量采样。
         let consumer = hasVisibleMetricsConsumer
-        let wantDetail = consumer && (detailTick % 3 == 1)   // 详情类采样（含 ~90ms 频率阻塞）隔次进行
+        // P3·M9：有消费者时详情**每 tick 都采**（此前 %3 → 面板打开后温度/风扇 ~6s 才刷一轮，
+        // 实时感明显弱于 iStat）。~90ms 频率阻塞发生在后台 sampleQueue，主线程零成本；
+        // 无消费者时依旧完全跳过（稳态省电路径不变）。
+        let wantDetail = consumer
         let needMacInfo = (macInfo == nil)
         let env = self.env
         let procSampler = processes
@@ -396,6 +401,9 @@ public final class AppModel: ObservableObject {
         push(&feed.netUpHistory, s.netUpBytesPerSec)
         push(&feed.diskReadHistory, s.diskReadBytesPerSec)
         push(&feed.diskWriteHistory, s.diskWriteBytesPerSec)
+        // 分层历史（实时/15 分/1 时 三挡时间窗，P3·M4）——面板折线的数据源。
+        feed.rings.push(cpu: s.cpuUsage, memory: s.memoryUsedFraction, gpu: s.gpuUsage ?? 0,
+                        netDown: s.netDownBytesPerSec, netUp: s.netUpBytesPerSec)
         // 本次会话峰值 / 累计（累计 = 速率 × 实测时间间隔的积分，来自真实采样，非编造）。
         let now0 = Date()
         feed.netDownPeak = max(feed.netDownPeak, s.netDownBytesPerSec)

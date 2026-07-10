@@ -84,7 +84,13 @@ func renderGlyphs() {
         let cpu = MenuBarGlyph.cpu(fraction: 0.62, history: cpuH, style: style)
         let mem = MenuBarGlyph.memory(fraction: 0.71, history: cpuH, style: style)
         let net = MenuBarGlyph.network(down: 1_250_000, up: 386_000, history: netH, style: style)
-        let comb = MenuBarGlyph.combined()
+        // 真 · 合并项：CPU 直方 + 内存饼盘 + 网络双行（默认预设的缩影）
+        let comb = MenuBarGlyph.combined(slots: [
+            MenuCombinedSlot(viz: .histogram(cpuH), tint: XColor.metricCPU),
+            MenuCombinedSlot(viz: .pie(0.71), tint: XColor.metricMemory),
+            MenuCombinedSlot(viz: .net(down: 1_250_000.0.compactRate, up: 386_000.0.compactRate),
+                             tint: XColor.metricNetwork),
+        ])
         func tinted(_ img: NSImage) -> some View {
             Image(nsImage: img).renderingMode(.template).foregroundStyle(dark ? .white : .black)
         }

@@ -18,8 +18,17 @@ final class SpaceLensModel: ObservableObject {
     /// 「移到废纸篓」失败或被删除红线拒绝时的提示文案。
     @Published var trashError: String?
 
+    /// 色相锚定表：扫描完成时按「大小降序的一级子目录」记录 色阶索引（与环图/图例的
+    /// 分配顺序一致），此后即使剪枝导致大小变化，颜色分配保持稳定、返回时可追（P2·D4）。
+    @Published private(set) var topHueIndex: [UUID: Int] = [:]
+
     private let env: XicoEnvironment
     private var task: Task<Void, Never>?
+
+    /// 收集篮（两段式删除）。随会话缓存共存亡——切侧栏 tab 再回来，篮里的东西还在。
+    lazy var basket: BasketModel = BasketModel(
+        deny: { [weak self] url in self?.denyReason(for: url) },
+        performTrash: { [weak self] nodes in await self?.trashMany(nodes) ?? (0, []) })
 
     init(env: XicoEnvironment) {
         self.env = env
@@ -29,6 +38,12 @@ final class SpaceLensModel: ObservableObject {
     }
 
     var current: DiskNode? { stack.last ?? root }
+
+    /// 当前视图根的家族色相：钻取后整个子树锚定其「扫描根下一级祖先」的色相（nil = 在扫描根，彩虹分配）。
+    var familyHue: Color? {
+        guard let first = stack.first, let i = topHueIndex[first.id] else { return nil }
+        return XColor.ring(i)
+    }
 
     func scan() {
         task?.cancel()
@@ -49,6 +64,9 @@ final class SpaceLensModel: ObservableObject {
             let tree = await env.diskTreeScanner.scan(target, progress: handler)
             if Task.isCancelled { return }
             self.root = tree
+            // 锚定色相分配：与 SunburstView 的「大小降序 → ring(i)」口径一致，扫描时定格。
+            let sorted = tree.children.sorted { $0.size > $1.size }
+            self.topHueIndex = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($0.element.id, $0.offset) })
             self.isScanning = false
             self.didScan = true
         }
@@ -122,12 +140,61 @@ final class SpaceLensModel: ObservableObject {
         objectWillChange.send()
         root.pruneSubtree(removingID: target.id)
     }
+
+    /// 删除红线预检（全应用唯一口径 env.safety）：返回拒绝原因，nil = 放行。
+    /// SunburstView / TreemapView / 收集篮的预检全部注入本方法——Features 层不再自建规则实例。
+    func denyReason(for url: URL) -> String? {
+        if case let .deny(reason) = env.safety.verify(url, intent: .trash) { return xLoc(reason) }
+        return nil
+    }
+
+    /// 批量移废纸篓（收集篮执行段）：逐项复检红线 → 回收 → 剪枝，返回释放量与失败清单。
+    /// 逐项而非整批 recycle：单项失败不拖垮整篮，且成功项可精确剪枝/计量。
+    func trashMany(_ nodes: [DiskNode]) async -> (freed: Int64, failures: [String]) {
+        var freed: Int64 = 0
+        var failures: [String] = []
+        for node in nodes {
+            guard !node.isAggregate else { failures.append(node.name); continue }
+            if case let .deny(reason) = env.safety.verify(node.url, intent: .trash) {
+                failures.append("\(node.name)（\(xLoc(reason))）")
+                continue
+            }
+            let error = await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+                NSWorkspace.shared.recycle([node.url]) { _, error in
+                    cont.resume(returning: error?.localizedDescription)
+                }
+            }
+            if let error {
+                failures.append("\(node.name)（\(error)）")
+            } else {
+                freed += node.size
+                pruneFromTree(node)
+            }
+        }
+        return (freed, failures)
+    }
+
+    /// 拖放入篮：把文件 URL 解析回当前树中的节点（按路径精确匹配，深度有限、可接受）。
+    func findNode(url: URL) -> DiskNode? {
+        guard let root else { return nil }
+        let path = url.path
+        func find(_ n: DiskNode) -> DiskNode? {
+            if n.url.path == path && !n.isAggregate { return n }
+            guard path.hasPrefix(n.url.path) else { return nil }
+            for child in n.children {
+                if let hit = find(child) { return hit }
+            }
+            return nil
+        }
+        return find(root)
+    }
 }
 
 public struct SpaceLensView: View {
     @StateObject private var model: SpaceLensModel
     /// 可视化方式：放射环形（ring）/ 方块 treemap（blocks），持久化记住偏好。
     @AppStorage("xico.spacelens.viz") private var viz = "ring"
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(env: XicoEnvironment) {
         _model = StateObject(wrappedValue: SpaceLensModel(env: env))
@@ -139,11 +206,28 @@ public struct SpaceLensView: View {
         _model = StateObject(wrappedValue: appModel.spaceLensModel)
     }
 
+    /// 「绽放」钻取的动画入口：宿主在 withAnimation 中改层级，SunburstView 的 Animatable 弧
+    /// 随之连续形变（Reduce Motion 下直接换层，无过渡）。
+    private func blossom(_ change: @escaping () -> Void) {
+        if reduceMotion {
+            change()
+        } else {
+            withAnimation(XMotion.settle) { change() }
+        }
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             XHeaderBar(title: xLoc("空间透镜"), subtitle: headerSubtitle) { headerActions }
             if hasResult && !model.isScanning { breadcrumbChips }
             content
+                .overlay(alignment: .bottom) {
+                    if hasResult && !model.isScanning {
+                        CollectionBasketBar(basket: model.basket, resolve: { model.findNode(url: $0) })
+                            .padding(.bottom, XSpacing.l)
+                    }
+                }
+                .overlay { BasketCompletionHost(basket: model.basket) }
         }
         .onAppear {
             if CommandLine.arguments.contains("--autoscan"), model.root == nil, !model.isScanning {
@@ -176,11 +260,10 @@ public struct SpaceLensView: View {
     @ViewBuilder private var headerActions: some View {
         HStack(spacing: XSpacing.m) {
             if hasResult && !model.isScanning {
-                Picker("", selection: $viz) {
-                    Image(systemName: "circle.hexagongrid").tag("ring")
-                    Image(systemName: "square.grid.2x2").tag("blocks")
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                XSegmentedControl(selection: $viz, options: [
+                    .init(tag: "ring", icon: "circle.hexagongrid", a11y: xLoc("放射环形图")),
+                    .init(tag: "blocks", icon: "square.grid.2x2", a11y: xLoc("方块图")),
+                ])
                 .accessibilityLabel(xLoc("可视化方式"))
                 Button { model.chooseFolder() } label: {
                     Label(xLoc("选择文件夹"), systemImage: "folder")
@@ -199,11 +282,13 @@ public struct SpaceLensView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: XSpacing.xs) {
                 chip(model.scanRoot.lastPathComponent.isEmpty ? xLoc("磁盘") : model.scanRoot.lastPathComponent,
-                     icon: "internaldrive", active: model.stack.isEmpty) { model.pop(to: -1) }
+                     icon: "internaldrive", active: model.stack.isEmpty) { blossom { model.pop(to: -1) } }
                 ForEach(Array(model.stack.enumerated()), id: \.offset) { idx, node in
                     Image(systemName: "chevron.compact.right")
                         .font(XFont.caption).foregroundStyle(XColor.textTertiary)
-                    chip(node.name, icon: "folder", active: idx == model.stack.count - 1) { model.pop(to: idx) }
+                    // 面包屑染家族色相：钻进哪一族，路径胶囊就是哪一族的颜色——返回时颜色可追（P2·D4）。
+                    chip(node.name, icon: "folder", active: idx == model.stack.count - 1,
+                         tint: model.familyHue) { blossom { model.pop(to: idx) } }
                 }
             }
             .padding(.horizontal, XSpacing.xl)
@@ -211,16 +296,18 @@ public struct SpaceLensView: View {
         .padding(.bottom, XSpacing.s)
     }
 
-    private func chip(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+    private func chip(_ title: String, icon: String, active: Bool, tint: Color? = nil,
+                      action: @escaping () -> Void) -> some View {
+        let accent = tint ?? XColor.brand
+        return Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: icon).font(XFont.micro)
                 Text(title).font(XFont.captionEmphasis).lineLimit(1)
             }
-            .foregroundStyle(active ? XColor.brand : XColor.textSecondary)
+            .foregroundStyle(active ? accent : XColor.textSecondary)
             .padding(.horizontal, XSpacing.m).padding(.vertical, 5)
-            .background(Capsule().fill(active ? XColor.brand.opacity(0.12) : XColor.surface.opacity(0.6)))
-            .overlay(Capsule().stroke(active ? XColor.brand.opacity(0.35) : XColor.hairline, lineWidth: 1))
+            .background(Capsule().fill(active ? accent.opacity(0.12) : XColor.surface.opacity(0.6)))
+            .overlay(Capsule().stroke(active ? accent.opacity(0.35) : XColor.hairline, lineWidth: 1))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -233,13 +320,20 @@ public struct SpaceLensView: View {
             Group {
                 if viz == "blocks" {
                     TreemapView(node: node,
-                                onTrash: { child in model.trash(child) }) { child in model.drill(into: child) }
+                                onTrash: { child in model.trash(child) },
+                                onCollect: { child in model.basket.add(child) },
+                                denyReason: { model.denyReason(for: $0) }) { child in
+                        blossom { model.drill(into: child) }
+                    }
                         .padding(XSpacing.xl)
                 } else {
                     SunburstView(node: node,
-                                 onDrill: { child in model.drill(into: child) },
-                                 onUp: model.stack.isEmpty ? nil : { model.pop(to: model.stack.count - 2) },
-                                 onTrash: { child in model.trash(child) })
+                                 onDrill: { child in blossom { model.drill(into: child) } },
+                                 onUp: model.stack.isEmpty ? nil : { blossom { model.pop(to: model.stack.count - 2) } },
+                                 onTrash: { child in model.trash(child) },
+                                 onCollect: { child in model.basket.add(child) },
+                                 denyReason: { model.denyReason(for: $0) },
+                                 familyHue: model.familyHue)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -304,7 +398,7 @@ public struct SpaceLensView: View {
             .background(Capsule().fill(XColor.surface.opacity(0.6)))
             .overlay(Capsule().stroke(XColor.hairline, lineWidth: 1))
             .frame(maxWidth: 420)
-            .animation(.easeOut(duration: 0.2), value: model.scanMessage)
+            .animation(XMotion.crossfade, value: model.scanMessage)
             Button(xLoc("取消")) { model.cancel() }
                 .buttonStyle(XSecondaryButtonStyle())
                 .padding(.top, XSpacing.xs)

@@ -21,6 +21,11 @@ final class HardwareViewModel: ObservableObject {
     /// 电池功率趋势（近 N 次采样的瓦数绝对值，正=充电/放电功率大小），供迷你曲线。
     @Published var powerHistory: [Double] = []
     private let powerCap = 48
+    /// 温度趋势（P5·H1）：CPU / GPU / SSD 代表温度的滚动历史（2s 采样 × 60 ≈ 2 分钟窗）。
+    @Published var cpuTempHistory: [Double] = []
+    @Published var gpuTempHistory: [Double] = []
+    @Published var ssdTempHistory: [Double] = []
+    private let tempCap = 60
     // 网络接口档案（名称 / 类型 / IP / MAC / 速率）——超越 Sensei 的硬件页网络卡。
     @Published var interfaces: [NetworkInterfaceInfo] = []
     @Published var wifi: WiFiInfo?
@@ -106,6 +111,15 @@ final class HardwareViewModel: ObservableObject {
                         self.powerHistory.removeFirst(self.powerHistory.count - self.powerCap)
                     }
                 }
+                // 温度趋势历史：只在读得到时追加（读不到不补 0——曲线绝不编造）。
+                func pushTemp(_ v: Double?, into arr: inout [Double]) {
+                    guard let v, v > 0 else { return }
+                    arr.append(v)
+                    if arr.count > self.tempCap { arr.removeFirst(arr.count - self.tempCap) }
+                }
+                pushTemp(self.temperature(.cpu), into: &self.cpuTempHistory)
+                pushTemp(self.temperature(.gpu), into: &self.gpuTempHistory)
+                pushTemp(self.temperature(.ssd), into: &self.ssdTempHistory)
             }
         }
     }
@@ -174,9 +188,15 @@ public struct HardwareView: View {
     private var heroCard: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.l) {
-                // 设备抬头：图标 + 营销全名 + 芯片·内存 副标（名称可换行，不再挤压）
+                // 设备抬头：机型插画（线稿 + 品牌渐变描边，P5·H2）+ 营销全名 + 芯片·内存 副标
                 HStack(alignment: .center, spacing: XSpacing.l) {
-                    XIconTile(systemImage: heroIcon, colors: XColor.brandGradientColors, size: 56)
+                    if let family = deviceFamily {
+                        DeviceArt(family: family)
+                            .frame(width: 64, height: 56)
+                            .accessibilityHidden(true)
+                    } else {
+                        XIconTile(systemImage: heroIcon, colors: XColor.brandGradientColors, size: 56)
+                    }
                     VStack(alignment: .leading, spacing: 3) {
                         if let p = vm.profile {
                             Text(p.marketingName)
@@ -198,6 +218,8 @@ public struct HardwareView: View {
                 specGrid
             }
         }
+        // 骨架 → 数据到位：crossfade 而非硬切（P5·H3）。
+        .animation(XMotion.crossfade, value: vm.profile != nil)
     }
 
     private var heroIcon: String {
@@ -208,6 +230,17 @@ public struct HardwareView: View {
         if id.contains("iMac") { return "desktopcomputer" }
         if id.contains("MacPro") { return "macpro.gen3" }
         return "cpu"
+    }
+
+    /// 机型家族（有插画的机型返回非 nil；未知机型回退 SF Symbol，绝不画错设备）。
+    private var deviceFamily: DeviceArt.Family? {
+        let id = vm.profile?.modelIdentifier ?? ""
+        if id.contains("MacBook") { return .laptop }
+        if id.contains("Macmini") { return .mini }
+        if id.contains("MacStudio") { return .studio }
+        if id.contains("iMac") { return .imac }
+        if id.contains("MacPro") { return .tower }
+        return nil
     }
 
     // MARK: 规格栅格（展开全部关键信息）
@@ -489,9 +522,9 @@ public struct HardwareView: View {
             if cpu == nil && gpu == nil && ssd == nil && bat == nil {
                 Text(xLoc("此机型不提供温度读数")).font(XFont.caption).foregroundStyle(XColor.textTertiary)
             }
-            tempRow(xLoc("处理器"), cpu)
-            tempRow("GPU", gpu)
-            tempRow(xLoc("固态硬盘"), ssd)
+            tempRow(xLoc("处理器"), cpu, trend: vm.cpuTempHistory)
+            tempRow("GPU", gpu, trend: vm.gpuTempHistory)
+            tempRow(xLoc("固态硬盘"), ssd, trend: vm.ssdTempHistory)
             tempRow(xLoc("电池"), bat)
             // 系统热压力（macOS 官方口径）：正常之外的状态才值得担心，用色点直说。
             HStack {
@@ -568,14 +601,27 @@ public struct HardwareView: View {
         }
     }
 
-    private func tempRow(_ label: String, _ celsius: Double?) -> some View {
-        HStack {
-            Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-            Spacer()
-            if let c = celsius {
-                Text(tempString(c)).font(XFont.mono).foregroundStyle(tempColor(c))
-            } else {
-                Text("—").font(XFont.mono).foregroundStyle(XColor.textTertiary)
+    /// 温度行：当前值 + 可选趋势迷你曲线（P5·H1，照抄电池 powerHistory 模式；
+    /// 归一化到 20–105℃ 视窗，与 sensorCell 的热度条同一量纲直觉）。
+    @ViewBuilder
+    private func tempRow(_ label: String, _ celsius: Double?, trend: [Double] = []) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                Spacer()
+                if let c = celsius {
+                    Text(tempString(c)).font(XFont.mono).foregroundStyle(tempColor(c))
+                        .contentTransition(.numericText())
+                } else {
+                    Text("—").font(XFont.mono).foregroundStyle(XColor.textTertiary)
+                }
+            }
+            if trend.count > 1, let cur = celsius {
+                XLineChart(values: trend.map { min(max(($0 - 20) / 85, 0), 1) },
+                           colors: [tempColor(cur), tempColor(cur).opacity(0.6)],
+                           showDot: false, lineWidth: 1.5)
+                    .frame(height: 22)
+                    .accessibilityLabel(xLocF("%@ 温度趋势", label))
             }
         }
     }
@@ -587,7 +633,7 @@ public struct HardwareView: View {
                      iconColors: [XColor.auroraViolet, XColor.auroraOrchid]) {
             HStack(alignment: .center, spacing: XSpacing.l) {
                 let util = engine.snapshot?.gpuUsage ?? vm.gpu?.utilizationPercent.map { $0 / 100 }
-                XRingGauge(progress: util ?? 0, colors: XColor.gpuGauge(util ?? 0), lineWidth: 10, size: 96) {
+                XRingGauge(progress: util ?? 0, colors: XColor.metricGPU, lineWidth: 10, size: 96) {
                     Text(util.map { "\(Int($0 * 100))%" } ?? "—").xHeadline().foregroundStyle(XColor.textPrimary)
                 }
                 VStack(alignment: .leading, spacing: XSpacing.s) {
@@ -808,6 +854,7 @@ public struct HardwareView: View {
             Spacer()
             Text(value).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                 .lineLimit(1).truncationMode(.middle)
+                .contentTransition(.numericText())   // 活指标数字滚动而非硬跳（P5·H3）
         }
     }
     private func miniStat(_ label: String, _ value: String) -> some View {
@@ -830,7 +877,86 @@ public struct HardwareView: View {
     }
 }
 
-// MARK: - 卡片容器（标题 + 图标 + 内容）
+// MARK: - 机型插画（P5·H2：极简线稿 + 品牌渐变描边——比 56pt SF Symbol 更有「这台机器」的实感）
+
+/// 自绘 Path 线稿（2pt 圆角笔画、无填充），设计语言：克制、精密仪表说明书风。
+/// 画布 64×56，居中构图；未知机型由调用方回退 SF Symbol，绝不画错设备。
+private struct DeviceArt: View {
+    enum Family { case laptop, mini, studio, imac, tower }
+    let family: Family
+
+    var body: some View {
+        artPath
+            .stroke(XColor.brandGradient,
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            .frame(width: 64, height: 56)
+    }
+
+    private var artPath: Path {
+        switch family {
+        case .laptop: return Self.laptopPath()
+        case .mini:   return Self.miniPath()
+        case .studio: return Self.studioPath()
+        case .imac:   return Self.imacPath()
+        case .tower:  return Self.towerPath()
+        }
+    }
+
+    private static func laptopPath() -> Path {
+        var p = Path()
+        // 屏幕 + 底座（微喇叭口）+ 触控板暗示
+        p.addRoundedRect(in: CGRect(x: 12, y: 8, width: 40, height: 28), cornerSize: CGSize(width: 4, height: 4))
+        p.move(to: CGPoint(x: 6, y: 42));  p.addLine(to: CGPoint(x: 58, y: 42))
+        p.move(to: CGPoint(x: 8, y: 42));  p.addLine(to: CGPoint(x: 12, y: 36))
+        p.move(to: CGPoint(x: 56, y: 42)); p.addLine(to: CGPoint(x: 52, y: 36))
+        p.move(to: CGPoint(x: 28, y: 39)); p.addLine(to: CGPoint(x: 36, y: 39))
+        return p
+    }
+
+    private static func miniPath() -> Path {
+        var p = Path()
+        p.addRoundedRect(in: CGRect(x: 12, y: 20, width: 40, height: 16), cornerSize: CGSize(width: 5, height: 5))
+        p.addEllipse(in: CGRect(x: 17, y: 30, width: 2, height: 2))   // 电源指示点
+        return p
+    }
+
+    private static func studioPath() -> Path {
+        var p = Path()
+        p.addRoundedRect(in: CGRect(x: 14, y: 12, width: 36, height: 32), cornerSize: CGSize(width: 6, height: 6))
+        // 前面板双 USB-C + 读卡口
+        p.addEllipse(in: CGRect(x: 22, y: 36, width: 3, height: 3))
+        p.addEllipse(in: CGRect(x: 29, y: 36, width: 3, height: 3))
+        p.move(to: CGPoint(x: 38, y: 37.5)); p.addLine(to: CGPoint(x: 43, y: 37.5))
+        return p
+    }
+
+    private static func imacPath() -> Path {
+        var p = Path()
+        p.addRoundedRect(in: CGRect(x: 8, y: 6, width: 48, height: 30), cornerSize: CGSize(width: 4, height: 4))
+        // 下巴分割线 + 支架
+        p.move(to: CGPoint(x: 8, y: 29));  p.addLine(to: CGPoint(x: 56, y: 29))
+        p.move(to: CGPoint(x: 27, y: 36)); p.addLine(to: CGPoint(x: 24, y: 46))
+        p.move(to: CGPoint(x: 37, y: 36)); p.addLine(to: CGPoint(x: 40, y: 46))
+        p.move(to: CGPoint(x: 18, y: 46)); p.addLine(to: CGPoint(x: 46, y: 46))
+        return p
+    }
+
+    private static func towerPath() -> Path {
+        var p = Path()
+        p.addRoundedRect(in: CGRect(x: 18, y: 8, width: 28, height: 40), cornerSize: CGSize(width: 5, height: 5))
+        // 提手 + 散热孔阵
+        p.move(to: CGPoint(x: 22, y: 8)); p.addQuadCurve(to: CGPoint(x: 30, y: 8), control: CGPoint(x: 26, y: 2))
+        p.move(to: CGPoint(x: 34, y: 8)); p.addQuadCurve(to: CGPoint(x: 42, y: 8), control: CGPoint(x: 38, y: 2))
+        for row in 0..<3 {
+            for col in 0..<3 {
+                p.addEllipse(in: CGRect(x: CGFloat(25 + col * 6), y: CGFloat(18 + row * 7), width: 2.5, height: 2.5))
+            }
+        }
+        return p
+    }
+}
+
+// MARK: - 卡片容器（薄别名 → 设计系统 XSectionCard，P5·H5 收编）
 
 private struct HardwareCard<Content: View>: View {
     let icon: String
@@ -838,16 +964,6 @@ private struct HardwareCard<Content: View>: View {
     let iconColors: [Color]
     @ViewBuilder let content: Content
     var body: some View {
-        XCard {
-            VStack(alignment: .leading, spacing: XSpacing.m) {
-                HStack(spacing: XSpacing.s) {
-                    XIconTile(systemImage: icon, colors: iconColors, size: 28, flat: true)
-                    Text(title).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
-                        .textCase(.uppercase).tracking(0.6)
-                    Spacer()
-                }
-                content
-            }
-        }
+        XSectionCard(icon: icon, title: title, iconColors: iconColors) { content }
     }
 }

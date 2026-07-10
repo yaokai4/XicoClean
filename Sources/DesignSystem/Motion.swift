@@ -167,31 +167,49 @@ public struct XCheckbox: View {
         self.toggle = toggle
     }
 
+    /// 部分选中（树形父目录下只勾了部分子项）——渲染横线而非对勾（P7：文件树刚需三态）。
+    public var mixed: Bool = false
+
     public var body: some View {
         // 用 Button 实现：自动获得键盘可达（Tab 聚焦 + 空格/回车触发）与无障碍 trait
         Button(action: toggle) {
             ZStack {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(isOn ? Color.clear : XColor.textTertiary.opacity(0.6), lineWidth: 1.5)
+                    .strokeBorder((isOn || mixed) ? Color.clear : XColor.textTertiary.opacity(0.6), lineWidth: 1.5)
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .opacity(isOn ? 1 : 0)
-                    .scaleEffect(isOn ? 1 : 0.6)
+                    .opacity((isOn || mixed) ? 1 : 0)
+                    .scaleEffect((isOn || mixed) ? 1 : 0.6)
                 if isOn {
                     Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .transition(.scale.combined(with: .opacity))
+                } else if mixed {
+                    Image(systemName: "minus")
                         .font(.system(size: 10, weight: .heavy))
                         .foregroundStyle(.white)
                         .transition(.scale.combined(with: .opacity))
                 }
             }
             .frame(width: 19, height: 19)
-            .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.6), value: isOn)
+            .animation(reduceMotion ? nil : XMotion.snappy, value: isOn)
+            .animation(reduceMotion ? nil : XMotion.snappy, value: mixed)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(a11yLabel ?? xLoc("勾选"))
-        .accessibilityValue(isOn ? xLoc("已选中") : xLoc("未选中"))
+        .accessibilityValue(isOn ? xLoc("已选中") : (mixed ? xLoc("部分选中") : xLoc("未选中")))
         .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
+public extension XCheckbox {
+    /// 三态便捷构造：isOn=nil 表示「部分选中」。
+    init(triState: Bool?, colors: [Color] = XColor.brandGradientColors,
+         accessibilityLabel: String? = nil, toggle: @escaping () -> Void) {
+        self.init(isOn: triState == true, colors: colors, accessibilityLabel: accessibilityLabel, toggle: toggle)
+        self.mixed = (triState == nil)
     }
 }
 
@@ -200,16 +218,23 @@ public struct XCheckbox: View {
 public struct XCelebrationBurst: View {
     let colors: [Color]
     @State private var start = Date()
+    /// 粒子 1.4s 后透明度已归零——到点即停 TimelineView 驱动（能耗铁律：动画必须停表，
+    /// 此前完成页常驻时 .animation 时间线仍满帧率空转，稳态 GPU 白耗）。
+    @State private var finished = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     public init(colors: [Color] = [XColor.success, XColor.accentTeal, XColor.brand]) {
         self.colors = colors.isEmpty ? [XColor.brand] : colors
     }
     public var body: some View {
-        // Reduce Motion 下跳过粒子爆发（完成页另有静态对勾）
-        if reduceMotion {
+        // Reduce Motion 下跳过粒子爆发（完成页另有静态对勾）；播完自停 → 稳态零帧。
+        if reduceMotion || finished {
             Color.clear.allowsHitTesting(false)
         } else {
             burst
+                .task {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    finished = true
+                }
         }
     }
     private var burst: some View {
@@ -270,6 +295,8 @@ public struct XLiveDot: View {
 
 // MARK: - 悬停抬升修饰
 
+/// 全应用**唯一**的卡片悬停物理（P7 收编）：上浮 + 阴影升至 XElevation.raised 档
+/// （radius 20 / y 10 / 0.12——与静置卡片的 z 轴阶梯同一套参数，不再自带私有影）。
 public struct HoverLift: ViewModifier {
     @State private var hover = false
     let amount: CGFloat
@@ -277,8 +304,8 @@ public struct HoverLift: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .offset(y: hover ? -amount : 0)
-            .shadow(color: .black.opacity(hover ? 0.14 : 0), radius: hover ? 16 : 0, y: hover ? 10 : 0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hover)
+            .shadow(color: .black.opacity(hover ? 0.12 : 0), radius: hover ? 20 : 0, y: hover ? 10 : 0)
+            .animation(XMotion.snappy, value: hover)
             .onHover { hover = $0 }
     }
 }

@@ -136,7 +136,7 @@ public struct MonitorView: View {
             miniGauge(xLoc("内存"), snap?.memoryUsedFraction ?? 0, "\(Int((snap?.memoryUsedFraction ?? 0) * 100))%")
             // GPU 全 App 统一走不变红的紫罗兰环（高占用是常态，与 GPU tab / 硬件页一致）。
             miniGauge("GPU", snap?.gpuUsage ?? 0, snap?.gpuUsage.map { "\(Int($0 * 100))%" } ?? "—",
-                      colors: XColor.gpuGauge(snap?.gpuUsage ?? 0))
+                      colors: XColor.metricGPU)
             miniGauge(xLoc("磁盘"), snap?.diskUsedFraction ?? 0, "\(Int((snap?.diskUsedFraction ?? 0) * 100))%")
         }
     }

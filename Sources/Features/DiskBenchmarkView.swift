@@ -1,4 +1,5 @@
 import SwiftUI
+import Domain
 import Infrastructure
 import DesignSystem
 
@@ -193,13 +194,22 @@ public struct DiskBenchmarkView: View {
             .padding(.horizontal, XSpacing.l).padding(.vertical, 7)
             .background(Capsule().fill(XColor.surface.opacity(0.6)))
             .overlay(Capsule().stroke(XColor.hairline, lineWidth: 1))
-            .animation(.easeOut(duration: 0.2), value: vm.running)
+            .animation(XMotion.crossfade, value: vm.running)
             if vm.running {
                 Button(xLoc("取消")) { vm.cancel() }.buttonStyle(XSecondaryButtonStyle(compact: true))
             } else {
                 Button(xLoc("运行基准测试")) { vm.run() }
                     .buttonStyle(XPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
+            }
+            // 评级徽章（P5·H4）：按接口代际参考区间给当前成绩一个语境（正向评级 + 参考值脚注）。
+            if !vm.running, vm.readMBps > 0, let key = DiskSpeedReference.ratingKey(readMBps: vm.readMBps) {
+                VStack(spacing: 2) {
+                    XBadge(xLoc(key), color: XColor.success)
+                    Text(xLoc("按接口代际典型顺序读速评级 · 参考值"))
+                        .font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                }
+                .transition(.opacity)
             }
             Text(xLoc("测速会在系统卷写入最多 10 GB 临时文件（空间不足时自动缩小），完成后自动删除；期间请勿进行大量拷贝。"))
                 .font(XFont.caption).foregroundStyle(XColor.textTertiary)
@@ -240,23 +250,52 @@ public struct DiskBenchmarkView: View {
         }
     }
 
+    /// 历史行（P5·H4）：横向对比条（同基准归一，历次成绩一眼可比）+ 最好成绩星标 + 相对时间。
     private func historyRow(_ r: DiskBenchmarkResult) -> some View {
-        HStack(spacing: XSpacing.m) {
-            Image(systemName: "internaldrive").font(.system(size: 12)).foregroundStyle(XColor.accentTeal)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(r.device).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
-                    .lineLimit(1).truncationMode(.middle)
-                Text(Self.dateFmt.string(from: r.date)).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+        let maxV = max(vm.history.map { max($0.readMBps, $0.writeMBps) }.max() ?? 1, 1)
+        let bestRead = vm.history.map(\.readMBps).max() ?? 0
+        let isBest = r.readMBps >= bestRead && bestRead > 0
+        let fmt = Self.relativeFmt
+        fmt.locale = XLocale.swiftUILocale
+        return HStack(spacing: XSpacing.m) {
+            Image(systemName: isBest ? "star.fill" : "internaldrive")
+                .font(.system(size: 12))
+                .foregroundStyle(isBest ? XColor.warning : XColor.accentTeal)
+                .help(isBest ? xLoc("最好成绩") : "")
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(r.device).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Text(fmt.localizedString(for: r.date, relativeTo: Date()))
+                        .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                }
+                comparisonBar(r.readMBps, maxV: maxV, color: XColor.netDown)
+                comparisonBar(r.writeMBps, maxV: maxV, color: XColor.netUp)
             }
-            Spacer()
-            speedChip(r.readMBps, label: xLoc("读取"), color: XColor.netDown)
-            speedChip(r.writeMBps, label: xLoc("写入"), color: XColor.netUp)
+            VStack(alignment: .trailing, spacing: 2) {
+                speedChip(r.readMBps, label: xLoc("读取"), color: XColor.netDown)
+                speedChip(r.writeMBps, label: xLoc("写入"), color: XColor.netUp)
+            }
         }
         .padding(.horizontal, XSpacing.m).padding(.vertical, XSpacing.s)
         .background(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
             .fill(XColor.surface.opacity(0.6)))
         .overlay(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
-            .stroke(XColor.hairline, lineWidth: 1))
+            .stroke(isBest ? XColor.warning.opacity(0.4) : XColor.hairline, lineWidth: 1))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(r.device) · \(Self.speedText(r.readMBps)) / \(Self.speedText(r.writeMBps))" + (isBest ? " · " + xLoc("最好成绩") : ""))
+    }
+
+    private func comparisonBar(_ v: Double, maxV: Double, color: Color) -> some View {
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                Capsule().fill(XColor.surfaceAlt)
+                Capsule().fill(color.opacity(0.8))
+                    .frame(width: max(2, g.size.width * CGFloat(min(v / maxV, 1))))
+            }
+        }
+        .frame(height: 4)
     }
 
     private func speedChip(_ mbps: Double, label: String, color: Color) -> some View {
@@ -272,10 +311,10 @@ public struct DiskBenchmarkView: View {
         mbps >= 1000 ? String(format: "%.2f GB/s", mbps / 1024) : String(format: "%.0f MB/s", mbps)
     }
 
-    private static let dateFmt: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = XLocale.swiftUILocale
-        f.dateFormat = "yyyy-MM-dd HH:mm"
+    /// 相对时间（与 ModuleScanView 同法），跟随应用语言——不再硬编码 "yyyy-MM-dd HH:mm" 与他处格式打架。
+    private static let relativeFmt: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
         return f
     }()
 }

@@ -119,7 +119,9 @@ public final class LiveMetricsSampler: @unchecked Sendable {
             ? smoothedGPU(hardware.acceleratorPerformance().utilization.map { min(1, max(0, $0 / 100)) })
             : smoothedGPU(nil)
         let temp: (cpu: Double?, gpu: Double?) = needTemp ? sensors.summary() : (nil, nil)
-        let battery: (percent: Int?, charging: Bool) = consumerVisible ? batteryStatus() : (nil, false)
+        // 电池：详情可见或菜单栏电池字形启用时读取（IOPS 快照成本低，与 gpu/temp 同一门控模式）。
+        let needBattery = consumerVisible || Self.menuGlyphEnabled("battery", default: false)
+        let battery: (percent: Int?, charging: Bool) = needBattery ? batteryStatus() : (nil, false)
         let fan: Int? = consumerVisible ? smc.fanRPM() : nil
         return SystemSnapshot(
             cpuUsage: cpu.busy, perCore: cores, cpuUser: cpu.user, cpuSystem: cpu.system,

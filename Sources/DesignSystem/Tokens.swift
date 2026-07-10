@@ -10,7 +10,7 @@ public enum XColor {
     public static let auroraOrchid = dynamic(light: 0xB873D8, dark: 0xC79AE8)
     public static let auroraRose   = dynamic(light: 0xD874B0, dark: 0xE6A6CE)
     /// 品牌强调色——随当前主题变化（图标、高亮、选中态）
-    public static var brand: Color { XThemeStore.current.accent }
+    public static var brand: Color { XThemeStore.shared.current.accent }
     public static let brandEnd     = auroraRose
     public static let accentTeal   = dynamic(light: 0x3AC9C2, dark: 0x86E6DC)
     public static let accentPink   = dynamic(light: 0xE070AC, dark: 0xF0A8CE)
@@ -23,12 +23,12 @@ public enum XColor {
     public static let ringPeri   = dynamic(light: 0x6E86E0, dark: 0x9DB0EE)
     public static let ringMint   = dynamic(light: 0x46B3AC, dark: 0x92DDD2)
     // 仪表/图表默认配色——随当前主题变化
-    public static var ringColors: [Color] { XThemeStore.current.ring }
+    public static var ringColors: [Color] { XThemeStore.shared.current.ring }
 
     /// 主题色阶索引取色（环绕）。所有数据可视化的「第 n 号强调色」都走它——
     /// 切主题即整体换色。i 可为任意整数（自动取模），永不越界。
     public static func ring(_ i: Int) -> Color {
-        let r = XThemeStore.current.ring
+        let r = XThemeStore.shared.current.ring
         guard !r.isEmpty else { return brand }
         return r[((i % r.count) + r.count) % r.count]
     }
@@ -68,8 +68,28 @@ public enum XColor {
     public static let canvasBottom = dynamic(light: 0xEDEFF7, dark: 0x07080F)
     public static let sidebar      = dynamic(light: 0xFBFBFE, dark: 0x0D0F19)
     public static let surface      = dynamic(light: 0xFFFFFF, dark: 0x181B2A)
-    public static let surfaceAlt   = dynamic(light: 0xEFF1F8, dark: 0x232739)
+    // surfaceAlt 微调提亮（0x232739→0x272C41）：保持与「高程提亮后的卡面」的可辨差，
+    // 让环轨道/骨架屏/分段条在 raised 卡上仍有轮廓。
+    public static let surfaceAlt   = dynamic(light: 0xEFF1F8, dark: 0x272C41)
     public static let surfaceHover = dynamic(light: 0xF5F6FC, dark: 0x2B3047)
+
+    // MARK: 暗色高程双通道（表面随 z 轴提亮；浅色恒为纯白，层级由阴影承担）
+    //
+    // 暗色画布上纯黑影不可见（0x07080F 底），顶级暗色界面靠「surface 提亮 + 内侧高光」分层。
+    // 提亮量 = 基底与白按 1.5%/3%/5% 混合（预混为常量，动态色零运行时开销）。
+    static let surfaceResting = dynamic(light: 0xFFFFFF, dark: 0x1C1E2D)   // +1.5%
+    static let surfaceRaised  = dynamic(light: 0xFFFFFF, dark: 0x1F2230)   // +3%
+    static let surfaceOverlay = dynamic(light: 0xFFFFFF, dark: 0x242635)   // +5%
+
+    /// 高程感知表面色：暗色随 z 轴提亮，浅色恒白。卡片/浮层的 fill 一律走它。
+    public static func surface(at level: XElevation) -> Color {
+        switch level {
+        case .flush:   return surface
+        case .resting: return surfaceResting
+        case .raised:  return surfaceRaised
+        case .overlay: return surfaceOverlay
+        }
+    }
 
     public static let textPrimary   = dynamic(light: 0x171A28, dark: 0xF4F6FC)
     public static let textSecondary = dynamic(light: 0x666C80, dark: 0xA4ABC2)
@@ -80,15 +100,15 @@ public enum XColor {
     public static let hairline      = dynamic(light: 0xEDEFF6, dark: 0x1D2131)
 
     // 渐变（三段，配白字清晰）——随当前主题变化
-    public static var brandGradientColors: [Color] { XThemeStore.current.gradient }
+    public static var brandGradientColors: [Color] { XThemeStore.shared.current.gradient }
     public static var brandGradient: LinearGradient {
-        LinearGradient(colors: XThemeStore.current.gradient, startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: XThemeStore.shared.current.gradient, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
     public static var successGradient: LinearGradient {
         LinearGradient(colors: [accentTeal, success], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
     /// 主题强调色（图标、分段标题）。
-    public static var themeAccent: Color { XThemeStore.current.accent }
+    public static var themeAccent: Color { XThemeStore.shared.current.accent }
 
     /// 健康分 / 占用率 → 颜色（三段语义：让仪表说真话）。
     /// <78% 健康：品牌通透色；78–90% 偏高：暖橙；≥90% 危险：红粉。
@@ -97,11 +117,6 @@ public enum XColor {
         if fraction >= 0.90 { return [danger, accentPink] }
         if fraction >= 0.78 { return [warning, accentPink] }
         return ringColors
-    }
-
-    /// GPU 专用光环：高占用是「在干活」而非告警，永不转红——用主题色阶的冷调段。
-    public static func gpuGauge(_ fraction: Double) -> [Color] {
-        metricGPU
     }
 
     /// 便捷构造动态色（供主题定义用）。
@@ -123,6 +138,18 @@ public extension NSColor {
             blue: CGFloat(hex & 0xFF) / 255,
             alpha: alpha)
     }
+}
+
+// MARK: - 透明度阶梯（收编散落的魔法 alpha）
+
+/// 全应用统一的透明度档位：淡染底、幽灵轨道、发丝线不再各处现配 0.06/0.12/0.14/0.15/0.16/0.22。
+/// 语义：hairline=发丝分隔 · ghost=幽灵轨道/暗色底纹 · tint=状态淡染底 · dim=弱化轨道 · strong=强调辉光。
+public enum XAlpha {
+    public static let hairline: Double = 0.06
+    public static let ghost: Double    = 0.10
+    public static let tint: Double     = 0.14
+    public static let dim: Double      = 0.22
+    public static let strong: Double   = 0.28
 }
 
 // MARK: - 间距（4pt 基准网格）
@@ -162,6 +189,9 @@ public enum XFont {
     // 默认观感不变，放大辅助字号时随之缩放。token 名/API 全部保持稳定。
     public static let title = Font.system(.title, design: .default).weight(.semibold)                         // 22pt · 补 largeTitle↔headline 断层
     public static let title2 = Font.system(.title2, design: .default).weight(.semibold)                       // 17pt · 卡片/区块标题
+    // ⚠️ 命名与 Apple 文本样式错位（历史遗留，P7 记录）：headline 实挂 .title3（15pt）、caption 实挂
+    // .subheadline（11pt）。全仓 ~150 处调用已按现语义使用，改名收益 < 全仓churn 风险——保留现名，
+    // 以此注释为准：**新代码请按「headline=15pt 行标题、caption=11pt 说明文字」理解**，勿与系统样式混淆。
     public static let headline = Font.system(.title3, design: .default).weight(.semibold)                     // 15pt · 行标题
     // 正文档位挂到相对文本样式，让文字随系统「首选正文大小」(Dynamic Type) 缩放。
     // 选用默认磅值与旧固定值一致的样式（body=13、callout=12、subheadline=11），
@@ -307,4 +337,16 @@ public enum XMotion {
     public static let gauge     = Animation.easeInOut(duration: 0.50)
     public static let crossfade = Animation.easeInOut(duration: 0.30)
     public static let hover     = Animation.easeOut(duration: 0.12)
+}
+
+// MARK: - 过渡令牌（统一的入场/出场 + stagger 编排，P7）
+
+/// 统一的 transition 语言：standard = 淡入 + 8pt 上移（入场 ease-out 的物理直觉）；
+/// stagger(i) = 列表卡片交错入场的标准延迟（0.05s/卡，收编各处手写 onAppear 编排）。
+public enum XTransition {
+    /// 计算属性而非存储（AnyTransition 非 Sendable，Swift 6 禁止共享静态存储）。
+    public static var standard: AnyTransition { .opacity.combined(with: .offset(y: 8)) }
+    public static func stagger(_ index: Int, base: Animation = XMotion.settle) -> Animation {
+        base.delay(Double(index) * 0.05)
+    }
 }

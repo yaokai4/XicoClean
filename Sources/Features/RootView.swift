@@ -19,9 +19,10 @@ public struct RootView: View {
                 DetailView()
                     .environmentObject(model)
             }
-            // 主题/语言切换时，色值与文案都来自静态查表（XThemeStore / XLocale），SwiftUI 无法追踪。
-            // 用 .id 绑定 themeID+语言，切换时重建整棵内容树 → 全局即时换色、换语言。
-            .id("\(model.themeID)-\(model.language.rawValue)")
+            // 语言切换时文案来自静态查表（XLocale），SwiftUI 无法追踪——仍需 .id 重建。
+            // 主题已走 @Observable XThemeStore：body 里读到主题色的视图自动登记依赖、
+            // 精准重渲，不再整树重建（P1 主题架构现代化）。
+            .id(model.language.rawValue)
             .environment(\.locale, XLocale.swiftUILocale)   // .relative 日期/数字等跟随 App 语言
             .transition(.opacity)
 
@@ -66,7 +67,7 @@ struct AppearanceToggle: View {
                         .foregroundStyle(appearance == a ? AnyShapeStyle(XColor.brand)
                                                          : AnyShapeStyle(XColor.textSecondary))
                         .background(
-                            Capsule().fill(appearance == a ? AnyShapeStyle(XColor.brand.opacity(0.15))
+                            Capsule().fill(appearance == a ? AnyShapeStyle(XColor.brand.opacity(XAlpha.tint))
                                                            : AnyShapeStyle(Color.clear))
                         )
                         .contentShape(Capsule())
@@ -101,10 +102,11 @@ public struct SidebarView: View {
             diskFooter
         }
         .background(
-            // 近乎纯净的竖向渐变 + 右缘发丝线；移除原先两层极光雾（去「彩色网页仪表盘」感，
-            // 让侧栏安静下来，选中态成为唯一的品牌重音）。
-            LinearGradient(colors: [XColor.sidebar, XColor.canvasBottom],
-                           startPoint: .top, endPoint: .bottom)
+            // 真 vibrancy 侧栏（P1 材质层）：behindWindow 透出桌面壁纸，与 Finder/系统设置同质感；
+            // 上面压一层极淡 sidebar 色统一品牌冷调。右缘发丝线保留。
+            // Reduce Transparency 时 NSVisualEffectView 自动退化为实底，无需分支。
+            VisualEffectBackground(material: .sidebar, blending: .behindWindow)
+                .overlay(XColor.sidebar.opacity(0.35))
                 .overlay(Rectangle().fill(XColor.hairline).frame(width: 1), alignment: .trailing)
                 .ignoresSafeArea()
         )
@@ -219,7 +221,7 @@ struct SidebarTile: View {
                 // 选中：极淡品牌染色底 + 左侧品牌指示条（原生高级做法），
                 // 取代原「饱和渐变发光块」的 web-app 廉价感。
                 RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
-                    .fill(selected ? AnyShapeStyle(XColor.brand.opacity(0.13))
+                    .fill(selected ? AnyShapeStyle(XColor.brand.opacity(XAlpha.tint))
                                    : AnyShapeStyle(hover ? XColor.surfaceHover : Color.clear))
             )
             .overlay(alignment: .leading) {
@@ -267,6 +269,8 @@ struct DetailView: View {
             }
             .animation(XMotion.crossfade, value: model.selection)
         }
+        // macOS 26：数据密集工具类用 .hard 分割线式滚动边缘（低版本 no-op，见 XSurface）。
+        .xHardScrollEdges()
     }
 
     @ViewBuilder private var page: some View {
@@ -284,7 +288,7 @@ struct DetailView: View {
         case .appUpdater:   AppUpdaterView(env: model.env)
         // 隐私已并入智能扫描；老用户持久化的选中项仍可正常打开
         case .privacy:      ModuleScanView(model: model, moduleID: .privacy, intent: .trash)
-        case .optimization: OptimizationView(env: model.env)
+        case .optimization: OptimizationView(env: model.env, feed: model.liveMetricsFeed)
         case .maintenance:  MaintenanceView(env: model.env)
         case .malware:      ModuleScanView(model: model, moduleID: .malware, intent: .trash)
         case .diskSpeed:    DiskBenchmarkView(device: internalDiskModel, standalone: true)
@@ -489,6 +493,8 @@ public struct MenuBarView: View {
 
     // MARK: - 组件
 
+    /// 菜单栏总览的**紧凑密度**分区卡（14pt 图标 + nano 小标，为 300pt 弹窗设计）。
+    /// 页面级分区卡请用 DesignSystem.XSectionCard（28pt 图标 + caption 小标）——两档密度、同一语言。
     private func card<C: View>(_ icon: String, _ title: String, _ headerValue: String, _ tint: Color,
                                @ViewBuilder content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 5) {

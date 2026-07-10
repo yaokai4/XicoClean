@@ -3,8 +3,49 @@ import Infrastructure
 import DesignSystem
 import Shared
 
+/// 每进程网络流量区块（面板可见期间每 ~3s 后台采样一轮；nettop 不可用时整块消失）。
+private struct NetTopSection: View {
+    @State private var usages: [ProcessNetUsage]?
+    @State private var unavailable = false
+
+
+    var body: some View {
+        Group {
+            if let usages, !usages.isEmpty {
+                VStack(alignment: .leading, spacing: XSpacing.xs) {
+                    Divider().padding(.vertical, 1)
+                    Text(xLoc("流量排行")).font(XFont.nano).foregroundStyle(XColor.textTertiary).tracking(0.4)
+                    ForEach(usages) { u in
+                        HStack(spacing: XSpacing.s) {
+                            Text(u.name).font(XFont.caption).foregroundStyle(XColor.textPrimary)
+                                .lineLimit(1).truncationMode(.middle)
+                            Spacer(minLength: XSpacing.s)
+                            Text("↓" + u.bytesInPerSec.compactRate).font(XFont.microMono).foregroundStyle(XColor.netDown)
+                            Text("↑" + u.bytesOutPerSec.compactRate).font(XFont.microMono).foregroundStyle(XColor.netUp)
+                        }
+                    }
+                }
+            }
+        }
+        .task {
+            guard !unavailable else { return }
+            while !Task.isCancelled {
+                let result = await Task.detached(priority: .utility) { netTopGlobalSampler.sample(top: 4) }.value
+                guard !Task.isCancelled else { return }
+                if let result {
+                    withAnimation(XMotion.crossfade) { usages = result }
+                } else {
+                    unavailable = true   // nettop 不可用：不再重试、整块隐藏
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+        }
+    }
+}
+
 public enum MenuMetric: Sendable {
-    case cpu, memory, network, temperature, disk, gpu
+    case cpu, memory, network, temperature, disk, gpu, battery
 
     var title: String {
         switch self {
@@ -14,6 +55,7 @@ public enum MenuMetric: Sendable {
         case .temperature: return xLoc("温度")
         case .disk: return xLoc("磁盘")
         case .gpu: return "GPU"
+        case .battery: return xLoc("电池")
         }
     }
     var icon: String {
@@ -24,6 +66,7 @@ public enum MenuMetric: Sendable {
         case .temperature: return "thermometer.medium"
         case .disk: return "internaldrive"
         case .gpu: return "cpu.fill"
+        case .battery: return "battery.100percent"
         }
     }
     var colors: [Color] {
@@ -34,6 +77,7 @@ public enum MenuMetric: Sendable {
         case .temperature: return [XColor.warning, XColor.accentPink]
         case .disk: return XColor.metricDisk
         case .gpu: return XColor.metricGPU
+        case .battery: return [XColor.success, XColor.accentTeal]
         }
     }
 }
@@ -44,14 +88,21 @@ public struct MenuMetricPanel: View {
     /// 高频快照/进程榜/传感器现归 MetricsFeed（AppModel 不再每 tick 重发布，审计 P2）——本面板须观察 feed 才能实时更新。
     @ObservedObject var feed: MetricsFeed
     let metric: MenuMetric
+    /// 钉住为浮动小窗（P3·M5，由 MenuBarController 提供；已钉住的实例传 nil 隐藏按钮）。
+    let onPin: (() -> Void)?
     /// 快速释放内存的进行/结果状态（本面板内联反馈，不弹窗）。
     @State private var freeingMemory = false
     @State private var freeMemNote: String?
+    /// 折线时间窗（实时 / 15 分 / 1 时），全部面板共享同一偏好（P3·M4）。
+    @AppStorage("xico.mb.panel.window") private var windowRaw = "live"
 
-    public init(model: AppModel, metric: MenuMetric) {
+    private var window: HistoryWindow { HistoryWindow(rawValue: windowRaw) ?? .live }
+
+    public init(model: AppModel, metric: MenuMetric, onPin: (() -> Void)? = nil) {
         self.model = model
         self._feed = ObservedObject(wrappedValue: model.liveMetricsFeed)
         self.metric = metric
+        self.onPin = onPin
     }
 
     public var body: some View {
@@ -62,6 +113,17 @@ public struct MenuMetricPanel: View {
                 Spacer()
                 if let chip = model.macInfo?.chip {
                     Text(chip).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                }
+                if let onPin {
+                    Button { onPin() } label: {
+                        Image(systemName: "pin")
+                            .font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
+                            .frame(width: 22, height: 22)
+                            .background(XColor.surfaceAlt.opacity(0.6), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(xLoc("钉住为浮动窗口"))
+                    .accessibilityLabel(xLoc("钉住为浮动窗口"))
                 }
             }
 
@@ -140,6 +202,25 @@ public struct MenuMetricPanel: View {
         }
     }
 
+    /// 折线时间窗切换（实时 / 15 分 / 1 时）——只在有分层数据的面板显示（P3·M4）。
+    private var windowPicker: some View {
+        XSegmentedControl(selection: $windowRaw, options: HistoryWindow.allCases.map {
+            .init(tag: $0.rawValue, label: xLoc($0.title), a11y: xLoc($0.title))
+        })
+        .scaleEffect(0.88, anchor: .trailing)   // 面板内收紧一号
+    }
+
+    /// 带时间窗与悬停擦洗的历史折线（网格 + 值·时刻读数——能力在 XLineChart 里躺了很久，P3 启用）。
+    private func historyChart(_ rings: HistoryRings, colors: [Color], height: CGFloat) -> some View {
+        let series = window.series(from: rings)
+        return XLineChart(values: series, colors: colors, showGrid: true,
+                          hoverLabel: { i in
+                              guard i >= 0, i < series.count else { return "" }
+                              return "\(Int((series[i] * 100).rounded()))%"
+                          })
+            .frame(height: height)
+    }
+
     @ViewBuilder private func content(_ s: SystemSnapshot) -> some View {
         switch metric {
         case .cpu:         cpuContent(s)
@@ -148,6 +229,7 @@ public struct MenuMetricPanel: View {
         case .temperature: temperatureContent(s)
         case .disk:        diskContent(s)
         case .gpu:         gpuContent(s)
+        case .battery:     batteryContent(s)
         }
     }
 
@@ -181,7 +263,11 @@ public struct MenuMetricPanel: View {
                 Spacer(minLength: 0)
                 metricChip(xLoc("已运行"), model.macInfo?.uptime ?? "—")
             }
-            XLineChart(values: model.cpuHistory, colors: XColor.ringColors).frame(height: 40)
+            HStack {
+                Spacer()
+                windowPicker
+            }
+            historyChart(feed.rings.cpu, colors: XColor.ringColors, height: 40)
                 .accessibilityLabel(xLoc("处理器占用历史曲线"))
             processList(model.topByCPU, kind: .cpu)
         }
@@ -226,7 +312,7 @@ public struct MenuMetricPanel: View {
 
     private func gpuSegment(_ g: Double) -> some View {
         HStack(spacing: XSpacing.s) {
-            XMiniRing(fraction: g, colors: XColor.gpuGauge(g), size: 34, lineWidth: 4) {
+            XMiniRing(fraction: g, colors: XColor.metricGPU, size: 34, lineWidth: 4) {
                 Text("\(Int((g * 100).rounded()))").font(XFont.monoMini)
                     .foregroundStyle(XColor.textPrimary)
             }
@@ -347,6 +433,8 @@ public struct MenuMetricPanel: View {
             }
             sessionRow
             networkChart.frame(height: 48)
+            // 每进程流量（P6·3，iStat 支柱内容）：nettop 差分采样；不可用时整块隐藏（诚实降级）。
+            NetTopSection()
             if !activeInterfaces.isEmpty {
                 Divider().padding(.vertical, 1)
                 ForEach(activeInterfaces) { interfaceRow($0) }
@@ -429,12 +517,23 @@ public struct MenuMetricPanel: View {
     }
 
     private var networkChart: some View {
-        let maxV = max((model.netDownHistory + model.netUpHistory).max() ?? 1, 1)
-        let down = model.netDownHistory.map { $0 / maxV }
-        let up = model.netUpHistory.map { $0 / maxV }
-        return ZStack {
-            XLineChart(values: down, colors: [XColor.netDown, XColor.ring(2)], showDot: false)
-            XLineChart(values: up, colors: [XColor.netUp, XColor.ring(1)], showFill: false, showDot: false)
+        // 分层时间窗（P3·M4）：按当前挡位取序列，双线同基准归一；悬停给出「↓ 下行 · ↑ 上行」真实速率。
+        let downRaw = window.series(from: feed.rings.netDown)
+        let upRaw = window.series(from: feed.rings.netUp)
+        let maxV = max((downRaw + upRaw).max() ?? 1, 1)
+        let down = downRaw.map { $0 / maxV }
+        let up = upRaw.map { $0 / maxV }
+        return VStack(alignment: .trailing, spacing: XSpacing.xs) {
+            windowPicker
+            ZStack {
+                XLineChart(values: down, colors: [XColor.netDown, XColor.ring(2)], showDot: false, showGrid: true,
+                           hoverLabel: { i in
+                               guard i >= 0, i < downRaw.count else { return "" }
+                               let u = i < upRaw.count ? upRaw[i] : 0
+                               return "↓\(downRaw[i].compactRate) ↑\(u.compactRate)"
+                           })
+                XLineChart(values: up, colors: [XColor.netUp, XColor.ring(1)], showFill: false, showDot: false)
+            }
         }
     }
 
@@ -616,7 +715,51 @@ public struct MenuMetricPanel: View {
                 metricChip(xLoc("利用率"), "\(Int(((s.gpuUsage ?? 0) * 100).rounded()))%")
                 Spacer(minLength: 0)
             }
-            XLineChart(values: model.gpuHistory, colors: XColor.metricGPU).frame(height: 44)
+            HStack {
+                Spacer()
+                windowPicker
+            }
+            historyChart(feed.rings.gpu, colors: XColor.metricGPU, height: 44)
+        }
+    }
+
+    // MARK: - 电池面板（P3·M10：真实快照数据——百分比 + 充电状态；台式机无电池时给明确说明）
+
+    @ViewBuilder private func batteryContent(_ s: SystemSnapshot) -> some View {
+        if let pct = s.batteryPercent {
+            VStack(alignment: .leading, spacing: XSpacing.m) {
+                HStack(spacing: XSpacing.l) {
+                    XRingGauge(progress: Double(pct) / 100,
+                               colors: s.batteryCharging ? [XColor.success, XColor.accentTeal]
+                                                         : (pct <= 20 ? [XColor.danger, XColor.accentPink] : XColor.metricMemory),
+                               lineWidth: 9, size: 96,
+                               a11yLabel: xLoc("电池")) {
+                        VStack(spacing: 0) {
+                            Text("\(pct)%").font(XFont.monoMid).foregroundStyle(XColor.textPrimary)
+                            if s.batteryCharging {
+                                Image(systemName: "bolt.fill").font(XFont.nano).foregroundStyle(XColor.success)
+                            }
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: XSpacing.s) {
+                        XBadge(s.batteryCharging ? xLoc("充电中") : xLoc("使用电池"),
+                               color: s.batteryCharging ? XColor.success : XColor.textSecondary)
+                        Text(xLoc("循环次数 / 健康度见「硬件」页"))
+                            .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                        Button(xLoc("打开硬件页")) {
+                            NSApp.activate(ignoringOtherApps: true)
+                            model.selection = .hardware
+                            for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
+                        }
+                        .buttonStyle(XSecondaryButtonStyle(compact: true))
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        } else {
+            Text(xLoc("此设备没有电池，或电池信息暂不可用。"))
+                .font(XFont.body).foregroundStyle(XColor.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -689,3 +832,6 @@ public struct MenuMetricPanel: View {
         }
     }
 }
+
+/// 文件级采样器实例（NetTopSampler 为 Sendable 类；避免 @MainActor View 的静态属性隔离限制）。
+private let netTopGlobalSampler = NetTopSampler()
