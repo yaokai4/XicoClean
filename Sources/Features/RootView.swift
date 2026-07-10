@@ -114,7 +114,8 @@ public struct SidebarView: View {
 
     private var navList: some View {
         VStack(alignment: .leading, spacing: XSpacing.l) {
-            ForEach(ModuleCatalog.grouped(), id: \.0) { category, modules in
+            ForEach(Array(ModuleCatalog.grouped().enumerated()), id: \.element.0) { catIndex, pair in
+                let (category, modules) = pair
                 VStack(alignment: .leading, spacing: 2) {
                     Text(xLoc(category.title))
                         .xSectionLabel()
@@ -122,7 +123,8 @@ public struct SidebarView: View {
                         .padding(.leading, XSpacing.m)
                         .padding(.bottom, 3)
                     ForEach(modules) { meta in
-                        SidebarTile(meta: meta, selected: model.selection == meta.id) {
+                        SidebarTile(meta: meta, tint: Self.categoryTint(catIndex),
+                                    selected: model.selection == meta.id) {
                             withAnimation(XMotion.snappy) {
                                 model.selection = meta.id
                             }
@@ -134,6 +136,19 @@ public struct SidebarView: View {
         .padding(.horizontal, XSpacing.s)
         .padding(.top, XSpacing.s)
         .padding(.bottom, XSpacing.l)
+    }
+
+    /// 每个分类一族色（CleanMyMac 式彩色侧栏图标——图标即导航地标，一眼定位分区）。
+    static func categoryTint(_ index: Int) -> Color {
+        let palette: [Color] = [
+            Color(red: 0.09, green: 0.72, blue: 0.65),   // 清理 · 青
+            Color(red: 0.24, green: 0.48, blue: 0.95),   // 应用 · 蓝
+            Color(red: 0.55, green: 0.36, blue: 0.96),   // 文件与空间 · 紫
+            Color(red: 0.96, green: 0.55, blue: 0.11),   // 性能与安全 · 橙
+            Color(red: 0.91, green: 0.32, blue: 0.49),   // 硬件/监控 · 玫红
+            Color(red: 0.13, green: 0.73, blue: 0.27),   // 其余 · 绿
+        ]
+        return palette[index % palette.count]
     }
 
     private var brandHeader: some View {
@@ -194,6 +209,7 @@ private struct SidebarDiskGauge: View {
 
 struct SidebarTile: View {
     let meta: ModuleMetadata
+    var tint: Color = XColor.brand
     let selected: Bool
     let action: () -> Void
     @State private var hover = false
@@ -202,13 +218,19 @@ struct SidebarTile: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: XSpacing.s + 2) {
-                Image(systemName: meta.systemImage)
-                    // 字号/字重恒定，仅颜色随选中变化——避免选中时行高跳动。
-                    // 选中态图标用品牌渐变着色（而非白底彩块），克制而有识别度。
-                    .xNavIcon(selected: selected)
-                    .foregroundStyle(selected ? AnyShapeStyle(XColor.brandGradient)
-                                             : AnyShapeStyle(XColor.textSecondary))
-                    .frame(width: 20, height: 20)
+                // 彩色迷你瓦片（CleanMyMac/系统设置式）：分类色小方块 + 白字形——
+                // 侧栏不再是一列灰图标，图标本身成为导航地标。选中时微亮。
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(LinearGradient(colors: [tint, tint.opacity(0.82)],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 22, height: 22)
+                    .overlay(
+                        Image(systemName: meta.systemImage)
+                            .font(XFont.captionEmphasis)
+                            .foregroundStyle(.white)
+                    )
+                    .opacity(selected || hover ? 1 : 0.88)
+                    .shadow(color: tint.opacity(selected ? 0.35 : 0), radius: 4, y: 1)
                 Text(xLoc(meta.title))
                     // 字号恒定 13.5pt（随 Dynamic Type 缩放），仅字重随选中变化，杜绝选中放大导致的重排。
                     .xNavLabel(selected: selected)

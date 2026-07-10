@@ -49,8 +49,6 @@ public struct SettingsView: View {
                     definitionsCard
 
                     sectionLabel("清理")
-                    safetyPromiseCard
-                    historyCard
                     ignoreListCard
 
                     sectionLabel("外观")
@@ -365,8 +363,10 @@ public struct SettingsView: View {
                 VStack(spacing: XSpacing.xs) {
                     Button(checkingUpdate ? xLoc("检查中…") : xLoc("检查更新")) { checkForUpdate() }
                         .buttonStyle(XSecondaryButtonStyle(compact: true)).disabled(checkingUpdate)
-                    Button(xLoc("升级 Pro")) { model.showPricing = true }
-                        .buttonStyle(XPrimaryButtonStyle(compact: true))
+                    if !licenseAllowsUse {
+                        Button(xLoc("升级 Pro")) { model.showPricing = true }
+                            .buttonStyle(XPrimaryButtonStyle(compact: true))
+                    }
                     Button(xLoc("导出诊断日志")) { exportDiagnostics() }
                         .buttonStyle(XSecondaryButtonStyle(compact: true))
                 }
@@ -430,14 +430,17 @@ public struct SettingsView: View {
                             .buttonStyle(XSecondaryButtonStyle(compact: true))
                     }
                 }
-                HStack(spacing: XSpacing.s) {
-                    TextField(xLoc("输入 18 位激活码"), text: $activationKey)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(model.activating)
-                        .onSubmit { activateKey() }
-                    Button(model.activating ? xLoc("激活中…") : xLoc("激活")) { activateKey() }
-                        .buttonStyle(XPrimaryButtonStyle(compact: true))
-                        .disabled(model.activating || activationKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                // 已激活后不再摆激活输入框（与状态行重复，P8 用户反馈）；未激活才显示。
+                if !licenseAllowsUse {
+                    HStack(spacing: XSpacing.s) {
+                        TextField(xLoc("输入 18 位激活码"), text: $activationKey)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(model.activating)
+                            .onSubmit { activateKey() }
+                        Button(model.activating ? xLoc("激活中…") : xLoc("激活")) { activateKey() }
+                            .buttonStyle(XPrimaryButtonStyle(compact: true))
+                            .disabled(model.activating || activationKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
                 }
                 if let licenseMessage {
                     Divider().padding(.vertical, XSpacing.xxs)

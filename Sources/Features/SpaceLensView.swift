@@ -14,7 +14,8 @@ final class SpaceLensModel: ObservableObject {
     @Published var didScan = false
     @Published var scannedBytes: Int64 = 0
     @Published var scanMessage: String = ""
-    @Published var scanRoot: URL = FileManager.default.homeDirectoryForCurrentUser
+    // 默认从整盘根目录扫描（DaisyDisk 同款完整视角）；用户可换主目录/任意文件夹。
+    @Published var scanRoot: URL = URL(fileURLWithPath: "/")
     /// 「移到废纸篓」失败或被删除红线拒绝时的提示文案。
     @Published var trashError: String?
 
@@ -42,7 +43,7 @@ final class SpaceLensModel: ObservableObject {
     /// 当前视图根的家族色相：钻取后整个子树锚定其「扫描根下一级祖先」的色相（nil = 在扫描根，彩虹分配）。
     var familyHue: Color? {
         guard let first = stack.first, let i = topHueIndex[first.id] else { return nil }
-        return XColor.ring(i)
+        return SunburstView.vividPalette[((i % SunburstView.vividPalette.count) + SunburstView.vividPalette.count) % SunburstView.vividPalette.count]
     }
 
     func scan() {
@@ -345,7 +346,7 @@ public struct SpaceLensView: View {
                 colors: XColor.brandGradientColors,
                 title: xLoc("空间透镜"),
                 subtitle: xLoc("把文件夹（或整个磁盘）的空间占用画成放射环形图，一眼看清谁在占地方，点击可逐层钻取。"),
-                buttonTitle: xLoc("扫描主目录"),
+                buttonTitle: xLoc("扫描整个磁盘"),
                 facts: [.init(icon: "eye", text: xLoc("只读扫描 · 可右键将项目移到废纸篓（可恢复）"), tint: XColor.success),
                         .init(icon: "hand.tap", text: xLoc("点击环层钻取 · 点击中心返回"))],
                 secondaryTitle: xLoc("选择文件夹"),

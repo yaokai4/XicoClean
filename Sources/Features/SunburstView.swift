@@ -122,6 +122,19 @@ public struct SunburstView: View {
 
     private let maxDepth = 4
 
+    /// 环形图专用高饱和调色板（深浅色同值）：DaisyDisk 式鲜明色轮——
+    /// 主题 ring 色阶是为「背景上的点缀」调的淡彩，铺满整环会发灰发水；数据图要的是果敢的色相。
+    static let vividPalette: [Color] = [
+        Color(red: 0.24, green: 0.48, blue: 0.95),   // 蓝
+        Color(red: 0.55, green: 0.36, blue: 0.96),   // 紫
+        Color(red: 0.91, green: 0.32, blue: 0.49),   // 玫红
+        Color(red: 0.09, green: 0.72, blue: 0.65),   // 青
+        Color(red: 0.96, green: 0.62, blue: 0.04),   // 琥珀
+        Color(red: 0.13, green: 0.73, blue: 0.27),   // 绿
+        Color(red: 0.85, green: 0.27, blue: 0.94),   // 品红
+        Color(red: 0.40, green: 0.40, blue: 0.95),   // 靛
+    ]
+
     /// 家族模式下同级的明度阶（烘进 Color，子孙自然继承）——让「同属一族」与「彼此有别」并存。
     /// 动态范围刻意拉大（1.0 → 0.42）：家族色相是「锚」，同级可辨靠明度差，弱对比读起来是一坨。
     private static let familyShades: [Double] = [1.0, 0.55, 0.82, 0.42, 0.70, 0.50]
@@ -131,7 +144,7 @@ public struct SunburstView: View {
         if let familyHue {
             return familyHue.opacity(Self.familyShades[((i % Self.familyShades.count) + Self.familyShades.count) % Self.familyShades.count])
         }
-        return XColor.ring(i)
+        return Self.vividPalette[((i % Self.vividPalette.count) + Self.vividPalette.count) % Self.vividPalette.count]
     }
 
     public var body: some View {
@@ -469,9 +482,13 @@ public struct SunburstView: View {
             for (i, child) in n.children.sorted(by: { $0.size > $1.size }).enumerated() {
                 let childSpan = span * Double(child.size) / Double(total)
                 if childSpan < 0.5 {
-                    otherSpan += childSpan
-                    otherItems.append(child)
-                    otherBytes += child.size
+                    // 深层碎片直接留白（DaisyDisk 亦然）——只有第 1 层才聚合成「其他」段，
+                    // 否则每个目录都吐一段灰弧，外圈会连成一整个灰盘（实测事故，已修正）。
+                    if depth == 1 {
+                        otherSpan += childSpan
+                        otherItems.append(child)
+                        otherBytes += child.size
+                    }
                     continue
                 }
                 let cStart = a, cEnd = a + childSpan
@@ -484,13 +501,13 @@ public struct SunburstView: View {
                 }
                 a = cEnd
             }
-            if otherSpan > 0.05, !otherItems.isEmpty {
+            if depth == 1, otherSpan > 0.05, !otherItems.isEmpty {
                 // 聚合弧的「载体节点」用一个只承载几何/大小的合成节点视图态——绝不参与删除
                 // （isOther 弧在 UI 上无删除/收集入口，点击只弹明细清单）。
                 let carrier = DiskNode(url: n.url, name: xLoc("其他"), isDirectory: false,
                                        size: otherBytes, isAggregate: true)
                 out.append(Arc(key: n.id.uuidString + "#other", node: carrier, depth: depth,
-                               start: a, end: a + otherSpan, color: XColor.idle,
+                               start: a, end: a + otherSpan, color: XColor.idle.opacity(0.45),
                                isOther: true, otherItems: otherItems))
             }
         }
@@ -502,10 +519,10 @@ public struct SunburstView: View {
 
     private func depthOpacity(_ depth: Int) -> Double {
         switch depth {
-        case 1: return 0.95
-        case 2: return 0.82
-        case 3: return 0.70
-        default: return 0.58
+        case 1: return 1.0
+        case 2: return 0.90
+        case 3: return 0.80
+        default: return 0.70
         }
     }
 }

@@ -6,16 +6,21 @@ public struct XCard<Content: View>: View {
     private let content: Content
     private let padding: CGFloat
     private let elevated: Bool
+    /// fill=true：卡面撑满可用高度（网格同排等高用；内容顶对齐，余量由卡面补齐——消灭「一大一小」）。
+    private let fill: Bool
     @Environment(\.colorScheme) private var scheme
-    public init(padding: CGFloat = XSpacing.l, elevated: Bool = true, @ViewBuilder content: () -> Content) {
+    public init(padding: CGFloat = XSpacing.l, elevated: Bool = true, fill: Bool = false,
+                @ViewBuilder content: () -> Content) {
         self.padding = padding
         self.elevated = elevated
+        self.fill = fill
         self.content = content()
     }
     public var body: some View {
         content
             .padding(padding)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: fill ? .infinity : nil,
+                   alignment: fill ? .topLeading : .leading)
             .background(
                 // 暗色高程双通道：surface 随 z 轴提亮（黑影在墨底上不可见，提亮才是主信号）；
                 // 浅色恒白、层级由阴影承担。
@@ -399,18 +404,22 @@ public struct XSectionCard<Content: View, Trailing: View>: View {
     let trailing: Trailing
     let content: Content
 
+    var fillHeight: Bool = false
+
     public init(icon: String, title: String, iconColors: [Color] = XColor.brandGradientColors,
+                fillHeight: Bool = false,
                 @ViewBuilder trailing: () -> Trailing = { EmptyView() },
                 @ViewBuilder content: () -> Content) {
         self.icon = icon
         self.title = title
         self.iconColors = iconColors
+        self.fillHeight = fillHeight
         self.trailing = trailing()
         self.content = content()
     }
 
     public var body: some View {
-        XCard {
+        XCard(fill: fillHeight) {
             VStack(alignment: .leading, spacing: XSpacing.m) {
                 HStack(spacing: XSpacing.s) {
                     XIconTile(systemImage: icon, colors: iconColors, size: 28, flat: true)

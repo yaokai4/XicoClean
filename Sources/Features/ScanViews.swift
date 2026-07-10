@@ -526,7 +526,6 @@ public struct SmartScanView: View {
                 .keyboardShortcut(.defaultAction)
                 .padding(.top, XSpacing.s)
 
-            recentCleanupCard
         }
         .padding(.horizontal, XSpacing.xl)
         .padding(.vertical, XSpacing.l)

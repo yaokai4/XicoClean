@@ -150,7 +150,6 @@ public struct HardwareView: View {
         self.engine = env.metricsEngine
     }
 
-    private let columns = [GridItem(.adaptive(minimum: 320), spacing: XSpacing.m)]
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -163,24 +162,41 @@ public struct HardwareView: View {
             ScrollView {
                 VStack(spacing: XSpacing.m) {
                     heroCard
-                    // 卡片按「高矮配对」排布：电池|内存（高）→ 存储|散热（高）→ GPU|网络（中）
-                    // → 显示器|传感器（中），同排等高，消除一大一小的错落感。
-                    LazyVGrid(columns: columns, spacing: XSpacing.m) {
-                        if let b = vm.battery { batteryCard(b) }
-                        memoryCard
-                        storageCard
-                        thermalCard
-                        gpuCard
-                        if !vm.interfaces.isEmpty { networkCard }
-                        if !vm.displays.isEmpty { displayCard }
-                        if !vm.temps.isEmpty { sensorsCard }
-                    }
+                    // 非懒 Grid + 成对 GridRow（P8）：①同排两卡强制等高（fillHeight 卡面补齐），
+                    // 彻底消灭「一大一小」；②视图不再被 Lazy 回收——往回滚动时环/曲线不会重播入场动画
+                    // （此前 GPU 环滚动一次动画一次，像进度条脱缰）。卡片数量固定个位数，无需懒加载。
+                    pairedGrid
                 }
                 .padding(XSpacing.xl)
             }
         }
         .onAppear { vm.start(); if !didRetain { didRetain = true; engine.retain() } }
         .onDisappear { vm.stop(); if didRetain { didRetain = false; engine.release() } }
+    }
+
+    /// 卡片成对网格：收集可见卡后两两一排（奇数最后一张独占整排）。
+    private var pairedGrid: some View {
+        var cards: [(String, AnyView)] = []
+        if let b = vm.battery { cards.append(("battery", AnyView(batteryCard(b)))) }
+        cards.append(("memory", AnyView(memoryCard)))
+        cards.append(("storage", AnyView(storageCard)))
+        cards.append(("thermal", AnyView(thermalCard)))
+        cards.append(("gpu", AnyView(gpuCard)))
+        if !vm.interfaces.isEmpty { cards.append(("network", AnyView(networkCard))) }
+        if !vm.displays.isEmpty { cards.append(("display", AnyView(displayCard))) }
+        if !vm.temps.isEmpty { cards.append(("sensors", AnyView(sensorsCard))) }
+        return Grid(horizontalSpacing: XSpacing.m, verticalSpacing: XSpacing.m) {
+            ForEach(Array(stride(from: 0, to: cards.count, by: 2)), id: \.self) { i in
+                GridRow {
+                    cards[i].1.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if i + 1 < cards.count {
+                        cards[i + 1].1.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                    }
+                }
+            }
+        }
     }
 
     // MARK: Hero
@@ -962,6 +978,7 @@ private struct HardwareCard<Content: View>: View {
     let iconColors: [Color]
     @ViewBuilder let content: Content
     var body: some View {
-        XSectionCard(icon: icon, title: title, iconColors: iconColors) { content }
+        // fillHeight：网格同排两卡等高（P8 用户反馈——「一大一小」难看），内容顶对齐。
+        XSectionCard(icon: icon, title: title, iconColors: iconColors, fillHeight: true) { content }
     }
 }
