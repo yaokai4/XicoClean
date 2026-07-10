@@ -368,31 +368,56 @@ struct ModuleIdleHero: View {
     }
 }
 
-// MARK: - 智能扫描页（仪表盘式）
+// MARK: - 智能扫描页（idle 仪表盘 + 六类目并行中枢，docs/14 P1）
 
 public struct SmartScanView: View {
+    private let model: AppModel
     private let env: XicoEnvironment
-    @ObservedObject private var vm: ModuleSessionViewModel
+    /// 六类目并行中枢（缓存于 AppModel，切换侧栏不丢结果与下钻位置）。
+    @ObservedObject private var hub: SmartScanHubViewModel
     /// 高频数据源（温度/SMART 子项取自这里；读不到即「暂无数据」，诚实降权）。
     @ObservedObject private var feed: MetricsFeed
     @State private var capacity: VolumeCapacity?
     @State private var metrics: SystemMetrics?
     @State private var appeared = false
     @State private var showHealthDetail = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(model: AppModel) {
+        self.model = model
         self.env = model.env
-        self.vm = model.smartScanSession   // 缓存的智能扫描会话，切换不丢结果
+        self.hub = model.smartScanHub
         self._feed = ObservedObject(wrappedValue: model.liveMetricsFeed)
     }
 
     public var body: some View {
-        SessionScaffold(vm: vm, cleanButtonTitle: xLoc("清理"), moduleIcon: "sparkles") { dashboard }
-            .onAppear {
-                refresh()
-                withAnimation(XMotion.settle) { appeared = true }
+        Group {
+            switch hub.phase {
+            case .idle:
+                dashboard.frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .active:
+                SmartScanHubActiveView(hub: hub)
+            case .finished:
+                if let report = hub.lastReport {
+                    CompletionView(report: report, intent: .trash, note: hub.spaceNote,
+                                   onUndo: { hub.undo() }, onDone: { hub.reset() })
+                } else {
+                    dashboard.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in refresh() }
+        }
+        .animation(reduceMotion ? XMotion.crossfade : XMotion.settle, value: hub.phase)
+        .alert(xLoc("部分项目未能恢复"), isPresented: $hub.undoFailedAlert) {
+            Button(xLoc("在废纸篓中显示")) { hub.revealUndoFailuresInTrash() }
+            Button(xLoc("好"), role: .cancel) {}
+        } message: {
+            Text(xLocF("有 %d 项无法自动放回原位（可能废纸篓已被清空、文件被移动或所在卷已卸载）。这些项仍可在废纸篓中手动找回。", hub.undoFailedItems.count))
+        }
+        .onAppear {
+            refresh()
+            withAnimation(XMotion.settle) { appeared = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in refresh() }
     }
 
     @State private var lastUndoable: CleaningRecord?
@@ -521,10 +546,30 @@ public struct SmartScanView: View {
             }
             .frame(maxWidth: 600)
 
-            Button(xLoc("开始智能扫描")) { vm.start() }
-                .buttonStyle(XPrimaryButtonStyle(large: true))
-                .keyboardShortcut(.defaultAction)
-                .padding(.top, XSpacing.s)
+            VStack(spacing: XSpacing.s) {
+                Button(xLoc("开始智能扫描")) { hub.start() }
+                    .buttonStyle(XPrimaryButtonStyle(large: true))
+                    .keyboardShortcut(.defaultAction)
+                // 一句话讲清扫描面（六类并行 + 逐类到达是中枢的签名能力，值得在 CTA 下亮明）。
+                Text(xLoc("六类并行：系统垃圾 · 废纸篓 · 威胁 · 重复 · 相似图片 · 大文件"))
+                    .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+            }
+            .padding(.top, XSpacing.s)
+
+            recentCleanupCard
+
+            // 工具入口：文件粉碎不是扫描类目（无扫描相、不可撤销），以工具行形式从中枢直达。
+            Button {
+                withAnimation(XMotion.snappy) { model.selection = .shredder }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "flame").font(XFont.micro)
+                    Text(xLoc("需要彻底粉碎文件？打开文件粉碎")).font(XFont.caption)
+                }
+                .foregroundStyle(XColor.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(xLoc("文件粉碎"))
 
         }
         .padding(.horizontal, XSpacing.xl)

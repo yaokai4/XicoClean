@@ -30,6 +30,31 @@ public enum Notifier {
         UNUserNotificationCenter.current().add(req)
     }
 
+    /// 废纸篓哨兵通知（P4）：删 App 入废纸篓时提示其残留。identifier 前缀
+    /// `xico.sentinel.` 供 AppDelegate 的通知点击路由识别（直达卸载器）。
+    public static func notifySentinel(appName: String, count: Int, bytes: String, bundleID: String) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            let fire = {
+                let content = UNMutableNotificationContent()
+                content.title = xLocF("检测到删除 %@", appName)
+                content.body = xLocF("本机还留有 %d 项残留（%@）。点按打开卸载器清理。", count, bytes)
+                content.sound = nil
+                let req = UNNotificationRequest(identifier: "xico.sentinel.\(bundleID)",
+                                                content: content, trigger: nil)
+                center.add(req)
+            }
+            switch settings.authorizationStatus {
+            case .authorized, .provisional:
+                fire()
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert]) { granted, _ in if granted { fire() } }
+            default:
+                break   // 用户已拒绝：不打扰
+            }
+        }
+    }
+
     /// 监控阈值告警通知（如「CPU 持续高于 90%」）。identifier 用于同一规则去重。
     public static func notifyAlert(title: String, body: String, identifier: String) {
         let center = UNUserNotificationCenter.current()

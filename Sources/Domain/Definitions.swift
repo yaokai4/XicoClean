@@ -13,10 +13,13 @@ public struct CleanupDefinition: Codable, Sendable, Identifiable {
     public let safety: SafetyLevel
     public let requiresHelper: Bool
     public let systemImage: String
+    /// 「为什么可删」（P5 安全库）：本条规则的专项解释；缺省回落类目模板（`resolvedExplanation`）。
+    public let explanation: String?
 
     public init(id: String, category: String, title: String, description: String,
                 paths: [String], exclude: [String] = [], safety: SafetyLevel = .safe,
-                requiresHelper: Bool = false, systemImage: String = "trash") {
+                requiresHelper: Bool = false, systemImage: String = "trash",
+                explanation: String? = nil) {
         self.id = id
         self.category = category
         self.title = title
@@ -26,10 +29,11 @@ public struct CleanupDefinition: Codable, Sendable, Identifiable {
         self.safety = safety
         self.requiresHelper = requiresHelper
         self.systemImage = systemImage
+        self.explanation = explanation
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, category, title, description, paths, exclude, safety, requiresHelper, systemImage
+        case id, category, title, description, paths, exclude, safety, requiresHelper, systemImage, explanation
     }
 
     /// 容错解码：可选字段缺省时用默认值（便于精简 JSON 与未来在线更新）
@@ -44,6 +48,25 @@ public struct CleanupDefinition: Codable, Sendable, Identifiable {
         safety = try c.decodeIfPresent(SafetyLevel.self, forKey: .safety) ?? .safe
         requiresHelper = try c.decodeIfPresent(Bool.self, forKey: .requiresHelper) ?? false
         systemImage = try c.decodeIfPresent(String.self, forKey: .systemImage) ?? "trash"
+        explanation = try c.decodeIfPresent(String.self, forKey: .explanation)
+    }
+
+    /// 专项解释，缺省回落类目模板——每条结果都答得出「为什么可删」（P5）。
+    /// 中文字面量即 i18n key，显示层 xLoc 本地化。
+    public var resolvedExplanation: String {
+        if let explanation, !explanation.isEmpty { return explanation }
+        switch category {
+        case "system-junk":
+            return "系统或应用自动生成的数据，删除后会按需自动重建，不影响你的文档与设置。"
+        case "developer-junk":
+            return "开发工具的派生数据（编译产物、索引、模拟器缓存），重新构建时会自动重新生成。"
+        case "ios":
+            return "iOS 设备的本地备份/固件安装包，可随时重新备份或重新下载。删除前请确认不再需要。"
+        case "privacy":
+            return "浏览器缓存数据，删除后浏览器会自动重建；不影响书签、密码与登录状态以外的数据请逐项确认。"
+        default:
+            return "由 Xico 安全库规则判定为可再生数据；删除默认移入废纸篓，可随时撤销。"
+        }
     }
 }
 

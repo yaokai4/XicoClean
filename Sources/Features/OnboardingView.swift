@@ -202,7 +202,7 @@ public struct OnboardingView: View {
             Button(xLoc("开始首次扫描")) {
                 model.completeOnboarding()
                 model.selection = .smartScan
-                if model.smartScanSession.phase == .idle { model.smartScanSession.start() }
+                if model.smartScanHub.phase == .idle { model.smartScanHub.start() }
             }
             .buttonStyle(XPrimaryButtonStyle(large: true))
             Button(xLoc("稍后再说")) { model.completeOnboarding() }

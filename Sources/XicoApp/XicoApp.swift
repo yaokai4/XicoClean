@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Darwin
+import UserNotifications
 import Features
 import Domain
 import Infrastructure
@@ -137,6 +138,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // 正常启动：用 AppKit 接管菜单栏（瞬态弹窗，自动消失 + 可在设置里编辑）——注入唯一 AppModel。
         menuBar = MenuBarController(model: model)
+        // 废纸篓哨兵通知的点击路由（P4）：identifier 前缀 xico.sentinel. → 打开卸载器。
+        UNUserNotificationCenter.current().delegate = self
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -182,6 +185,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         model.selection = .settings
         Task { _ = await model.activateLicense(key: key) }
+    }
+}
+
+// MARK: 通知点击路由（P4 废纸篓哨兵：点通知直达卸载器清残留）
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    // 通知代理回调不保证主线程——nonisolated 接收，内部跳主 actor 再碰 UI/模型。
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            didReceive response: UNNotificationResponse,
+                                            withCompletionHandler completionHandler: @escaping () -> Void) {
+        let identifier = response.notification.request.identifier
+        if identifier.hasPrefix("xico.sentinel.") {
+            Task { @MainActor in
+                self.model.selection = .uninstaller
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                for window in NSApp.windows where window.canBecomeMain {
+                    window.makeKeyAndOrderFront(nil)
+                }
+            }
+        }
+        completionHandler()
     }
 }
 

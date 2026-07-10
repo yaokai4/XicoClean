@@ -28,6 +28,8 @@ public extension ModuleID {
     static let shredder = ModuleID("shredder")
     static let diskSpeed = ModuleID("disk-speed")
     static let deepScan = ModuleID("deep-scan")
+    static let orphans = ModuleID("orphans")
+    static let menuBar = ModuleID("menu-bar")
     static let settings = ModuleID("settings")
 }
 
@@ -55,13 +57,17 @@ public struct ModuleMetadata: Sendable, Identifiable {
     public let subtitle: String
     public let systemImage: String
     public let category: ModuleCategory
+    /// 是否出现在侧边栏。false = 已并入智能扫描等中枢的隐藏模块——路由与 --open= 直达保留，
+    /// 元数据仍供 ModuleScanView 等按 ID 查询（与删除目录行不同，隐藏不破坏任何查找）。
+    public let sidebar: Bool
 
-    public init(id: ModuleID, title: String, subtitle: String, systemImage: String, category: ModuleCategory) {
+    public init(id: ModuleID, title: String, subtitle: String, systemImage: String, category: ModuleCategory, sidebar: Bool = true) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
         self.systemImage = systemImage
         self.category = category
+        self.sidebar = sidebar
     }
 }
 
@@ -130,14 +136,19 @@ public struct ScanResultGroup: Identifiable, Sendable {
     public let description: String
     public let systemImage: String
     public let safety: SafetyLevel
+    /// 「为什么可删」（P5 安全库）：这条规则判定可删的依据，基于 macOS 事实的一句话解释。
+    /// nil = 无专项解释（信息浮层只显示 description 与安全级别通用解释）。中文字面量即 i18n key。
+    public let explanation: String?
     public var items: [CleanableItem]
 
-    public init(id: String, title: String, description: String = "", systemImage: String = "folder", safety: SafetyLevel = .safe, items: [CleanableItem]) {
+    public init(id: String, title: String, description: String = "", systemImage: String = "folder",
+                safety: SafetyLevel = .safe, explanation: String? = nil, items: [CleanableItem]) {
         self.id = id
         self.title = title
         self.description = description
         self.systemImage = systemImage
         self.safety = safety
+        self.explanation = explanation
         self.items = items
     }
 

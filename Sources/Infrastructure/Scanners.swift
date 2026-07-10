@@ -115,6 +115,11 @@ enum PathExpander {
     }
 }
 
+/// 日志类规则：macOS 自动轮转日志，正常体积清了没意义还破坏故障诊断（Eclectic Light 结论）——
+/// 默认只勾选**异常膨胀**（单项 ≥ 该阈值）的日志，其余列出不选（P5 保守化默认）。
+private let conservativeLogDefIDs: Set<String> = ["user-logs", "system-logs"]
+private let logAnomalyThreshold: Int64 = 500 * 1_048_576
+
 /// 把一组定义跑成扫描结果（系统垃圾 / 隐私共用）。
 func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
                      fs: FileSystemService, safety: SafetyEngine, home: URL,
@@ -126,6 +131,7 @@ func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
     for def in definitions {
         if Task.isCancelled { break }
         let excludePaths = def.exclude.map { PathExpander.expandHome($0, home: home) }
+        let conservativeLog = conservativeLogDefIDs.contains(def.id)
         var items: [CleanableItem] = []
 
         for pattern in def.paths {
@@ -136,18 +142,29 @@ func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
                 let size = fs.allocatedSize(of: url)
                 guard size > 0 else { continue }
                 let running = runningIDs.contains(url.lastPathComponent)
+                let oversizeLog = conservativeLog && size >= logAnomalyThreshold
                 let note: String?
                 if def.requiresHelper {
                     note = "需要管理员权限 · 彻底删除"
                 } else if running {
                     note = "正在运行 · 建议退出后再清理"
+                } else if oversizeLog {
+                    note = "异常膨胀 · 建议清理"
                 } else {
                     note = nil
                 }
+                // 勾选策略：管理员/运行中一律不选；保守日志仅异常膨胀者选；其余按安全级默认。
+                let selected: Bool?
+                if running || def.requiresHelper {
+                    selected = false
+                } else if conservativeLog {
+                    selected = oversizeLog
+                } else {
+                    selected = nil
+                }
                 items.append(CleanableItem(url: url, displayName: FriendlyName.resolve(url.lastPathComponent),
                                            detail: url.path, size: size, safety: def.safety,
-                                           // 运行中的应用缓存默认不勾选，避免一键清理误删活跃缓存致其异常
-                                           isSelected: (running || def.requiresHelper) ? false : nil,
+                                           isSelected: selected,
                                            requiresHelper: def.requiresHelper,
                                            note: note))
                 runningTotal += size
@@ -158,7 +175,8 @@ func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
         if !items.isEmpty {
             items.sort { $0.size > $1.size }
             groups.append(ScanResultGroup(id: def.id, title: def.title, description: def.description,
-                                          systemImage: def.systemImage, safety: def.safety, items: items))
+                                          systemImage: def.systemImage, safety: def.safety,
+                                          explanation: def.resolvedExplanation, items: items))
         }
     }
     groups.sort { $0.totalSize > $1.totalSize }
@@ -176,14 +194,19 @@ public struct SystemJunkScanner: ScannerModule {
     private let fs: FileSystemService
     private let safety: SafetyEngine
     private let home: URL
+    /// 是否内联「已卸载应用残留」浅扫（容器 + 窗口状态）。独立「系统垃圾」页默认开；
+    /// 智能扫描中枢传 false——那里由 OrphanScanner（P4 全量孤儿引擎，按 App 分组）接管，避免两套并列。
+    private let includeLeftovers: Bool
 
     public init(definitions: [CleanupDefinition], fs: FileSystemService, safety: SafetyEngine,
-                home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+                home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                includeLeftovers: Bool = true) {
         let junkCategories: Set<String> = ["system-junk", "developer-junk", "ios"]
         self.definitions = definitions.filter { junkCategories.contains($0.category) }
         self.fs = fs
         self.safety = safety
         self.home = home
+        self.includeLeftovers = includeLeftovers
     }
 
     public func scan(progress: @escaping ProgressHandler) async throws -> ScanResult {
@@ -197,16 +220,18 @@ public struct SystemJunkScanner: ScannerModule {
         if let darwin = darwinTempCacheGroup(running: running, baseTotal: base, progress: progress) {
             groups.append(darwin); base += darwin.totalSize
         }
-        let (leftovers, orphanContainerPaths) = leftoversGroup(baseTotal: base, progress: progress)
-        // 去重：孤儿容器整体已计入「残留」，从「沙盒应用缓存」里剔除其下子项，避免重复计入夸大总量
-        if !orphanContainerPaths.isEmpty,
-           let idx = groups.firstIndex(where: { $0.id == "containers-caches" }) {
-            groups[idx].items.removeAll { item in
-                orphanContainerPaths.contains { item.url.path.hasPrefix($0 + "/") }
+        if includeLeftovers {
+            let (leftovers, orphanContainerPaths) = leftoversGroup(baseTotal: base, progress: progress)
+            // 去重：孤儿容器整体已计入「残留」，从「沙盒应用缓存」里剔除其下子项，避免重复计入夸大总量
+            if !orphanContainerPaths.isEmpty,
+               let idx = groups.firstIndex(where: { $0.id == "containers-caches" }) {
+                groups[idx].items.removeAll { item in
+                    orphanContainerPaths.contains { item.url.path.hasPrefix($0 + "/") }
+                }
+                if groups[idx].items.isEmpty { groups.remove(at: idx) }
             }
-            if groups[idx].items.isEmpty { groups.remove(at: idx) }
+            if let leftovers { groups.append(leftovers) }
         }
-        if let leftovers { groups.append(leftovers) }
         groups.sort { $0.totalSize > $1.totalSize }
         return ScanResult(moduleID: .systemJunk, groups: groups)
     }

@@ -188,7 +188,7 @@ public struct MenuMetricPanel: View {
         NSApp.activate(ignoringOtherApps: true)
         model.selection = .smartScan
         for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
-        if model.smartScanSession.phase == .idle { model.smartScanSession.start() }
+        if model.smartScanHub.phase == .idle { model.smartScanHub.start() }
     }
 
     /// 快速释放非活跃内存（purge，经特权助手）。助手未安装则优雅降级为提示，不静默失败。

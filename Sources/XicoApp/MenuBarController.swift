@@ -121,6 +121,7 @@ final class MenuBarController: NSObject {
     private func contextMenu() -> NSMenu {
         let menu = NSMenu()
         menu.addItem(withTitle: xLoc("打开 Xico"), action: #selector(openMainWindow), keyEquivalent: "").target = self
+        // 状态项右键的「设置…」直达状态栏页（P0 IA：菜单栏设置已从设置页迁出为独立模块）。
         menu.addItem(withTitle: xLoc("设置…"), action: #selector(openSettings), keyEquivalent: ",").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: xLoc("退出 Xico"), action: #selector(quit), keyEquivalent: "q").target = self
@@ -136,7 +137,7 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func openSettings() {
-        model.selection = .settings
+        model.selection = .menuBar
         openMainWindow()
     }
 

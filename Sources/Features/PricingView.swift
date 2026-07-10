@@ -39,6 +39,8 @@ public struct PricingView: View {
     @State private var deactivating = false
     /// 停用成功后的提示文案。
     @State private var deactivateNote: String?
+    /// 应用内浏览器目标（购买 / 隐私政策）——签名时刻 S3：零离开购买（docs/14 P2）。
+    @State private var browserTarget: BrowserTarget?
 
     public init(model: AppModel) { self.model = model }
 
@@ -83,6 +85,7 @@ public struct PricingView: View {
                                 ForEach(plans) { plan in planCard(plan) }
                             }
                             purchaseCTA
+                            trialEscape
                             importRow
                         }
                         trustLine
@@ -96,6 +99,14 @@ public struct PricingView: View {
         .task {
             // 与官网同步实时价格（同一套按 IP 定币种的口径）；失败静默保持缓存/兜底值。
             pricing = await ProPricingClient.fetch()
+        }
+        // 应用内浏览器：购买/隐私政策不再跳系统浏览器；支付成功页回跳 xico://activate?key=
+        // 被浏览器拦截 → 自动回填激活（S3 闭环）。
+        .sheet(item: $browserTarget) { target in
+            InAppBrowserView(target: target) { key in
+                activationKey = key
+                activateKey()
+            }
         }
     }
 
@@ -216,6 +227,23 @@ public struct PricingView: View {
         .accessibilityLabel(xLocF("立即购买 %@", plan.name))
     }
 
+    /// 付费墙逃逸出口（docs/14 P2）：试用可用时永远给出「先试用」按钮——
+    /// 首启弹出的定价页不做订阅压迫（CleanMyMac 被骂点反着做），信任本身是转化率。
+    @ViewBuilder private var trialEscape: some View {
+        if case let .trial(days) = model.licenseStatus?.state, days > 0 {
+            Button {
+                dismiss()
+            } label: {
+                Text(days >= LicenseService.defaultTrialDays
+                     ? xLoc("先试用 15 天 · 全功能免费体验")
+                     : xLocF("继续试用 · 剩余 %d 天", days))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(XSecondaryButtonStyle())
+            .accessibilityLabel(xLoc("先试用，稍后购买"))
+        }
+    }
+
     /// 已激活视图：授权状态 + 本机设备 + 换机释放。取代付款方案卡，让「已激活」一眼可辨。
     private var activatedView: some View {
         VStack(spacing: XSpacing.l) {
@@ -310,8 +338,10 @@ public struct PricingView: View {
         VStack(spacing: XSpacing.xxs) {
             Text(xLoc("激活与复验会上送本机设备标识以绑定授权台数，不含姓名/邮箱。"))
                 .font(XFont.nano).foregroundStyle(XColor.textTertiary).multilineTextAlignment(.center)
-            Button(xLoc("隐私政策")) { NSWorkspace.shared.open(Self.privacyURL()) }
-                .buttonStyle(.link).font(XFont.nano)
+            Button(xLoc("隐私政策")) {
+                browserTarget = BrowserTarget(url: Self.privacyURL(), title: xLoc("隐私政策"))
+            }
+            .buttonStyle(.link).font(XFont.nano)
         }
         .padding(.top, XSpacing.xs)
     }
@@ -383,15 +413,18 @@ public struct PricingView: View {
         }
     }
 
+    /// 打开购买页——应用内浏览器呈现（docs/14 P2 S3），不再 NSWorkspace 跳系统浏览器。
+    /// 附 embedded=1 供官网隐藏页头页脚（渐进增强：官网未适配时也只是多个无害参数）。
     private func openCheckout(plan: String) {
         var url = LicenseService.purchaseURL()
         if var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             var items = comps.queryItems ?? []
             items.append(URLQueryItem(name: "plan", value: plan))
+            items.append(URLQueryItem(name: "embedded", value: "1"))
             comps.queryItems = items
             if let u = comps.url { url = u }
         }
-        NSWorkspace.shared.open(url)
+        browserTarget = BrowserTarget(url: url, title: xLoc("购买 Xico Pro"))
     }
 
 }

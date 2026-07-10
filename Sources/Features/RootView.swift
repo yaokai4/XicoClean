@@ -133,14 +133,15 @@ public struct SidebarView: View {
     }
 
     /// 每个分类一族色（CleanMyMac 式彩色侧栏图标——图标即导航地标，一眼定位分区）。
+    /// 三组新架构（docs/14 P0）：文件与空间已撤组，索引即 grouped() 的可见分组顺序。
     static func categoryTint(_ index: Int) -> Color {
         let palette: [Color] = [
             Color(red: 0.09, green: 0.72, blue: 0.65),   // 清理 · 青
             Color(red: 0.24, green: 0.48, blue: 0.95),   // 应用 · 蓝
-            Color(red: 0.55, green: 0.36, blue: 0.96),   // 文件与空间 · 紫
             Color(red: 0.96, green: 0.55, blue: 0.11),   // 性能与安全 · 橙
-            Color(red: 0.91, green: 0.32, blue: 0.49),   // 硬件/监控 · 玫红
-            Color(red: 0.13, green: 0.73, blue: 0.27),   // 其余 · 绿
+            Color(red: 0.55, green: 0.36, blue: 0.96),   // 备用 · 紫
+            Color(red: 0.91, green: 0.32, blue: 0.49),   // 备用 · 玫红
+            Color(red: 0.13, green: 0.73, blue: 0.27),   // 备用 · 绿
         ]
         return palette[index % palette.count]
     }
@@ -310,6 +311,7 @@ struct DetailView: View {
         case .diskSpeed:    DiskBenchmarkView(device: internalDiskModel, standalone: true)
         case .hardware:     HardwareView(env: model.env)
         case .monitor:      MonitorView(env: model.env)
+        case .menuBar:      MenuBarSettingsView(model: model)
         case .settings:     SettingsView(model: model)
         // 未知模块 ID（例如开发用 --open=<拼写错误>）回落到仪表盘，而非过时的「即将推出」占位页。
         default:            SmartScanView(model: model)

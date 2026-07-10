@@ -167,6 +167,10 @@ public final class LicenseService: @unchecked Sendable {
     /// （切换日之后服务端必须为每次签发印上 deviceId，缺失即视为被拷贝/篡改的副本）。
     /// **默认 nil（不设 = 现状行为）**——切换日之前签发的遗留未绑定许可仍照常放行，绝不误伤存量用户。
     /// 完整设备绑定仍需服务端在 100% 签发上印章 deviceId（见 cross_file_notes 的服务端要求）。审计 P2。
+    /// 默认试用天数（docs/14 P2：14 → 15，与首启付费墙「先试用 15 天」文案一致）。
+    /// UI（PricingView 逃逸按钮）据此判断「全新试用 vs 试用中」，改这里即全局生效。
+    public static let defaultTrialDays = 15
+
     private let bindingCutover: Date?
     /// 永久授权软心跳天数：若设置(>0)，无到期日的永久授权在连续这么多天「零成功联网复验」后
     /// 降级为受限，直至一次成功联网复验自愈（服务端可据此收敛离线退款/吊销滥用）。审计 P3（AppModel:432）。
@@ -179,7 +183,7 @@ public final class LicenseService: @unchecked Sendable {
         trustedPublicKeys: [String: Data],
         licenseDirectory: URL? = nil,
         defaults: UserDefaults = .standard,
-        trialDays: Int = 14,
+        trialDays: Int = LicenseService.defaultTrialDays,
         anchor: SecureAnchorStore = KeychainAnchorStore(),
         revokedLicenseIDs: Set<String> = [],
         bindingCutover: Date? = LicenseService.infoPlistBindingCutover(),

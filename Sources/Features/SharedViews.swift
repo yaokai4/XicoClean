@@ -1,5 +1,6 @@
 import SwiftUI
 import Domain
+import Infrastructure
 import DesignSystem
 
 // MARK: - 安全级别 → 视觉
@@ -35,6 +36,8 @@ struct ItemRowView: View {
     let item: CleanableItem
     let onToggle: () -> Void
     var onIgnore: (() -> Void)? = nil
+    /// 「报告误报」（P5 安全库）：匿名上报规则 id + 本地立即忽略。nil = 该列表不支持上报。
+    var onReport: (() -> Void)? = nil
     @State private var hover = false
 
     var body: some View {
@@ -77,9 +80,13 @@ struct ItemRowView: View {
         .contextMenu {
             Button(xLoc("快速查看")) { quickLook(item.url) }
             Button(xLoc("在 Finder 中显示")) { revealInFinder(item.url) }
+            if onIgnore != nil || onReport != nil { Divider() }
             if let onIgnore {
-                Divider()
                 Button(xLoc("永不清理此项")) { onIgnore() }
+            }
+            if let onReport {
+                // 匿名上报（仅规则 id，不含路径/文件名）+ 本地立即忽略——误报闭环（P5）。
+                Button(xLoc("报告误报并忽略")) { onReport() }
             }
         }
     }
@@ -134,6 +141,17 @@ struct ResultGroupCard: View {
         .padding(.top, XSpacing.xs)
     }
 
+    /// 报告误报（P5）：匿名 POST 规则 id（= 分组 id）+ 模块语境，随后本地忽略该项。
+    /// 两处右键菜单（文字行 / 画廊磁贴）共用。
+    private func report(_ item: CleanableItem, ignore: ((UUID) -> Void)? = nil) {
+        DefinitionsFeedbackClient.reportFalsePositive(ruleID: group.id, module: group.title)
+        if let ignore {
+            ignore(item.id)
+        } else {
+            onIgnoreItem?(item.id)
+        }
+    }
+
     private func galleryTile(_ item: CleanableItem) -> some View {
         // 用 Button 承载磁贴：键盘可聚焦 + 空格/回车切换勾选（原 onTapGesture 对键盘/VoiceOver 均不可达）。
         Button { onToggleItem(item.id) } label: {
@@ -165,7 +183,11 @@ struct ResultGroupCard: View {
         .contextMenu {
             Button(xLoc("快速查看")) { quickLook(item.url) }
             Button(xLoc("在 Finder 中显示")) { revealInFinder(item.url) }
-            if let onIgnoreItem { Divider(); Button(xLoc("永不清理此项")) { onIgnoreItem(item.id) } }
+            if let onIgnoreItem {
+                Divider()
+                Button(xLoc("永不清理此项")) { onIgnoreItem(item.id) }
+                Button(xLoc("报告误报并忽略")) { report(item) }
+            }
         }
         // 单一无障碍元素：念出「<文件名> · <大小>」并把勾选态作为 .isSelected trait 播报。
         .accessibilityElement(children: .ignore)
@@ -203,6 +225,16 @@ struct ResultGroupCard: View {
                             if !group.description.isEmpty {
                                 Text(xLoc(group.description)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                             }
+                            // 「为什么可删」（P5 安全库）：逐条规则的判定依据，基于 macOS 事实。
+                            if let explanation = group.explanation {
+                                Divider()
+                                HStack(spacing: 6) {
+                                    Image(systemName: "text.book.closed").foregroundStyle(XColor.brand)
+                                    Text(xLoc("为什么可删")).font(XFont.captionEmphasis).foregroundStyle(XColor.brand)
+                                }
+                                Text(xLoc(explanation)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                             Divider()
                             HStack(spacing: 6) {
                                 Image(systemName: "checkmark.shield").foregroundStyle(group.safety.tint)
@@ -238,7 +270,8 @@ struct ResultGroupCard: View {
                         } else {
                             ForEach(shown) { item in
                                 ItemRowView(item: item, onToggle: { onToggleItem(item.id) },
-                                            onIgnore: onIgnoreItem.map { cb in { cb(item.id) } })
+                                            onIgnore: onIgnoreItem.map { cb in { cb(item.id) } },
+                                            onReport: onIgnoreItem.map { cb in { report(item, ignore: cb) } })
                             }
                         }
                         if items.count > Self.previewCap && !showAll {
@@ -433,9 +466,11 @@ struct TaskCompletionView: View {
 }
 
 /// 清理流的完成页——薄封装 `TaskCompletionView`（释放字节数计数庆祝 + 撤销/完成）。
+/// `note`：可选的诚实附注（如 P3 的「空间被快照暂存」解释），追加在明细行之后。
 struct CompletionView: View {
     let report: CleaningReport
     let intent: DeleteIntent
+    var note: String? = nil
     let onUndo: () -> Void
     let onDone: () -> Void
 
@@ -446,7 +481,8 @@ struct CompletionView: View {
             animateTo: report.reclaimedBytes,
             metricText: { xLocF("已释放 %@", $0.formattedBytes) },
             detail: xLocF("清理了 %d 项", report.removedCount) +
-                (report.failures.isEmpty ? "" : xLocF(" · %d 项被跳过", report.failures.count)),
+                (report.failures.isEmpty ? "" : xLocF(" · %d 项被跳过", report.failures.count)) +
+                (note.map { "\n" + $0 } ?? ""),
             undoTitle: canUndo ? xLoc("撤销") : nil,
             onUndo: canUndo ? onUndo : nil,
             doneTitle: xLoc("完成"),

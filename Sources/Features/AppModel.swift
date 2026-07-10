@@ -216,9 +216,21 @@ public final class AppModel: ObservableObject {
         return vm
     }
 
+    private var smartScanHubVM: SmartScanHubViewModel?
+
+    /// 智能扫描中枢（docs/14 P1）：六类目并行、逐类到达、混合意图清理。
+    /// 与 duplicatesFolderBox 共享重复文件扫描根——中枢换根后独立页同步生效，反之亦然。
+    public var smartScanHub: SmartScanHubViewModel {
+        if let vm = smartScanHubVM { return vm }
+        let vm = SmartScanHubViewModel(env: env, duplicatesRoot: duplicatesFolderBox)
+        smartScanHubVM = vm
+        return vm
+    }
+
     private var smartScanVM: ModuleSessionViewModel?
 
-    /// 智能扫描会话（单独缓存，含聚合协调器与失败汇总）。
+    /// 旧版智能扫描会话（三件套聚合）。中枢（smartScanHub）已接管 .smartScan 路由；
+    /// 保留供离屏截图渲染等遗留调用方使用。
     public var smartScanSession: ModuleSessionViewModel {
         if let vm = smartScanVM { return vm }
         let e = env
@@ -305,6 +317,9 @@ public final class AppModel: ObservableObject {
         alertRules = env.alertRuleStore.load()
         permissionBannerDismissed = UserDefaults.standard.bool(forKey: "xico.fdaDismissed")
         showOnboarding = !UserDefaults.standard.bool(forKey: "xico.onboarded")
+        // 真实首启（写入 xico.onboarded 前的旧值）——首启付费墙据此一次性触发（docs/14 P2）。
+        // --onboarding QA 重跑只强制引导页，不冒充首启，不触发付费墙。
+        isFirstLaunchSession = showOnboarding
         if CommandLine.arguments.contains("--onboarding") { showOnboarding = true }
         if CommandLine.arguments.contains(where: { $0.hasPrefix("--open=") }) { showOnboarding = false }
         if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--open=") }) {
@@ -322,6 +337,7 @@ public final class AppModel: ObservableObject {
         Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.revalidateLicenseOnline() }
         }
+        setTrashSentinel(enabled: Self.trashSentinelEnabled)
         refreshMetrics()
         NotificationCenter.default.addObserver(forName: .xicoDidClean, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refreshMetrics() }
@@ -583,10 +599,58 @@ public final class AppModel: ObservableObject {
         env.permissions.openFullDiskAccessSettings()
     }
 
+    /// 真实首启会话标记（init 捕获，一次性消费）。
+    private var isFirstLaunchSession = false
+
+    // MARK: 废纸篓哨兵（docs/14 P4）
+
+    private var trashSentinel: TrashSentinel?
+
+    /// 「删除 App 时提示残留」开关（默认开；设置页可关）。
+    static var trashSentinelEnabled: Bool {
+        UserDefaults.standard.object(forKey: "xico.sentinel.enabled") == nil
+            ? true : UserDefaults.standard.bool(forKey: "xico.sentinel.enabled")
+    }
+
+    /// 启停废纸篓哨兵。检测到 .app 入废纸篓且本机留有残留 → 系统通知（点击直达卸载器，
+    /// 路由在 AppDelegate 的通知代理里，按 identifier 前缀 xico.sentinel. 识别）。
+    public func setTrashSentinel(enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "xico.sentinel.enabled")
+        if enabled {
+            guard trashSentinel == nil else { return }
+            let sentinel = TrashSentinel(fs: env.fs) { finding in
+                Notifier.notifySentinel(appName: finding.appName,
+                                        count: finding.leftoverCount,
+                                        bytes: finding.leftoverBytes.formattedBytes,
+                                        bundleID: finding.bundleID)
+            }
+            sentinel.start()
+            trashSentinel = sentinel
+        } else {
+            trashSentinel?.stop()
+            trashSentinel = nil
+        }
+    }
+
     public func completeOnboarding() {
         UserDefaults.standard.set(true, forKey: "xico.onboarded")
         withAnimation(XMotion.settle) { showOnboarding = false }
         refreshPermissions()
+        // 首启付费墙（docs/14 P2）：引导结束即展示定价页——含「先试用 15 天」逃逸按钮，
+        // 不做订阅压迫；已持证（如企业预激活/重装导入）不打扰。仅真实首启触发一次。
+        if isFirstLaunchSession {
+            isFirstLaunchSession = false
+            let licensed: Bool = {
+                if case .licensed = licenseStatus?.state { return true }
+                return false
+            }()
+            if !licensed {
+                // 等 onboarding 淡出动画走完再升起 sheet，避免两层转场打架。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                    self?.showPricing = true
+                }
+            }
+        }
     }
 
     var showPermissionBanner: Bool { !hasFullDiskAccess && !permissionBannerDismissed }

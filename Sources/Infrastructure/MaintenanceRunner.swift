@@ -7,6 +7,7 @@ public enum UserMaintenanceTask: String, CaseIterable, Identifiable, Sendable {
     case flushFontCache
     case flushDNS
     case rebuildLaunchServices
+    case thinSnapshots
     case restartFinder
     case restartDock
 
@@ -18,6 +19,7 @@ public enum UserMaintenanceTask: String, CaseIterable, Identifiable, Sendable {
         case .flushFontCache: return "清理用户字体缓存"
         case .flushDNS: return "刷新 DNS 缓存"
         case .rebuildLaunchServices: return "重建「打开方式」数据库"
+        case .thinSnapshots: return "瘦身本地快照"
         case .restartFinder: return "重启访达"
         case .restartDock: return "重启程序坞"
         }
@@ -28,6 +30,7 @@ public enum UserMaintenanceTask: String, CaseIterable, Identifiable, Sendable {
         case .flushFontCache: return "atsutil，修复字体显示问题。"
         case .flushDNS: return "dscacheutil，解决网络解析异常。"
         case .rebuildLaunchServices: return "去除右键「打开方式」里的重复项。"
+        case .thinSnapshots: return "tmutil，请求系统立即回收 Time Machine 本地快照占用（删文件后空间不涨的头号原因）。"
         case .restartFinder: return "killall Finder，刷新文件浏览。"
         case .restartDock: return "killall Dock，刷新程序坞与触发角。"
         }
@@ -38,6 +41,7 @@ public enum UserMaintenanceTask: String, CaseIterable, Identifiable, Sendable {
         case .flushFontCache: return "textformat"
         case .flushDNS: return "network"
         case .rebuildLaunchServices: return "arrow.triangle.2.circlepath"
+        case .thinSnapshots: return "clock.arrow.circlepath"
         case .restartFinder: return "macwindow"
         case .restartDock: return "dock.rectangle"
         }
@@ -50,6 +54,9 @@ public enum UserMaintenanceTask: String, CaseIterable, Identifiable, Sendable {
         case .rebuildLaunchServices:
             return ("/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister",
                     ["-kill", "-r", "-domain", "local", "-domain", "user"])
+        // 请求瘦身全部本地快照（purge 目标给到天文数字 = 尽量多回收；紧迫度 1 = 温和）。
+        // tmutil 以当前用户即可发起瘦身请求（实际回收由系统决定并如实回显）。
+        case .thinSnapshots: return ("/usr/bin/tmutil", ["thinlocalsnapshots", "/", "999999999999", "1"])
         case .restartFinder: return ("/usr/bin/killall", ["Finder"])
         case .restartDock: return ("/usr/bin/killall", ["Dock"])
         }
