@@ -41,6 +41,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        if CommandLine.arguments.contains("--webshots") {
+            renderWebShots()
+            NSApp.terminate(nil)
+            return
+        }
         if CommandLine.arguments.contains("--menubar") {
             renderMenuBar()
             NSApp.terminate(nil)

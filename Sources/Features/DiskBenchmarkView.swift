@@ -134,33 +134,63 @@ public struct DiskBenchmarkView: View {
     @Environment(\.dismiss) private var dismiss
     /// true = 侧边栏独立功能页（自适应尺寸、无关闭按钮）；false = 弹出 sheet。
     private let standalone: Bool
+    /// 官网截图用：进入即注入拟真完成结果，展示专业指标与视频适配表。
+    private let demo: Bool
 
     public init(device: String, standalone: Bool = false) {
         _vm = StateObject(wrappedValue: DiskBenchmarkViewModel(device: device))
         self.standalone = standalone
+        self.demo = false
     }
 
+    #if DEBUG
+    /// 官网截图专用构造：预置拟真测速结果（Apple Silicon 内置盘量级）。
+    public init(demoDevice: String) {
+        _vm = StateObject(wrappedValue: DiskBenchmarkViewModel(device: demoDevice))
+        self.standalone = true
+        self.demo = true
+    }
+    #endif
+
     public var body: some View {
-        if standalone { pageBody } else { sheetBody }
+        Group {
+            if standalone { pageBody } else { sheetBody }
+        }
+        #if DEBUG
+        .onAppear { if demo { vm.loadDemo() } }
+        #endif
     }
 
     /// 独立功能页：与其它页面同语言的页头 + 居中大仪表 + 专业指标矩阵。
     private var pageBody: some View {
         VStack(spacing: 0) {
             XHeaderBar(title: xLoc("磁盘测速"), subtitle: vm.targetVolumeName ?? vm.device)
-            ScrollView {
+            if demo {
+                // 官网离屏截图（ImageRenderer 画不出 ScrollView 内容）：非滚动海报态，聚焦专业矩阵。
                 VStack(spacing: XSpacing.l) {
-                    volumeRow
-                    gauges(size: 220)
+                    gauges(size: 200)
                     statusRow
                     proMetricsSection
                     videoFitSection
-                    Divider().overlay(XColor.hairline)
-                    historySection
                 }
-                .frame(maxWidth: 760)
+                .frame(maxWidth: 820)
                 .padding(XSpacing.xl)
                 .frame(maxWidth: .infinity)
+            } else {
+                ScrollView {
+                    VStack(spacing: XSpacing.l) {
+                        volumeRow
+                        gauges(size: 220)
+                        statusRow
+                        proMetricsSection
+                        videoFitSection
+                        Divider().overlay(XColor.hairline)
+                        historySection
+                    }
+                    .frame(maxWidth: 760)
+                    .padding(XSpacing.xl)
+                    .frame(maxWidth: .infinity)
+                }
             }
         }
     }
@@ -534,3 +564,23 @@ public struct DiskBenchmarkView: View {
         return f
     }()
 }
+
+#if DEBUG
+extension DiskBenchmarkViewModel {
+    /// 官网截图用：注入拟真的完整测速结果（M-系列内置盘量级 + RND4K 矩阵）。
+    func loadDemo() {
+        var r = DiskBenchmarkResult(date: Date(), readMBps: 3326, writeMBps: 2652, device: device)
+        r.burstWriteMBps = 2547
+        r.flushSeconds = 0.12
+        r.fileBytes = Int64(10) * 1_073_741_824
+        r.rnd4kReadIOPS = 14_884; r.rnd4kReadAvgUS = 66; r.rnd4kReadP99US = 97
+        r.rnd4kWriteIOPS = 9_220; r.rnd4kWriteAvgUS = 107
+        r.rnd4kQD32ReadIOPS = 169_861; r.rnd4kQD32WriteIOPS = 22_955
+        readMBps = r.readMBps
+        writeMBps = r.writeMBps
+        lastResult = r
+        history = [r]
+        phase = .done(r)
+    }
+}
+#endif

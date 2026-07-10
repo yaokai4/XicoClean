@@ -20,21 +20,33 @@ public struct MenuBarSettingsView: View {
     /// 展开逐项详情的条目（同一时间只展开一个——渐进披露，防设置迷宫）。
     @State private var mbExpanded: String?
 
-    public init(model: AppModel) { self.model = model }
+    /// true = 官网离屏截图（ImageRenderer 画不出 ScrollView 内容）：非滚动海报态。
+    private let poster: Bool
+
+    public init(model: AppModel) { self.model = model; self.poster = false }
+    #if DEBUG
+    public init(model: AppModel, poster: Bool) { self.model = model; self.poster = poster }
+    #endif
 
     public var body: some View {
         VStack(spacing: 0) {
             XHeaderBar(title: xLoc("状态栏"), subtitle: xLoc("菜单栏样式、排序与刷新"))
-            ScrollView {
-                VStack(spacing: XSpacing.m) {
-                    presetsCard
-                    itemsCard
-                    globalCard
+            if poster {
+                cards.padding(XSpacing.xl).frame(maxWidth: 720).frame(maxWidth: .infinity)
+                Spacer(minLength: 0)
+            } else {
+                ScrollView {
+                    cards.padding(XSpacing.xl).frame(maxWidth: 720).frame(maxWidth: .infinity)
                 }
-                .padding(XSpacing.xl)
-                .frame(maxWidth: 720)
-                .frame(maxWidth: .infinity)
             }
+        }
+    }
+
+    private var cards: some View {
+        VStack(spacing: XSpacing.m) {
+            presetsCard
+            itemsCard
+            globalCard
         }
     }
 

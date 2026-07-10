@@ -489,16 +489,64 @@ public final class SmartScanHubViewModel: ObservableObject {
         rescan(.duplicates)
     }
     public var duplicatesRootURL: URL { duplicatesRoot.url }
+
+    #if DEBUG
+    /// 官网截图用：注入拟真的已完成扫描结果（六类目全 done + 账本），无需真实扫描即可展示结果态。
+    public func loadDemoResults() {
+        func item(_ name: String, _ mb: Double, _ safety: SafetyLevel = .safe, selected: Bool? = nil) -> CleanableItem {
+            CleanableItem(url: URL(fileURLWithPath: "/demo/\(name)"), displayName: name,
+                          detail: "~/Library/\(name)", size: Int64(mb * 1_048_576), safety: safety, isSelected: selected)
+        }
+        func group(_ id: String, _ title: String, _ icon: String, _ safety: SafetyLevel, _ items: [CleanableItem]) -> ScanResultGroup {
+            ScanResultGroup(id: id, title: title, systemImage: icon, safety: safety, items: items)
+        }
+        var demo: [SmartCategory: CategoryState] = [:]
+        demo[.junk] = CategoryState(status: .done, groups: [
+            group("user-caches", "应用缓存", "shippingbox", .safe,
+                  [item("com.apple.Safari", 842), item("Google", 512), item("Slack", 366), item("Spotify", 214)]),
+            group("developer-junk", "开发者残余", "hammer", .safe,
+                  [item("DerivedData", 6_400), item("CoreSimulator", 3_100)]),
+        ], included: true)
+        demo[.trash] = CategoryState(status: .done, groups: [
+            group("trash", "废纸篓", "trash.circle", .safe, [item("old-build.app", 3_400), item("archive.zip", 1_240)]),
+        ], included: true)
+        demo[.threats] = CategoryState(status: .done, groups: [
+            group("suspicious", "可疑启动项", "shield.lefthalf.filled", .risky,
+                  [item("com.genieo.agent.plist", 0.02, .risky, selected: false)]),
+        ], included: true)
+        demo[.duplicates] = CategoryState(status: .done, groups: [
+            group("dup", "重复文件", "doc.on.doc", .caution, [item("IMG_2043.mov", 1_820), item("dataset.csv", 640)]),
+        ], included: true)
+        demo[.similarImages] = CategoryState(status: .done, groups: [
+            group("sim", "相似图片", "photo.on.rectangle.angled", .caution, [item("Photos Library", 2_310)]),
+        ], included: true)
+        demo[.largeFiles] = CategoryState(status: .done, groups: [
+            group("large", "大文件与旧文件", "doc.viewfinder", .caution,
+                  [item("ubuntu.iso", 3_600, .caution, selected: false), item("recording.mov", 6_800, .caution, selected: false)]),
+        ], included: true)
+        states = demo
+        ledger = SpaceLedger(purgeableBytes: Int64(4.6 * 1_073_741_824), snapshotCount: 3,
+                             snapshotNames: ["com.apple.TimeMachine.2026-07-11-054512.local"])
+        phase = .active
+    }
+    #endif
 }
 
 // MARK: - 中枢活动视图（tile 网格 / Review 下钻 / 底部行动条）
 
-struct SmartScanHubActiveView: View {
+public struct SmartScanHubActiveView: View {
     @ObservedObject var hub: SmartScanHubViewModel
     @State private var confirmClean = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// true = 官网离屏截图（ImageRenderer 画不出 ScrollView 内容，故海报态用非滚动网格）。
+    var poster = false
 
-    var body: some View {
+    public init(hub: SmartScanHubViewModel) { self.hub = hub }
+    #if DEBUG
+    public init(hub: SmartScanHubViewModel, poster: Bool) { self.hub = hub; self.poster = poster }
+    #endif
+
+    public var body: some View {
         Group {
             if let reviewing = hub.reviewing {
                 CategoryReviewView(hub: hub, category: reviewing)
@@ -531,17 +579,24 @@ struct SmartScanHubActiveView: View {
             if let warning = warningText {
                 warningBanner(warning)
             }
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: XSpacing.m)],
-                          spacing: XSpacing.m) {
-                    ForEach(Array(SmartCategory.allCases.enumerated()), id: \.element) { index, category in
-                        CategoryTile(hub: hub, category: category, index: index)
-                    }
-                }
-                .padding(XSpacing.xl)
+            if poster {
+                grid   // 非滚动（离屏截图）
+                Spacer(minLength: 0)
+            } else {
+                ScrollView { grid }
             }
             actionBar
         }
+    }
+
+    private var grid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: XSpacing.m)],
+                  spacing: XSpacing.m) {
+            ForEach(Array(SmartCategory.allCases.enumerated()), id: \.element) { index, category in
+                CategoryTile(hub: hub, category: category, index: index)
+            }
+        }
+        .padding(XSpacing.xl)
     }
 
     private var header: some View {
