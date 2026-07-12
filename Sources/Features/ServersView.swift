@@ -61,10 +61,14 @@ public struct ServersView: View {
                 }
             }
             Divider().opacity(0.25)
-            HStack(spacing: 0) {
-                hostRail.frame(width: 258)
-                Divider().opacity(0.25)
-                detail.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if vm.hosts.isEmpty {
+                emptyOnboarding
+            } else {
+                HStack(spacing: 0) {
+                    hostRail.frame(width: 264)
+                    Divider().opacity(0.25)
+                    detail.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .sheet(isPresented: $showingEditor) {
@@ -79,34 +83,79 @@ public struct ServersView: View {
         .xToast($vm.toast)
     }
 
+    // MARK: 空态引导（无主机时全宽居中，不再是空侧栏 + 空面板的丑分屏）
+
+    private var emptyOnboarding: some View {
+        VStack(spacing: XSpacing.l) {
+            Spacer()
+            ZStack {
+                Circle().fill(XColor.brand.opacity(0.10)).frame(width: 140, height: 140)
+                Circle().fill(XColor.brandGradient).frame(width: 96, height: 96)
+                    .shadow(color: XColor.brand.opacity(0.35), radius: 22, y: 10)
+                Image(systemName: "server.rack").font(.system(size: 42, weight: .medium)).foregroundStyle(.white)
+            }
+            VStack(spacing: XSpacing.s) {
+                Text(xLoc("连接你的第一台服务器")).font(XFont.title).foregroundStyle(XColor.textPrimary)
+                Text(xLoc("用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。"))
+                    .font(XFont.body).foregroundStyle(XColor.textSecondary)
+                    .multilineTextAlignment(.center).frame(maxWidth: 440).lineSpacing(3)
+            }
+            HStack(spacing: XSpacing.s) {
+                featureChip("waveform.path.ecg", xLoc("实时监控"))
+                featureChip("apple.terminal", xLoc("终端"))
+                featureChip("folder", xLoc("SFTP"))
+                featureChip("bell.badge", xLoc("告警"))
+                featureChip("arrow.left.arrow.right", xLoc("端口转发"))
+            }
+            .padding(.top, XSpacing.xs)
+            HStack(spacing: XSpacing.m) {
+                Button { startAdd() } label: { Label(xLoc("添加主机"), systemImage: "plus") }
+                    .buttonStyle(XPrimaryButtonStyle())
+                Button { vm.importSSHConfig() } label: { Label(xLoc("导入 ~/.ssh/config"), systemImage: "square.and.arrow.down") }
+                    .buttonStyle(XSecondaryButtonStyle())
+            }
+            .padding(.top, XSpacing.s)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func featureChip(_ icon: String, _ label: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.system(size: 11))
+            Text(label).font(XFont.micro)
+        }
+        .foregroundStyle(XColor.textSecondary)
+        .padding(.horizontal, XSpacing.m).padding(.vertical, 7)
+        .background(XColor.surfaceAlt.opacity(0.7), in: Capsule())
+        .overlay(Capsule().strokeBorder(XColor.border, lineWidth: 1))
+    }
+
     // MARK: 主机栏
 
     private var hostRail: some View {
-        VStack(spacing: 0) {
-            if vm.hosts.isEmpty {
-                Spacer()
-                Text(xLoc("暂无主机")).font(XFont.caption).foregroundStyle(XColor.textTertiary)
-                Spacer()
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: XSpacing.s) {
-                        ForEach(vm.hosts) { host in
-                            HostRailRow(host: host,
-                                        state: engine.state(for: host.id),
-                                        snapshot: engine.snapshot(for: host.id),
-                                        selected: vm.selectedHostID == host.id)
-                                .contentShape(Rectangle())
-                                .onTapGesture { vm.selectedHostID = host.id }
-                                .contextMenu {
-                                    Button(xLoc("编辑")) { startEdit(host) }
-                                    Button(xLoc("删除"), role: .destructive) { vm.deleteHost(host.id) }
-                                }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: XSpacing.s) {
+                Text(xLocF("主机 · %d", vm.hosts.count))
+                    .font(XFont.micro).tracking(0.6).foregroundStyle(XColor.textTertiary)
+                    .padding(.horizontal, XSpacing.xs).padding(.top, XSpacing.xs)
+                ForEach(vm.hosts) { host in
+                    HostRailRow(host: host,
+                                state: engine.state(for: host.id),
+                                snapshot: engine.snapshot(for: host.id),
+                                selected: vm.selectedHostID == host.id)
+                        .contentShape(Rectangle())
+                        .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { vm.selectedHostID = host.id } }
+                        .contextMenu {
+                            Button { tunnelsHost = host } label: { Label(xLoc("端口转发…"), systemImage: "arrow.left.arrow.right") }
+                            Button(xLoc("编辑")) { startEdit(host) }
+                            Button(xLoc("删除"), role: .destructive) { vm.deleteHost(host.id) }
                         }
-                    }
-                    .padding(XSpacing.m)
                 }
             }
+            .padding(XSpacing.m)
         }
+        .background(XColor.surfaceAlt.opacity(0.35))
     }
 
     // MARK: 详情
@@ -214,33 +263,58 @@ private struct HostRailRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: XSpacing.s) {
             HStack(spacing: XSpacing.s) {
-                Circle().fill(state.dotColor).frame(width: 8, height: 8)
-                    .shadow(color: state.isLive ? state.dotColor.opacity(0.6) : .clear, radius: 3)
-                Text(host.name).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary).lineLimit(1)
+                // 渐变图标 + 右下状态点徽标
+                ZStack(alignment: .bottomTrailing) {
+                    XIconTile(systemImage: host.symbol, colors: ServerPalette.colors(host.colorIndex), size: 30)
+                    Circle().fill(state.dotColor).frame(width: 9, height: 9)
+                        .overlay(Circle().strokeBorder(selected ? XColor.surfaceHover : XColor.surface, lineWidth: 2))
+                        .shadow(color: state.isLive ? state.dotColor.opacity(0.7) : .clear, radius: 3)
+                        .offset(x: 3, y: 3)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(host.name).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary).lineLimit(1)
+                    Text(host.endpointLabel).font(XFont.captionMono).foregroundStyle(XColor.textTertiary).lineLimit(1)
+                }
                 Spacer(minLength: 0)
             }
-            Text(host.endpointLabel).font(XFont.captionMono).foregroundStyle(XColor.textTertiary).lineLimit(1)
             if let s = snapshot, state.isLive {
-                HStack(spacing: XSpacing.m) {
-                    miniStat(xLoc("处理器"), SrvFmt.pct(s.cpuUsage), XColor.metricCPU.first ?? XColor.brand)
-                    miniStat(xLoc("内存"), SrvFmt.pct(s.memUsedFraction), XColor.metricMemory.first ?? XColor.brand)
+                HStack(spacing: XSpacing.s) {
+                    miniBar(xLoc("处理器"), s.cpuUsage, XColor.metricCPU)
+                    miniBar(xLoc("内存"), s.memUsedFraction, XColor.metricMemory)
                 }
+                .padding(.top, 1)
             } else if let reason = state.failureReason {
                 Text(reason).font(XFont.micro).foregroundStyle(XColor.danger).lineLimit(2)
+            } else if state.isBusy {
+                HStack(spacing: 5) { XSpinner(size: 10); Text(xLoc("连接中")).font(XFont.micro).foregroundStyle(XColor.textTertiary) }
             }
         }
         .padding(XSpacing.m)
-        .background(selected ? XColor.surfaceHover : XColor.surface, in: RoundedRectangle(cornerRadius: XRadius.card, style: .continuous))
+        .background(selected ? XColor.surface : XColor.surface.opacity(0.55),
+                    in: RoundedRectangle(cornerRadius: XRadius.card, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
-                .strokeBorder(selected ? XColor.brand.opacity(0.5) : XColor.border, lineWidth: selected ? 1.5 : 1)
+                .strokeBorder(selected ? AnyShapeStyle(XColor.brand.opacity(0.55)) : AnyShapeStyle(XColor.border.opacity(0.7)),
+                              lineWidth: selected ? 1.5 : 1)
         )
+        .shadow(color: selected ? XColor.brand.opacity(0.12) : .clear, radius: 8, y: 3)
     }
 
-    private func miniStat(_ label: String, _ value: String, _ color: Color) -> some View {
-        HStack(spacing: 4) {
-            Text(label).font(XFont.micro).foregroundStyle(XColor.textTertiary)
-            Text(value).font(XFont.microMono).foregroundStyle(color)
+    private func miniBar(_ label: String, _ frac: Double, _ colors: [Color]) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 3) {
+                Text(label).font(.system(size: 8, weight: .semibold)).foregroundStyle(XColor.textTertiary)
+                Spacer(minLength: 2)
+                Text("\(Int((max(0, min(1, frac))) * 100))%")
+                    .font(.system(size: 8.5, weight: .bold, design: .rounded)).foregroundStyle(colors.first ?? XColor.brand)
+            }
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(XColor.surfaceAlt)
+                    Capsule().fill(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(3, g.size.width * max(0, min(1, frac))))
+                }
+            }.frame(height: 4)
         }
     }
 }

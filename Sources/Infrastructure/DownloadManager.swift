@@ -95,10 +95,20 @@ public final class DownloadManager: ObservableObject {
         }
     }
 
+    /// 组件安装可视状态（修复「点补齐组件无反应」——原来 try? 吞错、无 loading）。
+    @Published public var componentInstall: ComponentInstall = .idle
+
     /// 单独补齐合并/音频组件（ffmpeg）。
     public func installMergeComponent() {
+        if componentInstall.isInstalling { return }
+        componentInstall = .installing(xLoc("合并 / 音频组件"))
         Task {
-            try? await installer.installFFmpeg()
+            do {
+                try await installer.installFFmpeg()
+                componentInstall = .idle
+            } catch {
+                componentInstall = .failed((error as? LocalizedError)?.errorDescription ?? "\(error)")
+            }
             refreshEngineStatus()
         }
     }
@@ -281,8 +291,15 @@ public final class DownloadManager: ObservableObject {
     // 加速组件（aria2）就绪状态 + 安装
     @Published public var accelReady: Bool = EngineInstaller.hasAria2
     public func installAccelComponent() {
+        if componentInstall.isInstalling { return }
+        componentInstall = .installing(xLoc("磁力 / 种子加速组件"))
         Task {
-            try? await installer.installAria2()
+            do {
+                try await installer.installAria2()
+                componentInstall = .idle
+            } catch {
+                componentInstall = .failed((error as? LocalizedError)?.errorDescription ?? "\(error)")
+            }
             accelReady = EngineInstaller.hasAria2
         }
     }

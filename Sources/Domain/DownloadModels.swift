@@ -181,6 +181,14 @@ public struct DownloadPreferences: Codable, Sendable, Equatable {
     }
 }
 
+/// 组件（ffmpeg / aria2）按需安装的可视状态——修复「点补齐组件无反应」。
+public enum ComponentInstall: Equatable, Sendable {
+    case idle
+    case installing(String)   // 组件名
+    case failed(String)       // 错误
+    public var isInstalling: Bool { if case .installing = self { return true }; return false }
+}
+
 /// 引擎（yt-dlp/ffmpeg）就绪状态。
 public enum DownloadEngineStatus: Sendable, Equatable {
     case notInstalled           // 未安装 yt-dlp

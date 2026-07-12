@@ -111,12 +111,21 @@ public struct DownloaderView: View {
             if !ffmpeg {
                 banner(icon: "checkmark.seal", tint: XColor.warning,
                        title: xLoc("媒体组件已就绪"),
-                       subtitle: xLoc("高画质合并 / 音频提取组件未就绪，部分格式受限。")) {
-                    Button { engine.installMergeComponent() } label: { Label(xLoc("补齐组件"), systemImage: "arrow.down.app") }
-                        .buttonStyle(XSecondaryButtonStyle())
+                       subtitle: mergeSubtitle) {
+                    if engine.componentInstall.isInstalling {
+                        HStack(spacing: 6) { XSpinner(size: 14); Text(xLoc("准备中…")).font(XFont.caption).foregroundStyle(XColor.textSecondary) }
+                    } else {
+                        Button { engine.installMergeComponent() } label: { Label(xLoc("补齐组件"), systemImage: "arrow.down.app") }
+                            .buttonStyle(XSecondaryButtonStyle())
+                    }
                 }
             }
         }
+    }
+
+    private var mergeSubtitle: String {
+        if case .failed(let msg) = engine.componentInstall { return msg }
+        return xLoc("高画质合并 / 音频提取组件未就绪，部分格式受限。")
     }
 
     private func banner<Trailing: View>(icon: String, tint: Color, title: String, subtitle: String,
@@ -212,10 +221,15 @@ private struct DownloaderPreferencesView: View {
                     toggle(xLoc("剪贴板自动捕获"), xLoc("复制视频链接时自动提示下载（Downie 同款）"), $engine.preferences.clipboardMonitor)
                     row(xLoc("磁力 / 种子加速组件")) {
                         if engine.accelReady {
-                            Text(xLoc("已就绪")).font(XFont.caption).foregroundStyle(XColor.success)
+                            Label(xLoc("已就绪"), systemImage: "checkmark.circle.fill").font(XFont.caption).foregroundStyle(XColor.success)
+                        } else if engine.componentInstall.isInstalling {
+                            HStack(spacing: 6) { XSpinner(size: 13); Text(xLoc("准备中…")).font(XFont.caption).foregroundStyle(XColor.textSecondary) }
                         } else {
                             Button(xLoc("一键准备")) { engine.installAccelComponent() }.buttonStyle(XSecondaryButtonStyle())
                         }
+                    }
+                    if case .failed(let msg) = engine.componentInstall {
+                        Text(msg).font(XFont.micro).foregroundStyle(XColor.danger)
                     }
                     row(xLoc("保存到")) {
                         HStack(spacing: XSpacing.s) {

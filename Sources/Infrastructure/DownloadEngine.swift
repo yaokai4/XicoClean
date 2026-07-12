@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CommonCrypto
+import Darwin
 import Domain
 import DesignSystem
 
@@ -103,6 +104,7 @@ public final class EngineInstaller: @unchecked Sendable {
         if FileManager.default.fileExists(atPath: dest.path) { try? FileManager.default.removeItem(at: dest) }
         try FileManager.default.moveItem(at: tmp, to: dest)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dest.path)
+        Self.clearQuarantine(dest)
         onProgress(1.0)
     }
 
@@ -135,6 +137,7 @@ public final class EngineInstaller: @unchecked Sendable {
             throw DownloadError.engine("媒体合并组件解压失败")
         }
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ff.path)
+        Self.clearQuarantine(ff)
     }
 
     /// 按需拉取静态 aria2c（tar.gz → tar 解压 → chmod）。best-effort。
@@ -176,12 +179,22 @@ public final class EngineInstaller: @unchecked Sendable {
             throw DownloadError.engine("加速组件解压失败——可改用 brew install aria2")
         }
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.path)
+        Self.clearQuarantine(target)
     }
 
     private func fetchString(_ urlString: String) async throws -> String {
         guard let url = URL(string: urlString) else { throw DownloadError.badURL }
         let (data, _) = try await URLSession.shared.data(from: url)
         return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    /// 去除 com.apple.quarantine——否则硬化运行时的 App 无法执行「下载来的」二进制（Gatekeeper 拦截），
+    /// 会表现为「装了却下载不动/无反应」。用 removexattr（无需再 spawn 进程）。
+    static func clearQuarantine(_ url: URL) {
+        url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return }
+            _ = removexattr(path, "com.apple.quarantine", 0)
+        }
     }
 
     static func sha256Hex(_ data: Data) -> String {
