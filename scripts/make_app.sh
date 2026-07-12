@@ -77,8 +77,9 @@ else
   echo "▶︎ 许可公钥已就绪：keyID=${LICKEYS%%:*}"
 fi
 
-# Universal Binary（arm64 + x86_64），让 Intel 与 Apple Silicon 都能运行
-ARCHS="--arch arm64 --arch x86_64"
+# Universal Binary（arm64 + x86_64），让 Intel 与 Apple Silicon 都能运行。
+# 可用 XICO_ARCHS 覆盖（如 macOS 26 Metal 工具链缺失导致 --arch 通用构建失败时，设 XICO_ARCHS="" 走原生 arm64）。
+ARCHS="${XICO_ARCHS---arch arm64 --arch x86_64}"
 echo "▶︎ swift build -c $CONFIG $ARCHS (Xico + XicoHelper, Universal)"
 swift build -c "$CONFIG" $ARCHS --product Xico
 swift build -c "$CONFIG" $ARCHS --product XicoHelper
