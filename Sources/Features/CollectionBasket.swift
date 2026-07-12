@@ -28,11 +28,28 @@ final class BasketModel: ObservableObject {
     private let deny: (URL) -> String?
     private let performTrash: ([DiskNode]) async -> (freed: Int64, failures: [String])
     private var countdownTask: Task<Void, Never>?
+    /// 应用内撤销（P0-f KILLER-2）：宿主注入 CleaningEngine.undo 通路；nil = 宿主不支持。
+    /// 返回用户可读结果文案（toast 展示）。
+    var performUndo: (() async -> String)?
+    @Published var undoing = false
 
     init(deny: @escaping (URL) -> String?,
          performTrash: @escaping ([DiskNode]) async -> (freed: Int64, failures: [String])) {
         self.deny = deny
         self.performTrash = performTrash
+    }
+
+    /// 庆祝页「撤销」：从废纸篓恢复整篮到原位。
+    func undoLast() {
+        guard let performUndo, !undoing else { return }
+        undoing = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let message = await performUndo()
+            self.undoing = false
+            withAnimation(XMotion.crossfade) { self.completedBytes = nil }
+            self.toast = message
+        }
     }
 
     var totalBytes: Int64 { items.reduce(0) { $0 + $1.size } }
@@ -283,6 +300,9 @@ struct CollectionBasketBar: View {
                 accepted = true
             }
         }
+        // 拖拽吸附触感（docs/16 P0-1 收尾）：文件落进篮那一下 .alignment——收口在 dropURLs
+        // 而非 add()，右键/按钮加入不震（触感只属于「拖拽对准」这个物理动作）。
+        if accepted { XHaptic.perform(.alignment) }
         return accepted
     }
 }
@@ -303,6 +323,20 @@ struct BasketCompletionHost: View {
                         detail: completionDetail(freed),
                         doneTitle: xLoc("完成"),
                         onDone: { withAnimation(XMotion.crossfade) { basket.completedBytes = nil } })
+                }
+                // 一键撤销（KILLER-2）：删完还能整篮回原位——DaisyDisk 永久删除结构上做不到。
+                .overlay(alignment: .bottomTrailing) {
+                    if basket.performUndo != nil {
+                        Button {
+                            basket.undoLast()
+                        } label: {
+                            Label(basket.undoing ? xLoc("恢复中…") : xLoc("撤销（恢复到原位）"),
+                                  systemImage: "arrow.uturn.backward")
+                        }
+                        .buttonStyle(XSecondaryButtonStyle(compact: true))
+                        .disabled(basket.undoing)
+                        .padding(XSpacing.xl)
+                    }
                 }
                 .transition(.opacity)
             }

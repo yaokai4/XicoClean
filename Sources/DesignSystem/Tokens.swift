@@ -46,6 +46,11 @@ public enum XColor {
     public static var netDown: Color { ring(3) }
     public static var netUp: Color   { ring(0) }
 
+    /// 菜单栏 GPU / 磁盘 专属色（5 指标挤 4 槽 ring 的补位，docs/15 §1.5）。
+    /// 主题未定义时回退旧硬编码行为（GPU 品红 / 磁盘琥珀），旧六套主题外观零回归。
+    public static var menuGPU: Color  { XThemeStore.shared.current.menuGPU  ?? accentPink }
+    public static var menuDisk: Color { XThemeStore.shared.current.menuDisk ?? warning }
+
     // 内存明细分类色：3 档主题色阶 + 语义暖橙（压缩=有压力）+ 中性（可用），互相可辨且随主题走。
     public static var memApp: Color        { ring(2) }
     public static var memWired: Color      { ring(0) }
@@ -334,6 +339,9 @@ public enum XMotion {
     public static let snappy    = Animation.spring(response: 0.30, dampingFraction: 0.72)
     public static let settle    = Animation.spring(response: 0.50, dampingFraction: 0.82)
     public static let celebrate = Animation.spring(response: 0.55, dampingFraction: 0.60)
+    /// 招牌时刻的落定手感（docs/16）：0.55 阻尼让主数字/对勾有**两次可感余荡**——
+    /// 「高级弹性」与「廉价弹跳」的分界（iOS .bouncy 偏玩具感；此参数是系统 sheet 弹出的手感区间）。
+    public static let celebrateSoft = Animation.spring(response: 0.62, dampingFraction: 0.55)
     public static let gauge     = Animation.easeInOut(duration: 0.50)
     public static let crossfade = Animation.easeInOut(duration: 0.30)
     public static let hover     = Animation.easeOut(duration: 0.12)
@@ -348,5 +356,12 @@ public enum XTransition {
     public static var standard: AnyTransition { .opacity.combined(with: .offset(y: 8)) }
     public static func stagger(_ index: Int, base: Animation = XMotion.settle) -> Animation {
         base.delay(Double(index) * 0.05)
+    }
+
+    /// 自适应交错（docs/16）：总编排封顶 0.30s——交错的价值在「一眼扫到有序」，
+    /// 超过 ~0.4s 就变成「等它排队」。50 行长列表不再累积到 2.5s 拖沓。
+    public static func stagger(_ index: Int, of count: Int, base: Animation = XMotion.settle) -> Animation {
+        let step = min(0.05, 0.30 / Double(max(count, 1)))
+        return base.delay(Double(index) * step)
     }
 }

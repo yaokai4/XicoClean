@@ -123,8 +123,20 @@ public final class HardwareProfileService: @unchecked Sendable {
     private var cachedProfile: HardwareProfile?
     private var cachedProfilerJSON: [String: Any]?
     private var cachedClusters: [Bool]?
+    /// GPU 核数是恒量：解出一次即永久缓存，避免每帧详情采样都遍历 profiler 字典（2026-07 卡死修复）。
+    private var cachedGPUCores: Int?? = nil
 
     public init() {}
+
+    /// 后台预热 system_profiler 缓存（2026-07 卡死修复）：首次 storageHealth()/gpu() 会触发一次
+    /// system_profiler 子进程（冷启动阻塞 1–3 秒）。在 App 空闲的启动时机后台跑一遍，把这次阻塞
+    /// 从「用户点开监视/面板」的关键路径挪走——用户点开时缓存已热，详情采样稳定在毫秒级。
+    /// 幂等：底层 hardwareProfilerData() 有双检锁，重复调用至多跑一次子进程。
+    public func prewarmProfiler() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            _ = self?.hardwareProfilerData()
+        }
+    }
 
     // MARK: 每逻辑 CPU 的簇类型（性能核 / 能效核）
 
@@ -328,11 +340,19 @@ public final class HardwareProfileService: @unchecked Sendable {
     }
 
     private func gpuCoreCount() -> Int? {
-        guard let displays = hardwareProfilerData()["SPDisplaysDataType"] as? [[String: Any]] else { return nil }
-        for d in displays {
-            if let cores = d["sppci_cores"] as? String, let n = Int(cores) { return n }
+        // 恒量缓存（2026-07 卡死修复）：GPU 核数不会变，解出一次即永久命中——避免每帧 gpu() 详情
+        // 采样都重走 profiler 字典遍历（且冷启动首帧会触发 system_profiler 阻塞）。
+        lock.lock()
+        if let cached = cachedGPUCores { lock.unlock(); return cached }
+        lock.unlock()
+        var result: Int? = nil
+        if let displays = hardwareProfilerData()["SPDisplaysDataType"] as? [[String: Any]] {
+            for d in displays where result == nil {
+                if let cores = d["sppci_cores"] as? String, let n = Int(cores) { result = n }
+            }
         }
-        return nil
+        lock.lock(); cachedGPUCores = .some(result); lock.unlock()
+        return result
     }
 
     // MARK: 存储健康

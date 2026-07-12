@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Domain
 import Infrastructure
 import DesignSystem
 import Shared
@@ -144,15 +145,16 @@ public struct MenuMetricPanel: View {
             }
 
             if let s = model.liveSnapshot {
+                if let hint = insight(s) { insightBar(hint) }
                 content(s)
             } else {
                 XSpinner().frame(maxWidth: .infinity)
             }
 
             Divider().padding(.vertical, 2)
-            // 轻页脚（P9 减负）：面板专注监控数据本身——快捷操作只保留「打开监视器」文字链
-            // 与退出，不再在每个面板塞「释放内存/快速清理」大按钮。
-            HStack {
+            // 页脚 = 可执行入口（KILLER-1，三合一独占空档）：监控面板不止「看数字」，
+            // 磁盘 → 深潜空间透镜；内存/磁盘 → 一键清理。iStat 只能看不能做。
+            HStack(spacing: XSpacing.m) {
                 Button { openMonitor() } label: {
                     HStack(spacing: XSpacing.xs) {
                         Image(systemName: "waveform.path.ecg")
@@ -162,6 +164,28 @@ public struct MenuMetricPanel: View {
                     .foregroundStyle(XColor.brand)
                 }
                 .buttonStyle(.plain)
+                if metric == .disk {
+                    Button { openModule(.spaceLens) } label: {
+                        HStack(spacing: XSpacing.xs) {
+                            Image(systemName: "circle.hexagongrid.fill")
+                            Text(xLoc("空间透镜"))
+                        }
+                        .font(XFont.captionEmphasis)
+                        .foregroundStyle(XColor.brand)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if metric == .disk || metric == .memory {
+                    Button { openSmartScan() } label: {
+                        HStack(spacing: XSpacing.xs) {
+                            Image(systemName: "sparkles")
+                            Text(xLoc("一键清理"))
+                        }
+                        .font(XFont.captionEmphasis)
+                        .foregroundStyle(XColor.brand)
+                    }
+                    .buttonStyle(.plain)
+                }
                 Spacer()
                 Button { NSApp.terminate(nil) } label: {
                     Image(systemName: "power").font(XFont.captionEmphasis)
@@ -176,10 +200,61 @@ public struct MenuMetricPanel: View {
     }
 
     /// 打开主窗口的系统监视页。
-    private func openMonitor() {
+    private func openMonitor() { openModule(.monitor) }
+
+    /// 打开主窗口的任意模块（深链通用入口，KILLER-1）。
+    private func openModule(_ id: ModuleID) {
         NSApp.activate(ignoringOtherApps: true)
-        model.selection = .monitor
+        model.selection = id
         for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
+    }
+
+    // MARK: 轻量洞察（P2·AI 解读的规则内核：阈值 + 进程榜归因，严格基于真实数据，不编造）
+
+    /// 面板顶部的一句话洞察；无异常返回 nil（不占位、不制造焦虑）。
+    private func insight(_ s: SystemSnapshot) -> String? {
+        switch metric {
+        case .memory:
+            if s.memoryPressure >= 4 || (s.memoryPressurePercent ?? 0) >= 0.7 {
+                if let top = model.topByMemory.first {
+                    return xLocF("内存压力偏高——%@ 占 %@，建议关闭或一键清理", top.name, top.memoryBytes.formattedMemory)
+                }
+                return xLoc("内存压力偏高，建议关闭大内存应用")
+            }
+            if s.swapTotal > 0, s.swapUsedFraction >= 0.8 {
+                return xLoc("交换区接近占满，系统正频繁换页")
+            }
+        case .disk:
+            if s.diskTotal > 0, s.diskFree < 10 << 30 {
+                return xLocF("磁盘仅剩 %@——用空间透镜找出大文件", s.diskFree.formattedBytes)
+            }
+        case .cpu:
+            if s.cpuUsage >= 0.9, let top = model.topByCPU.first {
+                return xLocF("CPU 接近满载——%@ 占 %.0f%%", top.name, top.cpuPercent)
+            }
+        case .temperature:
+            if s.thermal == .critical || s.thermal == .serious {
+                return xLoc("机器偏热，系统可能已降频——检查高占用进程")
+            }
+        case .battery:
+            if let pct = s.batteryPercent, pct <= 15, !s.batteryCharging {
+                return xLoc("电量偏低，建议连接电源")
+            }
+        default: break
+        }
+        return nil
+    }
+
+    private func insightBar(_ text: String) -> some View {
+        HStack(spacing: XSpacing.s) {
+            Image(systemName: "lightbulb.fill").font(XFont.micro).foregroundStyle(XColor.warning)
+            Text(text).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, XSpacing.s).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: XRadius.chip, style: .continuous)
+            .fill(XColor.warning.opacity(0.10)))
     }
 
     /// 快速清理：打开主窗口、切到智能扫描模块，并立即开始扫描——让「快速清理」名副其实
@@ -400,9 +475,11 @@ public struct MenuMetricPanel: View {
             Text(xLocF("可用中含 %@ 缓存文件，系统随取随回收", s.memoryCached.formattedMemory))
                 .font(XFont.nano).foregroundStyle(XColor.textTertiary)
             Divider().padding(.vertical, 1)
+            // 换入/换出显示**速率**（P0 修复：此前是自开机累计字节，参考意义弱、数字吓人）。
+            // 首帧无前值 → "—"，绝不显示爆表累计值。
             HStack(spacing: XSpacing.l) {
-                metricChip(xLoc("换入分页"), s.pageIns.formattedBytes)
-                metricChip(xLoc("换出分页"), s.pageOuts.formattedBytes)
+                metricChip(xLoc("换入分页"), feed.pageInRate.map(\.formattedRate) ?? "—")
+                metricChip(xLoc("换出分页"), feed.pageOutRate.map(\.formattedRate) ?? "—")
                 Spacer(minLength: 0)
             }
             if s.swapTotal > 0 { swapBar(s) }
@@ -414,9 +491,9 @@ public struct MenuMetricPanel: View {
         let total = max(1.0, Double(s.memoryTotal))
         // 缓存不再画成「占用段」——缓存随取随回收，计入可用（iStat/活动监视器同口径）。
         return XSegmentBar(segments: [
-            .init(id: 0, fraction: Double(s.memoryApp) / total,        color: XColor.memApp),
-            .init(id: 1, fraction: Double(s.memoryWired) / total,      color: XColor.memWired),
-            .init(id: 2, fraction: Double(s.memoryCompressed) / total, color: XColor.memCompressed),
+            .init(id: "app", fraction: Double(s.memoryApp) / total,        color: XColor.memApp),
+            .init(id: "wired", fraction: Double(s.memoryWired) / total,      color: XColor.memWired),
+            .init(id: "comp", fraction: Double(s.memoryCompressed) / total, color: XColor.memCompressed),
         ], height: 9)
     }
 
@@ -782,6 +859,11 @@ public struct MenuMetricPanel: View {
                     VStack(alignment: .leading, spacing: XSpacing.s) {
                         XBadge(s.batteryCharging ? xLoc("充电中") : xLoc("使用电池"),
                                color: s.batteryCharging ? XColor.success : XColor.textSecondary)
+                        // 剩余时间估算（P1 追平 iStat）：系统尚在估算/外接电源时不显示。
+                        if let mins = s.batteryMinutesRemaining, mins > 0 {
+                            Text(xLocF("剩余约 %d 小时 %d 分", mins / 60, mins % 60))
+                                .font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
+                        }
                         Text(xLoc("循环次数 / 健康度见「硬件」页"))
                             .font(XFont.caption).foregroundStyle(XColor.textTertiary)
                         Button(xLoc("打开硬件页")) {

@@ -88,6 +88,12 @@ public final class MetricsFeed: ObservableObject {
     @Published public var storageVolumes: [StorageHealth] = []
     /// 分层历史（实时 / 10s 桶 / 60s 桶）——菜单栏面板折线的三挡时间窗数据源（P3·M4）。
     @Published public var rings = MetricRings()
+    /// 换入/换出**速率**（字节/秒，累计值差分；docs/15 P0：累计值自开机参考意义弱）。
+    /// nil = 尚无前帧可差分（首帧显示 "—"，绝不显示爆表累计值）。
+    @Published public var pageInRate: Double?
+    @Published public var pageOutRate: Double?
+    /// 电池剩余时间估算（分钟；nil = 无电池 / 外接电源 / 系统尚在估算）。
+    @Published public var batteryMinutesRemaining: Int?
 
     public init() {}
 }
@@ -101,6 +107,9 @@ public final class AppModel: ObservableObject {
     public let env: XicoEnvironment
 
     @Published public var selection: ModuleID? = .smartScan
+    /// ⌘K 命令面板开合（状态上提，终审 P1）：面板搜索框聚焦时 ⌘⏎/⌘Z 隐藏按钮必须解除挂载，
+    /// 否则输错想撤销输入的 ⌘Z 会被吞掉、甚至把刚清理的整批文件从废纸篓恢复并触发全量重扫。
+    @Published public var commandPaletteOpen = false
     @Published public var hasFullDiskAccess: Bool = false
     @Published public var permissionBannerDismissed: Bool = false {
         didSet { UserDefaults.standard.set(permissionBannerDismissed, forKey: "xico.fdaDismissed") }
@@ -172,6 +181,9 @@ public final class AppModel: ObservableObject {
     private let mbNetwork = NetworkInfoService()
     private var detailTick = 0
     private var lastMetricsAt: Date?
+    /// 换入/换出累计值的上一帧（速率差分用）。
+    private var lastPageIns: Int64?
+    private var lastPageOuts: Int64?
     // 阈值告警与历史落盘（随菜单栏采样一直运行，与 iStat 一致）
     @Published public var alertRules: [AlertRule] = []
     private let alertEvaluator = AlertEvaluator()
@@ -251,8 +263,9 @@ public final class AppModel: ObservableObject {
 
     /// 「重复文件」扫描位置（DuplicatesView 可更换文件夹）——缓存于此，跨 tab 保留所选目录与扫描结果。
     /// 内部可见即可（仅 Features 内的 DuplicatesView 消费；PathBox 为模块内部类型，不能对外 public）。
-    let duplicatesFolderBox = PathBox(
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads"))
+    // P0-g：默认根从单一 ~/Downloads 扩到家目录（扫描器会按 SafetyEngine 逐项校验、
+    // 深枚举自动跳过无权限区）；用户仍可在 DuplicatesView 换更窄的目录。
+    let duplicatesFolderBox = PathBox(FileManager.default.homeDirectoryForCurrentUser)
     private var duplicatesVM: ModuleSessionViewModel?
     /// 缓存的「重复文件」扫描会话：scanProvider 读取当前 duplicatesFolderBox.url，换文件夹后再扫即用新目录。
     var duplicatesSession: ModuleSessionViewModel {
@@ -434,8 +447,15 @@ public final class AppModel: ObservableObject {
             if dt > 0, dt < 30 {   // 跳过首帧与长睡眠后的异常间隔
                 feed.sessionDownBytes += Int64(s.netDownBytesPerSec * dt)
                 feed.sessionUpBytes += Int64(s.netUpBytesPerSec * dt)
+                // 换入/换出速率 = 累计值差分 ÷ 实测间隔（P0：面板不再显示自开机累计）。
+                if let lastIn = lastPageIns, let lastOut = lastPageOuts, s.pageIns >= lastIn, s.pageOuts >= lastOut {
+                    feed.pageInRate = Double(s.pageIns - lastIn) / dt
+                    feed.pageOutRate = Double(s.pageOuts - lastOut) / dt
+                }
             }
         }
+        lastPageIns = s.pageIns
+        lastPageOuts = s.pageOuts
         lastMetricsAt = now0
         // 进程榜仅在有消费者时采到（否则为 nil）——保留上帧，避免弹窗打开瞬间空表。
         if let byCPU = sample.topByCPU { feed.topByCPU = byCPU }
@@ -582,11 +602,27 @@ public final class AppModel: ObservableObject {
 
     public func startMetricsTimer() {
         timer?.invalidate()
+        // 预热 system_profiler（2026-07 卡死修复）：把首次 storageHealth()/gpu() 的 1–3 秒冷启动
+        // 阻塞从「用户点开监视/状态栏面板」的关键路径挪到启动空闲期后台跑掉，避免点开瞬间冻结。
+        hardwareProfiler.prewarmProfiler()
         let stored = UserDefaults.standard.double(forKey: "xico.mb.interval")
-        let interval = stored > 0 ? stored : 2.0   // 默认标准 2 秒
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        var interval = stored > 0 ? stored : 2.0   // 默认标准 2 秒
+        // 独立刷新率真驱动（P1）：某启用项设了比全局更快的刷新率 → 采样节拍提速到该项频率。
+        // 此前 updateImages 只能降频跳拍、无法超过全局节拍，「1 秒」设置形同虚设。
+        let d = UserDefaults.standard
+        for id in ["cpu", "memory", "network", "disk", "temp", "battery", "gpu", "combined"] {
+            let enabled = d.object(forKey: "xico.mb.\(id)") == nil
+                ? ["cpu", "memory", "network"].contains(id) : d.bool(forKey: "xico.mb.\(id)")
+            let itemInterval = d.double(forKey: "xico.mb.\(id).interval")
+            if enabled, itemInterval > 0 { interval = min(interval, itemInterval) }
+        }
+        // runloop `.common`（P0 修复）：默认 mode 下菜单跟踪/窗口实时缩放会挂起定时器，
+        // 图标停止刷新——in-app 引擎（MetricsEngine）早已用 .common，对齐之。
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshMetrics() }
         }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 
     /// 应用新的刷新频率（设置页「更新频率」），立即重启菜单栏采样定时器。

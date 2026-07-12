@@ -60,7 +60,8 @@ public struct DiskTreeScanner: Sendable {
         let node = await buildDir(target, depth: 0, ctx: ctx)
         let collapsed = collapse(node, parentSize: node.size)
         // 至此扫描相构建完成、定型：本函数返回后不再有任何后台任务改动此树（见 DiskNode 不变式）。
-        if !Task.isCancelled, let hidden = hiddenSpaceNode(for: target, scanned: node.size) {
+        if !Task.isCancelled,
+           let hidden = await hiddenSpaceNode(for: target, scanned: node.size, deniedDirs: ctx.deniedDirs) {
             return DiskNode(url: collapsed.url, name: collapsed.name, isDirectory: true,
                             size: collapsed.size + hidden.size,
                             children: collapsed.children + [hidden])
@@ -91,7 +92,7 @@ public struct DiskTreeScanner: Sendable {
             return DiskNode(url: url, name: url.lastPathComponent, isDirectory: true, size: 0)
         }
         let path = url.path
-        let entries = BulkDirectoryReader.read(path)
+        let entries = BulkDirectoryReader.read(path, onDenied: { ctx.noteDenied() })
 
         var children: [DiskNode] = []
         var dirEntries: [BulkDirEntry] = []
@@ -111,9 +112,10 @@ public struct DiskTreeScanner: Sendable {
                 }
             case .file, .symlink:
                 if entry.linkCount > 1 && !ctx.countFirstSighting(of: entry.fileID) { continue }
-                localBytes += entry.allocatedBytes
+                let bytes = ctx.effectiveBytes(of: entry)   // P0-c 克隆去重口径
+                localBytes += bytes
                 children.append(DiskNode(url: Self.resolvedChildURL(of: entry, in: url, isDirectory: false),
-                                         name: entry.name, isDirectory: false, size: entry.allocatedBytes))
+                                         name: entry.name, isDirectory: false, size: bytes))
             case .other:
                 break
             }
@@ -133,8 +135,12 @@ public struct DiskTreeScanner: Sendable {
                     if depth + 1 < self.parallelDepth {
                         node = await self.buildDir(childURL, depth: depth + 1, ctx: ctx)
                     } else {
+                        // 深层构建限流（P1-4）：浅层调度不持有信号量、深层独占递归才持有——
+                        // 无嵌套持有故无死锁；并发上限 = 2×核数，IO 重叠够用又不挤爆线程池。
+                        await ctx.buildSemaphore.wait()
                         node = await Self.build(childURL, depth: depth + 1, minBytes: minBytes,
                                                 maxDepth: maxDepth, ctx: ctx)
+                        await ctx.buildSemaphore.signal()
                     }
                     if depth == 0 {
                         ctx.emit(message: entry.name)
@@ -160,7 +166,7 @@ public struct DiskTreeScanner: Sendable {
         let path = url.path
         var built: [DiskNode] = []
         var localBytes: Int64 = 0
-        for entry in BulkDirectoryReader.read(path) {
+        for entry in BulkDirectoryReader.read(path, onDenied: { ctx.noteDenied() }) {
             guard !shouldSkip(entry, parentPath: path) else { continue }
             switch entry.kind {
             case .directory:
@@ -179,9 +185,10 @@ public struct DiskTreeScanner: Sendable {
                 }
             case .file, .symlink:
                 if entry.linkCount > 1 && !ctx.countFirstSighting(of: entry.fileID) { continue }
-                localBytes += entry.allocatedBytes
+                let bytes = ctx.effectiveBytes(of: entry)   // P0-c 克隆去重口径
+                localBytes += bytes
                 built.append(DiskNode(url: resolvedChildURL(of: entry, in: url, isDirectory: false),
-                                      name: entry.name, isDirectory: false, size: entry.allocatedBytes))
+                                      name: entry.name, isDirectory: false, size: bytes))
             case .other:
                 break
             }
@@ -196,7 +203,7 @@ public struct DiskTreeScanner: Sendable {
         var total: Int64 = 0
         var localBytes: Int64 = 0
         var subdirs: [String] = []
-        for entry in BulkDirectoryReader.read(path) {
+        for entry in BulkDirectoryReader.read(path, onDenied: { ctx.noteDenied() }) {
             guard !shouldSkip(entry, parentPath: path) else { continue }
             switch entry.kind {
             case .directory:
@@ -210,7 +217,7 @@ public struct DiskTreeScanner: Sendable {
                 }
             case .file, .symlink:
                 if entry.linkCount > 1 && !ctx.countFirstSighting(of: entry.fileID) { continue }
-                localBytes += entry.allocatedBytes
+                localBytes += ctx.effectiveBytes(of: entry)   // P0-c 克隆去重口径
             case .other:
                 break
             }
@@ -291,29 +298,85 @@ public struct DiskTreeScanner: Sendable {
                         size: node.size, children: collapsedChildren)
     }
 
-    // MARK: - 隐藏空间（扫整卷时的诚实口径）
+    // MARK: - 隐藏空间（扫整卷时的诚实口径，P0-d 三本账拆分）
 
-    /// 卷已用量 − 可见总量 = 快照、无权限读取的系统区等「看得见用量、看不见明细」的部分。
+    /// 卷已用量 − 可见总量 = 快照/purgeable/无权限区等「看得见用量、看不见明细」的部分。
+    /// P0-d：从单块灰升级为**可展开账本**——
+    ///   · 可清除（purgeable）：真实 API 值（importantUsage 差），只解释不代删；
+    ///   · 本地快照：tmutil 枚举个数与名字；体积无特权拿不到，用「差额 − purgeable」诚实标注「≈」，
+    ///     可经透镜的 tmutil 独立通道删除（二次确认）；
+    ///   · 无权限读取区：deniedDirs>0 时列出，引导开启完全磁盘访问（体积并入快照段之外的残差）。
     /// 阈值（>1GB 且 >已用 2%）以下不展示——克隆/云占位造成的小误差不值得画上环。
-    private func hiddenSpaceNode(for root: URL, scanned: Int64) -> DiskNode? {
+    private func hiddenSpaceNode(for root: URL, scanned: Int64, deniedDirs: Int) async -> DiskNode? {
         guard (try? root.resourceValues(forKeys: [.isVolumeKey]))?.isVolume == true,
               let cap = fs.volumeCapacity(for: root), cap.total > 0 else { return nil }
         let used = cap.total - cap.available
         let delta = used - scanned
         guard delta > max(1 << 30, used / 50) else { return nil }
-        return DiskNode(url: root, name: "隐藏空间", isDirectory: false, size: delta, isAggregate: true)
+
+        let ledger = await SpaceLedger.collect(volume: root)
+        var children: [DiskNode] = []
+        var accounted: Int64 = 0
+        if let purgeable = ledger.purgeableBytes, purgeable > 0 {
+            let p = min(purgeable, delta)
+            children.append(DiskNode(url: root, name: "可清除（系统自管）", isDirectory: false,
+                                     size: p, isAggregate: true, ledgerKind: .purgeable))
+            accounted += p
+        }
+        let remainder = max(0, delta - accounted)
+        if let count = ledger.snapshotCount, count > 0 {
+            children.append(DiskNode(url: root, name: "本地快照 · \(count) 个", isDirectory: false,
+                                     size: remainder, isAggregate: true, ledgerKind: .snapshots))
+        } else if deniedDirs > 0 {
+            children.append(DiskNode(url: root, name: "无权限读取区 · \(deniedDirs) 处未读",
+                                     isDirectory: false, size: remainder,
+                                     isAggregate: true, ledgerKind: .unreadable))
+        } else if remainder > 0 {
+            children.append(DiskNode(url: root, name: "其他系统占用", isDirectory: false,
+                                     size: remainder, isAggregate: true))
+        }
+        guard !children.isEmpty else {
+            return DiskNode(url: root, name: "隐藏空间", isDirectory: false, size: delta, isAggregate: true)
+        }
+        return DiskNode(url: root, name: "隐藏空间", isDirectory: true, size: delta,
+                        children: children, isAggregate: true)
     }
 }
 
-/// 扫描全程共享的上下文：硬链接去重表 + 节流的进度上报。
+/// 简单异步信号量（P1-4 并发限流）：深层子树构建的并发上限，
+/// 防止几十个大目录同时深递归把线程池占满、反拖菜单栏采样。
+/// 只在「浅层调度不持有、深层构建才持有」的模式下使用——无嵌套持有，无死锁。
+actor AsyncSemaphore {
+    private var available: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    init(_ n: Int) { available = max(1, n) }
+    func wait() async {
+        if available > 0 { available -= 1; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func signal() {
+        if let w = waiters.first { waiters.removeFirst(); w.resume() }
+        else { available += 1 }
+    }
+}
+
+/// 扫描全程共享的上下文：硬链接/克隆去重表（分片锁）+ 节流的进度上报 + 未读区统计。
 /// `@unchecked Sendable` 安全前提：全部可变状态由内部锁串行化。
 private final class ScanContext: @unchecked Sendable {
     private let lock = NSLock()
-    private var seenHardLinks = Set<UInt64>()
+    /// 去重表分片（P1-5）：百万文件并发下单锁是热点——按 id 低位分 16 片，各片独立锁。
+    private static let shardCount = 16
+    private var linkShards = (0..<shardCount).map { _ in (lock: NSLock(), set: Set<UInt64>()) }
+    private var cloneShards = (0..<shardCount).map { _ in (lock: NSLock(), set: Set<UInt64>()) }
     private var bytes: Int64 = 0
     private var lastEmit: TimeInterval = 0
     private var dirsSinceYield = 0
+    /// 无权限而未读的目录数（P1-6）：>0 且缺 FDA 时结果页显式引导，不静默少算。
+    private let deniedLock = NSLock()
+    private var denied = 0
     private let progress: ProgressHandler
+    /// 深层构建并发限流（P1-4）。
+    let buildSemaphore: AsyncSemaphore
     /// 罕见病例回退（非法 UTF-8 名字的目录）：FileManager 慢路径整树计量。
     let fallbackDirSize: @Sendable (URL) -> Int64
 
@@ -321,14 +384,36 @@ private final class ScanContext: @unchecked Sendable {
          fallbackDirSize: @escaping @Sendable (URL) -> Int64) {
         self.progress = progress
         self.fallbackDirSize = fallbackDirSize
+        self.buildSemaphore = AsyncSemaphore(ProcessInfo.processInfo.activeProcessorCount * 2)
     }
 
     /// 硬链接去重：首见返回 true（计数），重见返回 false（跳过）。fileID 未知时保守计数。
     func countFirstSighting(of fileID: UInt64) -> Bool {
         guard fileID != 0 else { return true }
-        lock.lock(); defer { lock.unlock() }
-        return seenHardLinks.insert(fileID).inserted
+        let i = Int(fileID) & (Self.shardCount - 1)
+        linkShards[i].lock.lock(); defer { linkShards[i].lock.unlock() }
+        return linkShards[i].set.insert(fileID).inserted
     }
+
+    /// 文件的有效计量字节（P0-c 克隆去重·混合口径）：
+    /// - 无共享块（private == alloc 或无 CMNEXT 信息）→ 计全量物理占用；
+    /// - 有共享块（CoW 克隆家族成员）→ **家族首见计全量**（共享块恰好计一次），
+    ///   **再见只计独占字节**（删除它真实能释放的量）。
+    /// Σ = 精确物理占用：共享块一次 + 各成员独占——总量与卷已用对账，单文件数字也诚实。
+    func effectiveBytes(of entry: BulkDirEntry) -> Int64 {
+        guard let priv = entry.privateBytes, priv < entry.allocatedBytes, entry.cloneID != 0 else {
+            return entry.allocatedBytes
+        }
+        let i = Int(entry.cloneID) & (Self.shardCount - 1)
+        cloneShards[i].lock.lock()
+        let first = cloneShards[i].set.insert(entry.cloneID).inserted
+        cloneShards[i].lock.unlock()
+        return first ? entry.allocatedBytes : priv
+    }
+
+    /// 无权限目录 +1（BulkDirectoryReader onDenied 回调）。
+    func noteDenied() { deniedLock.lock(); denied += 1; deniedLock.unlock() }
+    var deniedDirs: Int { deniedLock.lock(); defer { deniedLock.unlock() }; return denied }
 
     /// 累加字节并节流上报进度（每 0.1s 至多一次，消息 = 当前目录路径）。
     /// 返回「该让出协作线程了」（每 128 个目录一次）——调用方随即 Task.yield()，

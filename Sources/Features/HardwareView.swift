@@ -29,6 +29,8 @@ final class HardwareViewModel: ObservableObject {
     // 网络接口档案（名称 / 类型 / IP / MAC / 速率）——超越 Sensei 的硬件页网络卡。
     @Published var interfaces: [NetworkInterfaceInfo] = []
     @Published var wifi: WiFiInfo?
+    /// 蓝牙外设电量（AirPods / 妙控键盘 / 鼠标等，对标 iStat）。空数组 = 无可读设备，整卡隐藏。
+    @Published var peripherals: [BluetoothPeripheral] = []
     // 系统热压力——档案页的「活」指标。CPU 实时频率（P/E 簇）改从共享 MetricsEngine 读取，
     // 不再由本 VM 各自跑一遍 ~90ms 阻塞的 DVFS 采样（消除硬件页与监视页的重复频率读，审计 P3）。
     @Published var thermal: ProcessInfo.ThermalState = .nominal
@@ -38,6 +40,8 @@ final class HardwareViewModel: ObservableObject {
     // 专属网络采样器：接口速率靠「上次采样」增量计算，与菜单栏/监视页共享同一实例会互相污染基线，
     // 故硬件页自持一份，速率读数独立稳定（名称/IP/MAC 本就无状态）。
     private let network = NetworkInfoService()
+    // 蓝牙外设电量读取（无状态 IORegistry 枚举，走 bgQueue 与其余健康采样同批）。
+    private let bluetooth = BluetoothBatteryReader()
     private let bgQueue = DispatchQueue(label: "app.xico.hardware", qos: .userInitiated)
     private var timer: Timer?
 
@@ -86,15 +90,16 @@ final class HardwareViewModel: ObservableObject {
         }
     }
 
-    /// 电池 / GPU / 温度 / 风扇 / 网络接口：轻量，2 秒刷新。
+    /// 电池 / GPU / 温度 / 风扇 / 网络接口 / 蓝牙外设：轻量，2 秒刷新。
     private func refreshHealth() {
-        bgQueue.async { [hw, sensors, network] in
+        bgQueue.async { [hw, sensors, network, bluetooth] in
             let battery = hw.battery()
             let gpu = hw.gpu()
             let temps = sensors.temperatures()
             let fans = sensors.fans()
             let ifaces = network.interfaces()
             let wifi = network.wifi()
+            let peripherals = bluetooth.peripherals()
             let thermal = ProcessInfo.processInfo.thermalState
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -104,6 +109,7 @@ final class HardwareViewModel: ObservableObject {
                 self.fans = fans
                 self.interfaces = ifaces
                 self.wifi = wifi
+                self.peripherals = peripherals
                 self.thermal = thermal
                 if let b = battery, abs(b.powerWatts) > 0.01 {
                     self.powerHistory.append(abs(b.powerWatts))
@@ -143,6 +149,9 @@ public struct HardwareView: View {
     // 引擎引用计数守卫：确保 retain/release 每视图各恰好一次——onAppear/onDisappear 可能因
     // SwiftUI 重建二次触发，无守卫会让计数漂移、采样器在视图消失后仍空转。
     @State private var didRetain = false
+    /// 传感器卡「其他」类是否展开为完整清单（默认收起前 8 个）。
+    @State private var showAllSensors = false
+    private let sensorOtherCap = 8
 
     public init(env: XicoEnvironment) {
         self.env = env
@@ -178,6 +187,8 @@ public struct HardwareView: View {
     private var pairedGrid: some View {
         var cards: [(String, AnyView)] = []
         if let b = vm.battery { cards.append(("battery", AnyView(batteryCard(b)))) }
+        // 外设电量：读得到才有这张卡（台式机无外设 / 未连蓝牙时整卡隐藏，绝不占位空卡）。
+        if !vm.peripherals.isEmpty { cards.append(("peripherals", AnyView(peripheralsCard))) }
         cards.append(("memory", AnyView(memoryCard)))
         cards.append(("storage", AnyView(storageCard)))
         cards.append(("thermal", AnyView(thermalCard)))
@@ -211,7 +222,7 @@ public struct HardwareView: View {
                             .frame(width: 64, height: 56)
                             .accessibilityHidden(true)
                     } else {
-                        XIconTile(systemImage: heroIcon, colors: XColor.brandGradientColors, size: 56)
+                        XIconTile(systemImage: heroIcon, colors: XColor.brandGradientColors, size: 56, flat: false)
                     }
                     VStack(alignment: .leading, spacing: 3) {
                         if let p = vm.profile {
@@ -458,6 +469,71 @@ public struct HardwareView: View {
         return (xLoc("电池健康正常，随循环增加会逐步衰减"), "battery.75", XColor.accentTeal)
     }
 
+    // MARK: 外设电量（蓝牙 HID：AirPods / 妙控键盘 / 鼠标 / 触控板，对标 iStat）
+
+    private var peripheralsCard: some View {
+        HardwareCard(icon: "wave.3.right.circle", title: xLoc("外设电量"),
+                     iconColors: [XColor.accentTeal, XColor.auroraViolet]) {
+            ForEach(vm.peripherals) { p in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: XSpacing.s) {
+                        Image(systemName: peripheralIcon(p.name)).font(XFont.callout)
+                            .foregroundStyle(XColor.accentTeal).frame(width: 18)
+                        Text(p.name).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: XSpacing.s)
+                        Text("\(p.batteryPercent)%").font(XFont.mono)
+                            .foregroundStyle(peripheralBatteryColor(p.batteryPercent))
+                            .contentTransition(.numericText())
+                    }
+                    // 电量条：绿 / 黄 / 红三段语义，与电池健康环同一颜色语言。
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(XColor.surfaceAlt)
+                            Capsule().fill(peripheralBatteryColor(p.batteryPercent))
+                                .frame(width: max(2, geo.size.width * Double(p.batteryPercent) / 100))
+                        }
+                    }
+                    .frame(height: 4)
+                }
+                .padding(.vertical, 2)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(p.name)
+                .accessibilityValue("\(xLoc("电量")) \(p.batteryPercent)%")
+            }
+            // 低电提醒：仅当真有设备 ≤ 20% 时出现（不对满电设备制造焦虑）。
+            if vm.peripherals.contains(where: { $0.batteryPercent <= 20 }) {
+                HStack(spacing: XSpacing.s) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(XFont.captionEmphasis).foregroundStyle(XColor.warning)
+                    Text(xLoc("有外设电量偏低，请及时充电")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    /// 按产品名推断 SF Symbol（推断不出用通用无线图标，绝不画错设备类型）。
+    private func peripheralIcon(_ name: String) -> String {
+        let n = name.lowercased()
+        if n.contains("airpods max") { return "airpodsmax" }
+        if n.contains("airpods pro") { return "airpodspro" }
+        if n.contains("airpods") { return "airpods" }
+        if n.contains("keyboard") || n.contains("键盘") { return "keyboard" }
+        if n.contains("mouse") || n.contains("鼠标") { return "computermouse" }
+        if n.contains("headphone") || n.contains("beats") || n.contains("耳机") { return "headphones" }
+        if n.contains("controller") || n.contains("dualsense") || n.contains("xbox") { return "gamecontroller" }
+        if n.contains("pencil") { return "pencil" }
+        return "wave.3.right.circle"
+    }
+
+    private func peripheralBatteryColor(_ percent: Int) -> Color {
+        if percent <= 20 { return XColor.danger }
+        if percent <= 40 { return XColor.warning }
+        return XColor.success
+    }
+
     // MARK: 存储
 
     private var storageCard: some View {
@@ -678,10 +754,10 @@ public struct HardwareView: View {
             if let snap = engine.snapshot {
                 let total = max(1, Double(snap.memoryTotal))
                 XSegmentBar(segments: [
-                    .init(id: 0, fraction: Double(snap.memoryApp) / total,        color: memColor.app),
-                    .init(id: 1, fraction: Double(snap.memoryWired) / total,       color: memColor.wired),
-                    .init(id: 2, fraction: Double(snap.memoryCompressed) / total,  color: memColor.compressed),
-                    .init(id: 3, fraction: Double(snap.memoryCached) / total,      color: memColor.cached),
+                    .init(id: "app", fraction: Double(snap.memoryApp) / total,        color: memColor.app),
+                    .init(id: "wired", fraction: Double(snap.memoryWired) / total,       color: memColor.wired),
+                    .init(id: "comp", fraction: Double(snap.memoryCompressed) / total,  color: memColor.compressed),
+                    .init(id: "cached", fraction: Double(snap.memoryCached) / total,      color: memColor.cached),
                 ], height: 10)
                 .padding(.top, 2)
                 Divider().overlay(XColor.hairline)
@@ -821,6 +897,22 @@ public struct HardwareView: View {
                 }
                 .padding(.vertical, 1)
             }
+            // 「其他」类超出默认 8 个时可展开成完整传感器清单（真·全部传感器，不再无声截断）。
+            let othersTotal = vm.temps.filter { $0.category == .other }.count
+            if othersTotal > sensorOtherCap {
+                Button {
+                    withAnimation(XMotion.snappy) { showAllSensors.toggle() }
+                } label: {
+                    HStack(spacing: XSpacing.xs) {
+                        Image(systemName: showAllSensors ? "chevron.up" : "chevron.down").font(XFont.nano)
+                        Text(showAllSensors ? xLoc("收起") : xLocF("显示全部 %d 个传感器", vm.temps.count))
+                            .font(XFont.caption)
+                    }
+                    .foregroundStyle(XColor.accentTeal)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showAllSensors ? xLoc("收起") : xLocF("显示全部 %d 个传感器", vm.temps.count))
+            }
         }
     }
 
@@ -853,8 +945,8 @@ public struct HardwareView: View {
         var out: [(String, [TempReading])] = []
         for (cat, name) in order {
             let items = all.filter { $0.category == cat }.sorted { $0.celsius > $1.celsius }
-            // "其他" 类只取前 8 个避免刷屏
-            let capped = cat == .other ? Array(items.prefix(8)) : items
+            // "其他" 类默认只取前 8 个避免刷屏；点「显示全部」可展开完整清单。
+            let capped = (cat == .other && !showAllSensors) ? Array(items.prefix(sensorOtherCap)) : items
             if !capped.isEmpty { out.append((name, capped)) }
         }
         return out
@@ -866,7 +958,8 @@ public struct HardwareView: View {
         HStack {
             Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             Spacer()
-            Text(value).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+            Text(value).font(XFont.bodyEmphasis).monospacedDigit()   // 等宽数字：2s 刷新时读数不左右晃
+                .foregroundStyle(XColor.textPrimary)
                 .lineLimit(1).truncationMode(.middle)
                 .contentTransition(.numericText())   // 活指标数字滚动而非硬跳（P5·H3）
         }
@@ -874,6 +967,7 @@ public struct HardwareView: View {
     private func miniStat(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(value).font(XFont.mono).foregroundStyle(XColor.textPrimary)
+                .contentTransition(.numericText())
             Text(label).font(XFont.nano).foregroundStyle(XColor.textTertiary)
         }
     }

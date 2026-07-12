@@ -1,658 +1,786 @@
 {
-  "version": 3,
-  "revokedLicenseIDs": [],
-  "definitions": [
-    {
-      "id": "user-caches",
-      "category": "system-junk",
-      "title": "应用缓存",
-      "description": "各应用为加速重复操作而存的临时文件，删除安全，应用会按需自动重建。",
-      "paths": [
-        "~/Library/Caches/*"
-      ],
-      "exclude": [
-        "~/Library/Caches/Homebrew",
-        "~/Library/Caches/CocoaPods",
-        "~/Library/Caches/Yarn",
-        "~/Library/Caches/pip",
-        "~/Library/Caches/go-build",
-        "~/Library/Caches/pnpm",
-        "~/Library/Caches/org.swift.swiftpm",
-        "~/Library/Caches/org.carthage.CarthageKit",
-        "~/Library/Caches/com.apple.Safari",
-        "~/Library/Caches/Google",
-        "~/Library/Caches/Microsoft Edge",
-        "~/Library/Caches/Firefox",
-        "~/Library/Caches/company.thebrowser.Browser",
-        "~/Library/Caches/BraveSoftware"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox",
-      "explanation": "缓存只为加速重复操作而存在，删除后应用会按需自动重建。已排除 Homebrew/包管理器与浏览器等由专项规则管理的目录。"
-    },
-    {
-      "id": "user-logs",
-      "category": "system-junk",
-      "title": "应用日志",
-      "description": "应用运行产生的日志。macOS 会自动轮转，正常体积无需清理——仅异常膨胀的日志默认勾选。",
-      "paths": [
-        "~/Library/Logs/*"
-      ],
-      "safety": "safe",
-      "systemImage": "doc.text",
-      "explanation": "macOS 与应用会自动轮转日志，正常体积的日志清了没有意义、还会破坏故障诊断——因此只默认勾选异常膨胀（≥500MB）的日志，其余列出供你自行决定。"
-    },
-    {
-      "id": "system-caches",
-      "category": "system-junk",
-      "title": "系统级缓存",
-      "description": "位于 /Library/Caches 的系统级可重建缓存。需要管理员权限，删除后不可从废纸篓恢复。",
-      "paths": [
-        "/Library/Caches/*"
-      ],
-      "safety": "caution",
-      "requiresHelper": true,
-      "systemImage": "lock.shield",
-      "explanation": "系统级缓存可安全重建，但位于系统目录需管理员权限，删除不经废纸篓——默认不勾选，确认后再清。"
-    },
-    {
-      "id": "system-logs",
-      "category": "system-junk",
-      "title": "系统级日志",
-      "description": "系统和后台服务产生的旧日志。需要管理员权限，删除后不可从废纸篓恢复。",
-      "paths": [
-        "/Library/Logs/*",
-        "/private/var/log/*"
-      ],
-      "safety": "caution",
-      "requiresHelper": true,
-      "systemImage": "doc.badge.gearshape",
-      "explanation": "系统日志由 logd 自动轮转，正常情况无需人工清理；仅异常膨胀时默认勾选。需管理员权限且不可恢复。"
-    },
-    {
-      "id": "saved-state",
-      "category": "system-junk",
-      "title": "已存窗口状态",
-      "description": "应用重开时恢复窗口位置的状态，删除后下次以默认布局打开。",
-      "paths": [
-        "~/Library/Saved Application State/*"
-      ],
-      "safety": "safe",
-      "systemImage": "macwindow",
-      "explanation": "窗口恢复状态（重开 App 时恢复上次窗口布局），删除后仅首次重开不恢复布局，无数据风险。"
-    },
-    {
-      "id": "diagnostic-reports",
-      "category": "system-junk",
-      "title": "诊断与崩溃报告",
-      "description": "系统与应用的崩溃/诊断日志，删除安全。",
-      "paths": [
-        "~/Library/Logs/DiagnosticReports/*"
-      ],
-      "safety": "safe",
-      "systemImage": "stethoscope",
-      "explanation": "崩溃与诊断报告的历史存档，删除不影响系统运行；如需向开发者反馈问题请先导出。"
-    },
-    {
-      "id": "containers-caches",
-      "category": "system-junk",
-      "title": "沙盒应用缓存",
-      "description": "沙盒应用（含 App Store 应用）的缓存数据，删除安全、会自动重建。",
-      "paths": [
-        "~/Library/Containers/*/Data/Library/Caches/*"
-      ],
-      "safety": "safe",
-      "systemImage": "cube.box"
-    },
-    {
-      "id": "xcode-derived",
-      "category": "developer-junk",
-      "title": "Xcode 派生数据 (DerivedData)",
-      "description": "Xcode 编译中间产物，删除安全，下次编译会重建（首次稍慢）。",
-      "paths": [
-        "~/Library/Developer/Xcode/DerivedData/*"
-      ],
-      "safety": "safe",
-      "systemImage": "hammer",
-      "explanation": "Xcode 编译中间产物与索引，删除绝对安全，下次构建自动重建（首次构建稍慢）。"
-    },
-    {
-      "id": "xcode-devicesupport",
-      "category": "developer-junk",
-      "title": "Xcode 设备支持文件",
-      "description": "旧 iOS/watchOS/tvOS 版本的调试符号，连接对应系统的设备时会重建。",
-      "paths": [
-        "~/Library/Developer/Xcode/iOS DeviceSupport/*",
-        "~/Library/Developer/Xcode/watchOS DeviceSupport/*",
-        "~/Library/Developer/Xcode/tvOS DeviceSupport/*"
-      ],
-      "safety": "safe",
-      "systemImage": "iphone"
-    },
-    {
-      "id": "xcode-archives",
-      "category": "developer-junk",
-      "title": "Xcode 归档 (Archives)",
-      "description": "App 上架/分发用的归档，删除后无法从该归档导出，请确认不再需要。",
-      "paths": [
-        "~/Library/Developer/Xcode/Archives/*"
-      ],
-      "safety": "caution",
-      "systemImage": "archivebox"
-    },
-    {
-      "id": "xcode-device-logs",
-      "category": "developer-junk",
-      "title": "Xcode 设备日志",
-      "description": "真机调试产生的崩溃/运行日志，删除安全。",
-      "paths": [
-        "~/Library/Developer/Xcode/iOS Device Logs/*"
-      ],
-      "safety": "safe",
-      "systemImage": "doc.text.magnifyingglass"
-    },
-    {
-      "id": "simulator-caches",
-      "category": "developer-junk",
-      "title": "模拟器缓存",
-      "description": "iOS 模拟器的缓存数据，删除安全。",
-      "paths": [
-        "~/Library/Developer/CoreSimulator/Caches/*"
-      ],
-      "safety": "safe",
-      "systemImage": "apps.iphone"
-    },
-    {
-      "id": "swiftpm-cache",
-      "category": "developer-junk",
-      "title": "Swift Package 缓存",
-      "description": "SwiftPM 下载的依赖缓存，删除后下次解析会重新下载。",
-      "paths": [
-        "~/Library/Caches/org.swift.swiftpm"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "cocoapods-cache",
-      "category": "developer-junk",
-      "title": "CocoaPods 缓存",
-      "description": "CocoaPods 下载的 Pod 缓存，删除安全、会重新下载。",
-      "paths": [
-        "~/Library/Caches/CocoaPods"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "carthage-cache",
-      "category": "developer-junk",
-      "title": "Carthage 缓存",
-      "description": "Carthage 依赖缓存，删除安全、会重新构建。",
-      "paths": [
-        "~/Library/Caches/org.carthage.CarthageKit"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "homebrew-cache",
-      "category": "developer-junk",
-      "title": "Homebrew 缓存",
-      "description": "Homebrew 下载的安装包缓存，删除安全。",
-      "paths": [
-        "~/Library/Caches/Homebrew/*"
-      ],
-      "safety": "safe",
-      "systemImage": "mug"
-    },
-    {
-      "id": "npm-cache",
-      "category": "developer-junk",
-      "title": "npm 缓存",
-      "description": "npm 包缓存，删除后下次安装会重新下载。",
-      "paths": [
-        "~/.npm/_cacache"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "yarn-cache",
-      "category": "developer-junk",
-      "title": "Yarn 缓存",
-      "description": "Yarn 包缓存，删除安全、会重新下载。",
-      "paths": [
-        "~/Library/Caches/Yarn",
-        "~/.yarn/cache"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "pnpm-cache",
-      "category": "developer-junk",
-      "title": "pnpm 缓存",
-      "description": "pnpm 全局存储缓存，删除安全。",
-      "paths": [
-        "~/Library/Caches/pnpm",
-        "~/.pnpm-store"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "pip-cache",
-      "category": "developer-junk",
-      "title": "pip 缓存",
-      "description": "Python pip 下载缓存，删除安全。",
-      "paths": [
-        "~/Library/Caches/pip"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "gradle-cache",
-      "category": "developer-junk",
-      "title": "Gradle 缓存",
-      "description": "Gradle 构建与依赖缓存，删除后下次构建会重建。",
-      "paths": [
-        "~/.gradle/caches"
-      ],
-      "safety": "safe",
-      "systemImage": "hammer"
-    },
-    {
-      "id": "cargo-cache",
-      "category": "developer-junk",
-      "title": "Rust Cargo 缓存",
-      "description": "Cargo 下载的 crate 缓存，删除安全、会重新下载。",
-      "paths": [
-        "~/.cargo/registry/cache"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "go-build-cache",
-      "category": "developer-junk",
-      "title": "Go 构建缓存",
-      "description": "Go 编译缓存，删除后下次编译会重建。",
-      "paths": [
-        "~/Library/Caches/go-build"
-      ],
-      "safety": "safe",
-      "systemImage": "hammer"
-    },
-    {
-      "id": "androidstudio-cache",
-      "category": "developer-junk",
-      "title": "Android Studio 缓存",
-      "description": "Android Studio 的缓存数据，删除安全。",
-      "paths": [
-        "~/Library/Caches/Google/AndroidStudio*"
-      ],
-      "safety": "safe",
-      "systemImage": "hammer"
-    },
-    {
-      "id": "android-cache",
-      "category": "developer-junk",
-      "title": "Android SDK 缓存",
-      "description": "Android 构建/下载缓存，删除安全。",
-      "paths": [
-        "~/.android/cache",
-        "~/.android/build-cache"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "ios-backups",
-      "category": "ios",
-      "title": "iOS 设备备份",
-      "description": "Finder/iTunes 的本地 iOS 备份，通常很大。删除后无法从该备份恢复设备，请确认。",
-      "paths": [
-        "~/Library/Application Support/MobileSync/Backup/*"
-      ],
-      "safety": "caution",
-      "systemImage": "iphone.badge.play",
-      "explanation": "本地 iOS 备份体积巨大且常已过时；删除后将无法从这些备份恢复设备——请确认设备已有 iCloud 或更新的备份。"
-    },
-    {
-      "id": "safari-cache",
-      "category": "privacy",
-      "title": "Safari 缓存",
-      "description": "Safari 的网页缓存，删除安全。",
-      "paths": [
-        "~/Library/Caches/com.apple.Safari/*"
-      ],
-      "safety": "safe",
-      "systemImage": "safari"
-    },
-    {
-      "id": "chrome-cache",
-      "category": "privacy",
-      "title": "Chrome 缓存",
-      "description": "Chrome 的网页缓存，删除安全。",
-      "paths": [
-        "~/Library/Caches/Google/Chrome/*"
-      ],
-      "safety": "safe",
-      "systemImage": "globe"
-    },
-    {
-      "id": "edge-cache",
-      "category": "privacy",
-      "title": "Microsoft Edge 缓存",
-      "description": "Edge 的网页缓存，删除安全。",
-      "paths": [
-        "~/Library/Caches/Microsoft Edge/*"
-      ],
-      "safety": "safe",
-      "systemImage": "globe"
-    },
-    {
-      "id": "firefox-cache",
-      "category": "privacy",
-      "title": "Firefox 缓存",
-      "description": "Firefox 的网页缓存，删除安全。",
-      "paths": [
-        "~/Library/Caches/Firefox/*"
-      ],
-      "safety": "safe",
-      "systemImage": "globe"
-    },
-    {
-      "id": "arc-cache",
-      "category": "privacy",
-      "title": "Arc 浏览器缓存",
-      "description": "Arc 的网页缓存，删除安全。",
-      "paths": [
-        "~/Library/Caches/company.thebrowser.Browser/*"
-      ],
-      "safety": "safe",
-      "systemImage": "globe"
-    },
-    {
-      "id": "brave-cache",
-      "category": "privacy",
-      "title": "Brave 浏览器缓存",
-      "description": "Brave 的网页缓存，删除安全。",
-      "paths": [
-        "~/Library/Caches/BraveSoftware/*"
-      ],
-      "safety": "safe",
-      "systemImage": "globe"
-    },
-    {
-      "id": "electron-app-cache",
-      "category": "system-junk",
-      "title": "应用通用缓存 (Application Support)",
-      "description": "各应用（多为 Electron/Chromium）存在 Application Support 下的 Cache 目录，删除安全、会自动重建。",
-      "paths": [
-        "~/Library/Application Support/*/Cache/*"
-      ],
-      "safety": "safe",
-      "systemImage": "cube"
-    },
-    {
-      "id": "electron-code-cache",
-      "category": "system-junk",
-      "title": "Electron 应用代码缓存",
-      "description": "Slack、Discord、VS Code、Notion 等 Electron 应用的 Code Cache / GPUCache，删除安全，应用会自动重建。",
-      "paths": [
-        "~/Library/Application Support/*/Code Cache/*",
-        "~/Library/Application Support/*/GPUCache/*"
-      ],
-      "safety": "safe",
-      "systemImage": "cube"
-    },
-    {
-      "id": "electron-service-worker",
-      "category": "system-junk",
-      "title": "Electron 应用 Service Worker 缓存",
-      "description": "Electron 应用的 Service Worker CacheStorage，删除安全、会自动重建。",
-      "paths": [
-        "~/Library/Application Support/*/Service Worker/CacheStorage/*"
-      ],
-      "safety": "safe",
-      "systemImage": "cube"
-    },
-    {
-      "id": "appsupport-groupcache",
-      "category": "system-junk",
-      "title": "App Group 共享缓存",
-      "description": "App Group 共享容器内的缓存目录，删除安全、会自动重建。",
-      "paths": [
-        "~/Library/Group Containers/*/Library/Caches/*"
-      ],
-      "safety": "safe",
-      "systemImage": "cube.box"
-    },
-    {
-      "id": "vscode-cacheddata",
-      "category": "developer-junk",
-      "title": "VS Code 已缓存数据",
-      "description": "VS Code 的 CachedData（编译缓存），删除安全，重启后自动重建。",
-      "paths": [
-        "~/Library/Application Support/Code/CachedData/*"
-      ],
-      "safety": "safe",
-      "systemImage": "chevron.left.forwardslash.chevron.right"
-    },
-    {
-      "id": "spotify-cache",
-      "category": "system-junk",
-      "title": "Spotify 持久缓存",
-      "description": "Spotify 的持久化媒体缓存，删除安全，联网后会重新缓存。",
-      "paths": [
-        "~/Library/Application Support/Spotify/PersistentCache/*"
-      ],
-      "safety": "safe",
-      "systemImage": "music.note"
-    },
-    {
-      "id": "zoom-autodownload",
-      "category": "system-junk",
-      "title": "Zoom 自动下载缓存",
-      "description": "Zoom 的自动下载/更新缓存，删除安全。",
-      "paths": [
-        "~/Library/Application Support/zoom.us/AutoDownload/*"
-      ],
-      "safety": "safe",
-      "systemImage": "video"
-    },
-    {
-      "id": "xdg-cache",
-      "category": "developer-junk",
-      "title": "XDG 缓存目录 (~/.cache)",
-      "description": "众多命令行/开发工具遵循 XDG 规范存放的缓存，删除安全、按需重建。",
-      "paths": [
-        "~/.cache/*"
-      ],
-      "safety": "safe",
-      "systemImage": "terminal"
-    },
-    {
-      "id": "maven-repo",
-      "category": "developer-junk",
-      "title": "Maven 本地仓库",
-      "description": "Maven 下载的依赖（~/.m2/repository），删除后下次构建会重新下载。",
-      "paths": [
-        "~/.m2/repository/*"
-      ],
-      "safety": "caution",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "ivy2-cache",
-      "category": "developer-junk",
-      "title": "Ivy2 缓存",
-      "description": "Scala/SBT 的 Ivy2 依赖缓存，删除安全、会重新下载。",
-      "paths": [
-        "~/.ivy2/cache/*"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "sbt-boot",
-      "category": "developer-junk",
-      "title": "SBT boot 缓存",
-      "description": "SBT 启动器缓存，删除安全、会重建。",
-      "paths": [
-        "~/.sbt/boot/*"
-      ],
-      "safety": "safe",
-      "systemImage": "hammer"
-    },
-    {
-      "id": "bun-cache",
-      "category": "developer-junk",
-      "title": "Bun 缓存",
-      "description": "Bun 安装缓存，删除安全、会重新下载。",
-      "paths": [
-        "~/.bun/install/cache/*"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "composer-cache",
-      "category": "developer-junk",
-      "title": "Composer 缓存",
-      "description": "PHP Composer 下载缓存，删除安全、会重新下载。",
-      "paths": [
-        "~/.composer/cache/*",
-        "~/Library/Caches/composer/*"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "pub-cache",
-      "category": "developer-junk",
-      "title": "Dart/Flutter Pub 缓存",
-      "description": "Dart/Flutter 的 pub 依赖缓存（~/.pub-cache），删除后下次会重新拉取。",
-      "paths": [
-        "~/.pub-cache/*"
-      ],
-      "safety": "caution",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "nuget-cache",
-      "category": "developer-junk",
-      "title": "NuGet 缓存",
-      "description": ".NET NuGet 包缓存，删除后下次还原会重新下载。",
-      "paths": [
-        "~/.nuget/packages/*"
-      ],
-      "safety": "caution",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "electron-blob",
-      "category": "system-junk",
-      "title": "应用 Blob 存储缓存",
-      "description": "部分 Electron 应用的 blob_storage 临时数据，删除安全。",
-      "paths": [
-        "~/Library/Application Support/*/blob_storage/*"
-      ],
-      "safety": "safe",
-      "systemImage": "cube"
-    },
-    {
-      "id": "chromium-nested-sw",
-      "category": "system-junk",
-      "title": "浏览器 Profile Service Worker 缓存",
-      "description": "Chrome/Edge 等各 Profile 下的 Service Worker 缓存，删除安全、会重建。",
-      "paths": [
-        "~/Library/Application Support/*/*/Service Worker/CacheStorage/*"
-      ],
-      "safety": "safe",
-      "systemImage": "globe"
-    },
-    {
-      "id": "jetbrains-cache",
-      "category": "developer-junk",
-      "title": "JetBrains 缓存",
-      "description": "IntelliJ / PyCharm / GoLand 等 JetBrains IDE 的缓存，删除安全，下次打开会重建索引（首次稍慢）。",
-      "paths": [
-        "~/Library/Caches/JetBrains/*"
-      ],
-      "safety": "safe",
-      "systemImage": "hammer"
-    },
-    {
-      "id": "docker-logs",
-      "category": "developer-junk",
-      "title": "Docker Desktop 日志",
-      "description": "Docker Desktop 的日志文件，删除安全，不影响镜像与容器。",
-      "paths": [
-        "~/Library/Containers/com.docker.docker/Data/log/*"
-      ],
-      "safety": "safe",
-      "systemImage": "shippingbox"
-    },
-    {
-      "id": "adobe-cache",
-      "category": "system-junk",
-      "title": "Adobe 缓存",
-      "description": "Adobe 应用的媒体与磁盘缓存，删除安全，会按需重建。",
-      "paths": [
-        "~/Library/Caches/Adobe/*",
-        "~/Library/Application Support/Adobe/Common/Media Cache Files/*"
-      ],
-      "safety": "safe",
-      "systemImage": "paintbrush"
-    },
-    {
-      "id": "ios-firmware",
-      "category": "ios",
-      "title": "iOS 固件更新包",
-      "description": "旧版 iPhone/iPad 固件（IPSW），通常数 GB，可从 Apple 重新下载。",
-      "paths": [
-        "~/Library/iTunes/iPhone Software Updates/*",
-        "~/Library/iTunes/iPad Software Updates/*"
-      ],
-      "safety": "safe",
-      "systemImage": "arrow.down.circle"
-    },
-    {
-      "id": "mail-downloads",
-      "category": "system-junk",
-      "title": "邮件附件下载",
-      "description": "Apple 邮件为预览而下载的附件副本，删除安全，可从邮件服务器重新下载。",
-      "paths": [
-        "~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads/*"
-      ],
-      "safety": "caution",
-      "systemImage": "paperclip"
-    },
-    {
-      "id": "quicklook-thumbs",
-      "category": "system-junk",
-      "title": "快速查看缩略图缓存",
-      "description": "Quick Look 生成的缩略图缓存，删除安全、会自动重建。",
-      "paths": [
-        "~/Library/Caches/com.apple.QuickLook.thumbnailcache/*"
-      ],
-      "safety": "safe",
-      "systemImage": "eye"
-    },
-    {
-      "id": "photos-app-cache",
-      "category": "system-junk",
-      "title": "照片 App 缓存",
-      "description": "照片 App 为加速浏览生成的缩略图与派生渲染缓存，删除安全，照片会按需重新生成（首次浏览稍慢）。原始照片与相册不受影响。",
-      "paths": [
-        "~/Library/Caches/com.apple.Photos/*"
-      ],
-      "safety": "safe",
-      "systemImage": "photo.on.rectangle"
-    }
-  ]
+ "version": 5,
+ "revokedLicenseIDs": [],
+ "definitions": [
+  {
+   "id": "user-caches",
+   "category": "system-junk",
+   "title": "应用缓存",
+   "description": "各应用为加速重复操作而存的临时文件，删除安全，应用会按需自动重建。",
+   "paths": [
+    "~/Library/Caches/*"
+   ],
+   "exclude": [
+    "~/Library/Caches/Homebrew",
+    "~/Library/Caches/CocoaPods",
+    "~/Library/Caches/Yarn",
+    "~/Library/Caches/pip",
+    "~/Library/Caches/go-build",
+    "~/Library/Caches/pnpm",
+    "~/Library/Caches/org.swift.swiftpm",
+    "~/Library/Caches/org.carthage.CarthageKit",
+    "~/Library/Caches/com.apple.Safari",
+    "~/Library/Caches/Google",
+    "~/Library/Caches/Microsoft Edge",
+    "~/Library/Caches/Firefox",
+    "~/Library/Caches/company.thebrowser.Browser",
+    "~/Library/Caches/BraveSoftware"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "缓存只为加速重复操作而存在，删除后应用会按需自动重建。已排除 Homebrew/包管理器与浏览器等由专项规则管理的目录。"
+  },
+  {
+   "id": "user-logs",
+   "category": "system-junk",
+   "title": "应用日志",
+   "description": "应用运行产生的日志。macOS 会自动轮转，正常体积无需清理——仅异常膨胀的日志默认勾选。",
+   "paths": [
+    "~/Library/Logs/*"
+   ],
+   "safety": "safe",
+   "systemImage": "doc.text",
+   "explanation": "macOS 与应用会自动轮转日志，正常体积的日志清了没有意义、还会破坏故障诊断——因此只默认勾选异常膨胀（≥500MB）的日志，其余列出供你自行决定。"
+  },
+  {
+   "id": "system-caches",
+   "category": "system-junk",
+   "title": "系统级缓存",
+   "description": "位于 /Library/Caches 的系统级可重建缓存。需要管理员权限，删除后不可从废纸篓恢复。",
+   "paths": [
+    "/Library/Caches/*"
+   ],
+   "safety": "caution",
+   "requiresHelper": true,
+   "systemImage": "lock.shield",
+   "explanation": "系统级缓存可安全重建，但位于系统目录需管理员权限，删除不经废纸篓——默认不勾选，确认后再清。"
+  },
+  {
+   "id": "system-logs",
+   "category": "system-junk",
+   "title": "系统级日志",
+   "description": "系统和后台服务产生的旧日志。需要管理员权限，删除后不可从废纸篓恢复。",
+   "paths": [
+    "/Library/Logs/*",
+    "/private/var/log/*"
+   ],
+   "exclude": [
+    "/Library/Logs/DiagnosticReports"
+   ],
+   "safety": "caution",
+   "requiresHelper": true,
+   "systemImage": "doc.badge.gearshape",
+   "explanation": "系统日志由 logd 自动轮转，正常情况无需人工清理；仅异常膨胀时默认勾选。需管理员权限且不可恢复。"
+  },
+  {
+   "id": "sys-diagnostic-reports",
+   "category": "system-junk",
+   "title": "系统级诊断报告",
+   "description": "系统守护进程与后台服务的崩溃/诊断报告存档。需要管理员权限，删除后不可从废纸篓恢复。",
+   "paths": [
+    "/Library/Logs/DiagnosticReports/*"
+   ],
+   "safety": "caution",
+   "requiresHelper": true,
+   "systemImage": "waveform.path.ecg.rectangle",
+   "explanation": "系统级（root 域）进程的崩溃与诊断报告，与用户级诊断报告分开存放；删除不影响系统运行，但会清空系统服务的故障诊断历史——默认不勾选，需管理员权限。"
+  },
+  {
+   "id": "crashreporter-support",
+   "category": "system-junk",
+   "title": "崩溃报告器数据",
+   "description": "CrashReporter 的中间数据与索引，删除安全、系统会按需重建。",
+   "paths": [
+    "~/Library/Application Support/CrashReporter/*"
+   ],
+   "safety": "safe",
+   "systemImage": "bandage",
+   "explanation": "macOS 崩溃报告器（CrashReporter）为聚合崩溃记录而存的中间数据与索引文件，删除后系统在下次崩溃发生时自动重建，不影响任何应用。"
+  },
+  {
+   "id": "saved-state",
+   "category": "system-junk",
+   "title": "已存窗口状态",
+   "description": "应用重开时恢复窗口位置的状态，删除后下次以默认布局打开。",
+   "paths": [
+    "~/Library/Saved Application State/*"
+   ],
+   "safety": "safe",
+   "systemImage": "macwindow",
+   "explanation": "窗口恢复状态（重开 App 时恢复上次窗口布局），删除后仅首次重开不恢复布局，无数据风险。"
+  },
+  {
+   "id": "diagnostic-reports",
+   "category": "system-junk",
+   "title": "诊断与崩溃报告",
+   "description": "系统与应用的崩溃/诊断日志。删除安全，但会清空故障诊断历史——默认不勾选。",
+   "paths": [
+    "~/Library/Logs/DiagnosticReports/*"
+   ],
+   "safety": "caution",
+   "systemImage": "stethoscope",
+   "explanation": "崩溃与诊断报告的历史存档，删除不影响系统运行；但排查问题时开发者可能需要它们，故默认不勾选，由你决定。"
+  },
+  {
+   "id": "containers-caches",
+   "category": "system-junk",
+   "title": "沙盒应用缓存",
+   "description": "沙盒应用（含 App Store 应用）的缓存数据，删除安全、会自动重建。",
+   "paths": [
+    "~/Library/Containers/*/Data/Library/Caches/*"
+   ],
+   "safety": "safe",
+   "systemImage": "cube.box",
+   "explanation": "沙盒应用（含 App Store 装的应用）把缓存存放在各自 Containers 容器内，作用与普通应用缓存相同；删除后应用按需自动重建，不影响应用数据与设置。"
+  },
+  {
+   "id": "xcode-derived",
+   "category": "developer-junk",
+   "title": "Xcode 派生数据 (DerivedData)",
+   "description": "Xcode 编译中间产物，删除安全，下次编译会重建（首次稍慢）。",
+   "paths": [
+    "~/Library/Developer/Xcode/DerivedData/*"
+   ],
+   "safety": "safe",
+   "systemImage": "hammer",
+   "explanation": "Xcode 编译中间产物与索引，删除绝对安全，下次构建自动重建（首次构建稍慢）。"
+  },
+  {
+   "id": "xcode-devicesupport",
+   "category": "developer-junk",
+   "title": "Xcode 设备支持文件",
+   "description": "旧 iOS/watchOS/tvOS 版本的调试符号，连接对应系统的设备时会重建。",
+   "paths": [
+    "~/Library/Developer/Xcode/iOS DeviceSupport/*",
+    "~/Library/Developer/Xcode/watchOS DeviceSupport/*",
+    "~/Library/Developer/Xcode/tvOS DeviceSupport/*"
+   ],
+   "safety": "safe",
+   "systemImage": "iphone",
+   "explanation": "Xcode 为每个连接过的 iOS/watchOS/tvOS 系统版本生成的调试符号，旧版本通常不再用到；删除后再连接对应系统的设备时会重新生成，需等待几分钟。"
+  },
+  {
+   "id": "xcode-archives",
+   "category": "developer-junk",
+   "title": "Xcode 归档 (Archives)",
+   "description": "App 上架/分发用的归档，删除后无法从该归档导出，请确认不再需要。",
+   "paths": [
+    "~/Library/Developer/Xcode/Archives/*"
+   ],
+   "safety": "caution",
+   "systemImage": "archivebox",
+   "explanation": "App 分发归档，含导出安装包与符号化崩溃日志所需的 dSYM；删除后无法再从该归档导出或符号化对应版本，已上架版本的归档建议保留，确认不需要再删。"
+  },
+  {
+   "id": "xcode-device-logs",
+   "category": "developer-junk",
+   "title": "Xcode 设备日志",
+   "description": "真机调试产生的崩溃/运行日志，删除安全。",
+   "paths": [
+    "~/Library/Developer/Xcode/iOS Device Logs/*"
+   ],
+   "safety": "safe",
+   "systemImage": "doc.text.magnifyingglass",
+   "explanation": "真机调试时从设备同步来的崩溃与运行日志存档，仅供排查历史问题；删除不影响设备与项目，再次连接设备调试时会产生新日志。"
+  },
+  {
+   "id": "simulator-caches",
+   "category": "developer-junk",
+   "title": "模拟器缓存",
+   "description": "iOS 模拟器的缓存数据，删除安全。",
+   "paths": [
+    "~/Library/Developer/CoreSimulator/Caches/*"
+   ],
+   "safety": "safe",
+   "systemImage": "apps.iphone",
+   "explanation": "iOS 模拟器运行产生的系统缓存，删除安全，下次启动模拟器时自动重建；模拟器本体与其中安装的 App、数据均不受影响。"
+  },
+  {
+   "id": "xcode-previews",
+   "category": "developer-junk",
+   "title": "Xcode 预览缓存",
+   "description": "SwiftUI 预览画布的专用模拟器与派生数据，删除安全，下次预览时重建。",
+   "paths": [
+    "~/Library/Developer/Xcode/UserData/Previews/*"
+   ],
+   "safety": "safe",
+   "systemImage": "eye.square",
+   "explanation": "SwiftUI 预览画布（Canvas）为每个项目维护的专用模拟器与派生数据，随开发时间稳定膨胀；删除后下次打开预览时 Xcode 自动重建，项目代码不受影响。"
+  },
+  {
+   "id": "xctest-devices",
+   "category": "developer-junk",
+   "title": "XCTest 测试设备",
+   "description": "运行 UI/单元测试时克隆出的临时模拟器设备，删除安全，下次跑测试时重建。",
+   "paths": [
+    "~/Library/Developer/XCTestDevices/*"
+   ],
+   "safety": "caution",
+   "systemImage": "checkmark.seal",
+   "explanation": "Xcode 并行测试时克隆出的一次性模拟器设备，测试结束后经常残留；删除后下次运行测试时自动重新克隆。正在跑测试时请勿清理。"
+  },
+  {
+   "id": "swiftpm-cache",
+   "category": "developer-junk",
+   "title": "Swift Package 缓存",
+   "description": "SwiftPM 下载的依赖缓存，删除后下次解析会重新下载。",
+   "paths": [
+    "~/Library/Caches/org.swift.swiftpm"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "Swift Package Manager 的全局依赖仓库缓存，删除后下次解析包依赖时会重新克隆下载，只多花些下载时间，不影响任何项目代码。"
+  },
+  {
+   "id": "cocoapods-cache",
+   "category": "developer-junk",
+   "title": "CocoaPods 缓存",
+   "description": "CocoaPods 下载的 Pod 缓存，删除安全、会重新下载。",
+   "paths": [
+    "~/Library/Caches/CocoaPods"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "CocoaPods 下载的 Pod 源码与 podspec 缓存，删除后下次 pod install 会重新下载；各项目 Pods 目录里已安装的依赖不受影响。"
+  },
+  {
+   "id": "carthage-cache",
+   "category": "developer-junk",
+   "title": "Carthage 缓存",
+   "description": "Carthage 依赖缓存，删除安全、会重新构建。",
+   "paths": [
+    "~/Library/Caches/org.carthage.CarthageKit"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "Carthage 克隆的依赖仓库与预编译产物缓存，删除后下次 carthage update/bootstrap 需重新拉取并编译，耗时较久；项目内已嵌入的框架不受影响。"
+  },
+  {
+   "id": "homebrew-cache",
+   "category": "developer-junk",
+   "title": "Homebrew 缓存",
+   "description": "Homebrew 下载的安装包缓存，删除安全。",
+   "paths": [
+    "~/Library/Caches/Homebrew/*"
+   ],
+   "safety": "safe",
+   "systemImage": "mug",
+   "explanation": "Homebrew 下载的安装包（bottle）与源码压缩包，安装完成后即无用；删除等同 brew cleanup，下次安装或升级时按需重新下载。"
+  },
+  {
+   "id": "npm-cache",
+   "category": "developer-junk",
+   "title": "npm 缓存",
+   "description": "npm 包缓存，删除后下次安装会重新下载。",
+   "paths": [
+    "~/.npm/_cacache"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "npm 的全局下载缓存（_cacache），删除后安装依赖时按需重新下载，只多花下载时间，不影响任何项目的 node_modules 与代码。"
+  },
+  {
+   "id": "yarn-cache",
+   "category": "developer-junk",
+   "title": "Yarn 缓存",
+   "description": "Yarn 包缓存，删除安全、会重新下载。",
+   "paths": [
+    "~/Library/Caches/Yarn",
+    "~/.yarn/cache"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "Yarn 的全局包缓存，用于离线与加速安装；删除后下次 yarn install 重新下载，各项目已安装的 node_modules 不受影响。"
+  },
+  {
+   "id": "pnpm-cache",
+   "category": "developer-junk",
+   "title": "pnpm 缓存",
+   "description": "pnpm 全局存储缓存，删除安全。",
+   "paths": [
+    "~/Library/Caches/pnpm",
+    "~/.pnpm-store"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "pnpm 的全局内容寻址存储，各项目 node_modules 通过硬链接引用它；删除后已安装项目的文件仍在，下次安装缺失的包时会重新下载。"
+  },
+  {
+   "id": "pip-cache",
+   "category": "developer-junk",
+   "title": "pip 缓存",
+   "description": "Python pip 下载缓存，删除安全。",
+   "paths": [
+    "~/Library/Caches/pip"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "pip 下载的 wheel 与源码包缓存，删除后 pip install 时重新从 PyPI 下载；已装进虚拟环境或系统的库完全不受影响。"
+  },
+  {
+   "id": "gradle-cache",
+   "category": "developer-junk",
+   "title": "Gradle 缓存",
+   "description": "Gradle 构建与依赖缓存，删除后下次构建会重建。",
+   "paths": [
+    "~/.gradle/caches"
+   ],
+   "safety": "safe",
+   "systemImage": "hammer",
+   "explanation": "Gradle 的依赖与构建缓存，删除不损坏任何项目，但下次构建会重新下载全部依赖并重建缓存，大项目首次构建会明显变慢。"
+  },
+  {
+   "id": "cargo-cache",
+   "category": "developer-junk",
+   "title": "Rust Cargo 缓存",
+   "description": "Cargo 下载的 crate 缓存，删除安全、会重新下载。",
+   "paths": [
+    "~/.cargo/registry/cache"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "Cargo 下载的 crate 压缩包缓存，删除后下次 cargo build 会重新从 crates.io 下载所需依赖；已编译的项目 target 目录不受影响。"
+  },
+  {
+   "id": "go-build-cache",
+   "category": "developer-junk",
+   "title": "Go 构建缓存",
+   "description": "Go 编译缓存，删除后下次编译会重建。",
+   "paths": [
+    "~/Library/Caches/go-build"
+   ],
+   "safety": "safe",
+   "systemImage": "hammer",
+   "explanation": "Go 编译器的增量构建缓存，删除后代码与依赖都不受影响，只是下次 go build 需要全量重新编译，首次会慢一些。"
+  },
+  {
+   "id": "androidstudio-cache",
+   "category": "developer-junk",
+   "title": "Android Studio 缓存",
+   "description": "Android Studio 的缓存数据，删除安全。",
+   "paths": [
+    "~/Library/Caches/Google/AndroidStudio*"
+   ],
+   "safety": "safe",
+   "systemImage": "hammer",
+   "explanation": "Android Studio 的索引与临时缓存，删除后下次打开项目时 IDE 会重建索引，首次打开稍慢；项目代码与 SDK 均不受影响。"
+  },
+  {
+   "id": "android-cache",
+   "category": "developer-junk",
+   "title": "Android SDK 缓存",
+   "description": "Android 构建/下载缓存，删除安全。",
+   "paths": [
+    "~/.android/cache",
+    "~/.android/build-cache"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "Android SDK 工具的下载缓存与旧版构建缓存，删除后按需重新生成或下载，不影响已安装的 SDK 组件与任何项目。"
+  },
+  {
+   "id": "ios-backups",
+   "category": "ios",
+   "title": "iOS 设备备份",
+   "description": "Finder/iTunes 的本地 iOS 备份，通常很大。删除后无法从该备份恢复设备，请确认。",
+   "paths": [
+    "~/Library/Application Support/MobileSync/Backup/*"
+   ],
+   "safety": "caution",
+   "systemImage": "iphone.badge.play",
+   "explanation": "本地 iOS 备份体积巨大且常已过时；删除后将无法从这些备份恢复设备——请确认设备已有 iCloud 或更新的备份。"
+  },
+  {
+   "id": "safari-cache",
+   "category": "privacy",
+   "title": "Safari 缓存",
+   "description": "Safari 的网页缓存，删除安全。",
+   "paths": [
+    "~/Library/Caches/com.apple.Safari/*"
+   ],
+   "safety": "safe",
+   "systemImage": "safari",
+   "explanation": "Safari 存的网页资源缓存（图片、脚本等），删除后首次打开网页稍慢，随后自动重建；不含 Cookie 与历史记录，不会退出任何网站登录。"
+  },
+  {
+   "id": "chrome-cache",
+   "category": "privacy",
+   "title": "Chrome 缓存",
+   "description": "Chrome 的网页缓存，删除安全。",
+   "paths": [
+    "~/Library/Caches/Google/Chrome/*"
+   ],
+   "safety": "safe",
+   "systemImage": "globe",
+   "explanation": "Chrome 的网页资源缓存，删除后重新访问网页时自动重建，首次加载稍慢；书签、密码、Cookie 与登录状态存放在别处，不受影响。"
+  },
+  {
+   "id": "edge-cache",
+   "category": "privacy",
+   "title": "Microsoft Edge 缓存",
+   "description": "Edge 的网页缓存，删除安全。",
+   "paths": [
+    "~/Library/Caches/Microsoft Edge/*"
+   ],
+   "safety": "safe",
+   "systemImage": "globe",
+   "explanation": "Edge 的网页资源缓存，删除后浏览时自动重建，仅首次加载稍慢；收藏夹、密码与登录状态不在此目录，不受影响。"
+  },
+  {
+   "id": "firefox-cache",
+   "category": "privacy",
+   "title": "Firefox 缓存",
+   "description": "Firefox 的网页缓存，删除安全。",
+   "paths": [
+    "~/Library/Caches/Firefox/*"
+   ],
+   "safety": "safe",
+   "systemImage": "globe",
+   "explanation": "Firefox 各配置档的网页缓存，删除后浏览时自动重建，仅首次加载稍慢；书签、密码与登录数据存于 Profile 目录，不受影响。"
+  },
+  {
+   "id": "arc-cache",
+   "category": "privacy",
+   "title": "Arc 浏览器缓存",
+   "description": "Arc 的网页缓存，删除安全。",
+   "paths": [
+    "~/Library/Caches/company.thebrowser.Browser/*"
+   ],
+   "safety": "safe",
+   "systemImage": "globe",
+   "explanation": "Arc 浏览器的网页资源缓存，删除后重新访问时自动重建，首次加载稍慢；空间、标签页与登录状态均不在此目录，不受影响。"
+  },
+  {
+   "id": "brave-cache",
+   "category": "privacy",
+   "title": "Brave 浏览器缓存",
+   "description": "Brave 的网页缓存，删除安全。",
+   "paths": [
+    "~/Library/Caches/BraveSoftware/*"
+   ],
+   "safety": "safe",
+   "systemImage": "globe",
+   "explanation": "Brave 的网页资源缓存，删除后浏览时自动重建，仅首次加载稍慢；书签、密码、钱包与登录状态存放在别处，不受影响。"
+  },
+  {
+   "id": "electron-app-cache",
+   "category": "system-junk",
+   "title": "应用通用缓存 (Application Support)",
+   "description": "各应用（多为 Electron/Chromium）存在 Application Support 下的 Cache 目录，删除安全、会自动重建。",
+   "paths": [
+    "~/Library/Application Support/*/Cache/*"
+   ],
+   "safety": "safe",
+   "systemImage": "cube",
+   "explanation": "Slack、Notion 等 Chromium 内核应用在 Application Support 下的网络资源缓存，删除后应用自动重建，登录状态与用户数据不受影响。"
+  },
+  {
+   "id": "electron-code-cache",
+   "category": "system-junk",
+   "title": "Electron 应用代码缓存",
+   "description": "Slack、Discord、VS Code、Notion 等 Electron 应用的 Code Cache / GPUCache，删除安全，应用会自动重建。",
+   "paths": [
+    "~/Library/Application Support/*/Code Cache/*",
+    "~/Library/Application Support/*/GPUCache/*"
+   ],
+   "safety": "safe",
+   "systemImage": "cube",
+   "explanation": "Electron 应用的 V8 编译代码缓存与 GPU 着色器缓存，纯加速用途；删除后应用下次启动自动重建，首启稍慢，无任何数据风险。"
+  },
+  {
+   "id": "electron-service-worker",
+   "category": "system-junk",
+   "title": "Electron 应用 Service Worker 缓存",
+   "description": "Electron 应用的 Service Worker CacheStorage，删除安全、会自动重建。",
+   "paths": [
+    "~/Library/Application Support/*/Service Worker/CacheStorage/*"
+   ],
+   "safety": "safe",
+   "systemImage": "cube",
+   "explanation": "Electron 应用离线组件（Service Worker）缓存的网页资源，删除后应用联网时自动重新拉取，不影响账号与消息数据。"
+  },
+  {
+   "id": "appsupport-groupcache",
+   "category": "system-junk",
+   "title": "App Group 共享缓存",
+   "description": "App Group 共享容器内的缓存目录，删除安全、会自动重建。",
+   "paths": [
+    "~/Library/Group Containers/*/Library/Caches/*"
+   ],
+   "safety": "safe",
+   "systemImage": "cube.box",
+   "explanation": "同一开发者多个 App 共享容器（App Group）里的缓存目录，性质与普通应用缓存相同；删除后按需自动重建，共享的正式数据不在此列。"
+  },
+  {
+   "id": "vscode-cacheddata",
+   "category": "developer-junk",
+   "title": "VS Code 已缓存数据",
+   "description": "VS Code 的 CachedData（编译缓存），删除安全，重启后自动重建。",
+   "paths": [
+    "~/Library/Application Support/Code/CachedData/*"
+   ],
+   "safety": "safe",
+   "systemImage": "chevron.left.forwardslash.chevron.right",
+   "explanation": "VS Code 缓存的 V8 编译产物，用于加快启动；删除后重启 VS Code 时自动重建，扩展、设置与代码完全不受影响。"
+  },
+  {
+   "id": "spotify-cache",
+   "category": "system-junk",
+   "title": "Spotify 持久缓存",
+   "description": "Spotify 的持久化媒体缓存，删除安全，联网后会重新缓存。",
+   "paths": [
+    "~/Library/Application Support/Spotify/PersistentCache/*"
+   ],
+   "safety": "safe",
+   "systemImage": "music.note",
+   "explanation": "Spotify 缓存的音频数据，用于减少重复流量；注意离线下载的歌曲也存放在这里，删除后需联网重新缓存或重新下载离线内容。"
+  },
+  {
+   "id": "zoom-autodownload",
+   "category": "system-junk",
+   "title": "Zoom 自动下载缓存",
+   "description": "Zoom 的自动下载/更新缓存，删除安全。",
+   "paths": [
+    "~/Library/Application Support/zoom.us/AutoDownload/*"
+   ],
+   "safety": "safe",
+   "systemImage": "video",
+   "explanation": "Zoom 自动下载的更新安装包与组件，安装完成后即无用；删除安全，下次更新时 Zoom 会重新下载所需文件。"
+  },
+  {
+   "id": "xdg-cache",
+   "category": "developer-junk",
+   "title": "XDG 缓存目录 (~/.cache)",
+   "description": "众多命令行/开发工具遵循 XDG 规范存放的缓存，删除安全、按需重建。",
+   "paths": [
+    "~/.cache/*"
+   ],
+   "safety": "safe",
+   "systemImage": "terminal",
+   "explanation": "遵循 XDG 规范的命令行与开发工具（如 Hugging Face、pre-commit）的缓存目录，删除后按需重建；注意其中的大模型文件重新下载可能耗时。"
+  },
+  {
+   "id": "maven-repo",
+   "category": "developer-junk",
+   "title": "Maven 本地仓库",
+   "description": "Maven 下载的依赖（~/.m2/repository），删除后下次构建会重新下载。",
+   "paths": [
+    "~/.m2/repository/*"
+   ],
+   "safety": "caution",
+   "systemImage": "shippingbox",
+   "explanation": "Maven 的本地依赖仓库，所有 Java 项目共用；删除后下次构建会重新下载全部依赖、耗时较久，本地 mvn install 的自有构件也需重新安装。"
+  },
+  {
+   "id": "ivy2-cache",
+   "category": "developer-junk",
+   "title": "Ivy2 缓存",
+   "description": "Scala/SBT 的 Ivy2 依赖缓存，删除安全、会重新下载。",
+   "paths": [
+    "~/.ivy2/cache/*"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "Scala/SBT 通过 Ivy 下载的依赖缓存，删除后下次构建时重新解析下载，只多花下载时间，不影响项目代码。"
+  },
+  {
+   "id": "sbt-boot",
+   "category": "developer-junk",
+   "title": "SBT boot 缓存",
+   "description": "SBT 启动器缓存，删除安全、会重建。",
+   "paths": [
+    "~/.sbt/boot/*"
+   ],
+   "safety": "safe",
+   "systemImage": "hammer",
+   "explanation": "SBT 启动器缓存的 Scala 编译器与自身组件，删除后下次运行 sbt 时自动重新下载对应版本，项目不受影响。"
+  },
+  {
+   "id": "bun-cache",
+   "category": "developer-junk",
+   "title": "Bun 缓存",
+   "description": "Bun 安装缓存，删除安全、会重新下载。",
+   "paths": [
+    "~/.bun/install/cache/*"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "Bun 的全局包下载缓存，删除后下次 bun install 重新从注册表下载，各项目已装好的 node_modules 不受影响。"
+  },
+  {
+   "id": "composer-cache",
+   "category": "developer-junk",
+   "title": "Composer 缓存",
+   "description": "PHP Composer 下载缓存，删除安全、会重新下载。",
+   "paths": [
+    "~/.composer/cache/*",
+    "~/Library/Caches/composer/*"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "PHP Composer 下载的包压缩缓存，删除后 composer install/update 时重新下载，项目 vendor 目录不受影响。"
+  },
+  {
+   "id": "pub-cache",
+   "category": "developer-junk",
+   "title": "Dart/Flutter Pub 缓存",
+   "description": "Dart/Flutter 的 pub 依赖缓存（~/.pub-cache），删除后下次会重新拉取。",
+   "paths": [
+    "~/.pub-cache/*"
+   ],
+   "safety": "caution",
+   "systemImage": "shippingbox",
+   "explanation": "Dart/Flutter 的全局依赖缓存，所有项目共用；删除后下次 pub get 会重新下载全部依赖，用 pub global 安装的命令行工具也需重新激活。"
+  },
+  {
+   "id": "nuget-cache",
+   "category": "developer-junk",
+   "title": "NuGet 缓存",
+   "description": ".NET NuGet 包缓存，删除后下次还原会重新下载。",
+   "paths": [
+    "~/.nuget/packages/*"
+   ],
+   "safety": "caution",
+   "systemImage": "shippingbox",
+   "explanation": "NuGet 的全局包目录，.NET 项目构建时直接引用它；删除后下次 dotnet restore 会重新下载所有依赖，大解决方案首次还原较慢。"
+  },
+  {
+   "id": "electron-blob",
+   "category": "system-junk",
+   "title": "应用 Blob 存储缓存",
+   "description": "部分 Electron 应用的 blob_storage 临时数据，删除安全。",
+   "paths": [
+    "~/Library/Application Support/*/blob_storage/*"
+   ],
+   "safety": "safe",
+   "systemImage": "cube",
+   "explanation": "部分 Electron 应用暂存大块二进制数据（如图片、附件预览）的 blob_storage 目录，属临时数据，删除后按需重新生成。"
+  },
+  {
+   "id": "chromium-nested-sw",
+   "category": "system-junk",
+   "title": "浏览器 Profile Service Worker 缓存",
+   "description": "Chrome/Edge 等各 Profile 下的 Service Worker 缓存，删除安全、会重建。",
+   "paths": [
+    "~/Library/Application Support/*/*/Service Worker/CacheStorage/*"
+   ],
+   "safety": "safe",
+   "systemImage": "globe",
+   "explanation": "Chrome/Edge 等浏览器各配置档下 Service Worker 缓存的离线网页资源，删除后网站联网时自动重新拉取，登录与书签不受影响。"
+  },
+  {
+   "id": "jetbrains-cache",
+   "category": "developer-junk",
+   "title": "JetBrains 缓存",
+   "description": "IntelliJ / PyCharm / GoLand 等 JetBrains IDE 的缓存，删除安全，下次打开会重建索引（首次稍慢）。",
+   "paths": [
+    "~/Library/Caches/JetBrains/*"
+   ],
+   "safety": "safe",
+   "systemImage": "hammer",
+   "explanation": "JetBrains 系 IDE 的代码索引与编译缓存，删除后下次打开项目自动重建索引，首次打开明显变慢，但项目与设置不受影响。"
+  },
+  {
+   "id": "docker-logs",
+   "category": "developer-junk",
+   "title": "Docker Desktop 日志",
+   "description": "Docker Desktop 的日志文件，删除安全，不影响镜像与容器。",
+   "paths": [
+    "~/Library/Containers/com.docker.docker/Data/log/*"
+   ],
+   "safety": "safe",
+   "systemImage": "shippingbox",
+   "explanation": "Docker Desktop 的运行日志，仅用于排查 Docker 自身问题；删除不影响任何镜像、容器与数据卷，新日志会继续生成。"
+  },
+  {
+   "id": "adobe-cache",
+   "category": "system-junk",
+   "title": "Adobe 缓存",
+   "description": "Adobe 应用的媒体与磁盘缓存，删除安全，会按需重建。",
+   "paths": [
+    "~/Library/Caches/Adobe/*",
+    "~/Library/Application Support/Adobe/Common/Media Cache Files/*"
+   ],
+   "safety": "safe",
+   "systemImage": "paintbrush",
+   "explanation": "Premiere/After Effects 等生成的媒体预览与磁盘缓存，删除后原素材与工程不受影响；再次打开工程时会重新渲染缓存，需要一些时间。"
+  },
+  {
+   "id": "ios-firmware",
+   "category": "ios",
+   "title": "iOS 固件更新包",
+   "description": "旧版 iPhone/iPad 固件（IPSW），通常数 GB，可从 Apple 重新下载。",
+   "paths": [
+    "~/Library/iTunes/iPhone Software Updates/*",
+    "~/Library/iTunes/iPad Software Updates/*"
+   ],
+   "safety": "safe",
+   "systemImage": "arrow.down.circle",
+   "explanation": "更新 iPhone/iPad 时下载的固件安装包（IPSW），升级完成后即无用；单个常达数 GB，需要时可从 Apple 服务器重新下载。"
+  },
+  {
+   "id": "mail-downloads",
+   "category": "system-junk",
+   "title": "邮件附件下载",
+   "description": "Apple 邮件为预览而下载的附件副本，删除安全，可从邮件服务器重新下载。",
+   "paths": [
+    "~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads/*"
+   ],
+   "safety": "caution",
+   "systemImage": "paperclip",
+   "explanation": "Apple 邮件为预览附件而落盘的副本，原件仍在邮件服务器上、可重新下载；若曾直接编辑过预览打开的附件，删除前请确认已另存。"
+  },
+  {
+   "id": "quicklook-thumbs",
+   "category": "system-junk",
+   "title": "快速查看缩略图缓存",
+   "description": "Quick Look 生成的缩略图缓存，删除安全、会自动重建。",
+   "paths": [
+    "~/Library/Caches/com.apple.QuickLook.thumbnailcache/*"
+   ],
+   "safety": "safe",
+   "systemImage": "eye",
+   "explanation": "Quick Look（空格预览）生成的文件缩略图缓存，删除后系统在你再次预览时自动重建，仅首次生成稍慢，文件本身毫发无损。"
+  },
+  {
+   "id": "photos-app-cache",
+   "category": "system-junk",
+   "title": "照片 App 缓存",
+   "description": "照片 App 为加速浏览生成的缩略图与派生渲染缓存，删除安全，照片会按需重新生成（首次浏览稍慢）。原始照片与相册不受影响。",
+   "paths": [
+    "~/Library/Caches/com.apple.Photos/*"
+   ],
+   "safety": "safe",
+   "systemImage": "photo.on.rectangle",
+   "explanation": "照片 App 的缩略图与派生渲染缓存，原始照片和相册结构完全不受影响；删除后浏览时按需重新生成，首次滚动图库稍慢。"
+  },
+  {
+   "id": "chromium-nested-cache",
+   "category": "privacy",
+   "title": "Chromium 内核浏览器缓存（多配置档）",
+   "description": "360/搜狗/UC/夸克/QQ 浏览器等 Chromium 内核应用按配置档嵌套存放的缓存。只清缓存，绝不碰 Cookies、历史与登录数据。",
+   "paths": [
+    "~/Library/Application Support/*/*/Cache/*",
+    "~/Library/Application Support/*/*/Code Cache/*",
+    "~/Library/Application Support/*/*/GPUCache/*"
+   ],
+   "exclude": [],
+   "safety": "safe",
+   "systemImage": "globe.asia.australia",
+   "explanation": "Chromium 内核（含国产浏览器）把网页缓存按「应用/配置档/Cache」嵌套存放，删除后浏览器自动重建；Cookies、历史记录与登录数据在别的文件里，本规则路径上碰不到。"
+  },
+  {
+   "id": "xcode-doccache",
+   "category": "developer-junk",
+   "title": "Xcode 文档缓存 (DocumentationCache)",
+   "description": "Xcode 下载的开发者文档索引缓存，打开文档时会按需重建。",
+   "paths": [
+    "~/Library/Developer/Xcode/DocumentationCache/*"
+   ],
+   "exclude": [],
+   "safety": "safe",
+   "systemImage": "book",
+   "explanation": "Xcode 的离线文档索引缓存，删除后再次打开文档查看器会自动重新下载构建，不影响任何项目。"
+  }
+ ]
 }

@@ -1,11 +1,13 @@
 import AppKit
+import DesignSystem
 
 /// 签名音效（P4）：只有三个——扫描完成、清理完成、收集篮倒计时归零执行。
 /// 铁律：克制（短促、-12dB 起步）、全局可关（xico.sound.enabled）、跟随系统「播放用户界面声音效果」、
 /// 危险操作（粉碎等）永不配音效、循环/hover 永不配音效。
 ///
-/// 资产：当前用系统内置音色作占位（TODO：替换为专业定制音效资产——真实录音/专业合成，
-/// 参考 CleanMyMac 的多感官设计；接入点已就绪，只需替换 Bundle 资源与此处映射）。
+/// 资产（docs/16 P0-2）：定制合成音色（谐波钟声 + 指数衰减包络 + 单极低通，
+/// DesignSystem/Resources/xico-*.wav）——scanDone 轻质高频叮 / cleanDone 玻璃水滴 /
+/// countdownDone 低频确认。资源缺失时回退系统音，绝不静默失效。
 @MainActor
 public enum XSound {
     public enum Effect: String {
@@ -30,16 +32,27 @@ public enum XSound {
         return v
     }
 
+    /// 播放中的实例持有：NSSound 无人持有会被释放而中途哑掉（局部变量出作用域即停）。
+    private static var current: NSSound?
+
     public static func play(_ effect: Effect) {
         guard enabled, systemUISoundsEnabled else { return }
-        let name: NSSound.Name
-        switch effect {
-        case .scanDone:      name = "Tink"
-        case .cleanDone:     name = "Glass"
-        case .countdownDone: name = "Pop"
+        // 定制签名音色优先；资源缺失回退系统音（绝不静默失效）。
+        let sound: NSSound?
+        if let url = XAssets.soundURL("xico-\(effect.rawValue)") {
+            sound = NSSound(contentsOf: url, byReference: true)
+        } else {
+            let fallback: NSSound.Name
+            switch effect {
+            case .scanDone:      fallback = "Tink"
+            case .cleanDone:     fallback = "Glass"
+            case .countdownDone: fallback = "Pop"
+            }
+            sound = NSSound(named: fallback)
         }
-        guard let sound = NSSound(named: name) else { return }
+        guard let sound else { return }
         sound.volume = 0.25   // ≈ -12dB：存在感来自「有」，不来自「响」
+        current = sound
         sound.play()
     }
 }

@@ -78,6 +78,7 @@ public struct XMetricCard: View {
                 XMiniRing(fraction: fraction, colors: colors, size: 46, lineWidth: 5.5)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(value).font(XFont.monoLarge).foregroundStyle(XColor.textPrimary).lineLimit(1)
+                        .contentTransition(.numericText())   // 指标数字滚动到位（docs/16 P1-3）
                     Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -144,6 +145,13 @@ public struct XPrimaryButtonStyle: ButtonStyle {
                     enabled ? AnyShapeStyle(XColor.brandGradient) : AnyShapeStyle(XColor.surfaceAlt),
                     in: Capsule()
                 )
+                // 渐变胶囊叠 grain（docs/16 P0-3 收尾）：主按钮常是一屏的渐变主角，微粒把
+                // 「渲染图平滑」压成哑光实物感，顺手消灭暗色 banding。裁进胶囊，角外不漏。
+                .overlay {
+                    if enabled {
+                        XGrain().opacity(0.25).clipShape(Capsule())
+                    }
+                }
                 .overlay(
                     // 顶部高光收敛：更哑光、少「塑料光泽」，像原生 macOS 按钮而非糖果
                     Capsule()
@@ -287,6 +295,37 @@ public struct XSegmentedControl<T: Hashable>: View {
     }
 }
 
+// MARK: - 胶囊输入框（docs/16 P0-4：付费转化页零系统灰控件）
+
+/// 自绘胶囊文本框：surfaceAlt 底 + 品牌焦点环——替代系统 `.roundedBorder` 灰框，
+/// 与全应用的胶囊/玻璃语言一致。
+public struct XCapsuleTextField: View {
+    let placeholder: String
+    @Binding var text: String
+    let onSubmit: () -> Void
+    @FocusState private var focused: Bool
+
+    public init(placeholder: String, text: Binding<String>, onSubmit: @escaping () -> Void = {}) {
+        self.placeholder = placeholder
+        self._text = text
+        self.onSubmit = onSubmit
+    }
+
+    public var body: some View {
+        TextField(placeholder, text: $text)
+            .textFieldStyle(.plain)
+            .font(XFont.body)
+            .focused($focused)
+            .onSubmit(onSubmit)
+            .padding(.horizontal, XSpacing.m)
+            .padding(.vertical, XSpacing.s)
+            .background(Capsule().fill(XColor.surfaceAlt.opacity(0.8)))
+            .overlay(Capsule().strokeBorder(focused ? XColor.brand : XColor.border,
+                                            lineWidth: focused ? 1.5 : 1))
+            .animation(XMotion.hover, value: focused)
+    }
+}
+
 // MARK: - Toast（非模态轻提示）
 
 /// 底部浮动 toast：非模态、自动消失，用于「已拦截 / 已完成」类轻反馈——
@@ -388,7 +427,13 @@ public struct XActionBar<Trailing: View>: View {
         .padding(.horizontal, XSpacing.xl)
         .padding(.vertical, XSpacing.l)
         .xSurface(.thin)   // 浮层材质走令牌（导航层专属；内容卡片仍是不透明 surface）
-        .overlay(Rectangle().fill(XColor.hairline).frame(height: 1), alignment: .top)
+        // 双色发丝线（docs/16）：暗线 + 下沿极淡高光 = 「刻痕」的实物感，单色发丝在暗底会消失。
+        .overlay(alignment: .top) {
+            VStack(spacing: 0) {
+                Rectangle().fill(XColor.hairline).frame(height: 1)
+                Rectangle().fill(Color.white.opacity(0.04)).frame(height: 0.5)
+            }
+        }
     }
 }
 
@@ -516,7 +561,9 @@ public struct XEmptyState: View {
     public var body: some View {
         VStack(spacing: XSpacing.m) {
             ZStack {
+                // 染色圆叠 grain（docs/16 P0-3 收尾）：大面积淡染最容易暴露数字平滑感。
                 Circle().fill(tint[0].opacity(0.12)).frame(width: 96, height: 96)
+                    .overlay(XGrain().opacity(0.4).clipShape(Circle()))
                 if kind == .success { Circle().stroke(tint[0].opacity(0.35), lineWidth: 1).frame(width: 96, height: 96) }
                 Image(systemName: systemImage)
                     .font(.system(size: 42, weight: .light))

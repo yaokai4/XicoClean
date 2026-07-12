@@ -30,6 +30,12 @@ struct BulkDirEntry: Sendable {
     /// 扫描绝不跨入子挂载点——这是掐断 /System/Volumes/Data 重复计数、
     /// 外接盘/网络盘误入的根本开关。
     let isMountPoint: Bool
+    /// 独占字节（ATTR_CMNEXT_PRIVATESIZE）：不与任何其它文件共享的块。
+    /// CoW 克隆（cp -c / DerivedData / 原子写）的共享块不计入。nil = 文件系统未返回（非 APFS 等）。
+    let privateBytes: Int64?
+    /// 克隆家族 ID（ATTR_CMNEXT_CLONEID）。同族文件共享底层块——
+    /// 配合 privateBytes 做「首见计全量、再见计独占」的克隆去重（P0-c）。0 = 未知。
+    let cloneID: UInt64
 }
 
 /// 基于 `getattrlistbulk(2)` 的高速目录读取器；系统调用不可用时回退 FileManager。
@@ -39,14 +45,16 @@ enum BulkDirectoryReader {
     private static func u32(_ value: some BinaryInteger) -> UInt32 { UInt32(truncatingIfNeeded: value) }
 
     /// 读取目录的全部直接子项。打不开（无权限/不存在）返回空数组。
-    static func read(_ path: String) -> [BulkDirEntry] {
-        if let entries = readBulk(path) { return entries }
+    /// `onDenied`（P1-6）：目录因 EPERM/EACCES 打不开时回调——上层据此统计「未读区」，
+    /// 缺全盘磁盘访问权限时显式引导而不是静默少算。
+    static func read(_ path: String, onDenied: (() -> Void)? = nil) -> [BulkDirEntry] {
+        if let entries = readBulk(path, onDenied: onDenied) { return entries }
         return readViaFileManager(path)
     }
 
     // MARK: - getattrlistbulk 快路径
 
-    private static func readBulk(_ path: String) -> [BulkDirEntry]? {
+    private static func readBulk(_ path: String, onDenied: (() -> Void)? = nil) -> [BulkDirEntry]? {
         // 云占位红线（TN3150；DaisyDisk 同款策略）：扫描线程禁止触发 File Provider 物化——
         // 否则枚举 iCloud 云盘会把云端内容真的下载下来。仅影响当前线程，读完即恢复。
         let previousPolicy = getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD)
@@ -63,7 +71,14 @@ enum BulkDirectoryReader {
         guard fd >= 0 else {
             // EDEADLK = 未物化的云占位目录：内容不在本地、占用≈0，按空目录计——
             // 绝不能落到 FileManager 回退（Foundation 枚举会触发下载）。
-            return errno == EDEADLK ? [] : nil
+            if errno == EDEADLK { return [] }
+            // 无权限（缺 FDA/TCC 保护区）：上报未读区并按空目录计——FileManager 回退同样打不开，
+            // 走回退只是徒劳多一次系统调用（P1-6 诚实口径：不静默、可统计）。
+            if errno == EPERM || errno == EACCES {
+                onDenied?()
+                return []
+            }
+            return nil
         }
         defer { close(fd) }
 
@@ -77,6 +92,9 @@ enum BulkDirectoryReader {
         attrs.dirattr = u32(ATTR_DIR_MOUNTSTATUS)
         attrs.fileattr = u32(ATTR_FILE_LINKCOUNT)
             | u32(ATTR_FILE_ALLOCSIZE)
+        // CMNEXT 扩展属性（P0-c 克隆去重）：FSOPT_ATTR_CMN_EXTENDED 使 forkattr 字段
+        // 重解释为 ATTR_CMNEXT_*（macOS 10.13+）。独占字节 + 克隆家族 ID。
+        attrs.forkattr = u32(ATTR_CMNEXT_PRIVATESIZE) | u32(ATTR_CMNEXT_CLONEID)
 
         let bufSize = 256 * 1024
         let buf = UnsafeMutableRawPointer.allocate(byteCount: bufSize, alignment: 8)
@@ -84,7 +102,8 @@ enum BulkDirectoryReader {
 
         var out: [BulkDirEntry] = []
         while true {
-            let count = getattrlistbulk(fd, &attrs, buf, bufSize, 0)
+            let count = getattrlistbulk(fd, &attrs, buf, bufSize,
+                                        UInt64(truncatingIfNeeded: FSOPT_ATTR_CMN_EXTENDED))
             if count < 0 {
                 // 云占位目录（EDEADLK）：按已读内容返回，绝不落 FileManager 回退（会触发下载）。
                 if errno == EDEADLK { return out }
@@ -166,6 +185,18 @@ enum BulkDirectoryReader {
             offset += MemoryLayout<Int64>.size
         }
 
+        // CMNEXT 属性在 file 属性之后（forkattr 位域按位序）：PRIVATESIZE(0x8) < CLONEID(0x100)。
+        var privateBytes: Int64?
+        if returned.forkattr & u32(ATTR_CMNEXT_PRIVATESIZE) != 0 {
+            privateBytes = max(0, record.loadUnaligned(fromByteOffset: offset, as: Int64.self))
+            offset += MemoryLayout<Int64>.size
+        }
+        var cloneID: UInt64 = 0
+        if returned.forkattr & u32(ATTR_CMNEXT_CLONEID) != 0 {
+            cloneID = record.loadUnaligned(fromByteOffset: offset, as: UInt64.self)
+            offset += MemoryLayout<UInt64>.size
+        }
+
         guard !name.isEmpty else { return nil }
         let kind: BulkDirEntry.Kind
         switch objType {
@@ -175,7 +206,8 @@ enum BulkDirectoryReader {
         default: kind = .other
         }
         return BulkDirEntry(name: name, rawName: rawName, kind: kind, allocatedBytes: max(0, allocated),
-                            fileID: fileID, linkCount: linkCount, isMountPoint: isMountPoint)
+                            fileID: fileID, linkCount: linkCount, isMountPoint: isMountPoint,
+                            privateBytes: privateBytes, cloneID: cloneID)
     }
 
     // MARK: - FileManager 回退路径（个别不支持 getattrlistbulk 的文件系统）
@@ -196,7 +228,8 @@ enum BulkDirectoryReader {
             let size = kind == .directory ? 0 : Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
             return BulkDirEntry(name: child.lastPathComponent, rawName: nil, kind: kind,
                                 allocatedBytes: size, fileID: 0, linkCount: 1,
-                                isMountPoint: kind == .directory && rv.isVolume == true)
+                                isMountPoint: kind == .directory && rv.isVolume == true,
+                                privateBytes: nil, cloneID: 0)
         }
     }
 }

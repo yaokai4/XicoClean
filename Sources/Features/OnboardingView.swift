@@ -20,7 +20,7 @@ public struct OnboardingView: View {
 
     public var body: some View {
         ZStack {
-            AppBackground()
+            AppBackground(animated: true)   // hero 屏活极光（docs/16 P1-1）：中心控制点极慢微漂
             GeometryReader { geo in
                 ScrollView {
                     VStack(spacing: XSpacing.xl) {

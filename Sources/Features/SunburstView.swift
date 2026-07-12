@@ -96,6 +96,17 @@ public struct SunburstView: View {
     let denyReason: ((URL) -> String?)?
     /// 色相锚定：钻取后当前子树的「扫描根下一级祖先」色相；nil = 正在看扫描根（彩虹分配）。
     let familyHue: Color?
+    /// 卷可用字节（P1-7 可用空间楔形）：仅在「看整卷根」时传入，环追加一段低饱和可用楔形，
+    /// 中心与图例同步显示可用容量——「还剩多少」与「谁占掉了」同屏（DaisyDisk 口径）。
+    let freeBytes: Int64?
+    /// 跨树搜索（P2-11）：非空时命中名保持满亮、其余变暗，图例只列命中项。
+    let searchQuery: String
+    /// 树结构版本号（宿主在嫁接/剪枝/回接后自增）：DiskNode 是引用类型、就地改 children 时
+    /// node.id 不变——没有它 ArcCache 会拿陈旧几何当缓存命中，环上显示过期子树（多层下极显眼）。
+    let revision: Int
+    /// 账本节点动作（P0-d）：管理本地快照（tmutil 独立通道）/ 引导开启完全磁盘访问。
+    let onManageSnapshots: (() -> Void)?
+    let onOpenFDA: (() -> Void)?
 
     public init(node: DiskNode,
                 selected: DiskNode? = nil,
@@ -105,7 +116,12 @@ public struct SunburstView: View {
                 onTrash: ((DiskNode) -> Void)? = nil,
                 onCollect: ((DiskNode) -> Void)? = nil,
                 denyReason: ((URL) -> String?)? = nil,
-                familyHue: Color? = nil) {
+                familyHue: Color? = nil,
+                freeBytes: Int64? = nil,
+                searchQuery: String = "",
+                revision: Int = 0,
+                onManageSnapshots: (() -> Void)? = nil,
+                onOpenFDA: (() -> Void)? = nil) {
         self.node = node
         self.selected = selected
         self.onActivate = onActivate
@@ -115,6 +131,11 @@ public struct SunburstView: View {
         self.onCollect = onCollect
         self.denyReason = denyReason
         self.familyHue = familyHue
+        self.freeBytes = freeBytes
+        self.searchQuery = searchQuery
+        self.revision = revision
+        self.onManageSnapshots = onManageSnapshots
+        self.onOpenFDA = onOpenFDA
     }
 
     @State private var hovered: DiskNode?
@@ -125,29 +146,44 @@ public struct SunburstView: View {
     @State private var otherPopoverKey: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// 扇段几何缓存：只在当前目录（node.id）+ 家族色相变化时重算一次。悬停仅改变 @State `hovered`
-    /// 触发 body 重算，绝不应连带重建整棵弧树——高亮由每段派生态驱动（isHot/dimmed），
+    /// 扇段几何缓存：只在当前目录（node.id）+ 家族色相/可用楔形变化时重算一次。悬停仅改变 @State
+    /// `hovered` 触发 body 重算，绝不应连带重建整棵弧树——高亮由每段派生态驱动（isHot/dimmed），
     /// 与几何解耦。用引用类型持有，读取即命中、按 node.id 失效，规避每次 hover 的 O(n) 重建。
-    private final class ArcCache { var id: UUID?; var themeID: String?; var arcs: [Arc] = [] }
+    private final class ArcCache {
+        var id: UUID?; var themeID: String?; var free: Int64?; var rev: Int?; var arcs: [Arc] = []
+    }
     @State private var arcCache = ArcCache()
 
     private func cachedArcs() -> [Arc] {
         // 颜色烘进弧数据，故缓存键除 node.id 外还含主题 id——切主题即失效重建
-        // （P1 后不再整树重建，缓存必须自己感知主题）。
+        // （P1 后不再整树重建，缓存必须自己感知主题）。可用楔形改变几何，同为缓存键。
+        // revision：宿主细化嫁接/删除剪枝/撤销回接都是就地改 children（node.id 不变），
+        // 必须凭版本号失效，否则环形图停在过期子树上。
         let theme = XThemeStore.shared.current.id
-        if arcCache.id != node.id || arcCache.themeID != theme {
+        if arcCache.id != node.id || arcCache.themeID != theme || arcCache.free != freeBytes
+            || arcCache.rev != revision {
             arcCache.id = node.id
             arcCache.themeID = theme
+            arcCache.free = freeBytes
+            arcCache.rev = revision
             arcCache.arcs = buildArcs()
         }
         return arcCache.arcs
     }
 
+    /// 显示深度 = 5（2026-07 二次拍板：恢复 DaisyDisk 式多层放射）：内环 = 当前目录的
+    /// 直接子项（与右侧图例 1:1），子孙沿外环逐层放射、环带越外越薄——「当前目录里
+    /// 每一块空间从哪来」一眼可追。上一版单层甜甜圈被用户否决（“怎么变成圆圈了”）。
+    /// 可读性三道闸（吸收此前五层嵌套「嫌乱嫌丑」的教训）：
+    ///   1. 环段内嵌文字只画第 1 层——外环绝不出现挤在一起的小字；
+    ///   2. 深层 <0.5° 碎片直接留白（DaisyDisk 亦然），外圈不会连成灰盘；
+    ///   3. 「其他」聚合弧只在第 1 层出现，与图例口径一致。
+    /// 注意：这只是**显示**深度；扫描仍是全深度精确统计（DiskTreeScanner 不变）。
     private let maxDepth = 5
 
-    /// 各环宽度权重（内环宽、外环渐窄）——DaisyDisk 式层级景深：越深的细节占越少径向空间，
-    /// 五环也不拥挤。
-    private static let ringWeights: [CGFloat] = [1.0, 0.92, 0.80, 0.66, 0.54]
+    /// 各环带权重（内 → 外递减，DaisyDisk 式「内厚外薄」）：第 1 层是主角承载文字，
+    /// 外层只负责形状轮廓——放射的「尖刺」感来自薄外环。
+    private static let ringWeights: [CGFloat] = [1.30, 1.0, 0.78, 0.60, 0.46]
 
     /// 依权重预算各环的（内径，外径）。
     private static func ringRadii(hole: CGFloat, center: CGFloat) -> [(inner: CGFloat, outer: CGFloat)] {
@@ -164,7 +200,13 @@ public struct SunburstView: View {
 
     /// 环形图专用高饱和调色板（深浅色同值）：DaisyDisk 式鲜明色轮——
     /// 主题 ring 色阶是为「背景上的点缀」调的淡彩，铺满整环会发灰发水；数据图要的是果敢的色相。
-    static let vividPalette: [Color] = [
+    /// docs/16 P2：**随主题走**——暖调主题（warmLuxe/jewel）给暖倾向色轮，
+    /// 切主题时透镜与全局气质一致（arcCache 以 themeID 为键，切换即失效重建）。
+    static var vividPalette: [Color] {
+        XThemeStore.shared.current.lensPalette ?? defaultVividPalette
+    }
+
+    private static let defaultVividPalette: [Color] = [
         Color(red: 0.24, green: 0.48, blue: 0.95),   // 蓝
         Color(red: 0.55, green: 0.36, blue: 0.96),   // 紫
         Color(red: 0.91, green: 0.32, blue: 0.49),   // 玫红
@@ -206,6 +248,20 @@ public struct SunburstView: View {
             : xLoc("多个小项的合计视图")
     }
 
+    /// 账本节点的详情解释（P0-d 三本账，逐段说人话——诚实账本的展示面）。
+    private func ledgerExplanation(_ node: DiskNode) -> String {
+        switch node.ledgerKind {
+        case .purgeable:
+            return xLoc("macOS 自管的「可清除」空间（缓存/休眠镜像等）。系统在需要时自动腾出，第三方工具无法可靠释放——Xico 只解释、不代删、不计入可回收。")
+        case .snapshots:
+            return xLoc("Time Machine 本地快照。体积为差额估算（无特权拿不到精确值）；可逐个删除释放空间，删除走系统 tmutil、需二次确认。")
+        case .unreadable:
+            return xLoc("因缺少完全磁盘访问权限而未能读取的目录。开启权限后重新扫描即可看到明细。")
+        default:
+            return Self.aggregateHelp(node)
+        }
+    }
+
     public var body: some View {
         HStack(alignment: .center, spacing: XSpacing.xl) {
             GeometryReader { geo in
@@ -221,6 +277,10 @@ public struct SunburstView: View {
         }
         .padding(XSpacing.l)
         .onExitCommand { onDeselect?() }   // ESC 取消选中
+        // ⌘⌫ 删除选中项（P1-9，DaisyDisk 高频直觉快捷键）：走同一条红线预检 + 二次确认。
+        .onDeleteCommand {
+            if let sel = selected, !sel.isAggregate, onTrash != nil { requestTrash(sel) }
+        }
         .onChange(of: node.id) { hovered = nil; otherPopoverKey = nil }   // 换层后清掉陈旧悬停/浮层
         .confirmationDialog(xLoc("移到废纸篓"),
                             isPresented: Binding(get: { pendingTrash != nil },
@@ -253,7 +313,7 @@ public struct SunburstView: View {
 
     private func ring(arcs: [Arc], side: CGFloat) -> some View {
         let center = side / 2
-        let hole = side * 0.20            // 中心圆半径
+        let hole = side * 0.22            // 中心圆半径：多层放射下环带区加厚到 ~0.28×side
         let radii = Self.ringRadii(hole: hole, center: center)
         return ZStack {
             ForEach(arcs) { arc in
@@ -275,33 +335,57 @@ public struct SunburstView: View {
         let outer = band.outer - 1.5   // 环间留 1.5pt 缝
         let isSelected = selected?.id == arc.node.id && !arc.isOther
         let isHot = (hovered?.id == arc.node.id && !arc.isOther) || isSelected
-        // 同族高亮：悬停某段时，它与它的祖先/子孙（同色相路径）保持满亮，其余变淡——
-        // 一眼看清「这块空间从哪来、往哪去」。「其他」聚合弧不参与家族判定。
-        let dimmed = hovered != nil && !isHot && (arc.isOther || !isRelated(arc.node, to: hovered))
+        // 同族高亮：悬停某段时，它与它的祖先/子孙（同色相路径）保持满亮，其余**轻微后退**
+        // （0.68，仍保有本色）——一眼看清「这块空间从哪来、往哪去」，但绝不把全场压成灰
+        // （2026-07 用户实测：0.35 灰化被否决，「选中应是单段突出，不是其余变灰」）。
+        // 跨树搜索（P2-11）例外：找东西时非命中就该强力退场，保留 0.25 深压。
+        let searchDim = !searchQuery.isEmpty && !arc.node.name.localizedCaseInsensitiveContains(searchQuery)
+        // 关键排除：悬停的就是**当前选中项**时不触发家族压暗——点选后鼠标仍停在该段上，
+        // 若不排除，全场立即因 hover 变暗，用户感知成「一选中全变灰」（2026-07 实测投诉根因）。
+        let familyDim = hovered != nil && hovered?.id != selected?.id && !isHot
+            && (arc.isOther || !isRelated(arc.node, to: hovered))
+        let fade: Double = searchDim ? 0.25 : (familyDim ? 0.68 : 1)
+        // DaisyDisk 式「单段突出」：**选中段**沿弧中线向外弹出 5pt + 白描边 + 同色光晕——
+        // 强调来自「它抬起来了」，而非「别人都暗下去」。悬停只给描边光晕不弹出（鼠标扫过
+        // 几百段时满盘弹跳会晕）。zIndex 抬到最上层，弹出时不被外环遮挡。
+        let theta = (arc.mid - 90) * .pi / 180
+        let pop: CGFloat = isSelected ? 5 : 0
         // 每段弧封装为 .plain Button：可被 Tab 聚焦、空格/回车触发，并向 VoiceOver
         // 报出「名称·大小·占比」。单击激活（选中/进入由宿主决断）——文件与目录一视同仁，
         // 每一段都点得动（DaisyDisk 口径）。
         Button {
             if arc.isOther {
-                otherPopoverKey = arc.key
+                if !arc.otherItems.isEmpty { otherPopoverKey = arc.key }   // 可用楔形无明细，点击无操作
             } else {
                 onActivate(arc.node)
             }
         } label: {
             RingSector(start: arc.start + 0.25, end: arc.end - 0.25, inner: inner, outer: outer)
-                .fill(arc.color.opacity(isHot ? 1 : depthOpacity(arc.depth) * (dimmed ? 0.35 : 1)))
+                .fill(arc.color.opacity(isHot ? 1 : depthOpacity(arc.depth) * fade))
                 .overlay(
                     RingSector(start: arc.start + 0.25, end: arc.end - 0.25, inner: inner, outer: outer)
-                        .stroke(Color.white.opacity(isHot ? 0.9 : 0.0), lineWidth: isSelected ? 2 : 1.5)
+                        .stroke(Color.white.opacity(isHot ? 0.95 : 0.0), lineWidth: isSelected ? 2.5 : 1.5)
                 )
-                .shadow(color: isHot ? arc.color.opacity(0.55) : .clear, radius: isHot ? 10 : 0)
+                .shadow(color: isHot ? arc.color.opacity(0.6) : .clear, radius: isSelected ? 12 : (isHot ? 10 : 0))
         }
         .buttonStyle(.plain)
         .contentShape(RingSector(start: arc.start, end: arc.end, inner: inner, outer: band.outer))
+        .overlay {
+            // 环段内嵌标签（P1-7 信息密度追平 DaisyDisk）：**只画第 1 层**且弧够宽（≥14°）——
+            // 外环薄带绝不塞字（此前五层嵌套小字被实测否决）。纯装饰，a11y 已有完整标签。
+            if arc.depth == 1, arc.sweep >= 14, !arc.isOther || arc.node.name == xLoc("可用空间") {
+                arcInlineLabel(arc, inner: inner, outer: outer, dimmed: searchDim || familyDim)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .offset(x: pop * CGFloat(cos(theta)), y: pop * CGFloat(sin(theta)))
+        .zIndex(isHot ? 2 : 0)
         .onHover { if $0 { hovered = arc.node } else if hovered?.id == arc.node.id { hovered = nil } }
-        .help(arc.isOther ? xLocF("其他 %d 项", arc.otherItems.count) + " · \(arc.node.size.formattedBytes)"
+        .help(arc.isOther ? "\(xLoc(arc.node.name)) · \(arc.node.size.formattedBytes)"
                           : "\(xLoc(arc.node.name)) · \(arc.node.size.formattedBytes)")
         .animation(XMotion.hover, value: hovered?.id)
+        .animation(XMotion.hover, value: selected?.id)
         .accessibilityLabel(arcLabel(arc))
         .accessibilityAddTraits(.isButton)
         .transition(.opacity)   // 绽放时进出层淡入淡出，几何形变由 RingSector animatableData 插值
@@ -370,6 +454,57 @@ public struct SunburstView: View {
         .frame(width: 340)
     }
 
+    /// 环段内嵌标签（2026-07 重做）：**水平**「名称 + 百分比」两行置于弧中线径向中点——
+    /// 单层厚环带下水平字清晰体面；此前的切向旋转小字在多层窄环上被用户实测嫌丑。
+    private func arcInlineLabel(_ arc: Arc, inner: CGFloat, outer: CGFloat, dimmed: Bool) -> some View {
+        GeometryReader { geo in
+            let c = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
+            let r = (inner + outer) / 2
+            let theta = (arc.mid - 90) * .pi / 180
+            let pos = CGPoint(x: c.x + r * cos(theta), y: c.y + r * sin(theta))
+            // 弦长近似可用宽度（弧越窄可写越少），留 8pt 余量、封顶 110pt。
+            let maxW = min(max(0, 2 * r * sin(arc.sweep * .pi / 360) - 8), 110)
+            VStack(spacing: 1) {
+                Text(xLoc(arc.node.name))
+                    .font(XFont.nano)
+                    .lineLimit(1).truncationMode(.middle)
+                Text("\(Int((arc.sweep / 360 * 100).rounded()))%")
+                    .font(XFont.microMono)
+                    .opacity(0.8)
+            }
+            .foregroundStyle(Self.readableText(on: arc.color).opacity(dimmed ? 0.4 : 0.94))
+            .frame(maxWidth: maxW)
+            .position(pos)
+        }
+    }
+
+    /// 该文件是否「已完整下载在本机的 iCloud 项」——可驱逐本地副本（保留云端）。
+    static func isEvictableUbiquitous(_ url: URL) -> Bool {
+        guard let v = try? url.resourceValues(forKeys: [.isUbiquitousItemKey,
+                                                        .ubiquitousItemDownloadingStatusKey]) else { return false }
+        return v.isUbiquitousItem == true && v.ubiquitousItemDownloadingStatus == .current
+    }
+
+    /// 驱逐本地副本（文件仍在云端；树上就地剪除本地占用）。
+    private func evictLocal(_ node: DiskNode) {
+        do {
+            try FileManager.default.evictUbiquitousItem(at: node.url)
+            onDeselect?()
+            // 驱逐后本地占用归零——按「移除成功」语义就地剪枝由宿主 onTrash 的 prune 承担不了
+            //（未走废纸篓），此处提示用户重扫该层即可；体量小，代价可接受。
+            trashDeny = xLoc("已从本地移除（云端保留）。重新扫描该文件夹可刷新占用。")
+        } catch {
+            trashDeny = error.localizedDescription
+        }
+    }
+
+    /// 段色上可读的文字色：按 sRGB 相对亮度选黑/白（与 TreemapView 同法，就地实现避免跨文件私有依赖）。
+    static func readableText(on color: Color) -> Color {
+        let ns = NSColor(color).usingColorSpace(.sRGB) ?? .black
+        let l = 0.2126 * ns.redComponent + 0.7152 * ns.greenComponent + 0.0722 * ns.blueComponent
+        return l > 0.62 ? Color.black : Color.white
+    }
+
     /// VoiceOver 标签：名称 + 大小 + 占当前目录比例。复用既有「%@，%@」文案键，
     /// 占比以中性数字（如 " · 45%"）追加，不新增本地化键。
     private func arcLabel(_ arc: Arc) -> String {
@@ -377,8 +512,9 @@ public struct SunburstView: View {
             return xLocF("其他 %d 项", arc.otherItems.count) + "，\(arc.node.size.formattedBytes)"
         }
         let base = xLocF("%@，%@", xLoc(arc.node.name), arc.node.size.formattedBytes)
-        guard node.size > 0 else { return base }
-        let pct = Int((Double(arc.node.size) / Double(node.size) * 100).rounded())
+        let total = node.size + max(freeBytes ?? 0, 0)   // 与中心盘/详情卡同口径（终审 P1）
+        guard total > 0 else { return base }
+        let pct = Int((Double(arc.node.size) / Double(total) * 100).rounded())
         return "\(base) · \(pct)%"
     }
 
@@ -393,8 +529,13 @@ public struct SunburstView: View {
         // 中心优先级：悬停 > 选中 > 当前目录——选中后移开鼠标，中心仍锚着选中项（DaisyDisk 口径）。
         let shown = hovered ?? selected ?? node
         let sharePct: Int? = {
-            guard shown.id != node.id, node.size > 0 else { return nil }
-            return Int((Double(shown.size) / Double(node.size) * 100).rounded())
+            guard shown.id != node.id else { return nil }
+            // 分母 = 整环所代表的总量：看整卷根时含可用楔形（node.size 只是已用量，漏加 free
+            // 会让「可用空间」悬停显示 >100%、普通段占比虚高——2026-07 终审 P1）。
+            // 与环段内嵌标签的 sweep/360 口径完全一致。
+            let total = node.size + max(freeBytes ?? 0, 0)
+            guard total > 0 else { return nil }
+            return Int((Double(shown.size) / Double(total) * 100).rounded())
         }()
         let canGoUp = onUp != nil && hovered == nil && selected == nil
         // 中心盘也是一个 .plain Button：可被 Tab 聚焦、空格/回车触发「返回上一级」，
@@ -408,9 +549,12 @@ public struct SunburstView: View {
             }
         } label: {
         ZStack {
-            // 中心盘：给数字一块「表盘」底座，悬停上一级时点亮
-            Circle().fill(XColor.surface.opacity(centerHover && canGoUp ? 0.9 : 0.5))
+            // 中心盘（P2-13 玻璃质感）：系统材质底 + 表面色罩 + 极细内高光——
+            // 「悬浮表盘」景深，深色模式尤其立体（DaisyDisk 深色是弱项）。
+            Circle().fill(.ultraThinMaterial)
+            Circle().fill(XColor.surface.opacity(centerHover && canGoUp ? 0.72 : 0.35))
             Circle().stroke(XColor.hairline, lineWidth: 1)
+            Circle().stroke(Color.white.opacity(0.08), lineWidth: 1).padding(1.5)
             VStack(spacing: 3) {
                 if centerHover && canGoUp {
                     Image(systemName: "arrow.up.circle.fill")
@@ -453,7 +597,11 @@ public struct SunburstView: View {
 
     private var legend: some View {
         let sorted = Self.displayOrder(node.children)
-        let total = max(node.size, 1)
+        let total = max(node.size + max(freeBytes ?? 0, 0), 1)   // 与环段/中心盘同口径（终审 P1）
+        // 跨树搜索（P2-11）：查询非空时图例只列命中项（弧同步压暗非命中）。
+        let visible = searchQuery.isEmpty
+            ? Array(sorted.enumerated())
+            : Array(sorted.enumerated()).filter { $0.element.name.localizedCaseInsensitiveContains(searchQuery) }
         return VStack(alignment: .leading, spacing: XSpacing.s) {
             HStack {
                 Text(xLoc(node.name)).font(XFont.headline).foregroundStyle(XColor.textPrimary)
@@ -461,13 +609,23 @@ public struct SunburstView: View {
                 Spacer()
                 Text(node.size.formattedBytes).font(XFont.mono).foregroundStyle(XColor.textSecondary)
             }
-            Text(xLocF("%d 个项目 · 点文件夹进入 · 点文件选中", node.children.count))
+            if let free = freeBytes, free > 0 {
+                HStack(spacing: 5) {
+                    Circle().fill(XColor.success.opacity(0.5)).frame(width: 7, height: 7)
+                    Text(xLocF("可用 %@", free.formattedBytes))
+                        .font(XFont.captionEmphasis).foregroundStyle(XColor.success)
+                    Spacer()
+                }
+            }
+            Text(searchQuery.isEmpty
+                 ? xLocF("%d 个项目 · 点文件夹进入 · 点文件选中", node.children.count)
+                 : xLocF("命中 %d 项", visible.count))
                 .font(XFont.caption).foregroundStyle(XColor.textTertiary)
             Divider().padding(.vertical, 2)
             // 全部条目可滚动（不再截断到 14 项）——大目录也能逐项审阅。
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(sorted.enumerated()), id: \.element.id) { i, child in
+                    ForEach(visible, id: \.element.id) { i, child in
                         legendRow(child, color: child.isAggregate ? Self.aggregateColor : paletteColor(i),
                                   fraction: Double(child.size) / Double(total))
                     }
@@ -481,11 +639,25 @@ public struct SunburstView: View {
         .animation(XMotion.hover, value: selected?.id)
     }
 
+    /// 已知可安全清理的路径族（P2-15 徽标）：与 SafetyEngine 的可重建垃圾白名单同口径
+    ///（缓存/日志/窗口状态/开发者派生数据/废纸篓）。命中即在图例给 success 徽标 + 一键入篮。
+    static func isKnownCleanable(_ url: URL) -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let p = url.path
+        let roots = ["\(home)/Library/Caches", "\(home)/Library/Logs",
+                     "\(home)/Library/Saved Application State",
+                     "\(home)/Library/Developer/Xcode/DerivedData",
+                     "\(home)/.cache", "\(home)/.Trash"]
+        return roots.contains { p == $0 || p.hasPrefix($0 + "/") }
+    }
+
     // MARK: 选中详情卡（DaisyDisk 式：选中任意环段/行——含文件——即出详情与操作）
 
     @ViewBuilder
     private func selectionCard(_ sel: DiskNode) -> some View {
-        let pct = node.size > 0 ? Int((Double(sel.size) / Double(node.size) * 100).rounded()) : 0
+        // 分母与中心盘/环段标签同口径：看整卷根时含可用楔形（终审 P1 分母修正）。
+        let cardTotal = node.size + max(freeBytes ?? 0, 0)
+        let pct = cardTotal > 0 ? Int((Double(sel.size) / Double(cardTotal) * 100).rounded()) : 0
         let drillable = sel.isDirectory && !sel.isAggregate
         VStack(alignment: .leading, spacing: XSpacing.s) {
             HStack(spacing: XSpacing.s) {
@@ -499,10 +671,59 @@ public struct SunburstView: View {
                 Text("\(pct)%").font(XFont.captionEmphasis).foregroundStyle(XColor.brand).monospacedDigit()
             }
             if sel.isAggregate {
-                // 聚合段（其他/隐藏空间）：只解释，不给文件级操作（URL 是父目录，动它即误伤）。
-                Text(Self.aggregateHelp(sel))
+                // 聚合段（其他/隐藏空间/账本）：只解释，不给文件级操作（URL 是父目录，动它即误伤）。
+                Text(ledgerExplanation(sel))
                     .font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                // 账本子段在环上是很薄的外环弧、不好点——详情卡里逐行列出并携带
+                // 各自动作，三本账的可达性不依赖环上命中率。
+                if sel.ledgerKind == nil {
+                    ForEach(sel.children.filter { $0.ledgerKind != nil }) { child in
+                        HStack(spacing: XSpacing.s) {
+                            Circle().fill(Self.aggregateColor).frame(width: 7, height: 7)
+                            Text(xLoc(child.name)).font(XFont.caption)
+                                .foregroundStyle(XColor.textPrimary)
+                                .lineLimit(1)
+                            Spacer()
+                            Text(child.size.formattedBytes).font(XFont.microMono)
+                                .foregroundStyle(XColor.textSecondary)
+                            switch child.ledgerKind {
+                            case .snapshots:
+                                if let onManageSnapshots {
+                                    Button(xLoc("管理…")) { onManageSnapshots() }
+                                        .buttonStyle(XSecondaryButtonStyle(compact: true))
+                                }
+                            case .unreadable:
+                                if let onOpenFDA {
+                                    Button(xLoc("开启权限")) { onOpenFDA() }
+                                        .buttonStyle(XSecondaryButtonStyle(compact: true))
+                                }
+                            default:
+                                EmptyView()
+                            }
+                        }
+                        .help(ledgerExplanation(child))
+                    }
+                }
+                // 账本节点的专属动作（P0-d）：快照走 tmutil 独立通道、无权限区引导 FDA。
+                switch sel.ledgerKind {
+                case .snapshots:
+                    if let onManageSnapshots {
+                        Button { onManageSnapshots() } label: {
+                            Label(xLoc("管理本地快照…"), systemImage: "clock.arrow.circlepath")
+                        }
+                        .buttonStyle(XPrimaryButtonStyle(compact: true))
+                    }
+                case .unreadable:
+                    if let onOpenFDA {
+                        Button { onOpenFDA() } label: {
+                            Label(xLoc("开启完全磁盘访问"), systemImage: "lock.shield")
+                        }
+                        .buttonStyle(XPrimaryButtonStyle(compact: true))
+                    }
+                default:
+                    EmptyView()
+                }
             } else {
                 Text(sel.url.path)
                     .font(XFont.captionMono).foregroundStyle(XColor.textTertiary)
@@ -532,6 +753,15 @@ public struct SunburstView: View {
                         }
                         .buttonStyle(XSecondaryButtonStyle(compact: true))
                         .help(xLoc("加入收集篮"))
+                    }
+                    // iCloud 就地驱逐（P1-8）：已下载的 iCloud 文件「从本地移除、云端保留」——
+                    // 比移废纸篓更轻更安全，是 DaisyDisk 付费墙后才有的能力。
+                    if !sel.isDirectory, Self.isEvictableUbiquitous(sel.url) {
+                        Button { evictLocal(sel) } label: {
+                            Image(systemName: "icloud.and.arrow.up")
+                        }
+                        .buttonStyle(XSecondaryButtonStyle(compact: true))
+                        .help(xLoc("从本地移除（保留云端）"))
                     }
                     Spacer()
                     if onTrash != nil {
@@ -565,6 +795,13 @@ public struct SunburstView: View {
                             .font(XFont.nano).foregroundStyle(XColor.textTertiary)
                         Text(xLoc(child.name)).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                             .lineLimit(1).truncationMode(.middle)
+                        // 可安全清理徽标（P2-15）：缓存/日志/DerivedData 等已知可重建垃圾——
+                        // 空间可视化与清理安全库在同一屏产生化学反应（三合一独占）。
+                        if !child.isAggregate, Self.isKnownCleanable(child.url) {
+                            Image(systemName: "sparkles")
+                                .font(XFont.nano).foregroundStyle(XColor.success)
+                                .help(xLoc("已知可安全清理类型（缓存/日志/派生数据），删除后可自动重建"))
+                        }
                         Spacer()
                         Text("\(Int((fraction * 100).rounded()))%")
                             .font(XFont.caption).foregroundStyle(isHot ? color : XColor.textTertiary).monospacedDigit()
@@ -643,12 +880,16 @@ public struct SunburstView: View {
                     continue
                 }
                 let cStart = a, cEnd = a + childSpan
-                let color = child.isAggregate ? Self.aggregateColor : (hue ?? paletteColor(i))
+                let base = child.isAggregate ? Self.aggregateColor : (hue ?? paletteColor(i))
+                // 深层同胞交替明度（DaisyDisk 同法）：继承同一家族色相时，相邻段以 ~14% 差
+                // 彼此区分，否则整个扇区糊成一块实色。注意向下传的是未交替的 base——
+                // 交替只作用于本段展示，不随深度复利叠加。
+                let color = (depth >= 2 && !child.isAggregate && i % 2 == 1) ? base.opacity(0.86) : base
                 out.append(Arc(key: child.id.uuidString, node: child, depth: depth,
                                start: cStart, end: cEnd, color: color,
                                isOther: false, otherItems: []))
                 if child.isDirectory && !child.children.isEmpty {
-                    recurse(child, depth: depth + 1, start: cStart, end: cEnd, hue: color)
+                    recurse(child, depth: depth + 1, start: cStart, end: cEnd, hue: base)
                 }
                 a = cEnd
             }
@@ -664,7 +905,19 @@ public struct SunburstView: View {
         }
         // 初始 hue 传 nil：顶层分配一律走 paletteColor——家族模式下它返回「家族色相 × 明度阶」
         // （同级可辨），扫描根下它返回主题色阶彩虹；子孙经 hue 参数继承烘好的颜色。
-        recurse(node, depth: 1, start: 0, end: 360, hue: nil)
+        // 可用空间楔形（P1-7）：看整卷根时，已用部分按占比压缩、尾部追加低饱和「可用」段——
+        // 整环 = 卷总量，一眼同时读出「还剩多少」与「谁占掉了」。
+        if let free = freeBytes, free > 0, node.size > 0 {
+            let usedSpan = 360 * Double(node.size) / Double(node.size + free)
+            recurse(node, depth: 1, start: 0, end: usedSpan, hue: nil)
+            let carrier = DiskNode(url: node.url, name: xLoc("可用空间"), isDirectory: false,
+                                   size: free, isAggregate: true)
+            out.append(Arc(key: node.id.uuidString + "#free", node: carrier, depth: 1,
+                           start: usedSpan, end: 360, color: XColor.success.opacity(0.22),
+                           isOther: true, otherItems: []))
+        } else {
+            recurse(node, depth: 1, start: 0, end: 360, hue: nil)
+        }
         return out
     }
 

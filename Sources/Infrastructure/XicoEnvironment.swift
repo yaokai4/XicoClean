@@ -132,12 +132,18 @@ public final class XicoEnvironment: @unchecked Sendable {
         // 智能扫描既有「知道去哪找」的精准，也有「每个文件都看过」的全面。废纸篓不在此列（见上）。
         // 系统垃圾扫描器关掉内联浅扫残留（includeLeftovers: false），残留全权交给 OrphanScanner，
         // 避免同一路径在两个分组里打架；独立「系统垃圾」页仍保留浅扫（scanner(for:) 默认 true）。
+        // 同理关掉 privacy 纳入（includePrivacy: false）——中枢里浏览器缓存由并列的 PrivacyScanner
+        // 承担；独立页默认 true（侧边栏无隐私入口，不纳入则浏览器缓存两头落空，2026-07 审计）。
         var modules: [ScannerModule] = [
-            SystemJunkScanner(definitions: currentDefinitions(), fs: fs, safety: safety, includeLeftovers: false),
+            SystemJunkScanner(definitions: currentDefinitions(), fs: fs, safety: safety,
+                              includeLeftovers: false, includePrivacy: false),
         ]
         if let privacy = scanner(for: .privacy) { modules.append(privacy) }
         modules.append(DeepScanner(fs: fs, safety: safety))
         modules.append(OrphanScanner(fs: fs, safety: safety))
+        // 微信专清（docs/15 P0-e 中国区破局）：4.0/3.x 双路径动态枚举、6 粒度、
+        // 聊天媒体 90 天档默认不勾、聊天数据库仅提示——CMM 没有、比柠檬更克制。
+        modules.append(WeChatScanner(fs: fs, safety: safety))
         return ScanCoordinator(modules: modules)
     }
 }
@@ -147,6 +153,8 @@ public enum ModuleCatalog {
     public static let all: [ModuleMetadata] = [
         // —— 清理：只留两个入口，其余清理面全部并入智能扫描中枢（docs/14 P0）。
         ModuleMetadata(id: .smartScan, title: "智能扫描", subtitle: "一键体检与清理", systemImage: "sparkles", category: .cleanup),
+        // 命名定稿（用户拍板 2026-07-12）：本页保留「系统垃圾」——专门清系统垃圾的定点秒级快扫；
+        // 重名冲突由中枢侧解决：那张聚合卡（垃圾+隐私+深扫+孤儿+微信 五引擎）改名「垃圾与残留」。
         ModuleMetadata(id: .systemJunk, title: "系统垃圾", subtitle: "缓存 / 日志 / 开发者残余", systemImage: "trash", category: .cleanup),
 
         // —— 应用：空间透镜迁入（用户拍板，docs/14 §3.1）。

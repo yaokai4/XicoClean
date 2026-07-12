@@ -42,8 +42,11 @@ public struct SystemSnapshot: Sendable {
     public let gpuUsage: Double?          // 0...1（IOAccelerator）
     public let cpuTemp: Double?           // ℃（Apple Silicon HID / Intel SMC）
     public let gpuTemp: Double?           // ℃
+    public let ssdTemp: Double?           // ℃（NAND/SSD 传感器均值；菜单栏温度项可选源）
     public let batteryPercent: Int?       // 0...100（无电池为 nil）
     public let batteryCharging: Bool
+    /// 剩余使用时间（分钟；nil = 无电池 / 外接电源 / 系统尚在估算）。IOPSGetTimeRemainingEstimate。
+    public let batteryMinutesRemaining: Int?
     public let thermal: ThermalLevel
     public let fanRPM: Int?
 
@@ -122,10 +125,11 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         let gpu = needGPU
             ? smoothedGPU(hardware.acceleratorPerformance().utilization.map { min(1, max(0, $0 / 100)) })
             : smoothedGPU(nil)
-        let temp: (cpu: Double?, gpu: Double?) = needTemp ? sensors.summary() : (nil, nil)
+        let temp: (cpu: Double?, gpu: Double?, ssd: Double?) = needTemp ? sensors.summary3() : (nil, nil, nil)
         // 电池：详情可见或菜单栏电池字形启用时读取（IOPS 快照成本低，与 gpu/temp 同一门控模式）。
         let needBattery = consumerVisible || Self.menuGlyphEnabled("battery", default: false)
         let battery: (percent: Int?, charging: Bool) = needBattery ? batteryStatus() : (nil, false)
+        let batteryMinutes: Int? = needBattery ? batteryTimeRemaining() : nil
         let fan: Int? = consumerVisible ? smc.fanRPM() : nil
         return SystemSnapshot(
             cpuUsage: cpu.busy, perCore: cores, cpuUser: cpu.user, cpuSystem: cpu.system,
@@ -139,8 +143,9 @@ public final class LiveMetricsSampler: @unchecked Sendable {
             netDownBytesPerSec: net.down, netUpBytesPerSec: net.up,
             diskReadBytesPerSec: disk.read, diskWriteBytesPerSec: disk.write,
             gpuUsage: gpu,
-            cpuTemp: temp.cpu, gpuTemp: temp.gpu,
+            cpuTemp: temp.cpu, gpuTemp: temp.gpu, ssdTemp: temp.ssd,
             batteryPercent: battery.percent, batteryCharging: battery.charging,
+            batteryMinutesRemaining: batteryMinutes,
             thermal: thermalLevel(), fanRPM: fan)
     }
 
@@ -391,7 +396,12 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         var nameBuf = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
         guard if_indextoname(UInt32(index), &nameBuf) != nil else { return false }
         let name = String(cString: nameBuf)
-        let excludedPrefixes = ["lo", "utun", "awdl", "llw", "bridge", "gif", "stf", "ap", "anpi", "XHC"]
+        var excludedPrefixes = ["lo", "awdl", "llw", "bridge", "gif", "stf", "ap", "anpi", "XHC"]
+        // VPN 隧道（utun）默认排除——流量会在隧道口与物理口各计一遍（双计）。
+        // 「计入 VPN 流量」开关（P1）：只看隧道内明文流量的用户可显式打开。
+        if !UserDefaults.standard.bool(forKey: "xico.mb.net.includeVPN") {
+            excludedPrefixes.append("utun")
+        }
         return !excludedPrefixes.contains { name.hasPrefix($0) }
     }
 
@@ -410,6 +420,14 @@ public final class LiveMetricsSampler: @unchecked Sendable {
             return (Int((Double(c) / Double(m) * 100).rounded()), charging)
         }
         return (nil, charging)
+    }
+
+    /// 电池剩余时间（分钟）。kIOPSTimeRemainingUnknown（估算中）/ kIOPSTimeRemainingUnlimited
+    ///（外接电源）均返回 nil——不显示假数字。
+    private func batteryTimeRemaining() -> Int? {
+        let seconds = IOPSGetTimeRemainingEstimate()
+        guard seconds > 0 else { return nil }
+        return Int(seconds / 60)
     }
 
     // MARK: 温度（公开热状态）

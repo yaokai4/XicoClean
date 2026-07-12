@@ -44,8 +44,35 @@ public struct SpaceLedger: Sendable {
         return max(0, important - Int64(available))
     }
 
+    /// 删除单个本地快照：`tmutil deletelocalsnapshots <日期>`。
+    /// 入参为完整快照名（com.apple.TimeMachine.2026-07-11-054512.local），内部提取日期段。
+    /// 系统级操作、不可移废纸篓——调用方**必须**先弹二次确认（透镜快照通道的红线）。
+    public static func deleteLocalSnapshot(named name: String) async -> Bool {
+        // com.apple.TimeMachine.<date>.local → <date>
+        var date = name
+        if let range = date.range(of: "com.apple.TimeMachine.") { date.removeSubrange(range) }
+        if date.hasSuffix(".local") { date.removeLast(".local".count) }
+        guard !date.isEmpty, date.allSatisfy({ $0.isNumber || $0 == "-" }) else { return false }
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/tmutil")
+                proc.arguments = ["deletelocalsnapshots", date]
+                proc.standardOutput = FileHandle.nullDevice
+                proc.standardError = FileHandle.nullDevice
+                do { try proc.run() } catch { return continuation.resume(returning: false) }
+                let watchdog = DispatchWorkItem { if proc.isRunning { proc.terminate() } }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
+                proc.waitUntilExit()
+                watchdog.cancel()
+                continuation.resume(returning: proc.terminationStatus == 0)
+            }
+        }
+    }
+
     /// `tmutil listlocalsnapshots <卷>` → 快照名数组；nil = 执行失败/超时。
-    static func listLocalSnapshots(volume: URL) async -> [String]? {
+    /// public（P0-d）：透镜快照管理浮层直接枚举。
+    public static func listLocalSnapshots(volume: URL) async -> [String]? {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 let proc = Process()

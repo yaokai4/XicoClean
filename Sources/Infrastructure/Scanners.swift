@@ -121,10 +121,12 @@ private let conservativeLogDefIDs: Set<String> = ["user-logs", "system-logs"]
 private let logAnomalyThreshold: Int64 = 500 * 1_048_576
 
 /// 把一组定义跑成扫描结果（系统垃圾 / 隐私共用）。
+/// async（P1 性能）：`allocatedSize` 对大容器缓存是同步递归求和——每项之间让出协作线程，
+/// 长扫描不再饿死同池的其它异步任务（菜单栏采样等）。
 func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
                      fs: FileSystemService, safety: SafetyEngine, home: URL,
                      progress: @escaping ProgressHandler,
-                     runningIDs: Set<String> = []) -> ScanResult {
+                     runningIDs: Set<String> = []) async -> ScanResult {
     var groups: [ScanResultGroup] = []
     var runningTotal: Int64 = 0
 
@@ -137,6 +139,7 @@ func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
         for pattern in def.paths {
             for url in PathExpander.expand(pattern, home: home, fs: fs) {
                 if Task.isCancelled { break }
+                await Task.yield()   // 每项一次让步：递归求和不长占协作线程
                 if PathExpander.isExcluded(url, byRoots: excludePaths) { continue }
                 guard safety.verify(url, intent: .trash).isAllowed else { continue }
                 let size = fs.allocatedSize(of: url)
@@ -174,6 +177,14 @@ func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
 
         if !items.isEmpty {
             items.sort { $0.size > $1.size }
+            // 保留策略（P1）：DeviceSupport **按平台各保最新一份**（iOS/watchOS/tvOS 三平台
+            // 合在一条定义里，全局取一会把「手表平台唯一且在用」的符号目录默认勾删——终审 P2）；
+            // iOS 备份保留最近一次（数据安全底线）——保留项强制不勾 + 说明。
+            if def.id == "xcode-devicesupport" {
+                markNewestKeepPerParent(&items, fs: fs, note: "最新版本 · 真机调试仍需，建议保留")
+            } else if def.id == "ios-backups" {
+                markNewestKeep(&items, fs: fs, note: "最近一次备份 · 建议保留")
+            }
             groups.append(ScanResultGroup(id: def.id, title: def.title, description: def.description,
                                           systemImage: def.systemImage, safety: def.safety,
                                           explanation: def.resolvedExplanation, items: items))
@@ -181,6 +192,43 @@ func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
     }
     groups.sort { $0.totalSize > $1.totalSize }
     return ScanResult(moduleID: moduleID, groups: groups)
+}
+
+/// 按「父目录」分桶后各自保留最新一份——DeviceSupport 的 iOS/watchOS/tvOS 三平台在同一条
+/// 定义里，父目录（"iOS DeviceSupport" 等）即平台边界；每个平台的最新版本都可能正在使用。
+private func markNewestKeepPerParent(_ items: inout [CleanableItem], fs: FileSystemService, note: String) {
+    let parents = Set(items.map { $0.url.deletingLastPathComponent().path })
+    for parent in parents {
+        let bucket = items.enumerated().filter { $0.element.url.deletingLastPathComponent().path == parent }
+        guard !bucket.isEmpty else { continue }
+        var newestIdx = bucket[0].offset
+        var newestDate = Date.distantPast
+        for (offset, item) in bucket {
+            let d = fs.entry(for: item.url)?.modificationDate ?? .distantPast
+            if d > newestDate { newestDate = d; newestIdx = offset }
+        }
+        let old = items[newestIdx]
+        items[newestIdx] = CleanableItem(id: old.id, url: old.url, displayName: old.displayName,
+                                         detail: old.detail, size: old.size, safety: old.safety,
+                                         isSelected: false, requiresHelper: old.requiresHelper,
+                                         note: note)
+    }
+}
+
+/// 把（按修改时间）最新的一项强制置为不勾选并加保留提示——DeviceSupport/iOS 备份的保留策略。
+private func markNewestKeep(_ items: inout [CleanableItem], fs: FileSystemService, note: String) {
+    guard items.count > 0 else { return }
+    var newestIdx = 0
+    var newestDate = Date.distantPast
+    for (i, item) in items.enumerated() {
+        let d = fs.entry(for: item.url)?.modificationDate ?? .distantPast
+        if d > newestDate { newestDate = d; newestIdx = i }
+    }
+    let old = items[newestIdx]
+    items[newestIdx] = CleanableItem(id: old.id, url: old.url, displayName: old.displayName,
+                                     detail: old.detail, size: old.size, safety: old.safety,
+                                     isSelected: false, requiresHelper: old.requiresHelper,
+                                     note: note)
 }
 
 // MARK: - 系统垃圾扫描器（系统/开发者/iOS 类别）
@@ -198,10 +246,15 @@ public struct SystemJunkScanner: ScannerModule {
     /// 智能扫描中枢传 false——那里由 OrphanScanner（P4 全量孤儿引擎，按 App 分组）接管，避免两套并列。
     private let includeLeftovers: Bool
 
+    /// 是否纳入 privacy 类定义（浏览器缓存）。独立「系统垃圾」页默认开——侧边栏没有独立
+    /// 隐私入口，而 user-caches 又刻意排除了浏览器目录（交给专项规则），不纳入的话浏览器
+    /// 缓存在独立页上两头落空（2026-07 审计发现）；智能扫描中枢传 false（那里由并列的
+    /// PrivacyScanner 承担，避免同一路径在两个引擎里重复计量）。
     public init(definitions: [CleanupDefinition], fs: FileSystemService, safety: SafetyEngine,
                 home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                includeLeftovers: Bool = true) {
-        let junkCategories: Set<String> = ["system-junk", "developer-junk", "ios"]
+                includeLeftovers: Bool = true, includePrivacy: Bool = true) {
+        var junkCategories: Set<String> = ["system-junk", "developer-junk", "ios"]
+        if includePrivacy { junkCategories.insert("privacy") }
         self.definitions = definitions.filter { junkCategories.contains($0.category) }
         self.fs = fs
         self.safety = safety
@@ -213,13 +266,26 @@ public struct SystemJunkScanner: ScannerModule {
         let running = await MainActor.run {
             Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
         }
-        var groups = scanDefinitions(definitions, moduleID: .systemJunk, fs: fs, safety: safety,
-                                     home: home, progress: progress, runningIDs: running).groups
+        var groups = await scanDefinitions(definitions, moduleID: .systemJunk, fs: fs, safety: safety,
+                                           home: home, progress: progress, runningIDs: running).groups
         // 继续累计已发现字节，避免后续分组从 0 汇报导致进度环数字中途回跳。
         var base = groups.reduce(Int64(0)) { $0 + $1.totalSize }
         if let darwin = darwinTempCacheGroup(running: running, baseTotal: base, progress: progress) {
             groups.append(darwin); base += darwin.totalSize
         }
+        // /private/var/folders 的 T（临时）目录：与 C（缓存）同为系统分配的每用户目录，
+        // 只列 3 天以上未动的项——新鲜临时文件可能被进程持有中（2026-07 系统级精细化）。
+        if let darwinTemp = darwinTempFilesGroup(running: running, baseTotal: base, progress: progress) {
+            groups.append(darwinTemp); base += darwinTemp.totalSize
+        }
+        // Docker 磁盘镜像引导（P1）：Docker.raw 动辄几十 GB，但**绝不能直接删**（删 = 所有容器/镜像全毁）。
+        // 列出体积 + 指路 `docker system prune`，risky 永不勾选——「不做危险项」是安全卖点。
+        if let docker = dockerGuidanceGroup() { groups.append(docker) }
+        // 三个「仅提示」组（2026-07 系统级精细化）：只解释体量与正确的处置方式，永不代删——
+        // 「大而不能乱删」的诚实呈现是与激进清理器的差异化卖点。
+        if let sims = simulatorDevicesGuidanceGroup() { groups.append(sims) }
+        if let gomod = goModCacheGuidanceGroup() { groups.append(gomod) }
+        if let vm = vmFilesGuidanceGroup() { groups.append(vm) }
         if includeLeftovers {
             let (leftovers, orphanContainerPaths) = leftoversGroup(baseTotal: base, progress: progress)
             // 去重：孤儿容器整体已计入「残留」，从「沙盒应用缓存」里剔除其下子项，避免重复计入夸大总量
@@ -262,6 +328,97 @@ public struct SystemJunkScanner: ScannerModule {
                                systemImage: "cpu", safety: .caution, items: items)
     }
 
+    /// /private/var/folders 的 T（临时）目录：macOS 为各 App 分配的每用户临时文件区。
+    /// 与 C（缓存）目录同源同性质，但临时文件可能被运行中的进程持有——只列**3 天以上未动**
+    /// 且 ≥1MB 的项，caution 默认不勾，由用户确认。
+    private func darwinTempFilesGroup(running: Set<String>, baseTotal: Int64,
+                                      progress: @escaping ProgressHandler) -> ScanResultGroup? {
+        guard let dir = Self.darwinUserTempURL() else { return nil }
+        let now = Date()
+        var items: [CleanableItem] = []
+        var total = baseTotal
+        for url in fs.contentsOfDirectory(dir) {
+            if Task.isCancelled { break }
+            guard safety.verify(url, intent: .trash).isAllowed else { continue }
+            // 3 天新鲜期：正在被进程使用的临时文件多在此窗口内，宁可漏、不可误。
+            let modified = fs.entry(for: url)?.modificationDate ?? now
+            guard now.timeIntervalSince(modified) > 3 * 86400 else { continue }
+            let size = fs.allocatedSize(of: url)
+            guard size > 1_000_000 else { continue }
+            let isRunning = running.contains(url.lastPathComponent)
+            items.append(CleanableItem(url: url, displayName: FriendlyName.resolve(url.lastPathComponent),
+                                       detail: url.path, size: size, safety: .caution,
+                                       isSelected: false,
+                                       note: isRunning ? "正在运行 · 建议退出后再清理" : "3 天以上未动的临时文件"))
+            total += size
+            progress(ScanProgress(message: url.lastPathComponent, bytesFound: total))
+        }
+        guard !items.isEmpty else { return nil }
+        items.sort { $0.size > $1.size }
+        return ScanResultGroup(id: "darwin-temp-files", title: "系统临时文件",
+                               description: "macOS 为各应用分配的临时文件区（/private/var/folders 的 T 目录），只列 3 天以上未动的项。",
+                               systemImage: "clock.arrow.2.circlepath", safety: .caution,
+                               explanation: "T 目录与系统临时缓存同源，存放应用的中间临时文件；新鲜文件可能仍被进程持有，因此只列出 3 天以上未动的项，默认不勾选。删除后应用按需重建。",
+                               items: items)
+    }
+
+    /// iOS 模拟器设备引导项（仅提示）：CoreSimulator/Devices 动辄 20–100GB，但哪些「不可用」
+    /// 需要 simctl 运行时判定——指路 `xcrun simctl delete unavailable`，Xico 不代删模拟器设备。
+    private func simulatorDevicesGuidanceGroup() -> ScanResultGroup? {
+        let devices = home.appendingPathComponent("Library/Developer/CoreSimulator/Devices")
+        guard fs.exists(devices) else { return nil }
+        let size = fs.allocatedSize(of: devices)
+        guard size > 1 << 30 else { return nil }   // <1GB 不值得提示
+        let item = CleanableItem(url: devices, displayName: "CoreSimulator/Devices",
+                                 detail: devices.path, size: size, safety: .risky,
+                                 note: "模拟器设备 · 请在终端运行 xcrun simctl delete unavailable 清理旧版本，勿直接删除",
+                                 isInformational: true)
+        return ScanResultGroup(
+            id: "simulator-devices-guidance", title: "模拟器设备（仅提示）",
+            description: "iOS 模拟器设备的数据盘。直接删除会毁掉全部模拟器与其中数据。正确瘦身：xcrun simctl delete unavailable（清理不可用旧设备）。Xico 不代删。",
+            systemImage: "iphone.gen3.slash", safety: .risky,
+            explanation: "每个模拟器设备是一块完整的数据盘，其中可能有你测试中的 App 与数据。哪些设备属于「不可用旧版本」需要 Xcode 工具链运行时判定，因此 Xico 只提示总体积、指路官方命令，绝不代删。",
+            items: [item])
+    }
+
+    /// Go 模块缓存引导项（仅提示）：~/go/pkg/mod 的文件是**只读**权限，直接移废纸篓会
+    /// 大面积失败——正确方式是 `go clean -modcache`。列体积 + 指路，不代删。
+    private func goModCacheGuidanceGroup() -> ScanResultGroup? {
+        let mod = home.appendingPathComponent("go/pkg/mod")
+        guard fs.exists(mod) else { return nil }
+        let size = fs.allocatedSize(of: mod)
+        guard size > 1 << 30 else { return nil }
+        let item = CleanableItem(url: mod, displayName: xLoc("Go 模块缓存"),
+                                 detail: mod.path, size: size, safety: .risky,
+                                 note: "只读缓存 · 请在终端运行 go clean -modcache 释放，勿直接删除",
+                                 isInformational: true)
+        return ScanResultGroup(
+            id: "go-modcache-guidance", title: "Go 模块缓存（终端瘦身）",
+            description: "Go 的全局模块缓存（~/go/pkg/mod）。其中文件为只读权限，直接删除会部分失败。正确瘦身：go clean -modcache。Xico 不代删。",
+            systemImage: "shippingbox.circle", safety: .risky,
+            explanation: "Go 工具链刻意把模块缓存设为只读以保证构建可复现，绕过权限强删既不完整也可能留下损坏的缓存状态；go clean -modcache 是官方且完整的释放方式，下次构建按需重新下载。",
+            items: [item])
+    }
+
+    /// 休眠镜像与交换文件（仅提示）：/private/var/vm 由 macOS 全权自管，任何工具都不应删——
+    /// 诚实解释「这块空间为什么在、什么时候还」，与激进清理器划清界限。
+    private func vmFilesGuidanceGroup() -> ScanResultGroup? {
+        let vm = URL(fileURLWithPath: "/private/var/vm", isDirectory: true)
+        guard fs.exists(vm) else { return nil }
+        let size = fs.allocatedSize(of: vm)
+        guard size > 1 << 30 else { return nil }
+        let item = CleanableItem(url: vm, displayName: xLoc("休眠镜像与交换文件"),
+                                 detail: vm.path, size: size, safety: .risky,
+                                 note: "系统自管 · 重启或内存压力缓解后自动回收，任何工具都不应删除",
+                                 isInformational: true)
+        return ScanResultGroup(
+            id: "vm-files-guidance", title: "休眠镜像与交换文件（仅提示）",
+            description: "macOS 的内存休眠镜像（sleepimage）与交换文件（swapfile）。系统自动管理，删除会被立即重建甚至引发不稳定。Xico 只解释、不代删。",
+            systemImage: "memorychip", safety: .risky,
+            explanation: "这块空间是 macOS 虚拟内存体系的一部分：休眠镜像保存睡眠时的内存快照，交换文件在内存吃紧时兜底。它们随内存压力自动伸缩，重启后自然回收——把它们算进「可清理垃圾」是行业里常见的虚标，Xico 不这么做。",
+            items: [item])
+    }
+
     /// 已卸载应用残留：仅扫沙盒容器与窗口状态（按 bundle id 一一对应，误判极低）。
     /// 刻意不扫 Application Support —— 那里混有 Adobe dunamis 等"无独立 App 的框架组件"，
     /// 会被误判成残留，对清理器而言误删比漏删更致命。
@@ -294,9 +451,42 @@ public struct SystemJunkScanner: ScannerModule {
         return (group, orphanContainerPaths)
     }
 
+    /// Docker/OrbStack 虚拟磁盘引导项：只陈述占用与「正确的瘦身方式」，永不勾选、永不代删。
+    private func dockerGuidanceGroup() -> ScanResultGroup? {
+        let candidates = [
+            home.appendingPathComponent("Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw"),
+            home.appendingPathComponent("Library/Containers/com.docker.docker/Data/vms/0/Docker.raw"),
+            home.appendingPathComponent(".orbstack/data/data.img"),
+        ]
+        var items: [CleanableItem] = []
+        for url in candidates where fs.exists(url) {
+            let size = fs.allocatedSize(of: url)
+            guard size > 1 << 30 else { continue }
+            items.append(CleanableItem(url: url, displayName: url.lastPathComponent,
+                                       detail: url.path, size: size, safety: .risky,
+                                       note: "虚拟磁盘 · 请在终端运行 docker system prune 瘦身，勿直接删除",
+                                       isInformational: true))
+        }
+        guard !items.isEmpty else { return nil }
+        return ScanResultGroup(
+            id: "docker-guidance", title: "容器虚拟磁盘（仅提示）",
+            description: "Docker/OrbStack 的虚拟磁盘删除会毁掉全部容器与镜像。正确瘦身：docker system prune -a（清理未用镜像）。Xico 不代删。",
+            systemImage: "shippingbox.circle", safety: .risky,
+            explanation: "该文件是容器运行时的整块虚拟磁盘，内含你的全部镜像、容器与卷。直接删除等于卸载所有容器数据，因此 Xico 只提示体积、指路官方瘦身命令，绝不代删。",
+            items: items)
+    }
+
     static func darwinUserCacheURL() -> URL? {
         var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
         let n = confstr(_CS_DARWIN_USER_CACHE_DIR, &buf, buf.count)
+        guard n > 0 else { return nil }
+        return URL(fileURLWithPath: xicoString(fromNullTerminated: buf), isDirectory: true)
+    }
+
+    /// /private/var/folders/.../T——系统分配的每用户临时目录（与 C 缓存目录同级）。
+    static func darwinUserTempURL() -> URL? {
+        var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let n = confstr(_CS_DARWIN_USER_TEMP_DIR, &buf, buf.count)
         guard n > 0 else { return nil }
         return URL(fileURLWithPath: xicoString(fromNullTerminated: buf), isDirectory: true)
     }
@@ -348,7 +538,7 @@ public struct PrivacyScanner: ScannerModule {
     }
 
     public func scan(progress: @escaping ProgressHandler) async throws -> ScanResult {
-        scanDefinitions(definitions, moduleID: .privacy, fs: fs, safety: safety, home: home, progress: progress)
+        await scanDefinitions(definitions, moduleID: .privacy, fs: fs, safety: safety, home: home, progress: progress)
     }
 }
 
@@ -365,13 +555,23 @@ public struct LargeFilesScanner: ScannerModule {
     private let threshold: Int64
     private let maxItems: Int
 
+    /// 用户可调阈值（P1）：`xico.largefiles.thresholdMB`，未设置默认 100MB。
+    public static var configuredThreshold: Int64 {
+        let mb = UserDefaults.standard.integer(forKey: "xico.largefiles.thresholdMB")
+        return mb > 0 ? Int64(mb) * 1024 * 1024 : 100 * 1024 * 1024
+    }
+    /// 是否纳入外置卷（P1）：`xico.largefiles.externals`，默认关。
+    public static var includeExternalVolumes: Bool {
+        UserDefaults.standard.bool(forKey: "xico.largefiles.externals")
+    }
+
     public init(fs: FileSystemService, safety: SafetyEngine,
                 home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                thresholdBytes: Int64 = 100 * 1024 * 1024, maxItems: Int = 200) {
+                thresholdBytes: Int64? = nil, maxItems: Int = 500) {
         self.fs = fs
         self.safety = safety
         self.home = home
-        self.threshold = thresholdBytes
+        self.threshold = thresholdBytes ?? Self.configuredThreshold
         self.maxItems = maxItems
     }
 
@@ -472,6 +672,7 @@ public struct LargeFilesScanner: ScannerModule {
 
     /// 用户内容目录 + ~/Library（大文件常藏在 Containers/Application Support/iOS 备份里）。
     /// deepEnumerate 会剪掉 node_modules/DerivedData 等海量小文件目录，故纳入 Library 不至于拖垮。
+    /// P1：可选纳入外置卷（`xico.largefiles.externals`）。
     private func scanRoots() -> [URL] {
         let skipDot = true
         var roots = fs.contentsOfDirectory(home).filter { url in
@@ -480,6 +681,15 @@ public struct LargeFilesScanner: ScannerModule {
             return (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
         }
         roots.append(home.appendingPathComponent("Library"))
+        if Self.includeExternalVolumes {
+            let keys: [URLResourceKey] = [.volumeIsInternalKey]
+            let mounted = FileManager.default.mountedVolumeURLs(
+                includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
+            for vol in mounted {
+                let isInternal = (try? vol.resourceValues(forKeys: [.volumeIsInternalKey]))?.volumeIsInternal ?? true
+                if !isInternal { roots.append(vol) }
+            }
+        }
         return roots
     }
 }
@@ -569,6 +779,7 @@ public struct DeepScanner: ScannerModule {
     public func scan(progress: @escaping ProgressHandler) async throws -> ScanResult {
         var installers: [CleanableItem] = []
         var partials: [CleanableItem] = []
+        var zombies: [CleanableItem] = []
         var filesScanned = 0
         var bytesFound: Int64 = 0
         let now = Date()
@@ -576,6 +787,28 @@ public struct DeepScanner: ScannerModule {
         for await entry in fs.deepEnumerate(home, includeFiles: true) {
             if Task.isCancelled { break }
             let ext = entry.url.pathExtension.lowercased()
+
+            // 僵尸 node_modules（P2，CMM/柠檬都没有）：项目 90 天没动过的依赖树——
+            // 重跑 `npm install` 即可完整重建，是开发者机器上最肥的「隐形垃圾」。
+            // deepEnumerate 先产出该目录再剪枝，正好在此拦截；体量 ≥50MB 才列。
+            if entry.isDirectory, entry.url.lastPathComponent == "node_modules" {
+                let projectDir = entry.url.deletingLastPathComponent()
+                let projectMtime = fs.entry(for: projectDir)?.modificationDate ?? entry.modificationDate ?? now
+                let stale = now.timeIntervalSince(projectMtime) > 90 * 86400
+                if stale, safety.verify(entry.url, intent: .trash).isAllowed {
+                    let size = fs.allocatedSize(of: entry.url)
+                    if size >= 50 << 20 {
+                        zombies.append(CleanableItem(
+                            url: entry.url, displayName: projectDir.lastPathComponent + "/node_modules",
+                            detail: entry.url.path, size: size,
+                            safety: .caution, isSelected: false,
+                            note: "项目超过 90 天未动 · npm install 可完整重建"))
+                        bytesFound += size
+                        progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: bytesFound))
+                    }
+                }
+                continue
+            }
 
             // Safari 的 .download 是目录包——目录也要看扩展名，其余目录跳过
             if entry.isDirectory && ext != "download" { continue }
@@ -592,11 +825,13 @@ public struct DeepScanner: ScannerModule {
                 let age = now.timeIntervalSince(entry.modificationDate ?? entry.accessDate ?? now)
                 let stale = age > 30 * 86400
                 let size = fs.entry(for: entry.url)?.size ?? entry.size
+                // 默认不自动勾选（P0 勾选纪律）：安装包是用户下载的文件，可能要留档/分发，
+                // 「>30 天就勾」过于激进——对齐 CleanMyMac 的安全姿态，把决定权交回用户。
                 installers.append(CleanableItem(
                     url: entry.url, displayName: entry.url.lastPathComponent,
                     detail: entry.url.path, size: size,
-                    safety: stale ? .safe : .caution, isSelected: stale,
-                    note: "安装包 · 装完即可删"))
+                    safety: stale ? .safe : .caution, isSelected: false,
+                    note: stale ? "安装包 · 超过 30 天未动，装完即可删" : "安装包 · 装完即可删"))
                 bytesFound += size
                 progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: bytesFound))
             } else if Self.partialExts.contains(ext) {
@@ -630,6 +865,15 @@ public struct DeepScanner: ScannerModule {
                 id: "partial-downloads", title: "中断的下载",
                 description: "下载中断留下的残块（.crdownload / .part / .download），续传会重新开始，可安全清理。",
                 systemImage: "icloud.and.arrow.down", safety: .safe, items: partials))
+        }
+        if !zombies.isEmpty {
+            zombies.sort { $0.size > $1.size }
+            groups.append(ScanResultGroup(
+                id: "zombie-node-modules", title: "僵尸依赖（node_modules）",
+                description: "超过 90 天未动的项目的依赖树。重跑 npm/yarn/pnpm install 即可完整重建；默认不勾选。",
+                systemImage: "shippingbox.and.arrow.backward", safety: .caution,
+                explanation: "node_modules 是 npm 生态的本地依赖副本，完全由 package.json 派生——删除后在项目里重跑一次安装命令即可恢复。只列出项目本身长期未动的（90 天），活跃项目不打扰。",
+                items: zombies))
         }
         return ScanResult(moduleID: .deepScan, groups: groups)
     }

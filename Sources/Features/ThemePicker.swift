@@ -17,25 +17,23 @@ struct ThemePickerCard: View {
                     }
                     Spacer()
                 }
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: XSpacing.m) {
-                        ForEach(XTheme.all) { theme in
-                            let isSel = theme.id == selectedID
+                // 自适应网格全平铺（2026-07 用户实测修复）：此前横向滚动无指示器，
+                // 折叠在卡外的主题看起来「选不到」——八套主题一屏尽收，永不折叠。
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: XSpacing.m)],
+                          spacing: XSpacing.m) {
+                    ForEach(XTheme.all) { theme in
+                        let isSel = theme.id == selectedID
+                        Button {
+                            withAnimation(XMotion.snappy) { selectedID = theme.id }
+                        } label: {
                             ThemeSwatch(theme: theme, selected: isSel)
-                                // 选中项前推放大并高亮，未选中项略缩淡出——稳定的深度层次
-                                .scaleEffect(isSel ? 1.06 : 0.95)
-                                .opacity(isSel ? 1 : 0.8)
-                                .zIndex(isSel ? 1 : 0)
-                                .onTapGesture {
-                                    withAnimation(XMotion.snappy) {
-                                        selectedID = theme.id
-                                    }
-                                }
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(xLoc(theme.name))
+                        .accessibilityAddTraits(isSel ? [.isButton, .isSelected] : .isButton)
                     }
-                    .padding(.vertical, 10)
-                    .padding(.horizontal, XSpacing.s)
                 }
+                .padding(.vertical, XSpacing.xs)
             }
         }
     }

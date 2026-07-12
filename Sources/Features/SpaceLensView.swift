@@ -22,6 +22,9 @@ final class SpaceLensModel: ObservableObject {
     @Published var scanRoot: URL = URL(fileURLWithPath: "/")
     /// 「移到废纸篓」失败或被删除红线拒绝时的提示文案。
     @Published var trashError: String?
+    /// 树结构版本号：细化嫁接 / 删除剪枝 / 撤销回接等**就地改 children**（DiskNode 引用类型，
+    /// node.id 不变）后自增——SunburstView 的 ArcCache 凭它失效重建，否则环上停留过期几何。
+    @Published private(set) var treeRevision = 0
 
     /// 色相锚定表：扫描完成时按「大小降序的一级子目录」记录 色阶索引（与环图/图例的
     /// 分配顺序一致），此后即使剪枝导致大小变化，颜色分配保持稳定、返回时可追（P2·D4）。
@@ -34,9 +37,19 @@ final class SpaceLensModel: ObservableObject {
     private var scanGeneration = 0
 
     /// 收集篮（两段式删除）。随会话缓存共存亡——切侧栏 tab 再回来，篮里的东西还在。
-    lazy var basket: BasketModel = BasketModel(
-        deny: { [weak self] url in self?.denyReason(for: url) },
-        performTrash: { [weak self] nodes in await self?.trashMany(nodes) ?? (0, []) })
+    lazy var basket: BasketModel = {
+        let b = BasketModel(
+            deny: { [weak self] url in self?.denyReason(for: url) },
+            performTrash: { [weak self] nodes in await self?.trashMany(nodes) ?? (0, []) })
+        // 应用内一键撤销（P0-f KILLER-2）：DaisyDisk 永久删除结构上做不到。
+        b.performUndo = { [weak self] in await self?.undoLastBasket() ?? xLoc("没有可撤销的删除") }
+        return b
+    }()
+
+    /// 跨树搜索（P2-11）：命中名满亮、其余压暗，图例只列命中项。
+    @Published var searchText = ""
+    /// 快照管理浮层（P0-d 独立 tmutil 通道）。
+    @Published var showSnapshotSheet = false
 
     init(env: XicoEnvironment) {
         self.env = env
@@ -162,7 +175,18 @@ final class SpaceLensModel: ObservableObject {
             if delta != 0 {
                 for ancestor in self.ancestors(of: node) { ancestor.adjustSize(by: delta) }
             }
+            self.treeRevision += 1
+            self.rebindSelectionAfterGraft(under: node)
         }
+    }
+
+    /// 嫁接换掉了整批子实例（UUID 全新）：selected 若指向被替换子树中的旧实例，按路径重绑到
+    /// 新实例（找不到即清除）——否则详情卡/⌘⌫ 会对陈旧实例执行删除，id 剪枝空转出「幽灵」条目。
+    private func rebindSelectionAfterGraft(under node: DiskNode) {
+        guard let sel = selected, !sel.isAggregate else { return }
+        let base = node.url.path
+        guard sel.url.path == base || sel.url.path.hasPrefix(base + "/") else { return }
+        selected = findNode(url: sel.url)
     }
 
     /// 现场子扫描 + 嫁接 + 进入。代际闸：扫描期间用户若重扫/换根，旧树的嫁接与入栈一律作废。
@@ -184,6 +208,8 @@ final class SpaceLensModel: ObservableObject {
             if delta != 0 {
                 for ancestor in self.ancestors(of: node) { ancestor.adjustSize(by: delta) }
             }
+            self.treeRevision += 1
+            self.rebindSelectionAfterGraft(under: node)
             self.enter(node, animatedBy: animate)
         }
     }
@@ -266,7 +292,12 @@ final class SpaceLensModel: ObservableObject {
     private func pruneFromTree(_ target: DiskNode) {
         guard let root else { return }
         objectWillChange.send()
-        root.pruneSubtree(removingID: target.id)
+        // 细化嫁接会全量换新子实例（UUID 全新）：删除动作若持有旧实例，id 剪枝空转 →
+        // 按路径兜底，保证「已入废纸篓的项必从环上消失」（2026-07 终审 P1 幽灵条目）。
+        if root.pruneSubtree(removingID: target.id) == 0, !target.isAggregate {
+            root.pruneSubtree(removingPath: target.url.path)
+        }
+        treeRevision += 1
     }
 
     /// 删除红线预检（全应用唯一口径 env.safety）：返回拒绝原因，nil = 放行。
@@ -276,32 +307,67 @@ final class SpaceLensModel: ObservableObject {
         return nil
     }
 
-    /// 批量移废纸篓（收集篮执行段）：逐项复检红线 → 回收 → 剪枝，返回释放量与失败清单。
-    /// 逐项而非整批 recycle：单项失败不拖垮整篮，且成功项可精确剪枝/计量。
+    /// 上一篮删除的引擎报告 + 被剪节点及其父节点（撤销时回接树用）。
+    private var lastReport: CleaningReport?
+    private var lastPruned: [(node: DiskNode, parent: DiskNode?)] = []
+
+    /// 批量移废纸篓（收集篮执行段，P0-f KILLER-2）：改走 **CleaningEngine**——
+    /// 与「清理」页共用同一删除引擎：同一条红线（verify + TOCTOU 复校，比此前单次 verify 更严）、
+    /// 同一份 CleaningReport 口径、同一个撤销栈（restorable → undo 一键回原位）。
     func trashMany(_ nodes: [DiskNode]) async -> (freed: Int64, failures: [String]) {
-        var freed: Int64 = 0
         var failures: [String] = []
+        var eligible: [DiskNode] = []
         for node in nodes {
-            guard !node.isAggregate else { failures.append(node.name); continue }
-            if case let .deny(reason) = env.safety.verify(node.url, intent: .trash) {
-                failures.append("\(node.name)（\(xLoc(reason))）")
-                continue
-            }
-            let error = await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
-                NSWorkspace.shared.recycle([node.url]) { _, error in
-                    cont.resume(returning: error?.localizedDescription)
-                }
-            }
-            if let error {
-                failures.append("\(node.name)（\(error)）")
-            } else {
-                // 已知近似：硬链接文件按首见路径全额计量，删除其一并不真正释放磁盘
-                //（其余链接仍持有数据）——与 Finder「显示文件大小」同口径，不为罕见病例引入链接表查询。
-                freed += node.size
-                pruneFromTree(node)
+            if node.isAggregate { failures.append(node.name) } else { eligible.append(node) }
+        }
+        guard !eligible.isEmpty else { return (0, failures) }
+        // DiskNode → CleanableItem 适配层（唯一新增桥接）。
+        let items = eligible.map {
+            CleanableItem(url: $0.url, displayName: $0.name, detail: $0.url.path,
+                          size: $0.size, safety: .caution, isSelected: true)
+        }
+        let report = await env.cleaningEngine.execute(CleaningPlan(items: items, intent: .trash))
+        let failedPaths = Set(report.failures.map { $0.url.standardizedFileURL.path })
+        for f in report.failures {
+            failures.append("\(f.url.lastPathComponent)（\(xLoc(f.reason))）")
+        }
+        var freed: Int64 = 0
+        lastPruned.removeAll()
+        for node in eligible where !failedPaths.contains(node.url.standardizedFileURL.path) {
+            // 已知近似：硬链接文件按首见路径全额计量，删除其一并不真正释放磁盘
+            //（其余链接仍持有数据）——与 Finder「显示文件大小」同口径。
+            freed += node.size
+            lastPruned.append((node, ancestors(of: node).last))
+            pruneFromTree(node)
+        }
+        lastReport = report
+        return (freed, failures)
+    }
+
+    /// 应用内一键撤销（KILLER-2）：CleaningEngine.undo 把废纸篓项移回原位，
+    /// 成功项就地回接到树上（无需整棵重扫）。返回用户可读结果文案。
+    func undoLastBasket() async -> String {
+        guard let report = lastReport, !report.restorable.isEmpty else {
+            return xLoc("没有可撤销的删除")
+        }
+        let result = await env.cleaningEngine.undo(report)
+        let failedPaths = Set(result.failed.map { $0.originalURL.standardizedFileURL.path })
+        objectWillChange.send()
+        for (node, parent) in lastPruned
+        where !failedPaths.contains(node.url.standardizedFileURL.path) {
+            if let parent {
+                parent.graftChild(node)
+                // 父节点已在 graftChild 中计量；父之上的祖先链回填。
+                for ancestor in ancestors(of: node).dropLast() { ancestor.adjustSize(by: node.size) }
             }
         }
-        return (freed, failures)
+        treeRevision += 1
+        lastReport = nil
+        lastPruned.removeAll()
+        if result.failed.isEmpty {
+            return xLocF("已恢复 %d 项到原位", result.restored)
+        }
+        return xLocF("已恢复 %d 项，%d 项未能恢复（可在废纸篓手动找回）", result.restored, result.failed.count)
     }
 
     /// 拖放入篮：把文件 URL 解析回当前树中的节点（按路径精确匹配，深度有限、可接受）。
@@ -382,6 +448,10 @@ public struct SpaceLensView: View {
         } message: {
             Text(model.trashError ?? "")
         }
+        // 本地快照管理（P0-d 独立通道）：tmutil 系统级删除、逐个二次确认，绝不进「一键」批量。
+        .sheet(isPresented: $model.showSnapshotSheet) {
+            SnapshotManagerSheet(onDone: { model.showSnapshotSheet = false })
+        }
     }
 
     /// 是否有可展示的扫描结果（根为非空树）——控制头部动作、面包屑与主视图的出现时机。
@@ -393,27 +463,81 @@ public struct SpaceLensView: View {
 
     private var headerSubtitle: String {
         if model.isScanning { return xLoc("正在分析空间") }
-        if model.current != nil { return model.scanRoot.path }
+        if model.current != nil {
+            // 友好名（2026-07 用户实测）：裸 "/" 挂在标题下太丑；家目录显示 ~ 缩写。
+            let path = model.scanRoot.path
+            if path == "/" { return xLoc("整个磁盘") }
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            if path.hasPrefix(home) { return "~" + path.dropFirst(home.count) }
+            return path
+        }
         return xLoc("放射环形图 · 逐层钻取 · 只读分析")
+    }
+
+    /// 看整卷根（栈空且扫描根是卷）时的可用字节——环上可用楔形 + 图例可用行的数据源（P1-7）。
+    private var rootFreeBytes: Int64? {
+        guard model.stack.isEmpty,
+              (try? model.scanRoot.resourceValues(forKeys: [.isVolumeKey]))?.isVolume == true,
+              let cap = try? model.scanRoot.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
+              let avail = cap.volumeAvailableCapacity else { return nil }
+        return Int64(avail)
+    }
+
+    /// 已挂载可浏览卷（多卷选择器，P2-11）。
+    private func mountedVolumes() -> [URL] {
+        let keys: [URLResourceKey] = [.volumeIsBrowsableKey]
+        let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys,
+                                                         options: [.skipHiddenVolumes]) ?? []
+        return urls.filter { (try? $0.resourceValues(forKeys: Set(keys)))?.volumeIsBrowsable == true }
     }
 
     /// 头部动作区：与其它页面同语言（无材质条、无分割线），有结果时才出现视图切换。
     @ViewBuilder private var headerActions: some View {
         HStack(spacing: XSpacing.m) {
             if hasResult && !model.isScanning {
+                // 跨树搜索（P2-11）：命中高亮、图例过滤——大盘找特定大文件不必逐层钻。
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass").font(XFont.micro).foregroundStyle(XColor.textTertiary)
+                    TextField(xLoc("搜索名称"), text: $model.searchText)
+                        .textFieldStyle(.plain).font(XFont.caption)
+                        .frame(width: 120)
+                    if !model.searchText.isEmpty {
+                        Button { model.searchText = "" } label: {
+                            Image(systemName: "xmark.circle.fill").font(XFont.micro)
+                                .foregroundStyle(XColor.textTertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(xLoc("清除搜索"))
+                    }
+                }
+                .padding(.horizontal, XSpacing.s).padding(.vertical, 5)
+                .background(Capsule().fill(XColor.surfaceAlt.opacity(0.6)))
                 XSegmentedControl(selection: $viz, options: [
                     .init(tag: "ring", icon: "circle.hexagongrid", a11y: xLoc("放射环形图")),
                     .init(tag: "blocks", icon: "square.grid.2x2", a11y: xLoc("方块图")),
                 ])
                 .accessibilityLabel(xLoc("可视化方式"))
-                Button { model.chooseFolder() } label: {
-                    Label(xLoc("选择文件夹"), systemImage: "folder")
+                // 多卷选择器（P2-11）：一键切换扫描根到任意已挂载卷。
+                Menu {
+                    ForEach(mountedVolumes(), id: \.path) { vol in
+                        Button(vol.lastPathComponent.isEmpty ? vol.path : vol.lastPathComponent) {
+                            model.scanRoot = vol
+                            model.scan()
+                        }
+                    }
+                    Divider()
+                    Button(xLoc("选择文件夹…")) { model.chooseFolder() }
+                } label: {
+                    Label(xLoc("位置"), systemImage: "internaldrive")
                 }
-                .buttonStyle(XSecondaryButtonStyle(compact: true))
+                .menuStyle(.borderlessButton)
+                .fixedSize()
                 Button { model.scan() } label: {
                     Label(xLoc("重新扫描"), systemImage: "arrow.clockwise")
+                        .lineLimit(1)
                 }
                 .buttonStyle(XPrimaryButtonStyle(compact: true))
+                .fixedSize()   // 窄窗防折行变形（2026-07 用户实测：按钮文字折成两行）
             }
         }
     }
@@ -477,14 +601,19 @@ public struct SpaceLensView: View {
                                  onTrash: { child in model.trash(child) },
                                  onCollect: { child in model.basket.add(child) },
                                  denyReason: { model.denyReason(for: $0) },
-                                 familyHue: model.familyHue)
+                                 familyHue: model.familyHue,
+                                 freeBytes: rootFreeBytes,
+                                 searchQuery: model.searchText,
+                                 revision: model.treeRevision,
+                                 onManageSnapshots: { model.showSnapshotSheet = true },
+                                 onOpenFDA: { model.openFullDiskAccessSettings() })
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .top) {
                 if model.isExpanding {
                     HStack(spacing: XSpacing.s) {
-                        ProgressView().controlSize(.small)
+                        XSpinner(size: 14)
                         Text(xLoc("正在深入扫描…")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     .padding(.horizontal, XSpacing.m).padding(.vertical, 6)
@@ -541,7 +670,7 @@ public struct SpaceLensView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// 扫描态：招牌彗星环 + 滚动字节数 + 当前目录胶囊 + 取消。
+    /// 扫描态：招牌彗星环 + 滚动字节数 + 当前目录胶囊 + 取消。（快照管理浮层见文件尾 SnapshotManagerSheet）
     private var scanning: some View {
         VStack(spacing: XSpacing.l) {
             XScanOrb(value: model.scannedBytes.formattedBytes, label: xLoc("正在分析空间"), size: 260)
@@ -562,5 +691,112 @@ public struct SpaceLensView: View {
                 .padding(.top, XSpacing.xs)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - 本地快照管理浮层（P0-d：tmutil 独立删除通道，逐个二次确认）
+
+/// Time Machine 本地快照清单：逐个删除（系统级 tmutil，不可移废纸篓 → 每个都要确认）。
+/// 体积无特权拿不到（DaisyDisk MAS 版同样拿不到），诚实不编数字。
+private struct SnapshotManagerSheet: View {
+    let onDone: () -> Void
+    @State private var names: [String]?
+    @State private var pendingDelete: String?
+    @State private var deleting = false
+    @State private var note: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: XSpacing.m) {
+            HStack {
+                XIconTile(systemImage: "clock.arrow.circlepath", colors: XColor.metricDisk, size: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(xLoc("本地快照")).font(XFont.headline).foregroundStyle(XColor.textPrimary)
+                    Text(xLoc("Time Machine 的本地时点备份。删除立即释放空间，但不可恢复——请逐个确认。"))
+                        .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                }
+                Spacer()
+            }
+            Divider()
+            if let names {
+                if names.isEmpty {
+                    Text(xLoc("当前没有本地快照。"))
+                        .font(XFont.body).foregroundStyle(XColor.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, XSpacing.xl)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            ForEach(names, id: \.self) { name in
+                                HStack(spacing: XSpacing.s) {
+                                    Image(systemName: "clock").font(XFont.caption)
+                                        .foregroundStyle(XColor.textTertiary)
+                                    Text(Self.displayDate(name))
+                                        .font(XFont.captionMono).foregroundStyle(XColor.textPrimary)
+                                    Spacer()
+                                    Button(xLoc("删除…")) { pendingDelete = name }
+                                        .buttonStyle(XDestructiveButtonStyle(compact: true))
+                                        .disabled(deleting)
+                                }
+                                .padding(.vertical, 4).padding(.horizontal, XSpacing.s)
+                                .background(RoundedRectangle(cornerRadius: XRadius.chip)
+                                    .fill(XColor.surfaceAlt.opacity(0.5)))
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 300)
+                }
+            } else {
+                XSpinner().frame(maxWidth: .infinity).padding(.vertical, XSpacing.xl)
+            }
+            if let note {
+                Text(note).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+            }
+            HStack {
+                Text(xLoc("提示：macOS 会在磁盘紧张时自动瘦身快照。"))
+                    .font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                Spacer()
+                Button(xLoc("完成")) { onDone() }.buttonStyle(XPrimaryButtonStyle(compact: true))
+            }
+        }
+        .padding(XSpacing.xl)
+        .frame(width: 460)
+        .task { names = await SpaceLedger.listLocalSnapshots(volume: URL(fileURLWithPath: "/")) ?? [] }
+        .confirmationDialog(xLoc("删除本地快照"),
+                            isPresented: Binding(get: { pendingDelete != nil },
+                                                 set: { if !$0 { pendingDelete = nil } }),
+                            presenting: pendingDelete) { name in
+            Button(xLoc("删除（不可恢复）"), role: .destructive) {
+                pendingDelete = nil
+                deleting = true
+                Task { @MainActor in
+                    let ok = await SpaceLedger.deleteLocalSnapshot(named: name)
+                    deleting = false
+                    if ok {
+                        names?.removeAll { $0 == name }
+                        note = xLoc("已删除。释放的空间会在系统整理后反映到可用容量。")
+                    } else {
+                        note = xLoc("删除失败：系统拒绝或快照已不存在。")
+                    }
+                }
+            }
+            Button(xLoc("取消"), role: .cancel) { pendingDelete = nil }
+        } message: { name in
+            Text(xLocF("将删除快照 %@。这是系统级操作，不经过废纸篓、不可恢复。", Self.displayDate(name)))
+        }
+    }
+
+    /// com.apple.TimeMachine.2026-07-11-054512.local → 2026-07-11 05:45
+    static func displayDate(_ name: String) -> String {
+        var d = name
+        if let r = d.range(of: "com.apple.TimeMachine.") { d.removeSubrange(r) }
+        if d.hasSuffix(".local") { d.removeLast(".local".count) }
+        // 2026-07-11-054512 → 2026-07-11 05:45
+        let parts = d.split(separator: "-")
+        if parts.count == 4, parts[3].count == 6 {
+            let t = parts[3]
+            let hh = t.prefix(2), mm = t.dropFirst(2).prefix(2)
+            return "\(parts[0])-\(parts[1])-\(parts[2]) \(hh):\(mm)"
+        }
+        return d
     }
 }

@@ -263,10 +263,10 @@ private struct MemoryHeroCard: View {
                         }
                         let total = max(Double(s.memoryTotal), 1)
                         XSegmentBar(segments: [
-                            .init(id: 0, fraction: Double(s.memoryApp) / total, color: XColor.memApp),
-                            .init(id: 1, fraction: Double(s.memoryWired) / total, color: XColor.memWired),
-                            .init(id: 2, fraction: Double(s.memoryCompressed) / total, color: XColor.memCompressed),
-                            .init(id: 3, fraction: Double(s.memoryCached) / total, color: XColor.memCached),
+                            .init(id: "app", fraction: Double(s.memoryApp) / total, color: XColor.memApp),
+                            .init(id: "wired", fraction: Double(s.memoryWired) / total, color: XColor.memWired),
+                            .init(id: "comp", fraction: Double(s.memoryCompressed) / total, color: XColor.memCompressed),
+                            .init(id: "cached", fraction: Double(s.memoryCached) / total, color: XColor.memCached),
                         ], height: 8)
                         HStack(spacing: XSpacing.m) {
                             legend(xLoc("应用"), XColor.memApp, s.memoryApp)

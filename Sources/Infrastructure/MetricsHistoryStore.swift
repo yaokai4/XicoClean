@@ -80,10 +80,12 @@ public final class MetricsHistoryStore: @unchecked Sendable {
     }
 
     /// 取某时间范围内的点（保证按时间升序，供下游按下标画折线）。
+    /// `points` 由 record() 维持严格升序（回拨点在 :72 被拒），filter 保序 → 无需再 sort。
+    /// 去掉对最多上万点的每帧冗余排序（2026-07 卡死修复：监视页每次 body 求值都会调用本方法）。
     public func points(in range: Range, now: Date) -> [MetricsHistoryPoint] {
         let cutoff = now.timeIntervalSince1970 - range.seconds
         lock.lock(); defer { lock.unlock() }
-        return points.filter { $0.t >= cutoff }.sorted { $0.t < $1.t }
+        return points.filter { $0.t >= cutoff }
     }
 
     /// 落盘（脏才写）。可在主线程低频调用——编码与写盘派发到后台串行队列，不阻塞调用线程。

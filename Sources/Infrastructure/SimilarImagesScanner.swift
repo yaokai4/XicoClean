@@ -120,17 +120,21 @@ public struct SimilarImagesScanner: Sendable {
         for cluster in clusters where cluster.count > 1 {
             let sorted = cluster.sorted { $0.size > $1.size }   // 最大的作为"保留"
             var items: [CleanableItem] = []
+            var wasted: Int64 = 0
             for (idx, m) in sorted.enumerated() {
+                // 体积口径 = 物理已分配字节（P0）；默认全不勾——相似照片是用户的照片，
+                // 「删哪张」交回用户（P0 默认勾选纪律，比 CMM 更克制）。
+                let phys = DuplicatesScanner.physicalSize(m.url) ?? m.size
                 items.append(CleanableItem(url: m.url, displayName: m.url.lastPathComponent,
-                                           detail: m.url.path, size: m.size, safety: .caution,
-                                           isSelected: idx != 0,
+                                           detail: m.url.path, size: phys, safety: .caution,
+                                           isSelected: false,
                                            note: idx == 0 ? "建议保留（最大）" : nil))
+                if idx != 0 { wasted += phys }
             }
-            let wasted = sorted.dropFirst().reduce(Int64(0)) { $0 + $1.size }
             groups.append(ScanResultGroup(
                 id: "sim-\(sorted[0].url.path)",
                 title: xLocF("%@ · %d 张相似", sorted[0].url.lastPathComponent, cluster.count),
-                description: xLocF("可释放约 %@（保留最大的一张）", wasted.formattedBytes),
+                description: xLocF("预计可释放约 %@（保留最大的一张）", wasted.formattedBytes),
                 systemImage: "photo.on.rectangle.angled", safety: .caution, items: items))
         }
         groups.sort { $0.selectedSize > $1.selectedSize }

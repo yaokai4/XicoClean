@@ -129,6 +129,7 @@ struct SessionScaffold<Idle: View>: View {
                         ResultGroupCard(
                             group: group,
                             index: idx,
+                            count: vm.groups.count,
                             allSelected: vm.groupSelectionState(group),
                             onToggleGroup: { vm.setGroup(group.id, selected: $0) },
                             onToggleItem: { vm.toggleItem(groupID: group.id, itemID: $0) },
@@ -283,8 +284,10 @@ struct SummaryHeader: View {
         let top = groups.sorted { $0.bytes > $1.bytes }
         let denom = max(total, 1)
         return VStack(alignment: .leading, spacing: XSpacing.xs) {
+            // 身份 = 组 id（稳定）：扫描中/收尾时按大小重排，同一段平滑滑动而非瞬移到别组的值上
+            //（此前 id=排名 + 颜色跟排名，重排即「到处飞」——2026-07 用户实测修复）。
             XSegmentBar(segments: Array(top.prefix(6)).enumerated().map { i, g in
-                .init(id: i, fraction: Double(g.bytes) / Double(denom), color: XColor.ring(i))
+                .init(id: g.id, fraction: Double(g.bytes) / Double(denom), color: XColor.ring(i))
             }, height: 6)
             // 图例胶囊：点击滚动到组。超过 6 组只列前 6（余量并入轨道底色，诚实不假聚合）。
             HStack(spacing: XSpacing.s) {
@@ -333,7 +336,7 @@ struct ModuleIdleHero: View {
     let action: () -> Void
     var body: some View {
         VStack(spacing: XSpacing.l) {
-            XIconTile(systemImage: icon, colors: colors, size: 88)
+            XIconTile(systemImage: icon, colors: colors, size: 88, flat: false)
                 .xGlow(colors.first ?? XColor.brand, radius: 30)
             Text(xLoc(title)).xLargeTitle().foregroundStyle(XColor.textPrimary)
             Text(xLoc(subtitle)).font(XFont.body).foregroundStyle(XColor.textSecondary)
@@ -381,6 +384,10 @@ public struct SmartScanView: View {
     @State private var metrics: SystemMetrics?
     @State private var appeared = false
     @State private var showHealthDetail = false
+    /// S-B 阈值跃迁的一次性辉光脉冲。
+    @State private var healthGlow = false
+    /// S-B phaseAnimator 登场触发器（每次跨过 ≥85 自增，驱动 seed→overshoot→settle 三阶段）。
+    @State private var healthPop = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(model: AppModel) {
@@ -502,7 +509,47 @@ public struct SmartScanView: View {
             smartText: internals.isEmpty ? xLoc("打开硬件页后计入") : (smartHealthy == true ? xLoc("全部正常") : xLoc("有告警")))
     }
 
-    private var dashboard: some View {
+    /// 首帧未采样占位（docs/16 P0-5）：世界级首帧从不显示假 0——「0%→88%」硬跳是廉价感第一来源。
+    /// 结构感 skeleton + 旋转环，真值到达即 crossfade 到 dashboardLoaded。
+    @ViewBuilder private var dashboard: some View {
+        Group {
+            if capacity == nil && metrics == nil {
+                dashboardSkeleton
+            } else {
+                dashboardLoaded
+            }
+        }
+        .animation(XMotion.crossfade, value: capacity == nil && metrics == nil)
+    }
+
+    private var dashboardSkeleton: some View {
+        VStack(spacing: XSpacing.xl) {
+            XSkeleton(width: 240, height: 22)
+            XRingGauge(progress: 0, spinning: true, colors: XColor.ringColors,
+                       lineWidth: 16, size: 296, a11yLabel: xLoc("加载中")) {
+                VStack(spacing: XSpacing.s) {
+                    XSkeleton(width: 150, height: 36)
+                    XSkeleton(width: 96, height: 12)
+                }
+            }
+            HStack(spacing: XSpacing.m) {
+                ForEach(0..<3, id: \.self) { _ in
+                    XCard(padding: XSpacing.l) {
+                        HStack(spacing: XSpacing.m) {
+                            Circle().fill(XColor.surfaceAlt).frame(width: 46, height: 46)
+                            VStack(alignment: .leading, spacing: 6) {
+                                XSkeleton(width: 64, height: 16)
+                                XSkeleton(width: 88, height: 10)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var dashboardLoaded: some View {
         let disk = capacity?.usedFraction ?? 0
         let free = max(0, 1 - disk)
         let mem = metrics?.memoryUsedFraction ?? 0
@@ -539,6 +586,26 @@ public struct SmartScanView: View {
                                 fraction: Double(health) / 100, colors: healthColors(health))
                 }
                 .buttonStyle(.plain)
+                // S-B「健康分登场」（docs/16）：跨过优秀阈值（≥85）那一刻——
+                // 一次 .levelChange 触感 + 品牌辉光脉冲 + phaseAnimator 三阶段登场
+                // （seed 0.96 → overshoot 1.06 → settle 1.0），把「跨过一道坎」物理化。
+                // 环色同帧从中性阶跃迁为品牌极光（healthColors 的 ≥85 分支），声触光色同刻发生。
+                .xGlow(XColor.brand, radius: healthGlow ? 22 : 0, opacity: healthGlow ? 0.5 : 0)
+                .phaseAnimator([1.0, 0.96, 1.06], trigger: healthPop) { view, scale in
+                    view.scaleEffect(reduceMotion ? 1 : scale)
+                } animation: { phase in
+                    phase == 1.06 ? XMotion.celebrateSoft : XMotion.settle
+                }
+                .onChange(of: health >= 85) { _, excellent in
+                    guard excellent else { return }
+                    XHaptic.perform(.levelChange)
+                    healthPop += 1
+                    withAnimation(XMotion.celebrateSoft) { healthGlow = true }
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 900_000_000)
+                        withAnimation(XMotion.crossfade) { healthGlow = false }
+                    }
+                }
                 .accessibilityLabel(xLocF("健康评分 %d，点按查看构成", health))
                 .popover(isPresented: $showHealthDetail, arrowEdge: .bottom) {
                     HealthBreakdownView(score: detail)
@@ -622,8 +689,10 @@ public struct SmartScanView: View {
     }
 
     private func healthColors(_ s: Int) -> [Color] {
-        if s >= 80 { return [XColor.accentTeal, XColor.success] }
-        if s >= 60 { return XColor.ringColors }
+        // S-B 色彩跃迁（docs/16）：品牌极光只留给「优秀」——从中性阶跃迁到品牌色本身就是
+        // 奖励语义；一般状态用中性 graphite（不发糖），差状态保留警示色（诚实指标）。
+        if s >= 85 { return XColor.brandGradientColors }
+        if s >= 60 { return [XColor.textTertiary, XColor.textSecondary] }
         return [XColor.warning, XColor.accentPink]
     }
 

@@ -23,6 +23,27 @@ final class DefinitionsSafetyCrossAuditTests: XCTestCase {
         return ["/" + filled]
     }
 
+    /// 摄入期红线固化（docs/15 P1-g CI 门禁）：内置库每条路径都必须通过
+    /// `DefinitionPathPolicy.isAllowed`——否则同一条规则经在线更新通道下发时会被摄入期整条拒收，
+    /// 「内置能跑、在线更新被拒」的口径分裂在 CI 即失败。
+    func testEveryBundledDefinitionPassesIngestionPolicy() {
+        let lib = DefinitionsLibrary.bundled()
+        XCTAssertFalse(lib.definitions.isEmpty)
+        for def in lib.definitions {
+            for pattern in def.paths {
+                XCTAssertTrue(DefinitionPathPolicy.isAllowed(path: pattern, requiresHelper: def.requiresHelper),
+                              "规则 \"\(def.id)\" 的路径 \"\(pattern)\" 未通过摄入期路径策略（DefinitionPathPolicy）")
+            }
+        }
+    }
+
+    /// 每条规则都必须有非空 explanation（docs/15「逐规则可解释」是产品承诺，CI 固化）。
+    func testEveryBundledDefinitionHasExplanation() {
+        for def in DefinitionsLibrary.bundled().definitions {
+            XCTAssertFalse(def.resolvedExplanation.isEmpty, "规则 \"\(def.id)\" 缺少可解释文案")
+        }
+    }
+
     func testEveryBundledDefinitionPathIsDeletable() {
         let rules = XicoSafetyRules(home: URL(fileURLWithPath: testHome))
         let lib = DefinitionsLibrary.bundled()

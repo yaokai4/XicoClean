@@ -65,27 +65,32 @@ public struct MenuBarSettingsView: View {
 
     private var mbItems: [MBItem] {
         [
-            MBItem(id: "network", title: xLoc("网络速度"), icon: "antenna.radiowaves.left.and.right",
-                   tint: XColor.metricNetwork[0], defOn: true, defStyle: .graph,
-                   styles: [.iconValue, .valueOnly, .graph, .rich]),
+            // 网络速度默认纯数值（2026-07 用户拍板）：不带图标、不带折线图/横条速率计——那些
+            // 让它比 CPU/内存还宽、还"像图形"。可选样式收窄到 纯数值 / 图标+数值 两档。
+            MBItem(id: "network", title: xLoc("网络速度"), icon: "arrow.up.arrow.down",
+                   tint: XColor.metricNetwork[0], defOn: true, defStyle: .valueOnly,
+                   styles: [.valueOnly, .iconValue]),
             MBItem(id: "disk", title: xLoc("磁盘占用"), icon: "internaldrive",
-                   tint: XColor.warning, defOn: false, defStyle: .iconValue,
+                   tint: XColor.menuDisk, defOn: false, defStyle: .iconValue,
                    styles: [.iconValue, .valueOnly, .rich, .ring]),
-            MBItem(id: "temp", title: xLoc("处理器温度"), icon: "thermometer.medium",
+            MBItem(id: "diskio", title: xLoc("磁盘活动（读/写）"), icon: "arrow.up.arrow.down.circle",
+                   tint: XColor.menuDisk, defOn: false, defStyle: .valueOnly,
+                   styles: [.iconValue, .valueOnly, .graph, .rich]),
+            MBItem(id: "temp", title: xLoc("温度"), icon: "thermometer.medium",
                    tint: XColor.warning, defOn: false, defStyle: .iconValue,
                    styles: [.iconValue, .valueOnly]),
             MBItem(id: "battery", title: xLoc("电池"), icon: "battery.100percent",
                    tint: XColor.success, defOn: false, defStyle: .iconValue,
                    styles: [.iconValue, .valueOnly, .ring]),
             MBItem(id: "gpu", title: xLoc("GPU 占用"), icon: "display",
-                   tint: XColor.accentPink, defOn: false, defStyle: .rich,
+                   tint: XColor.menuGPU, defOn: false, defStyle: .rich,
                    styles: [.iconValue, .valueOnly, .graph, .rich, .ring]),
             MBItem(id: "memory", title: xLoc("内存"), icon: "memorychip",
                    tint: XColor.metricMemory[0], defOn: true, defStyle: .rich,
                    styles: [.iconValue, .valueOnly, .graph, .rich, .ring]),
             MBItem(id: "cpu", title: xLoc("处理器 CPU"), icon: "cpu",
                    tint: XColor.metricCPU[0], defOn: true, defStyle: .rich,
-                   styles: [.iconValue, .valueOnly, .graph, .rich, .ring]),
+                   styles: [.iconValue, .valueOnly, .graph, .rich, .ring, .loadAvg, .stacked, .coreGrid]),
             MBItem(id: "combined", title: xLoc("合并项（多迷你图并排）"), icon: "gauge.with.dots.needle.50percent",
                    tint: XColor.textSecondary, defOn: false, defStyle: .rich, styles: []),
         ]
@@ -155,10 +160,13 @@ public struct MenuBarSettingsView: View {
                     Spacer()
                 }
                 Divider().padding(.vertical, XSpacing.xxs)
+                // 三档组合（2026-07 用户拍板）：正常就是 网络+内存+CPU，往后依次加温度、磁盘——
+                // 这五项即全部。此前六个花哨预设（GPU/电池/游戏/续航等）被否决；高级项仍可在下方
+                // 逐项列表里手动开，不删功能。
                 HStack(spacing: XSpacing.s) {
-                    mbPresetCard(xLoc("极简"), desc: xLoc("单一合并项 · 单色"), preview: presetPreviewMinimal) { applyPreset("minimal") }
-                    mbPresetCard(xLoc("性能"), desc: xLoc("CPU + 内存 + GPU"), preview: presetPreviewPerformance) { applyPreset("performance") }
-                    mbPresetCard(xLoc("全景"), desc: xLoc("五项常驻 · 彩色"), preview: presetPreviewPanorama) { applyPreset("panorama") }
+                    mbPresetCard(xLoc("基础"), desc: xLoc("网络 + 内存 + CPU"), preview: presetPreviewBasic) { applyPreset("basic") }
+                    mbPresetCard(xLoc("加温度"), desc: xLoc("基础 + 温度"), preview: presetPreviewTemp) { applyPreset("temp") }
+                    mbPresetCard(xLoc("全部"), desc: xLoc("再加磁盘"), preview: presetPreviewAll) { applyPreset("all") }
                 }
             }
         }
@@ -200,6 +208,28 @@ public struct MenuBarSettingsView: View {
                     .accessibilityLabel(xLoc("更新频率"))
                     .onChange(of: mbInterval) { model.applyRefreshInterval(mbInterval) }
                 }
+                Divider().padding(.vertical, XSpacing.xxs)
+                // 交互与口径（P1）：悬停预览 / 全局快捷键 / 彩色垫底 / VPN 计入。
+                VStack(alignment: .leading, spacing: 3) {
+                    toggleRow(xLoc("悬停展开面板"), mbBool("xico.mb.hover", default: false))
+                    Text(xLoc("鼠标悬停状态项 0.35 秒即展开详情，无需点击"))
+                        .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    toggleRow(xLoc("全局快捷键 ⌃⌥M"), mbBool("xico.mb.hotkey", default: false))
+                    Text(xLoc("任意应用内按 ⌃⌥M 唤出/收起菜单栏面板"))
+                        .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    toggleRow(xLoc("彩色图形垫底"), mbBool("xico.mb.backing", default: false))
+                    Text(xLoc("透明菜单栏/浅色壁纸下给彩色图形垫半透明底，任何背景都清晰"))
+                        .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    toggleRow(xLoc("计入 VPN 流量"), mbBool("xico.mb.net.includeVPN", default: false))
+                    Text(xLoc("默认排除 utun 隧道防止双计；只关注隧道内流量时可打开"))
+                        .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                }
             }
         }
     }
@@ -208,25 +238,28 @@ public struct MenuBarSettingsView: View {
 
     private static let mbDemoHist: [Double] = [0.3, 0.5, 0.4, 0.7, 0.6, 0.8, 0.5, 0.9, 0.7, 0.6, 0.8, 0.7, 0.62]
 
-    private var presetPreviewMinimal: NSImage {
+    // 三档预览缩影：网络用 .net 双行数字（真实渲染即 valueOnly 纯数值）、内存/CPU 用饼盘/直方，
+    // 温度/磁盘按档递增——与 applyPreset 的组合逐一对应。
+    private var presetPreviewBasic: NSImage {
         MenuBarGlyph.combined(slots: [
-            MenuCombinedSlot(viz: .histogram(Self.mbDemoHist), tint: XColor.metricCPU),
-            MenuCombinedSlot(viz: .pie(0.71), tint: XColor.metricMemory),
             MenuCombinedSlot(viz: .net(down: "1.2M", up: "386K"), tint: XColor.metricNetwork),
+            MenuCombinedSlot(viz: .pie(0.71), tint: XColor.metricMemory),
+            MenuCombinedSlot(viz: .histogram(Self.mbDemoHist), tint: XColor.metricCPU),
         ])
     }
-    private var presetPreviewPerformance: NSImage {
+    private var presetPreviewTemp: NSImage {
         MenuBarGlyph.combined(slots: [
-            MenuCombinedSlot(viz: .histogram(Self.mbDemoHist), tint: XColor.metricCPU, value: "62%"),
-            MenuCombinedSlot(viz: .pie(0.71), tint: XColor.metricMemory, value: "71%"),
-            MenuCombinedSlot(viz: .pie(0.26), tint: XColor.metricGPU, value: "26%"),
+            MenuCombinedSlot(viz: .net(down: "1.2M", up: "386K"), tint: XColor.metricNetwork),
+            MenuCombinedSlot(viz: .pie(0.71), tint: XColor.metricMemory),
+            MenuCombinedSlot(viz: .histogram(Self.mbDemoHist), tint: XColor.metricCPU),
+            MenuCombinedSlot(viz: .text("44°"), tint: [XColor.warning]),
         ])
     }
-    private var presetPreviewPanorama: NSImage {
+    private var presetPreviewAll: NSImage {
         MenuBarGlyph.combined(slots: [
-            MenuCombinedSlot(viz: .histogram(Self.mbDemoHist), tint: XColor.metricCPU),
-            MenuCombinedSlot(viz: .pie(0.71), tint: XColor.metricMemory),
             MenuCombinedSlot(viz: .net(down: "1.2M", up: "386K"), tint: XColor.metricNetwork),
+            MenuCombinedSlot(viz: .pie(0.71), tint: XColor.metricMemory),
+            MenuCombinedSlot(viz: .histogram(Self.mbDemoHist), tint: XColor.metricCPU),
             MenuCombinedSlot(viz: .text("44°"), tint: [XColor.warning]),
             MenuCombinedSlot(viz: .pie(0.39), tint: XColor.metricDisk),
         ])
@@ -262,23 +295,31 @@ public struct MenuBarSettingsView: View {
         func enable(_ ids: [String]) {
             for id in allIDs { d.set(ids.contains(id), forKey: "xico.mb.\(id)") }
         }
+        // 网络一律 valueOnly（纯数值）；内存/CPU 用 rich（饼盘/直方）；顺序钉成 网络→内存→CPU→温度→磁盘。
+        func base() {
+            d.set(MenuBarStyle.valueOnly.rawValue, forKey: "xico.mb.network.style")
+            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.memory.style")
+            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.cpu.style")
+        }
         switch name {
-        case "minimal":
-            enable(["combined"])
-            for id in allIDs { d.removeObject(forKey: "xico.mb.combined.\(id)") }   // 恢复默认 cpu+mem+net
+        case "basic":
+            enable(["network", "memory", "cpu"])
+            base()
+            d.set("network,memory,cpu", forKey: "xico.mb.order")
             mbColored = false
-        case "performance":
-            enable(["cpu", "memory", "gpu"])
-            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.cpu.style")
-            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.memory.style")
-            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.gpu.style")
+        case "temp":
+            enable(["network", "memory", "cpu", "temp"])
+            base()
+            d.set(MenuBarStyle.iconValue.rawValue, forKey: "xico.mb.temp.style")
+            d.set("network,memory,cpu,temp", forKey: "xico.mb.order")
             mbColored = false
-        default:   // panorama
-            enable(["cpu", "memory", "network", "temp", "disk"])
-            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.cpu.style")
-            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.memory.style")
-            d.set(MenuBarStyle.graph.rawValue, forKey: "xico.mb.network.style")
-            mbColored = true
+        default:   // all
+            enable(["network", "memory", "cpu", "temp", "disk"])
+            base()
+            d.set(MenuBarStyle.iconValue.rawValue, forKey: "xico.mb.temp.style")
+            d.set(MenuBarStyle.rich.rawValue, forKey: "xico.mb.disk.style")
+            d.set("network,memory,cpu,temp,disk", forKey: "xico.mb.order")
+            mbColored = false
         }
         withAnimation(XMotion.snappy) { mbExpanded = nil }
     }
@@ -348,6 +389,12 @@ public struct MenuBarSettingsView: View {
                     }
                 }
                 toggleRow(xLoc("图形旁显示数值"), $mbCombinedValues)
+                toggleRow(xLoc("图形前显示图标"), mbBool("xico.mb.combined.icons", default: false))
+                VStack(alignment: .leading, spacing: 3) {
+                    toggleRow(xLoc("刘海屏自动省宽"), mbBool("xico.mb.combined.notchAdapt", default: false))
+                    Text(xLoc("检测到刘海时自动收起数值文字，寸土寸金"))
+                        .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                }
             } else if !item.styles.isEmpty {
                 let styleBinding = mbStyleBinding(item)
                 HStack(spacing: 6) {
@@ -357,6 +404,40 @@ public struct MenuBarSettingsView: View {
                             withAnimation(XMotion.snappy) { styleBinding.wrappedValue = st.rawValue }
                         }
                     }
+                }
+            }
+            // 温度传感器源（P1 多传感器）：CPU（默认）/ GPU / SSD。
+            if item.id == "temp" {
+                HStack(spacing: XSpacing.xs) {
+                    Text(xLoc("传感器")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Picker("", selection: Binding(
+                        get: { UserDefaults.standard.string(forKey: "xico.mb.temp.source") ?? "cpu" },
+                        set: { UserDefaults.standard.set($0, forKey: "xico.mb.temp.source") })) {
+                        Text(xLoc("处理器")).tag("cpu")
+                        Text("GPU").tag("gpu")
+                        Text(xLoc("固态硬盘")).tag("ssd")
+                    }
+                    .labelsHidden().pickerStyle(.menu).fixedSize()
+                    .accessibilityLabel(xLoc("传感器"))
+                }
+            }
+            // 磁盘卷选择（P1）：默认主卷；可切外置/其他卷（0 = 跟随主卷）。
+            if item.id == "disk" {
+                HStack(spacing: XSpacing.xs) {
+                    Text(xLoc("卷")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Picker("", selection: Binding(
+                        get: { UserDefaults.standard.string(forKey: "xico.mb.disk.volume") ?? "" },
+                        set: { v in
+                            if v.isEmpty { UserDefaults.standard.removeObject(forKey: "xico.mb.disk.volume") }
+                            else { UserDefaults.standard.set(v, forKey: "xico.mb.disk.volume") }
+                        })) {
+                        Text(xLoc("主卷（默认）")).tag("")
+                        ForEach(mountedVolumePaths(), id: \.self) { path in
+                            Text(URL(fileURLWithPath: path).lastPathComponent).tag(path)
+                        }
+                    }
+                    .labelsHidden().pickerStyle(.menu).fixedSize()
+                    .accessibilityLabel(xLoc("卷"))
                 }
             }
             // 内存口径（P8）：压力（kern.memorystatus_level，与 iStat 菜单栏一致，默认）/ 占用（已用÷总量）。
@@ -400,6 +481,18 @@ public struct MenuBarSettingsView: View {
                     Spacer()
                 }
             }
+        }
+    }
+
+    /// 已挂载的可写数据卷路径（/Volumes 下 + 根卷），供磁盘项卷选择器。
+    private func mountedVolumePaths() -> [String] {
+        let keys: [URLResourceKey] = [.volumeIsBrowsableKey, .volumeIsLocalKey]
+        let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys,
+                                                         options: [.skipHiddenVolumes]) ?? []
+        return urls.compactMap { url in
+            guard let rv = try? url.resourceValues(forKeys: Set(keys)),
+                  rv.volumeIsBrowsable == true else { return nil }
+            return url.path
         }
     }
 
@@ -486,6 +579,25 @@ private struct MBStyleTile: View {
             HStack(spacing: 2) {
                 MBRingPreview()
                 Text("42%").font(XFont.microMono)
+            }
+        case .loadAvg:
+            Text("1.2 1.0 0.9").font(XFont.microMono)
+        case .stacked:
+            VStack(alignment: .leading, spacing: 0) {
+                Text("CPU 42%").font(XFont.nano)
+                Text("MEM 61%").font(XFont.nano).opacity(0.7)
+            }
+        case .coreGrid:
+            HStack(alignment: .bottom, spacing: 1) {
+                ForEach(Array([0.4, 0.8, 0.3, 0.9, 0.5, 0.7, 0.2, 0.6].enumerated()), id: \.offset) { _, v in
+                    Capsule().opacity(0.55 + 0.45 * v)
+                        .frame(width: 1.5, height: max(2, 12 * CGFloat(v)))
+                }
+            }
+        case .interface:
+            VStack(alignment: .leading, spacing: 0) {
+                Text("en0").font(XFont.nano)
+                Text("↓1.2M ↑386K").font(XFont.nano).opacity(0.7)
             }
         }
     }

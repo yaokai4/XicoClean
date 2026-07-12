@@ -263,6 +263,84 @@ public struct XCelebrationBurst: View {
     }
 }
 
+// MARK: - 招牌时刻 S-A「空间湮灭」（docs/16）：汇聚 → 闪光 → 释放 的三幕回收叙事
+
+/// 清理完成的招牌粒子：**不是四散爆炸（语义=消失），而是回收叙事**——
+/// 幕1（0–0.6s）碎片从四周被吸入中心（ease-in 汇聚）；
+/// 幕2（0.6–0.85s）中心一次 radial 白闪，`onFlash` 在这一帧回调（宿主同帧齐发
+/// `XSound.cleanDone` + `XHaptic.levelChange`——声/触/光对齐同一窗口，大脑绑成一个事件）；
+/// 幕3 交还宿主（对勾 celebrateSoft 弹出 + 数字 count-up）。
+/// 能耗铁律同 XCelebrationBurst：1.6s 自停 TimelineView，稳态零帧；Reduce Motion 整段跳过。
+public struct XAnnihilationBurst: View {
+    let colors: [Color]
+    let onFlash: (() -> Void)?
+    @State private var start = Date()
+    @State private var finished = false
+    @State private var flashFired = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    public init(colors: [Color] = [XColor.success, XColor.accentTeal, XColor.brand],
+                onFlash: (() -> Void)? = nil) {
+        self.colors = colors.isEmpty ? [XColor.brand] : colors
+        self.onFlash = onFlash
+    }
+
+    public var body: some View {
+        if reduceMotion || finished {
+            Color.clear.allowsHitTesting(false)
+                .onAppear {
+                    // Reduce Motion：无叙事动画，但「完成」的声/触仍应发生一次。
+                    if reduceMotion, !flashFired { flashFired = true; onFlash?() }
+                }
+        } else {
+            stage
+                .task {
+                    try? await Task.sleep(nanoseconds: 600_000_000)   // 幕2 起点
+                    if !Task.isCancelled, !flashFired { flashFired = true; onFlash?() }
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    finished = true                                   // 1.6s 自停，稳态零帧
+                }
+        }
+    }
+
+    private var stage: some View {
+        TimelineView(.animation) { tl in
+            let e = tl.date.timeIntervalSince(start)
+            Canvas { ctx, sz in
+                let c = CGPoint(x: sz.width / 2, y: sz.height / 2)
+                // 幕1：34 个碎片向中心汇聚（dist 150→0，ease-in——越近越快，被「吸进去」）。
+                if e < 0.68 {
+                    let gather = 1 - min(e / 0.6, 1)
+                    let fadeIn = min(e / 0.15, 1)                     // 入场淡入，避免硬蹦
+                    let n = 34
+                    for i in 0..<n {
+                        let ang = Double(i) / Double(n) * 2 * .pi + Double(i % 3) * 0.35
+                        let radius = 150 * CGFloat(gather * gather) * (0.7 + 0.5 * CGFloat(abs(sin(Double(i) * 1.7))))
+                        let x = c.x + CGFloat(cos(ang)) * radius
+                        let y = c.y + CGFloat(sin(ang)) * radius
+                        let op = Double(fadeIn) * (0.35 + 0.65 * (1 - gather))   // 越近越亮——能量在聚集
+                        let r: CGFloat = 2.6
+                        ctx.fill(Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)),
+                                 with: .color(colors[i % colors.count].opacity(op)))
+                    }
+                }
+                // 幕2：中心 radial 白闪（scale 0→1.4、opacity 1→0）——「转化」的一瞬。
+                if e >= 0.6, e < 0.85 {
+                    let p = (e - 0.6) / 0.25
+                    let r = 70 * CGFloat(0.2 + 1.2 * p)
+                    let rect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
+                    ctx.fill(Path(ellipseIn: rect),
+                             with: .radialGradient(
+                                Gradient(colors: [.white.opacity(1 - p),
+                                                  colors[0].opacity((1 - p) * 0.4), .clear]),
+                                center: c, startRadius: 0, endRadius: r))
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 // MARK: - 实时脉冲点（LIVE 指示）
 
 /// 会呼吸的「实时」小圆点：实心点 + 向外扩散淡出的圆环。用在监视器/硬件页头部，
@@ -298,8 +376,9 @@ public struct XLiveDot: View {
 
 // MARK: - 悬停抬升修饰
 
-/// 全应用**唯一**的卡片悬停物理（P7 收编）：上浮 + 阴影升至 XElevation.raised 档
-/// （radius 20 / y 10 / 0.12——与静置卡片的 z 轴阶梯同一套参数，不再自带私有影）。
+/// 全应用**唯一**的卡片悬停物理（P7 收编）：上浮 + 阴影随之**散开变淡**——
+/// 物体离桌面越远，影子越散越淡（raised→overlay 档插值）。交互时的光学诚实（docs/16）：
+/// 静态双层影已到位，抬起时阴影不变会露馅。
 public struct HoverLift: ViewModifier {
     @State private var hover = false
     let amount: CGFloat
@@ -307,7 +386,8 @@ public struct HoverLift: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .offset(y: hover ? -amount : 0)
-            .shadow(color: .black.opacity(hover ? 0.12 : 0), radius: hover ? 20 : 0, y: hover ? 10 : 0)
+            // 抬起：radius 20→30、y 10→14、opacity 0.12→0.10——更散、更淡（overlay 档方向）。
+            .shadow(color: .black.opacity(hover ? 0.10 : 0), radius: hover ? 30 : 0, y: hover ? 14 : 0)
             .animation(XMotion.snappy, value: hover)
             .onHover { hover = $0 }
     }

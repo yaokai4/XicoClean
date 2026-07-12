@@ -66,17 +66,26 @@ public final class SensorReader: @unchecked Sendable {
     /// 归纳后的关键温度：CPU / GPU（若各自有传感器则取平均）。
     /// 单趟遍历同时累加两类平均，省去按类别的多次 filter/map/reduce。
     public func summary() -> (cpu: Double?, gpu: Double?) {
+        let s = summary3()
+        return (s.cpu, s.gpu)
+    }
+
+    /// 三类关键温度：CPU / GPU / SSD（菜单栏温度项可选源，P1 多传感器）。同一趟遍历。
+    public func summary3() -> (cpu: Double?, gpu: Double?, ssd: Double?) {
         var cpuSum = 0.0, cpuN = 0
         var gpuSum = 0.0, gpuN = 0
+        var ssdSum = 0.0, ssdN = 0
         for t in cachedTemperatures() {
             switch t.category {
             case .cpu: cpuSum += t.celsius; cpuN += 1
             case .gpu: gpuSum += t.celsius; gpuN += 1
+            case .ssd: ssdSum += t.celsius; ssdN += 1
             default: break
             }
         }
         return (cpuN > 0 ? cpuSum / Double(cpuN) : nil,
-                gpuN > 0 ? gpuSum / Double(gpuN) : nil)
+                gpuN > 0 ? gpuSum / Double(gpuN) : nil,
+                ssdN > 0 ? ssdSum / Double(ssdN) : nil)
     }
 
     /// 带短 TTL 的全量温度读取：TTL 内复用上次枚举结果，超时即重新枚举并刷新缓存。

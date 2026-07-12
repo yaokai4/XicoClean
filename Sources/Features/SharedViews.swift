@@ -42,7 +42,17 @@ struct ItemRowView: View {
 
     var body: some View {
         HStack(spacing: XSpacing.m) {
-            XCheckbox(isOn: item.isSelected, accessibilityLabel: item.displayName, toggle: onToggle)
+            // 「仅提示」项不给勾选框（三层闸第二层）：给 info 图标表明「这行是说明，不是操作」。
+            if item.isInformational {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(XColor.textTertiary)
+                    .frame(width: 19, height: 19)
+                    .help(xLoc("仅提示项：请按其说明用官方方式处置，Xico 不代删"))
+                    .accessibilityLabel(xLoc("仅提示，不可勾选"))
+            } else {
+                XCheckbox(isOn: item.isSelected, accessibilityLabel: item.displayName, toggle: onToggle)
+            }
 
             // 真实缩略图（图片/视频/PDF 等），非可视文件回退类型图标——告别灰色文字行。
             XThumbnail(url: item.url, side: 30)
@@ -111,6 +121,8 @@ func quickLook(_ url: URL) {
 struct ResultGroupCard: View {
     let group: ScanResultGroup
     let index: Int
+    /// 列表总卡数（自适应 stagger 用，docs/16）：>0 时交错总编排封顶 0.30s，长列表不拖沓。
+    var count: Int = 0
     let allSelected: Bool
     let onToggleGroup: (Bool) -> Void
     let onToggleItem: (UUID) -> Void
@@ -200,7 +212,17 @@ struct ResultGroupCard: View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.s) {
                 HStack(spacing: XSpacing.m) {
-                    XCheckbox(isOn: allSelected, accessibilityLabel: xLoc(group.title)) { onToggleGroup(!allSelected) }
+                    // 整组都是「仅提示」项（容器虚拟磁盘/休眠镜像等 guidance 组）：不给组勾选框——
+                    // 否则是个永远勾不动的死控件；单项混排时保留组勾选（setGroup 会跳过提示项）。
+                    if group.items.allSatisfy(\.isInformational) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 15))
+                            .foregroundStyle(XColor.textTertiary)
+                            .frame(width: 19, height: 19)
+                            .accessibilityLabel(xLoc("仅提示，不可勾选"))
+                    } else {
+                        XCheckbox(isOn: allSelected, accessibilityLabel: xLoc(group.title)) { onToggleGroup(!allSelected) }
+                    }
                     XIconTile(systemImage: group.systemImage, colors: group.safety.gradient, size: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(xLoc(group.title)).xHeadline().foregroundStyle(XColor.textPrimary)
@@ -248,9 +270,9 @@ struct ResultGroupCard: View {
                     Button {
                         withAnimation(XMotion.snappy) { expanded.toggle() }
                     } label: {
-                        Image(systemName: "chevron.down")
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
                             .font(.system(size: 12, weight: .semibold))
-                            .rotationEffect(.degrees(expanded ? 180 : 0))
+                            .contentTransition(.symbolEffect(.replace))   // 符号原生替换（docs/16 P1-3）
                             .foregroundStyle(XColor.textSecondary)
                             .frame(width: 22, height: 22)
                             .background(XColor.surfaceAlt, in: Circle())
@@ -300,9 +322,10 @@ struct ResultGroupCard: View {
             if reduceMotion {
                 appeared = true   // 降低动态效果：不做交错入场位移
             } else {
-                withAnimation(XMotion.settle.delay(Double(index) * 0.05)) {
-                    appeared = true
-                }
+                // 自适应 stagger（docs/16）：知道总数时封顶 0.30s 总编排——50 张卡不再排队 2.5s。
+                let anim = count > 0 ? XTransition.stagger(index, of: count)
+                                     : XTransition.stagger(index)
+                withAnimation(anim) { appeared = true }
             }
         }
     }
@@ -400,6 +423,9 @@ struct TaskCompletionView: View {
     var onUndo: (() -> Void)? = nil
     var doneTitle: String? = nil
     var onDone: (() -> Void)? = nil
+    /// 招牌 S-A「空间湮灭」三幕 + 声/触反馈（docs/16）。危险操作（粉碎）传 false——
+    /// 铁律：危险操作永不配「愉悦」的声/触强化，走朴素庆祝。
+    var signature: Bool = true
 
     @State private var pop = false
     @State private var shown: Int64 = 0   // 从 0 数到目标的动画值
@@ -407,7 +433,17 @@ struct TaskCompletionView: View {
 
     var body: some View {
         ZStack {
-            XCelebrationBurst().frame(width: 360, height: 360)
+            // S-A 三幕（docs/16）：汇聚→闪光→释放。幕2 闪光帧齐发 声(cleanDone)+触(levelChange)——
+            // 声/触/光对齐同一窗口，大脑绑成一个事件（CMM 只有视觉）。
+            if signature {
+                XAnnihilationBurst(onFlash: {
+                    XSound.play(.cleanDone)
+                    XHaptic.perform(.levelChange)
+                })
+                .frame(width: 360, height: 360)
+            } else {
+                XCelebrationBurst().frame(width: 360, height: 360)
+            }
             VStack(spacing: XSpacing.l) {
                 ZStack {
                     Circle().fill(XColor.success.opacity(0.15)).frame(width: 124, height: 124)
@@ -441,8 +477,20 @@ struct TaskCompletionView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            withAnimation(XMotion.celebrate) { pop = true }
-            countUp()
+            // 幕3（0.75s 起）：对勾 celebrateSoft 弹出（两次可感余荡）+ 数字 count-up——
+            // 招牌模式下等幕1汇聚/幕2闪光走完再登场；朴素模式/Reduce Motion 立即到位。
+            if signature && !reduceMotion {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 750_000_000)
+                    withAnimation(XMotion.celebrateSoft) { pop = true }
+                    countUp()
+                }
+            } else {
+                withAnimation(XMotion.celebrate) { pop = true }
+                countUp()
+            }
+            // 盲用户也「听到」结果（docs/16 §5）：完成播报，不只视觉粒子。
+            AccessibilityNotification.Announcement(metricText(animateTo)).post()
         }
     }
 

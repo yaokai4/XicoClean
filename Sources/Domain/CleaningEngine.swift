@@ -25,6 +25,14 @@ public actor CleaningEngine {
         for (index, item) in plan.items.enumerated() {
             if Task.isCancelled { break }
 
+            // 「仅提示」项引擎级拒删（三层闸的最后一层）：Docker 虚拟磁盘 / 模拟器设备 /
+            // Go 模块缓存 / 休眠镜像 / 微信聊天库等只陈述体量、指路官方处置方式——
+            // 无论上游 UI 如何把它勾进计划，这里一律拒绝并说明。
+            if item.isInformational {
+                failures.append(CleaningFailure(url: item.url, reason: "仅提示项：请按其说明用官方方式处置，Xico 不代删"))
+                continue
+            }
+
             // 清空废纸篓的特例（对抗复核 P3）：废纸篓内的叶子符号链接（含悬空链）——直接删链接本身，
             // 绝不解析/跟随其目标。通用红线会先把软链解析到目标再判定，从而把「指向内容目录/红线区的
             // 废纸篓软链」误拒，导致废纸篓清不空；而删链接本身（removeItem 不跟随）从不触及目标，是安全的。

@@ -6,11 +6,14 @@ import DesignSystem
 public struct MonitorView: View {
     private let env: XicoEnvironment
     @ObservedObject private var engine: MetricsEngine
+    /// 共享高频指标源（AppModel 的采样循环独家发布换入/换出速率等差分指标）——只读消费，不改发布结构。
+    @ObservedObject private var feed: MetricsFeed
     @StateObject private var netVM: NetworkViewModel
     @State private var info: MacInfo?
     @State private var procTab: ProcTab = .cpu
     @State private var tab: MonitorTab = .overview
-    @State private var historyRange: MetricsHistoryStore.Range = .minute
+    /// 历史曲线时间范围（1 分钟 / 1 小时 / 24 小时 / 7 天），持久化记住偏好。
+    @AppStorage("xico.monitor.historyRange") private var historyRange: MetricsHistoryStore.Range = .minute
     /// 每核心可视化：当前条 / 迷你环 / 历史热力图，持久化记住偏好（对齐 Sensei 的可选每核心视图）。
     @AppStorage("xico.monitor.coreViz") private var coreViz = "bars"
     /// 全部命名温度传感器（传感器中心）——独立于快照采样，进页面时读一次、每 3 秒刷新。
@@ -37,6 +40,7 @@ public struct MonitorView: View {
     public init(env: XicoEnvironment, initialTab: MonitorTab = .overview) {
         self.env = env
         self.engine = env.metricsEngine
+        self.feed = AppModel.shared.liveMetricsFeed
         _netVM = StateObject(wrappedValue: NetworkViewModel(service: env.network))
         _tab = State(initialValue: initialTab)
     }
@@ -52,10 +56,10 @@ public struct MonitorView: View {
                     Text("LIVE").font(XFont.micro).tracking(1).foregroundStyle(XColor.success)
                 }
             }
-            Picker("", selection: $tab) {
-                ForEach(MonitorTab.allCases, id: \.self) { Text(xLoc($0.title)).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden()
+            // 自家分段语言（docs/16 P0-4）：清除全 app 唯一「macOS 13 观感」的系统灰控件残留。
+            XSegmentedControl(selection: $tab, options: MonitorTab.allCases.map {
+                .init(tag: $0, label: xLoc($0.title), a11y: xLoc($0.title))
+            })
             .padding(.horizontal, XSpacing.xl).padding(.bottom, XSpacing.s)
 
             ScrollView {
@@ -114,7 +118,7 @@ public struct MonitorView: View {
     private var macCard: some View {
         XCard {
             HStack(alignment: .center, spacing: XSpacing.xl) {
-                XIconTile(systemImage: "laptopcomputer", colors: XColor.brandGradientColors, size: 52)
+                XIconTile(systemImage: "laptopcomputer", colors: XColor.brandGradientColors, size: 52, flat: false)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(info?.chip ?? "—").xHeadline().foregroundStyle(XColor.textPrimary)
                     Text(info?.model ?? "—").font(XFont.caption).foregroundStyle(XColor.textSecondary)
@@ -161,17 +165,20 @@ public struct MonitorView: View {
                 HStack {
                     cardHeader("waveform.path.ecg", xLoc("历史曲线"))
                     Spacer()
-                    Picker("", selection: $historyRange) {
-                        ForEach(MetricsHistoryStore.Range.allCases, id: \.self) { Text(xLoc($0.title)).tag($0) }
-                    }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    XSegmentedControl(selection: $historyRange, options: MetricsHistoryStore.Range.allCases.map {
+                        .init(tag: $0, label: xLoc($0.title), a11y: xLoc($0.title))
+                    })
                 }
                 let series = historySeries()
-                chartRow(xLoc("处理器"), series.cpu, XColor.brandGradientColors, "\(Int((snap?.cpuUsage ?? 0) * 100))%") { i in hoverStamp("\(Int(series.cpu[i] * 100))%", index: i, times: series.times) }
-                chartRow(xLoc("内存"), series.mem, XColor.metricMemory, "\(Int((snap?.memoryUsedFraction ?? 0) * 100))%") { i in hoverStamp("\(Int(series.mem[i] * 100))%", index: i, times: series.times) }
-                chartRow("GPU", series.gpu, XColor.metricGPU, snap?.gpuUsage.map { "\(Int($0 * 100))%" } ?? "—") { i in hoverStamp("\(Int(series.gpu[i] * 100))%", index: i, times: series.times) }
+                chartRow(xLoc("处理器"), series.cpu, XColor.brandGradientColors, "\(Int((snap?.cpuUsage ?? 0) * 100))%",
+                         peak: percentPeak(series.cpu)) { i in hoverStamp("\(Int(series.cpu[i] * 100))%", index: i, times: series.times) }
+                chartRow(xLoc("内存"), series.mem, XColor.metricMemory, "\(Int((snap?.memoryUsedFraction ?? 0) * 100))%",
+                         peak: percentPeak(series.mem)) { i in hoverStamp("\(Int(series.mem[i] * 100))%", index: i, times: series.times) }
+                chartRow("GPU", series.gpu, XColor.metricGPU, snap?.gpuUsage.map { "\(Int($0 * 100))%" } ?? "—",
+                         peak: percentPeak(series.gpu)) { i in hoverStamp("\(Int(series.gpu[i] * 100))%", index: i, times: series.times) }
                 chartRow(xLoc("网络"), series.net, XColor.metricNetwork,
-                         "↓\((snap?.netDownBytesPerSec ?? 0).formattedRate)") { i in
+                         "↓\((snap?.netDownBytesPerSec ?? 0).formattedRate)",
+                         peak: series.netRaw.max().flatMap { $0 > 0 ? "\(xLoc("峰值")) \($0.formattedRate)" : nil }) { i in
                     series.netRaw.indices.contains(i) ? hoverStamp("↓\(series.netRaw[i].formattedRate)", index: i, times: series.times) : ""
                 }
             }
@@ -205,11 +212,25 @@ public struct MonitorView: View {
         return "\(value) · \(f.string(from: times[i]))"
     }
 
+    /// 所选范围内的峰值文案（"峰值 91%"）；序列为空返回 nil 不占位。
+    private func percentPeak(_ values: [Double]) -> String? {
+        guard let m = values.max() else { return nil }
+        return "\(xLoc("峰值")) \(Int(m * 100))%"
+    }
+
     private func chartRow(_ title: String, _ values: [Double], _ colors: [Color], _ value: String,
-                          _ hoverFmt: ((Int) -> String)?) -> some View {
+                          peak: String? = nil, _ hoverFmt: ((Int) -> String)?) -> some View {
         HStack(spacing: XSpacing.m) {
-            Text(title).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                .lineLimit(1).truncationMode(.tail).frame(width: 72, alignment: .leading)  // 可截断，长语言不挤压图表
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    .lineLimit(1).truncationMode(.tail)  // 可截断，长语言不挤压图表
+                // 所选时间范围内的真实峰值（1 分钟 / 1 小时 / 24 小时 / 7 天各自如实）。
+                if let peak {
+                    Text(peak).font(XFont.nano).monospacedDigit().foregroundStyle(XColor.textTertiary)
+                        .lineLimit(1).minimumScaleFactor(0.75)
+                }
+            }
+            .frame(width: 72, alignment: .leading)
             // 网格基线 + 悬停读数（对标 iStat 的可擦洗历史曲线）。
             XLineChart(values: values, colors: colors, showGrid: true,
                        hoverLabel: hoverFmt.map { fmt in { i in i < values.count ? fmt(i) : "" } })
@@ -294,15 +315,11 @@ public struct MonitorView: View {
                     cardHeader("cpu", xLoc("处理器 · 每核心"))
                     Spacer()
                     // 当前条 / 迷你环 / 历史热力图 切换（记忆偏好）。
-                    Picker("", selection: $coreViz) {
-                        Image(systemName: "chart.bar.fill").tag("bars")
-                            .accessibilityLabel(xLoc("柱状"))
-                        Image(systemName: "circle.grid.2x2").tag("rings")
-                            .accessibilityLabel(xLoc("圆环"))
-                        Image(systemName: "square.grid.3x3.fill").tag("heat")
-                            .accessibilityLabel(xLoc("热力图"))
-                    }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    XSegmentedControl(selection: $coreViz, options: [
+                        .init(tag: "bars", icon: "chart.bar.fill", a11y: xLoc("柱状")),
+                        .init(tag: "rings", icon: "circle.grid.2x2", a11y: xLoc("圆环")),
+                        .init(tag: "heat", icon: "square.grid.3x3.fill", a11y: xLoc("热力图")),
+                    ])
                     .accessibilityLabel(xLoc("每核心视图"))
                     if let s = snap {
                         Text(xLocF("用户 %d%%  系统 %d%%", Int(s.cpuUser * 100), Int(s.cpuSystem * 100)))
@@ -559,8 +576,13 @@ public struct MonitorView: View {
 
     private var pagesCard: some View {
         MonitorCard(icon: "arrow.up.arrow.down", title: xLoc("分页"), colors: XColor.metricMemory) {
-            statRow(xLoc("换入分页"), (snap?.pageIns ?? 0).formattedBytes)
-            statRow(xLoc("换出分页"), (snap?.pageOuts ?? 0).formattedBytes)
+            // 换入/换出**速率**（字节/秒，差分自 AppModel 采样循环；docs/15 P0——
+            // 累计值自开机只会单调上涨，参考意义弱）。首帧无前帧可差分时如实显示 "—"。
+            statRow(xLoc("换入分页"), feed.pageInRate.map(\.formattedRate) ?? "—")
+            statRow(xLoc("换出分页"), feed.pageOutRate.map(\.formattedRate) ?? "—")
+            Divider().overlay(XColor.hairline)
+            statRow(xLoc("累计换入"), (snap?.pageIns ?? 0).formattedBytes)
+            statRow(xLoc("累计换出"), (snap?.pageOuts ?? 0).formattedBytes)
         }
     }
 
@@ -660,7 +682,9 @@ public struct MonitorView: View {
     private func infoCol(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(XFont.caption).foregroundStyle(XColor.textTertiary)
-            Text(value).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+            Text(value).font(XFont.bodyEmphasis).monospacedDigit()   // 等宽数字：每秒刷新时不左右晃
+                .foregroundStyle(XColor.textPrimary)
+                .contentTransition(.numericText())
         }
         .frame(minWidth: 60, alignment: .leading)   // 列对齐成栅格，标签/值左对齐
     }

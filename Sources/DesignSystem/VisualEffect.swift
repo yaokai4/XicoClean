@@ -54,6 +54,8 @@ public extension View {
 
     /// 浮层玻璃：macOS 26 走系统 Liquid Glass，低版本退化为薄材质。
     /// 仅用于悬浮导航元素（收集篮、钉住面板、浮动工具条）——内容层禁止上玻璃。
+    /// 低版本描边升级为**方向性内高光**（上亮下暗，与 XCard 同语言）——真实玻璃的边缘
+    /// 是受光的，单色描边是「贴纸」；macOS 15 用户也拿到「受光边缘」（docs/16）。
     @ViewBuilder func xFloatingGlass(cornerRadius: CGFloat = XRadius.card) -> some View {
         if #available(macOS 26.0, *) {
             self.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
@@ -63,7 +65,10 @@ public extension View {
                             in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(XColor.border.opacity(0.6), lineWidth: 1)
+                        .strokeBorder(
+                            LinearGradient(colors: [.white.opacity(0.16), .white.opacity(0.03)],
+                                           startPoint: .top, endPoint: .bottom),
+                            lineWidth: 1)
                 )
         }
     }
@@ -75,7 +80,10 @@ public extension View {
         } else {
             self
                 .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().strokeBorder(XColor.border.opacity(0.6), lineWidth: 1))
+                .overlay(Capsule().strokeBorder(
+                    LinearGradient(colors: [.white.opacity(0.16), .white.opacity(0.03)],
+                                   startPoint: .top, endPoint: .bottom),
+                    lineWidth: 1))
         }
     }
 

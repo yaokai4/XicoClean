@@ -121,7 +121,8 @@ public struct ShredderView: View {
                         metricText: { xLocF("已释放 %@", $0.formattedBytes) },
                         detail: xLocF("已粉碎 %d 项", c.count),
                         doneTitle: xLoc("完成"),
-                        onDone: { model.clear() })
+                        onDone: { model.clear() },
+                        signature: false)   // 危险操作：永不配声/触强化，走朴素庆祝
                 } else if let r = model.resultText {
                     XEmptyState(systemImage: "checkmark.seal.fill", title: xLoc("完成"), subtitle: r)
                 } else {

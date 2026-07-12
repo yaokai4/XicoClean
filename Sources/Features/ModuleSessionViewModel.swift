@@ -97,7 +97,7 @@ public final class ModuleSessionViewModel: ObservableObject {
     public var selectedRequiresHelper: Bool { selectedItems.contains(where: \.requiresHelper) }
     public var selectedSize: Int64 { selectedItems.reduce(0) { $0 + $1.size } }
     public var selectedCount: Int { selectedItems.count }
-    public var totalReclaimable: Int64 { groups.reduce(0) { $0 + $1.totalSize } }
+    public var totalReclaimable: Int64 { groups.reduce(0) { $0 + $1.reclaimableSize } }   // 剔除「仅提示」字节（终审 P1）
     public var totalItemCount: Int { groups.reduce(0) { $0 + $1.items.count } }
 
     // MARK: 扫描
@@ -191,12 +191,16 @@ public final class ModuleSessionViewModel: ObservableObject {
     public func toggleItem(groupID: String, itemID: UUID) {
         guard let gi = groups.firstIndex(where: { $0.id == groupID }),
               let ii = groups[gi].items.firstIndex(where: { $0.id == itemID }) else { return }
+        guard !groups[gi].items[ii].isInformational else { return }   // 「仅提示」项不可勾
         groups[gi].items[ii].isSelected.toggle()
     }
 
     public func setGroup(_ groupID: String, selected: Bool) {
         guard let gi = groups.firstIndex(where: { $0.id == groupID }) else { return }
-        for i in groups[gi].items.indices { groups[gi].items[i].isSelected = selected }
+        // 「仅提示」项不随组全选卷入（三层闸第一层；引擎侧仍会兜底拒删）。
+        for i in groups[gi].items.indices where !groups[gi].items[i].isInformational {
+            groups[gi].items[i].isSelected = selected
+        }
     }
 
     /// 把某项加入「忽略清单」并从当前结果移除——它今后不再被扫描/清理。
@@ -253,7 +257,7 @@ public final class ModuleSessionViewModel: ObservableObject {
                                                     removedCount: report.removedCount,
                                                     restorable: self.intent == .trash ? report.restorable : [])
             self.phase = .finished
-            XSound.play(.cleanDone)   // 签名音效②：清理完成（P4）
+            // 签名音效②改在完成页 S-A 幕2 闪光帧齐发（声/触/光同窗，docs/16）——此处不再播避免双响。
             if report.reclaimedBytes > 0 {
                 Notifier.notifyCleaningDone(reclaimed: report.reclaimedBytes.formattedBytes,
                                             count: report.removedCount)

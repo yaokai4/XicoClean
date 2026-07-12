@@ -112,7 +112,7 @@ public struct PricingView: View {
 
     private var header: some View {
         HStack(spacing: XSpacing.m) {
-            XIconTile(systemImage: "sparkles", colors: XColor.brandGradientColors, size: 42)
+            XIconTile(systemImage: "sparkles", colors: XColor.brandGradientColors, size: 42, flat: false)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Xico Pro").xTitle().foregroundStyle(XColor.textPrimary)
                 Text(xLoc("一次买断，永久使用 · 数据全程本地")).font(XFont.callout).foregroundStyle(XColor.textSecondary)
@@ -203,9 +203,26 @@ public struct PricingView: View {
                 RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
                     .fill(selected ? XColor.brand.opacity(0.06) : XColor.surface)
                     .overlay(RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
-                        .strokeBorder(selected ? XColor.brand : XColor.border,
-                                      lineWidth: selected ? 2 : 1))
+                        .strokeBorder(
+                            selected ? AnyShapeStyle(XColor.brand)
+                                     : (plan.highlighted ? AnyShapeStyle(XColor.brandGradient)
+                                                         : AnyShapeStyle(XColor.border)),
+                            lineWidth: (selected || plan.highlighted) ? 2 : 1))
             )
+            // 推荐档卖相（docs/16 P2）：渐变描边发光 + 顶部 ribbon + 1.02 微缩放——
+            // 与 Setapp/Bear 的推荐档同段位，此前只多一枚小徽章拉不开。
+            .overlay(alignment: .top) {
+                if plan.highlighted {
+                    Text(xLoc("最超值"))
+                        .font(XFont.captionEmphasis).foregroundStyle(XColor.onAccent)
+                        .padding(.horizontal, XSpacing.m).padding(.vertical, 3)
+                        .background(XColor.brandGradient, in: Capsule())
+                        .xGrain(0.3)
+                        .offset(y: -11)
+                }
+            }
+            .scaleEffect(plan.highlighted ? 1.02 : 1)
+            .shadow(color: plan.highlighted ? XColor.brand.opacity(0.22) : .clear, radius: 18, y: 6)
             .xCardShadow()
             .contentShape(RoundedRectangle(cornerRadius: XRadius.card, style: .continuous))
         }
@@ -249,7 +266,7 @@ public struct PricingView: View {
         VStack(spacing: XSpacing.l) {
             VStack(alignment: .leading, spacing: XSpacing.m) {
                 HStack(spacing: XSpacing.m) {
-                    XIconTile(systemImage: "checkmark.seal.fill", colors: [XColor.success, XColor.accentTeal], size: 44)
+                    XIconTile(systemImage: "checkmark.seal.fill", colors: [XColor.success, XColor.accentTeal], size: 44, flat: false)
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: XSpacing.s) {
                             Text(xLoc("已激活")).xHeadline().foregroundStyle(XColor.textPrimary)
@@ -305,11 +322,9 @@ public struct PricingView: View {
         VStack(spacing: XSpacing.s) {
             Text(xLoc("已购买？输入激活码解锁")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             HStack(spacing: XSpacing.s) {
-                TextField(xLoc("18 位激活码"), text: $activationKey)
-                    .textFieldStyle(.roundedBorder)
+                XCapsuleTextField(placeholder: xLoc("18 位激活码"), text: $activationKey) { activateKey() }
                     .frame(maxWidth: 260)
                     .disabled(model.activating)
-                    .onSubmit { activateKey() }
                 Button(model.activating ? xLoc("激活中…") : xLoc("激活")) { activateKey() }
                     .buttonStyle(XPrimaryButtonStyle(compact: true))
                     .disabled(model.activating || activationKey.trimmingCharacters(in: .whitespaces).isEmpty)

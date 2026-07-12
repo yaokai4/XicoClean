@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 import Combine
+import Carbon.HIToolbox
+import SystemConfiguration
 import Features
 import Infrastructure
 import DesignSystem
@@ -33,6 +35,7 @@ final class MenuBarController: NSObject {
     private let config: [(id: String, key: String, def: Bool)] = [
         ("network", "xico.mb.network", true),
         ("disk",    "xico.mb.disk",    false),
+        ("diskio",  "xico.mb.diskio",  false),   // 磁盘活动（读/写速率）——与「占用」分离（P1）
         ("temp",    "xico.mb.temp",    false),
         ("battery", "xico.mb.battery", false),
         ("gpu",     "xico.mb.gpu",     false),
@@ -69,11 +72,14 @@ final class MenuBarController: NSObject {
     }
 
     /// 当前所有 `xico.mb.*` 偏好键的字符串化快照（供变化比对）。
+    /// 主题 ID 也纳入快照——彩色模式兜底读主题的 `menuBarColored`（P0 修复死代码），
+    /// 切主题必须触发重建 + 字形缓存失效，否则菜单栏颜色滞留旧主题。
     private static func mbDefaultsSnapshot() -> [String: String] {
         var out: [String: String] = [:]
         for (key, value) in UserDefaults.standard.dictionaryRepresentation() where key.hasPrefix("xico.mb.") {
             out[key] = "\(value)"
         }
+        out["xico.themeID"] = UserDefaults.standard.string(forKey: "xico.themeID") ?? ""
         return out
     }
 
@@ -114,7 +120,11 @@ final class MenuBarController: NSObject {
                 statusItems[id] = item
             }
         }
+        installHoverTracking()
+        syncHotKey()
         lastImageUpdate.removeAll()
+        // 主题切换会走到这里（themeID 已纳入快照）：字形缓存签名不含主题色，必须整体失效。
+        MenuBarGlyph.invalidateCache()
         updateImages(force: true)
     }
 
@@ -167,6 +177,7 @@ final class MenuBarController: NSObject {
         switch id {
         case "cpu", "memory", "gpu": return .rich
         case "network":              return .graph
+        case "diskio":               return .valueOnly
         default:                     return .iconValue   // temp / disk / battery
         }
     }
@@ -175,12 +186,17 @@ final class MenuBarController: NSObject {
            let st = MenuBarStyle(rawValue: s) { return st }
         return defaultStyle(for: id)
     }
-    /// 每项独立的彩色开关。优先 `xico.mb.<id>.colored`，回退全局 `xico.mb.colored`。
+    /// 每项独立的彩色开关。优先级：逐项 `xico.mb.<id>.colored` > 全局 `xico.mb.colored` >
+    /// **主题自带 `menuBarColored`**（P0 修复：此前主题标志是死代码——切 ocean/sunset/warmLuxe
+    /// 等彩色主题菜单栏仍单色，联动断裂）。用户显式设过全局开关则用户意志优先。
     private func colored(for id: String) -> Bool {
         if UserDefaults.standard.object(forKey: "xico.mb.\(id).colored") != nil {
             return UserDefaults.standard.bool(forKey: "xico.mb.\(id).colored")
         }
-        return UserDefaults.standard.object(forKey: "xico.mb.colored") == nil ? false : UserDefaults.standard.bool(forKey: "xico.mb.colored")
+        if UserDefaults.standard.object(forKey: "xico.mb.colored") != nil {
+            return UserDefaults.standard.bool(forKey: "xico.mb.colored")
+        }
+        return XThemeStore.shared.current.menuBarColored
     }
 
     private func image(for id: String, snapshot s: SystemSnapshot?) -> NSImage? {
@@ -188,7 +204,10 @@ final class MenuBarController: NSObject {
         let colored = colored(for: id)
         switch id {
         case "cpu":      return MenuBarGlyph.cpu(fraction: s?.cpuUsage ?? 0,
-                                                 history: model.cpuHistory, style: style, colored: colored)
+                                                 history: model.cpuHistory, style: style, colored: colored,
+                                                 load: s.map { ($0.load1, $0.load5, $0.load15) },
+                                                 memFraction: s?.memoryUsedFraction,
+                                                 perCore: s?.perCore ?? [])
         case "memory":
             // 口径（P8）：默认「压力」（kern.memorystatus_level 连续值，与 iStat 菜单栏一致）；
             // 可在设置切回「占用」。压力读不到时自动退回占用。
@@ -197,11 +216,39 @@ final class MenuBarController: NSObject {
                                           : (s?.memoryUsedFraction ?? 0)
             return MenuBarGlyph.memory(fraction: memFraction,
                                        history: model.memHistory, style: style, colored: colored)
-        case "network":  return MenuBarGlyph.network(down: s?.netDownBytesPerSec ?? 0,
-                                                     up: s?.netUpBytesPerSec ?? 0,
-                                                     history: netNormHistory(), style: style, colored: colored)
-        case "temp":     return MenuBarGlyph.temperature(celsius: s?.cpuTemp, style: style, colored: colored)
-        case "disk":     return MenuBarGlyph.disk(fraction: s?.diskUsedFraction ?? 0, style: style, colored: colored)
+        case "network":
+            let hist = netHistories()
+            return MenuBarGlyph.network(down: s?.netDownBytesPerSec ?? 0,
+                                        up: s?.netUpBytesPerSec ?? 0,
+                                        history: hist.down, upHistory: hist.up,
+                                        style: style, colored: colored,
+                                        interfaceName: style == .interface ? Self.primaryInterfaceName() : nil)
+        case "temp":
+            // 传感器源（P1 多传感器）：CPU（默认）/ GPU / SSD，破除此前 s.cpuTemp 硬编码。
+            let source = UserDefaults.standard.string(forKey: "xico.mb.temp.source") ?? "cpu"
+            let (celsius, label): (Double?, String?) = {
+                switch source {
+                case "gpu": return (s?.gpuTemp, "GPU")
+                case "ssd": return (s?.ssdTemp, "SSD")
+                default:    return (s?.cpuTemp, nil)
+                }
+            }()
+            return MenuBarGlyph.temperature(celsius: celsius, style: style, colored: colored, label: label)
+        case "disk":
+            // 卷选择（P1）：默认跟随主卷快照；用户选了其他卷则现场 statfs（微秒级）。
+            var fraction = s?.diskUsedFraction ?? 0
+            if let path = UserDefaults.standard.string(forKey: "xico.mb.disk.volume"), !path.isEmpty,
+               let cap = model.env.fs.volumeCapacity(for: URL(fileURLWithPath: path, isDirectory: true)),
+               cap.total > 0 {
+                fraction = cap.usedFraction
+            }
+            return MenuBarGlyph.disk(fraction: fraction, style: style, colored: colored)
+        case "diskio":
+            let hist = diskIOHistories()
+            return MenuBarGlyph.diskIO(read: s?.diskReadBytesPerSec ?? 0,
+                                       write: s?.diskWriteBytesPerSec ?? 0,
+                                       history: hist.read, writeHistory: hist.write,
+                                       style: style, colored: colored)
         case "gpu":      return MenuBarGlyph.gpu(fraction: s?.gpuUsage ?? 0,
                                                  history: model.gpuHistory, style: style, colored: colored)
         case "battery":  return MenuBarGlyph.battery(percent: s?.batteryPercent,
@@ -212,36 +259,66 @@ final class MenuBarController: NSObject {
         }
     }
 
+    /// 磁盘读写历史（同基准归一，diskio 项 graph 样式的数据源）。
+    private func diskIOHistories() -> (read: [Double], write: [Double]) {
+        let read = model.diskReadHistory
+        let write = model.diskWriteHistory
+        let maxV = max((read + write).max() ?? 1, 1)
+        return (read.map { $0 / maxV }, write.map { $0 / maxV })
+    }
+
+    /// 主网络接口 BSD 名（en0 等）：SCDynamicStore 单键查询，微秒级，无权限门槛
+    ///（Wi-Fi SSID 在 macOS 14+ 需定位权限，刻意不做——接口名诚实且零权限）。
+    static func primaryInterfaceName() -> String? {
+        guard let store = SCDynamicStoreCreate(nil, "xico.mb" as CFString, nil, nil),
+              let value = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any]
+        else { return nil }
+        return value["PrimaryInterface"] as? String
+    }
+
     /// 真 · 合并项（P3·M1）：按 `xico.mb.combined.<id>` 勾选构建槽位（默认 cpu+memory+network）。
+    /// P2 升级：可选 symbol 前缀（一眼认指标）+ 刘海自适应（刘海屏空间紧张时自动收起数值文字）。
     private func combinedSlots(_ s: SystemSnapshot?) -> [MenuCombinedSlot] {
-        let showValues = isEnabled("xico.mb.combined.values", default: false)
+        var showValues = isEnabled("xico.mb.combined.values", default: false)
+        let showIcons = isEnabled("xico.mb.combined.icons", default: false)
+        // 刘海自适应：内建屏有刘海（safeAreaInsets.top > 0）时自动省宽——数值文字先让位。
+        if isEnabled("xico.mb.combined.notchAdapt", default: false), Self.builtInScreenHasNotch() {
+            showValues = false
+        }
         var slots: [MenuCombinedSlot] = []
         func value(_ f: Double) -> String? { showValues ? "\(Int((f * 100).rounded()))%" : nil }
+        func icon(_ name: String) -> String? { showIcons ? name : nil }
         for id in orderedIDs() where id != "combined" && isEnabled("xico.mb.combined.\(id)", default: ["cpu", "memory", "network"].contains(id)) {
             switch id {
             case "cpu":
                 slots.append(MenuCombinedSlot(viz: .histogram(model.cpuHistory), tint: XColor.metricCPU,
-                                              value: value(s?.cpuUsage ?? 0)))
+                                              value: value(s?.cpuUsage ?? 0), icon: icon("cpu")))
             case "memory":
                 slots.append(MenuCombinedSlot(viz: .pie(s?.memoryUsedFraction ?? 0), tint: XColor.metricMemory,
-                                              value: value(s?.memoryUsedFraction ?? 0)))
+                                              value: value(s?.memoryUsedFraction ?? 0), icon: icon("memorychip")))
             case "gpu":
-                slots.append(MenuCombinedSlot(viz: .pie(s?.gpuUsage ?? 0), tint: XColor.metricGPU,
-                                              value: value(s?.gpuUsage ?? 0)))
+                slots.append(MenuCombinedSlot(viz: .pie(s?.gpuUsage ?? 0), tint: [XColor.menuGPU],
+                                              value: value(s?.gpuUsage ?? 0), icon: icon("display")))
             case "disk":
-                slots.append(MenuCombinedSlot(viz: .pie(s?.diskUsedFraction ?? 0), tint: XColor.metricDisk,
-                                              value: value(s?.diskUsedFraction ?? 0)))
+                slots.append(MenuCombinedSlot(viz: .pie(s?.diskUsedFraction ?? 0), tint: [XColor.menuDisk],
+                                              value: value(s?.diskUsedFraction ?? 0), icon: icon("internaldrive")))
+            case "diskio":
+                slots.append(MenuCombinedSlot(viz: .net(down: (s?.diskReadBytesPerSec ?? 0).compactRate,
+                                                        up: (s?.diskWriteBytesPerSec ?? 0).compactRate),
+                                              tint: [XColor.menuDisk], icon: icon("internaldrive")))
             case "network":
                 slots.append(MenuCombinedSlot(viz: .net(down: (s?.netDownBytesPerSec ?? 0).compactRate,
                                                         up: (s?.netUpBytesPerSec ?? 0).compactRate),
-                                              tint: XColor.metricNetwork))
+                                              tint: XColor.metricNetwork,
+                                              icon: icon("antenna.radiowaves.left.and.right")))
             case "temp":
                 let t = s?.cpuTemp
                 slots.append(MenuCombinedSlot(viz: .text((t != nil && t! > 0) ? "\(Int(t!.rounded()))°" : "—°"),
-                                              tint: [XColor.warning]))
+                                              tint: [XColor.warning], icon: icon("thermometer.medium")))
             case "battery":
                 if let pct = s?.batteryPercent {
-                    slots.append(MenuCombinedSlot(viz: .text("\(pct)%"), tint: [XColor.success]))
+                    slots.append(MenuCombinedSlot(viz: .text("\(pct)%"), tint: [XColor.success],
+                                                  icon: icon("battery.100percent")))
                 }
             default: break
             }
@@ -249,14 +326,17 @@ final class MenuBarController: NSObject {
         return slots
     }
 
-    /// 网络折线归一化：总吞吐（下行+上行），同基准归一。
-    private func netNormHistory() -> [Double] {
+    /// 内建屏是否有刘海（相机屋）。外接屏无 safeArea，不影响判定。
+    private static func builtInScreenHasNotch() -> Bool {
+        NSScreen.screens.contains { $0.safeAreaInsets.top > 0 }
+    }
+
+    /// 网络折线归一化：下行/上行**分开**两条历史，同一基准归一（双线字形的数据源）。
+    private func netHistories() -> (down: [Double], up: [Double]) {
         let down = model.netDownHistory
         let up = model.netUpHistory
         let maxV = max((down + up).max() ?? 1, 1)
-        let n = min(down.count, up.count)
-        guard n > 0 else { return down.map { $0 / maxV } }
-        return zip(down.suffix(n), up.suffix(n)).map { (d, u) in (d + u) / maxV }
+        return (down.map { $0 / maxV }, up.map { $0 / maxV })
     }
 
     @objc private func handleClick(_ sender: NSStatusBarButton) {
@@ -386,6 +466,88 @@ final class MenuBarController: NSObject {
         escKeyMonitor = nil
     }
 
+    // MARK: 悬停预览（P1，对标 iStat「hovering over」；默认关，设置页开启）
+
+    /// 悬停 0.35s 后自动展开面板；移出不自动关（沿用点击外部/Esc 的既有关闭体系，
+    /// 避免「面板追鼠标」的打地鼠体验）。
+    private var hoverTask: Task<Void, Never>?
+
+    private func installHoverTracking() {
+        guard UserDefaults.standard.bool(forKey: "xico.mb.hover") else { return }
+        for (id, item) in statusItems {
+            guard let button = item.button else { continue }
+            // 防重复：rebuild 会多次经过，仅在按钮尚无我们的跟踪区时添加。
+            if button.trackingAreas.contains(where: { ($0.userInfo?["xico.id"] as? String) == id }) { continue }
+            let area = NSTrackingArea(rect: .zero,
+                                      options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                      owner: self,
+                                      userInfo: ["xico.id": id])
+            button.addTrackingArea(area)
+        }
+    }
+
+    @objc func mouseEntered(with event: NSEvent) {
+        guard UserDefaults.standard.bool(forKey: "xico.mb.hover"),
+              let id = event.trackingArea?.userInfo?["xico.id"] as? String,
+              cardPanelID != id else { return }
+        hoverTask?.cancel()
+        hoverTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard let self, !Task.isCancelled, self.cardPanelID != id,
+                  let button = self.statusItems[id]?.button else { return }
+            self.closeCardPanel()
+            self.showCardPanel(id: id, from: button)
+        }
+    }
+
+    @objc func mouseExited(with event: NSEvent) {
+        hoverTask?.cancel()
+        hoverTask = nil
+    }
+
+    // MARK: 全局快捷键（P1）：⌃⌥M 唤出/收起首个状态项面板（默认关，设置页开启）
+
+    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyHandler: EventHandlerRef?
+
+    private func syncHotKey() {
+        let wanted = UserDefaults.standard.bool(forKey: "xico.mb.hotkey")
+        if wanted, hotKeyRef == nil { registerHotKey() }
+        if !wanted, hotKeyRef != nil { unregisterHotKey() }
+    }
+
+    private func registerHotKey() {
+        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                      eventKind: UInt32(kEventHotKeyPressed))
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
+            guard let userData else { return noErr }
+            let controller = Unmanaged<MenuBarController>.fromOpaque(userData).takeUnretainedValue()
+            Task { @MainActor in controller.toggleFirstPanel() }
+            return noErr
+        }, 1, &eventType, selfPtr, &hotKeyHandler)
+        let hotKeyID = EventHotKeyID(signature: OSType(0x5849434F) /* 'XICO' */, id: 1)
+        // ⌃⌥M（kVK_ANSI_M = 46）
+        RegisterEventHotKey(UInt32(kVK_ANSI_M), UInt32(controlKey | optionKey),
+                            hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+    }
+
+    private func unregisterHotKey() {
+        if let ref = hotKeyRef { UnregisterEventHotKey(ref); hotKeyRef = nil }
+        if let handler = hotKeyHandler { RemoveEventHandler(handler); hotKeyHandler = nil }
+    }
+
+    /// 快捷键行为：有面板开着 → 关；否则展开左起第一个状态项的面板。
+    private func toggleFirstPanel() {
+        if cardPanel != nil { closeCardPanel(); return }
+        let desired = orderedIDs().filter { id in
+            guard let c = config.first(where: { $0.id == id }) else { return false }
+            return isEnabled(c.key, default: c.def)
+        }
+        guard let first = desired.first, let button = statusItems[first]?.button else { return }
+        showCardPanel(id: first, from: button)
+    }
+
     @ViewBuilder private func panelContent(for id: String) -> some View {
         let metric: MenuMetric? = {
             switch id {
@@ -393,7 +555,7 @@ final class MenuBarController: NSObject {
             case "memory": return .memory
             case "network": return .network
             case "temp": return .temperature
-            case "disk": return .disk
+            case "disk", "diskio": return .disk
             case "gpu": return .gpu
             case "battery": return .battery
             default: return nil

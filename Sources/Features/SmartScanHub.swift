@@ -23,7 +23,9 @@ public enum SmartCategory: String, CaseIterable, Identifiable, Sendable {
     /// 中文字面量即 i18n key（与 ModuleCatalog 复用同一批既有键）。
     var title: String {
         switch self {
-        case .junk: return "系统垃圾"
+        // 「垃圾与残留」（2026-07 命名定稿）：这张卡是聚合体（定点规则+隐私+深度走查+孤儿+微信），
+        // 与侧边栏「系统垃圾」定点页重名会让用户困惑「旁边那个是干嘛的」——名实相符各归其位。
+        case .junk: return "垃圾与残留"
         case .trash: return "废纸篓"
         case .largeFiles: return "大文件与旧文件"
         case .duplicates: return "重复文件"
@@ -144,8 +146,9 @@ public final class SmartScanHubViewModel: ObservableObject {
     public var scanningCount: Int { states.values.filter { $0.status == .scanning }.count }
 
     /// 全部类目发现总量（含未纳入的卡——「发现」是事实陈述，「纳入」才影响清理）。
+    /// 口径剔除「仅提示」字节：引擎永不删的体量计入「可清理」头条即是虚标（终审 P1）。
     public var totalFound: Int64 {
-        SmartCategory.allCases.reduce(0) { $0 + state($1).groups.reduce(0) { $0 + $1.totalSize } }
+        SmartCategory.allCases.reduce(0) { $0 + state($1).groups.reduce(0) { $0 + $1.reclaimableSize } }
     }
     public var totalItemCount: Int {
         SmartCategory.allCases.reduce(0) { $0 + state($1).groups.reduce(0) { $0 + $1.items.count } }
@@ -169,6 +172,17 @@ public final class SmartScanHubViewModel: ObservableObject {
     }
     /// 结果是否为「全类目扫完且一无所获」。
     public var isSpotless: Bool { allDone && totalItemCount == 0 }
+
+    /// ⌘⏎ 全局快捷键的清理请求（终审 P1 修正：此前 guard phase == .finished 写反——结果审阅页
+    /// 是 .active+allDone，快捷键在唯一有意义的页面上失灵；庆祝页反而可绕过确认对话框直调 clean）。
+    /// 置起本标志后由 SmartScanHubActiveView 消费，走与「一键清理」按钮**完全相同**的分支
+    ///（付费墙 / 二次确认 / 直接清理），快捷键不再有自己的旁路。
+    @Published public var cleanRequestPending = false
+
+    public func requestClean() {
+        guard phase == .active, allDone, !cleaning, selectedCount > 0 else { return }
+        cleanRequestPending = true
+    }
 
     private func refreshPurchaseGate() {
         needsPurchaseToClean = !env.license.status().state.allowsCommercialUse
@@ -341,13 +355,17 @@ public final class SmartScanHubViewModel: ObservableObject {
         guard var st = states[c],
               let gi = st.groups.firstIndex(where: { $0.id == groupID }),
               let ii = st.groups[gi].items.firstIndex(where: { $0.id == itemID }) else { return }
+        guard !st.groups[gi].items[ii].isInformational else { return }   // 「仅提示」项不可勾
         st.groups[gi].items[ii].isSelected.toggle()
         states[c] = st
     }
 
     public func setGroup(_ c: SmartCategory, groupID: String, selected: Bool) {
         guard var st = states[c], let gi = st.groups.firstIndex(where: { $0.id == groupID }) else { return }
-        for i in st.groups[gi].items.indices { st.groups[gi].items[i].isSelected = selected }
+        // 「仅提示」项不随组全选卷入（三层闸第一层；引擎侧仍会兜底拒删）。
+        for i in st.groups[gi].items.indices where !st.groups[gi].items[i].isInformational {
+            st.groups[gi].items[i].isSelected = selected
+        }
         states[c] = st
     }
 
@@ -420,7 +438,7 @@ public final class SmartScanHubViewModel: ObservableObject {
                                                          removedCount: merged.removedCount,
                                                          restorable: trashRestorables)
             self.phase = .finished
-            XSound.play(.cleanDone)   // 签名音效②：清理完成
+            // 签名音效②改在完成页 S-A 幕2 闪光帧齐发（声/触/光同窗，docs/16）——此处不再播避免双响。
             if merged.reclaimedBytes > 0 {
                 Notifier.notifyCleaningDone(reclaimed: merged.reclaimedBytes.formattedBytes,
                                             count: merged.removedCount)
@@ -565,6 +583,19 @@ public struct SmartScanHubActiveView: View {
         } message: {
             Text(xLoc("废纸篓与管理员项目将彻底删除（不可恢复）；其余项目移入废纸篓，可随时撤销。"))
         }
+        // ⌘⏎ 请求消费（终审 P1）：与「一键清理」按钮同一分支序——付费墙 / 二次确认 / 直接清理，
+        // 快捷键没有任何旁路（此前庆祝页可绕过确认对话框直调 clean）。
+        .onChange(of: hub.cleanRequestPending) { _, pending in
+            guard pending else { return }
+            hub.cleanRequestPending = false
+            if hub.needsPurchaseToClean {
+                NotificationCenter.default.post(name: .xicoShowPricing, object: nil)
+            } else if hub.selectionNeedsConfirm {
+                confirmClean = true
+            } else {
+                hub.clean()
+            }
+        }
     }
 
     // MARK: 总览（六卡网格）
@@ -590,13 +621,20 @@ public struct SmartScanHubActiveView: View {
     }
 
     private var grid: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: XSpacing.m)],
+        // 断点 260（docs/16 P2 收尾）：窄窗（如 900pt 分屏）也促成双列而非落单列长条；
+        // 瓦片自身 minHeight 兜底，行内容多寡不再决定卡高错落。
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: XSpacing.m)],
                   spacing: XSpacing.m) {
             ForEach(Array(SmartCategory.allCases.enumerated()), id: \.element) { index, category in
                 CategoryTile(hub: hub, category: category, index: index)
+                    .frame(minHeight: 132)
             }
         }
         .padding(XSpacing.xl)
+        // S-C「六类落定」光扫（docs/16）：六卡各自弹跳是「点」，一道掠过全局的光才是「面」——
+        // 面级收束给「一览无余、大功告成」的整体句点，终点配一次轻触感。
+        .overlay { CompletionSweep(active: hub.allDone) }
+        .clipped()
     }
 
     private var header: some View {
@@ -695,9 +733,7 @@ public struct SmartScanHubActiveView: View {
 
     private var spotlessView: some View {
         VStack(spacing: XSpacing.l) {
-            XEmptyState(systemImage: "checkmark.seal.fill",
-                        title: xLoc("太棒了，这里很干净 ✨"),
-                        subtitle: xLoc("没有发现可清理的项目。"), kind: .success)
+            SpotlessHero()
                 .frame(maxHeight: 340)
             if hub.permissionIssue {
                 Button(xLoc("开启完全磁盘访问")) { hub.openPermissionSettings() }
@@ -806,7 +842,8 @@ private struct CategoryTile: View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.s) {
                 HStack(alignment: .top, spacing: XSpacing.m) {
-                    XIconTile(systemImage: category.icon, colors: category.colors, size: 40)
+                    XIconTile(systemImage: category.icon, colors: category.colors, size: 40, flat: false)
+                        .symbolEffect(.bounce, value: pop)   // done 落定一跳（docs/16 P1-3）
                         .opacity(st.included ? 1 : 0.35)
                         // 扫描中：低饱和呼吸（P6）；Reduce Motion 不呼吸。
                         .saturation(isScanning && !reduceMotion ? (breathe ? 0.55 : 0.85) : 1)
@@ -959,6 +996,7 @@ private struct CategoryReviewView: View {
                             ResultGroupCard(
                                 group: group,
                                 index: idx,
+                                count: st.groups.count,
                                 allSelected: hub.groupSelectionState(category, group: group),
                                 onToggleGroup: { hub.setGroup(category, groupID: group.id, selected: $0) },
                                 onToggleItem: { hub.toggleItem(category, groupID: group.id, itemID: $0) },
@@ -1015,6 +1053,80 @@ private struct CategoryReviewView: View {
         panel.directoryURL = hub.duplicatesRootURL
         if panel.runModal() == .OK, let url = panel.url {
             hub.setDuplicatesRoot(url)
+        }
+    }
+}
+
+
+// MARK: - S-C 六类落定光扫（docs/16 招牌时刻）
+
+/// 45° 高光带掠过网格（~320ms）：等六卡波次弹跳先走完（450ms 延迟）再扫，
+/// 终点配一次 `.alignment` 轻触感。Reduce Motion 完全跳过；播完即移除，稳态零帧。
+private struct CompletionSweep: View {
+    let active: Bool
+    @State private var progress: CGFloat = -0.5
+    @State private var visible = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        GeometryReader { geo in
+            if visible {
+                LinearGradient(colors: [.clear, .white.opacity(0.13), .clear],
+                               startPoint: .leading, endPoint: .trailing)
+                    .frame(width: geo.size.width * 0.45, height: geo.size.height * 1.6)
+                    .rotationEffect(.degrees(18))   // 方案原稿 45°，实测 18° 更贴卡片横向比例（偏差决策）
+                    .offset(x: geo.size.width * progress, y: -geo.size.height * 0.3)
+                    .blendMode(.plusLighter)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .onChange(of: active) {
+            guard active, !reduceMotion else { return }
+            progress = -0.5
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 450_000_000)   // 先让六卡波次弹完
+                visible = true
+                withAnimation(.easeInOut(duration: 0.32)) { progress = 1.1 }
+                try? await Task.sleep(nanoseconds: 340_000_000)
+                visible = false
+                XHaptic.perform(.alignment)   // 收束点缀（轻）
+            }
+        }
+    }
+}
+
+// MARK: - Spotless 宝石空态（docs/16：定制插画是 Linear/Notion 空态的高级感来源）
+
+/// 「这里很干净」的品牌宝石呼吸插画——用自家 XBrandMark 切面宝石语言，替代系统味的
+/// checkmark.seal。呼吸极慢（4s 往返）且 Reduce Motion 静止。
+private struct SpotlessHero: View {
+    @State private var breathe = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(spacing: XSpacing.m) {
+            ZStack {
+                Circle().fill(XColor.success.opacity(0.10)).frame(width: 128, height: 128)
+                Circle().stroke(XColor.success.opacity(0.25), lineWidth: 1).frame(width: 128, height: 128)
+                XBrandMark(size: 64)
+                    .scaleEffect(breathe ? 1.04 : 0.98)
+                    .shadow(color: XColor.brand.opacity(breathe ? 0.35 : 0.2), radius: 18)
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(.white, XColor.success)
+                    .offset(x: 34, y: 34)
+            }
+            Text(xLoc("太棒了，这里很干净 ✨")).xTitle().foregroundStyle(XColor.textPrimary)
+            Text(xLoc("没有发现可清理的项目。"))
+                .font(XFont.body).foregroundStyle(XColor.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(XSpacing.xxl)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 4).repeatForever(autoreverses: true)) { breathe = true }
         }
     }
 }

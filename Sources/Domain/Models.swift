@@ -105,6 +105,10 @@ public struct CleanableItem: Identifiable, Sendable, Hashable {
     public let requiresHelper: Bool
     /// 附注（如"正在运行"/"已卸载残留"），用于在结果里给用户上下文提示
     public let note: String?
+    /// 「仅提示」项（Docker 虚拟磁盘 / 模拟器设备 / Go 模块缓存 / 休眠镜像等）：只陈述体量与
+    /// 正确的处置方式，**任何路径都不得执行删除**——组全选跳过、UI 不给勾选框、引擎拒删三层闸。
+    /// 此前仅靠 isSelected:false 初始态兜底，组勾选框一勾就会被卷入删除（2026-07 审计缺口）。
+    public let isInformational: Bool
 
     public init(
         id: UUID = UUID(),
@@ -115,7 +119,8 @@ public struct CleanableItem: Identifiable, Sendable, Hashable {
         safety: SafetyLevel = .safe,
         isSelected: Bool? = nil,
         requiresHelper: Bool = false,
-        note: String? = nil
+        note: String? = nil,
+        isInformational: Bool = false
     ) {
         self.id = id
         self.url = url
@@ -124,7 +129,8 @@ public struct CleanableItem: Identifiable, Sendable, Hashable {
         self.size = size
         self.safety = safety
         self.requiresHelper = requiresHelper
-        self.isSelected = isSelected ?? (requiresHelper ? false : safety.defaultSelected)
+        self.isInformational = isInformational
+        self.isSelected = isInformational ? false : (isSelected ?? (requiresHelper ? false : safety.defaultSelected))
         self.note = note
     }
 }
@@ -154,6 +160,10 @@ public struct ScanResultGroup: Identifiable, Sendable {
 
     public var totalSize: Int64 { items.reduce(0) { $0 + $1.size } }
     public var selectedSize: Int64 { items.filter(\.isSelected).reduce(0) { $0 + $1.size } }
+    /// 真正可清理的字节（剔除「仅提示」项）：头条「可清理 X GB」与进度环分母必须用这个口径——
+    /// 引擎永不删的字节计入「可清理」即是行业虚标（2026-07 终审 P1）。组卡自身仍显示 totalSize
+    ///（该组的事实体量，配「仅提示」徽标是诚实的）。
+    public var reclaimableSize: Int64 { items.filter { !$0.isInformational }.reduce(0) { $0 + $1.size } }
 }
 
 /// 一个模块扫描后的完整结果
@@ -166,7 +176,7 @@ public struct ScanResult: Sendable {
         self.groups = groups
     }
 
-    public var totalReclaimable: Int64 { groups.reduce(0) { $0 + $1.totalSize } }
+    public var totalReclaimable: Int64 { groups.reduce(0) { $0 + $1.reclaimableSize } }
     public var selectedReclaimable: Int64 { groups.reduce(0) { $0 + $1.selectedSize } }
     public var itemCount: Int { groups.reduce(0) { $0 + $1.items.count } }
 }

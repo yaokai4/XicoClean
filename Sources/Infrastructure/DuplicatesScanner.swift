@@ -113,18 +113,23 @@ public struct DuplicatesScanner: Sendable {
             do {
                 let sorted = dupURLs.sorted { $0.path.count < $1.path.count }
                 var items: [CleanableItem] = []
+                var wasted: Int64 = 0
                 for (idx, url) in sorted.enumerated() {
-                    // 默认保留第一个（路径最短者），其余勾选待删
+                    // 体积口径 = 物理已分配字节（P0：逻辑大小对压缩/克隆/稀疏虚高）。
+                    let phys = Self.physicalSize(url) ?? size
+                    // 默认全不勾（P0 默认勾选纪律）：重复的是**用户自己的文件**，
+                    // 「删哪份」必须交回用户——比 CleanMyMac 更克制是卖点不是退让。
                     items.append(CleanableItem(url: url, displayName: url.lastPathComponent,
-                                               detail: url.path, size: size, safety: .caution,
-                                               isSelected: idx != 0))
+                                               detail: url.path, size: phys, safety: .caution,
+                                               isSelected: false,
+                                               note: idx == 0 ? xLoc("建议保留（路径最短）") : nil))
+                    if idx != 0 { wasted += phys }
                 }
-                let wasted = Int64(dupURLs.count - 1) * size
-                let cloneNote = anyAreClones(dupURLs) ? xLoc(" · 含 APFS 克隆，删除可能不释放空间") : ""
+                let cloneNote = anyAreClones(dupURLs) ? xLoc(" · 含 APFS 克隆，实际释放可能接近 0") : ""
                 groups.append(ScanResultGroup(
                     id: hash,
                     title: xLocF("%@ · %d 份", sorted[0].lastPathComponent, dupURLs.count),
-                    description: xLocF("可释放约 %@（保留 1 份）%@", wasted.formattedBytes, cloneNote),
+                    description: xLocF("预计可释放约 %@（保留 1 份）%@", wasted.formattedBytes, cloneNote),
                     systemImage: "doc.on.doc", safety: .caution, items: items))
             }
         }
@@ -132,6 +137,13 @@ public struct DuplicatesScanner: Sendable {
         groups.sort { $0.selectedSize > $1.selectedSize }
         if groups.count > maxGroups { groups = Array(groups.prefix(maxGroups)) }
         return ScanResult(moduleID: .duplicates, groups: groups)
+    }
+
+    /// 物理已分配字节（所有 fork）；读不到返回 nil 由调用方回退逻辑大小。
+    static func physicalSize(_ url: URL) -> Int64? {
+        guard let v = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]),
+              let alloc = v.totalFileAllocatedSize else { return nil }
+        return Int64(alloc)
     }
 
     private func inodeKey(_ url: URL) -> String? {

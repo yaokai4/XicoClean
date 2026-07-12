@@ -117,12 +117,16 @@ public enum DefinitionPathPolicy {
         "~/Library/iTunes/iPad Software Updates",                          // iPad 固件更新包
         "~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads",  // 邮件附件预览副本
         "~/Library/Application Support/zoom.us/AutoDownload",               // Zoom 自动下载缓存
-        "~/Library/Application Support/*/blob_storage"                      // Electron 应用 blob 临时数据(通配段)
+        "~/Library/Application Support/*/blob_storage",                     // Electron 应用 blob 临时数据(通配段)
+        "~/Library/Application Support/CrashReporter"                       // 崩溃报告器中间数据（系统按需重建）
     ]
     /// 家目录内**明确列名**放行的缓存点目录（可无损重建）。此外还接受任意分量含 `cache` 的点目录。
+    /// pnpm store / sbt boot / NuGet packages（2026-07 CI 交叉审计发现的口径分裂）：三者均为
+    /// 重装时可全量重下的包缓存，内置规则已在清理而摄入期却会拒收其在线更新版本——补入放行。
     public static let cacheDotdirPrefixes = [
         "~/.cache", "~/.npm", "~/.yarn", "~/.gradle/caches",
-        "~/.cargo/registry/cache", "~/.pub-cache", "~/.gem", "~/.m2/repository"
+        "~/.cargo/registry/cache", "~/.pub-cache", "~/.gem", "~/.m2/repository",
+        "~/.pnpm-store", "~/.sbt/boot", "~/.nuget/packages"
     ]
     /// 家目录内凭证/密钥/云配置点目录：普通定义**一律不得**命中（即便含 cache 分量也拒）。
     public static let deniedCredentialDotdirs = [

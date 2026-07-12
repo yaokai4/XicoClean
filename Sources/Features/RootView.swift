@@ -107,7 +107,11 @@ public struct SidebarView: View {
     }
 
     private var navList: some View {
-        VStack(alignment: .leading, spacing: XSpacing.l) {
+        // 分组间距 xl→xxl（docs/16）：留白即奢侈——Arc 式呼吸感。
+        // 注：曾尝试用 GlassEffectContainer 让选中药丸跨瓦片 morph，但在 macOS 26 实机上
+        // 玻璃被放大发白、盖住文字（用户实测否决），故撤销——选中态回到 SidebarTile 内那颗
+        // 干净的淡染/单块玻璃药丸。
+        VStack(alignment: .leading, spacing: XSpacing.xxl) {
             ForEach(Array(ModuleCatalog.grouped().enumerated()), id: \.element.0) { catIndex, pair in
                 let (category, modules) = pair
                 VStack(alignment: .leading, spacing: 2) {
@@ -133,17 +137,12 @@ public struct SidebarView: View {
     }
 
     /// 每个分类一族色（CleanMyMac 式彩色侧栏图标——图标即导航地标，一眼定位分区）。
-    /// 三组新架构（docs/14 P0）：文件与空间已撤组，索引即 grouped() 的可见分组顺序。
+    /// 2026-07 用户拍板：**随主题走**——从当前主题色阶取（读 XColor.ring 即登记 @Observable
+    /// 依赖，切主题侧边栏自动换装）。取阶顺序 3/2/0/1：各主题下三组间距最大、互相可辨
+    ///（如珠宝暖调 = 祖母绿/黄玉/蓝宝石，暖阳高级 = 青碧/蜜琥珀/莓玫）。
     static func categoryTint(_ index: Int) -> Color {
-        let palette: [Color] = [
-            Color(red: 0.09, green: 0.72, blue: 0.65),   // 清理 · 青
-            Color(red: 0.24, green: 0.48, blue: 0.95),   // 应用 · 蓝
-            Color(red: 0.96, green: 0.55, blue: 0.11),   // 性能与安全 · 橙
-            Color(red: 0.55, green: 0.36, blue: 0.96),   // 备用 · 紫
-            Color(red: 0.91, green: 0.32, blue: 0.49),   // 备用 · 玫红
-            Color(red: 0.13, green: 0.73, blue: 0.27),   // 备用 · 绿
-        ]
-        return palette[index % palette.count]
+        let order = [3, 2, 0, 1]
+        return XColor.ring(order[index % order.count])
     }
 
     private var brandHeader: some View {
@@ -158,7 +157,7 @@ public struct SidebarView: View {
         }
         .padding(.horizontal, XSpacing.m)
         .padding(.top, 24)
-        .padding(.bottom, XSpacing.s)
+        .padding(.bottom, XSpacing.m)   // 与首组标题的挤间距修复（docs/16）
     }
 
     private var diskFooter: some View {
@@ -226,6 +225,7 @@ struct SidebarTile: View {
                     )
                     .opacity(selected || hover ? 1 : 0.88)
                     .shadow(color: tint.opacity(selected ? 0.35 : 0), radius: 4, y: 1)
+                    .symbolEffect(.bounce, value: selected)   // 选中一跳（docs/16 P1-3）
                 Text(xLoc(meta.title))
                     // 字号恒定 13.5pt（随 Dynamic Type 缩放），仅字重随选中变化，杜绝选中放大导致的重排。
                     .xNavLabel(selected: selected)
@@ -235,8 +235,9 @@ struct SidebarTile: View {
             .padding(.horizontal, XSpacing.s + 2)
             .padding(.vertical, 8)
             .background(
-                // 选中：极淡品牌染色底 + 左侧品牌指示条（原生高级做法），
-                // 取代原「饱和渐变发光块」的 web-app 廉价感。
+                // 选中态 = 干净的品牌淡染药丸（各 macOS 版本统一）。曾在 macOS 26 上用真 Liquid
+                // Glass（.regular.tint.interactive），但实机渲染发白、盖住图标与文字（用户实测否决），
+                // 遂全面回退——侧栏选中态要的是「一眼可辨的高亮」，不是会吃字的光学玻璃。
                 RoundedRectangle(cornerRadius: XRadius.tile, style: .continuous)
                     .fill(selected ? AnyShapeStyle(XColor.brand.opacity(XAlpha.tint))
                                    : AnyShapeStyle(hover ? XColor.surfaceHover : Color.clear))
@@ -267,12 +268,25 @@ struct SidebarTile: View {
 
 // MARK: - 详情区
 
+/// 观察智能扫描 hub 的背景宿主：只有「智能扫描页 + 已落定」这个 hero 时刻才开活极光，
+/// 独立小视图承担 hub 观察，避免整个 DetailView 随 hub 每次 @Published 变更重排。
+private struct HeroAwareBackground: View {
+    @ObservedObject var hub: SmartScanHubViewModel
+    let isSmartScan: Bool
+
+    var body: some View {
+        AppBackground(animated: isSmartScan && hub.phase == .finished)
+    }
+}
+
 struct DetailView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
         ZStack {
-            AppBackground()
+            // 扫描完成 = hero 时刻（docs/16 P1-1）：智能扫描页落定后极光「活」起来，
+            // 其余页面/阶段保持静态（能耗铁律：稳态零重绘；Reduce Motion 在组件内自降级）。
+            HeroAwareBackground(hub: model.smartScanHub, isSmartScan: model.selection == .smartScan || model.selection == nil)
             VStack(spacing: 0) {
                 if model.showPermissionBanner {
                     PermissionBanner().environmentObject(model)
@@ -288,6 +302,29 @@ struct DetailView: View {
         }
         // macOS 26：数据密集工具类用 .hard 分割线式滚动边缘（低版本 no-op，见 XSurface）。
         .xHardScrollEdges()
+        // ⌘K 命令面板（docs/16 P2，Raycast 式）：专业工具 vs 消费级向导流的段位分水岭。
+        .overlay { CommandPaletteHost(model: model) }
+        // 全局快捷键（docs/16 P1-4）：⌘R 一键智能扫描/重扫——键盘党以不碰鼠标为荣。
+        .background {
+            Button("") {
+                model.selection = .smartScan
+                model.smartScanHub.start()   // start() 自带取消重启语义，⌘R = 扫描/重扫
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .hidden()
+            // ⌘⏎ 执行 / ⌘Z 撤销（docs/16 P1-4 收尾）：**只在智能扫描页且 ⌘K 面板关闭时挂载**——
+            // hidden Button 的快捷键优先于响应链，全局挂载会吞掉文本框的 ⌘Z 文本撤销
+            //（含本页 ⌘K 面板的搜索框，终审 P1）。⌘⏎ 走 requestClean()：与「一键清理」按钮
+            // 完全同路（付费墙/二次确认/直接清理），快捷键没有旁路；undo() 自带全部守卫。
+            if (model.selection == .smartScan || model.selection == nil) && !model.commandPaletteOpen {
+                Button("") { model.smartScanHub.requestClean() }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .hidden()
+                Button("") { model.smartScanHub.undo() }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .hidden()
+            }
+        }
     }
 
     @ViewBuilder private var page: some View {

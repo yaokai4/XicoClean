@@ -42,6 +42,7 @@ public struct SettingsView: View {
                     sectionLabel("外观")
                     appearanceCard
                     soundCard
+                    hapticsCard
                     languageCard
                     ThemePickerCard(selectedID: Binding(
                         get: { model.themeID },
@@ -191,6 +192,18 @@ public struct SettingsView: View {
                    title: xLoc("界面音效"), subtitle: xLoc("扫描完成 / 清理完成 / 删除执行的轻量提示音；跟随系统「界面声音」偏好")) {
             Toggle("", isOn: $soundEnabled).toggleStyle(.switch).labelsHidden()
                 .accessibilityLabel(xLoc("界面音效"))
+        }
+    }
+
+    // MARK: 触感反馈（XHaptic 总开关，docs/16 P0-1 收尾）
+
+    @AppStorage("xico.haptics.enabled") private var hapticsEnabled = true
+
+    private var hapticsCard: some View {
+        settingRow(icon: "hand.tap", colors: [XColor.ringLav, XColor.brand],
+                   title: xLoc("触感反馈"), subtitle: xLoc("清理完成 / 拖拽吸附 / 阈值跨越时触控板轻震；无支持硬件时自动无效")) {
+            Toggle("", isOn: $hapticsEnabled).toggleStyle(.switch).labelsHidden()
+                .accessibilityLabel(xLoc("触感反馈"))
         }
     }
 
@@ -547,29 +560,60 @@ public struct SettingsView: View {
                         Text(xLoc("指标持续越过阈值时发系统通知")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                     }
                     Spacer()
+                    // 新增规则：选指标即建一条该指标的合理默认规则（可再调阈值/开关/删除）。
+                    Menu {
+                        ForEach(AlertMetric.allCases, id: \.self) { metric in
+                            Button(xLoc(metric.title)) { addAlertRule(metric: metric) }
+                        }
+                    } label: {
+                        Label(xLoc("新增规则"), systemImage: "plus")
+                            .font(XFont.captionEmphasis)
+                    }
+                    .fixedSize()
+                    .accessibilityLabel(xLoc("新增规则"))
                 }
                 Divider().padding(.vertical, XSpacing.xxs)
-                ForEach(Array(model.alertRules.enumerated()), id: \.element.id) { idx, rule in
-                    alertRuleRow(idx: idx, rule: rule)
+                if model.alertRules.isEmpty {
+                    Text(xLoc("暂无告警规则")).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                        .padding(.vertical, XSpacing.xs)
+                }
+                ForEach(model.alertRules) { rule in
+                    alertRuleRow(rule: rule)
                 }
             }
         }
     }
 
-    private func alertRuleRow(idx: Int, rule: AlertRule) -> some View {
+    /// 新建某指标的规则：阈值/方向/持续时长取该指标的合理默认，落库即生效。
+    private func addAlertRule(metric: AlertMetric) {
+        let rule: AlertRule
+        switch metric {
+        case .battery: rule = AlertRule(metric: .battery, comparison: .below, threshold: 0.20, durationSeconds: 0)
+        case .cpuTemp: rule = AlertRule(metric: .cpuTemp, comparison: .above, threshold: 95, durationSeconds: 10)
+        case .disk:    rule = AlertRule(metric: .disk, comparison: .above, threshold: 0.92, durationSeconds: 0)
+        default:       rule = AlertRule(metric: metric, comparison: .above, threshold: 0.90, durationSeconds: 20)
+        }
+        withAnimation(XMotion.snappy) { model.alertRules.append(rule) }
+        model.saveAlertRules()
+    }
+
+    /// 规则行：指标 + 阈值文案 / 阈值下拉 / 启用开关 / 删除。
+    /// 绑定按 id 反查而非缓存下标——支持增删后下标漂移不越界。
+    private func alertRuleRow(rule: AlertRule) -> some View {
         HStack(spacing: XSpacing.m) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(xLoc(rule.metric.title)).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                 Text(rule.durationSeconds > 0
                      ? xLocF("%@ 持续 %d 秒", rule.thresholdText, rule.durationSeconds)
                      : rule.thresholdText)
-                    .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    .font(XFont.caption).monospacedDigit().foregroundStyle(XColor.textSecondary)
             }
             Spacer()
             Picker("", selection: Binding(
                 get: { rule.threshold },
                 set: { newVal in
-                    model.alertRules[idx].threshold = newVal
+                    guard let i = model.alertRules.firstIndex(where: { $0.id == rule.id }) else { return }
+                    model.alertRules[i].threshold = newVal
                     model.saveAlertRules()
                 })) {
                 ForEach(thresholdOptions(for: rule.metric), id: \.self) { v in
@@ -581,10 +625,20 @@ public struct SettingsView: View {
             Toggle("", isOn: Binding(
                 get: { rule.enabled },
                 set: { on in
-                    model.alertRules[idx].enabled = on
+                    guard let i = model.alertRules.firstIndex(where: { $0.id == rule.id }) else { return }
+                    model.alertRules[i].enabled = on
                     model.saveAlertRules()
                 })).toggleStyle(.switch).labelsHidden()
                 .accessibilityLabel(xLocF("%@ 告警开关", xLoc(rule.metric.title)))
+            Button {
+                withAnimation(XMotion.snappy) { model.alertRules.removeAll { $0.id == rule.id } }
+                model.saveAlertRules()
+            } label: {
+                Image(systemName: "trash").font(XFont.caption).foregroundStyle(XColor.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help(xLoc("删除规则"))
+            .accessibilityLabel(xLocF("删除 %@ 规则", xLoc(rule.metric.title)))
         }
         .padding(.vertical, XSpacing.xxs)
     }
