@@ -15,6 +15,7 @@ public struct SettingsView: View {
     @State private var definitionsMessage: String?
     @State private var definitionsUpdating = false
     @State private var licenseStatus: LicenseStatus?
+    @State private var showingLicenses = false
     // 菜单栏设置已迁出为独立「状态栏」页（MenuBarSettingsView，P0 IA 重组 docs/14）。
 
     public init(model: AppModel) { self.model = model }
@@ -71,6 +72,7 @@ public struct SettingsView: View {
             reloadIgnored()
         }
         .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in reloadHistory() }
+        .sheet(isPresented: $showingLicenses) { OpenSourceLicensesView { showingLicenses = false } }
         .alert(xLoc("操作未完成"), isPresented: Binding(get: { helperError != nil }, set: { if !$0 { helperError = nil } })) {
             Button(xLoc("好"), role: .cancel) {}
         } message: {
@@ -367,6 +369,9 @@ public struct SettingsView: View {
                                 .buttonStyle(.link).font(XFont.caption)
                             Text("·").foregroundStyle(XColor.textTertiary)
                             Button(xLoc("许可协议")) { NSWorkspace.shared.open(URL(string: "https://xicoai.com/terms")!) }
+                                .buttonStyle(.link).font(XFont.caption)
+                            Text("·").foregroundStyle(XColor.textTertiary)
+                            Button(xLoc("开源许可")) { showingLicenses = true }
                                 .buttonStyle(.link).font(XFont.caption)
                         }
                     }

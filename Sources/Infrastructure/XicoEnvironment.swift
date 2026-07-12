@@ -27,6 +27,18 @@ public final class XicoEnvironment: @unchecked Sendable {
     /// 统一实时指标引擎（监视页/硬件页共享，避免各自采样丢失差分状态）。
     @MainActor public private(set) lazy var metricsEngine = MetricsEngine()
 
+    // —— 服务器套件（反超 ServerCat）
+    /// SSH 凭据的 Keychain 存储（密码/私钥；非明文落盘）。
+    public let keychainSecretStore = KeychainSecretStore()
+    /// 主机 + 片段持久化（非机密）。
+    public let serverHostStore = ServerHostStore()
+    /// 远程服务器实时监控引擎（多主机；镜像 metricsEngine 的发布纪律）。
+    @MainActor public private(set) lazy var serverMonitorEngine = ServerMonitorEngine()
+    /// 端口转发隧道运行时管理。
+    @MainActor public private(set) lazy var tunnelManager = TunnelManager()
+    /// 下载器队列（对标 Downie）。**仅直销/公证版**——MAS 沙盒版应在其目标中排除下载器相关源文件。
+    @MainActor public private(set) lazy var downloadManager = DownloadManager()
+
     private let scanners: [ModuleID: ScannerModule]
 
     public init(
@@ -169,6 +181,10 @@ public enum ModuleCatalog {
         ModuleMetadata(id: .diskSpeed, title: "磁盘测速", subtitle: "顺序读写基准", systemImage: "gauge.with.needle", category: .performance),
         ModuleMetadata(id: .hardware, title: "硬件", subtitle: "档案 · 健康 · 温度", systemImage: "cpu", category: .performance),
         ModuleMetadata(id: .monitor, title: "系统监视", subtitle: "CPU / 内存 / 网络 / GPU 实时", systemImage: "waveform.path.ecg", category: .performance),
+
+        // —— 工具：远程服务器（反超 ServerCat）+ 下载器（对标 Downie，仅直销版）。
+        ModuleMetadata(id: .servers, title: "服务器", subtitle: "远程 SSH 监控 · 终端 · 片段", systemImage: "server.rack", category: .tools),
+        ModuleMetadata(id: .downloader, title: "下载器", subtitle: "视频 / 音频 / 图片下载队列", systemImage: "arrow.down.circle", category: .tools),
 
         // —— 隐藏模块：并入智能扫描中枢，侧边栏不展示（sidebar: false）。
         // 路由（RootView DetailView）与 --open= 直达保留——与 .privacy 先例一致；

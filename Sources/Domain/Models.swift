@@ -31,6 +31,9 @@ public extension ModuleID {
     static let orphans = ModuleID("orphans")
     static let menuBar = ModuleID("menu-bar")
     static let settings = ModuleID("settings")
+    // —— 工具（远程与下载）：反超 ServerCat / Downie 的新入口。
+    static let servers = ModuleID("servers")
+    static let downloader = ModuleID("downloader")
 }
 
 /// 模块分类（决定侧边栏分组）
@@ -39,6 +42,7 @@ public enum ModuleCategory: String, Sendable, CaseIterable, Codable {
     case applications   // 应用
     case filesSpace     // 文件与空间
     case performance    // 性能与安全
+    case tools          // 工具（远程服务器 / 下载器）
 
     public var title: String {
         switch self {
@@ -46,6 +50,7 @@ public enum ModuleCategory: String, Sendable, CaseIterable, Codable {
         case .applications: return "应用"
         case .filesSpace: return "文件与空间"
         case .performance: return "性能与安全"
+        case .tools: return "工具"
         }
     }
 }

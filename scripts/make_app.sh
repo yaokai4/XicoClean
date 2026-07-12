@@ -111,6 +111,19 @@ for b in "$BIN_DIR"/*.bundle; do
 done
 echo "▶︎ 已嵌入 $bundle_count 个资源包"
 
+# —— 可选：内置 LGPL ffmpeg（下载器的合并/音频提取组件）。
+# 用户选定「yt-dlp 运行时上游获取」，但 ffmpeg 是 LGPL、可合法内置——若仓库放了
+# Resources/engines/ffmpeg（LGPL 动态构建、不带 x264/x265），这里嵌入并随 App 一起深签名。
+# 没有则跳过（App 会在需要时按需拉取，见 EngineInstaller.installFFmpeg）。
+if [ -x "$ROOT/Resources/engines/ffmpeg" ]; then
+  mkdir -p "$CONTENTS/Resources/Engines"
+  cp "$ROOT/Resources/engines/ffmpeg" "$CONTENTS/Resources/Engines/ffmpeg"
+  chmod +x "$CONTENTS/Resources/Engines/ffmpeg"
+  # 内置可执行文件的签名在下方签名阶段做（inside-out，用真正的 $IDENTITY）。
+  [ -f "$ROOT/Resources/engines/ffmpeg-LICENSE.txt" ] && cp "$ROOT/Resources/engines/ffmpeg-LICENSE.txt" "$CONTENTS/Resources/Engines/"
+  echo "  ✓ 内置 ffmpeg（LGPL）"
+fi
+
 {
 cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -203,6 +216,11 @@ xattr -cr "$APP" 2>/dev/null || true
 TS=""
 [ "$IDENTITY" != "-" ] && TS="--timestamp"
 # 先签内嵌助手（带 Hardened Runtime + entitlements），再签主程（含其内嵌资源）
+# 内置 ffmpeg 须先于外层 App 签名（inside-out）；无内置则跳过（运行时按需拉取）。
+if [ -x "$CONTENTS/Resources/Engines/ffmpeg" ]; then
+  codesign --force --options runtime $TS --sign "$IDENTITY" "$CONTENTS/Resources/Engines/ffmpeg"
+  echo "▶︎ 已签名内置 ffmpeg"
+fi
 codesign --force --options runtime $TS --entitlements "$HELPER_ENT" --sign "$IDENTITY" "$CONTENTS/MacOS/XicoHelper"
 codesign --force --options runtime $TS --entitlements "$APP_ENT" --sign "$IDENTITY" "$APP"
 codesign --verify --strict "$APP" && echo "✓ 签名校验通过"

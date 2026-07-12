@@ -174,8 +174,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 免去用户手动复制粘贴激活码。需要 Info.plist 注册 CFBundleURLTypes（见 make_app.sh）。
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls where url.scheme?.lowercased() == "xico" {
-            handleActivationURL(url)
+            let host = url.host?.lowercased()
+            if host == "download" {
+                handleDownloadURL(url)
+            } else {
+                handleActivationURL(url)
+            }
         }
+    }
+
+    /// 自动化深链：`xico://download?url=<encoded>&kind=video|audio|image`——供 Shortcuts / 命令行
+    /// `open "xico://download?url=…"` / 其他 App 驱动下载（「不只是桌面点点点」）。仍受授权门禁约束。
+    @MainActor
+    private func handleDownloadURL(_ url: URL) {
+        guard model.env.license.status().state.allowsCommercialUse else {
+            NSApp.activate(ignoringOtherApps: true); model.showPricing = true; return
+        }
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        guard let raw = comps?.queryItems?.first(where: { $0.name == "url" })?.value,
+              let target = raw.removingPercentEncoding, target.contains("://") else { return }
+        let kindStr = comps?.queryItems?.first(where: { $0.name == "kind" })?.value ?? "video"
+        let kind = DownloadKind(rawValue: kindStr) ?? .video
+        NSApp.activate(ignoringOtherApps: true)
+        for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
+        model.selection = .downloader
+        model.env.downloadManager.add(urlString: target, kind: kind)
     }
 
     /// 上次深链激活时刻——用于对深链激活做速率限制，抵御恶意页面反复唤起。

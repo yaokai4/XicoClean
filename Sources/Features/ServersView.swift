@@ -1,0 +1,423 @@
+import SwiftUI
+import Domain
+import Infrastructure
+import DesignSystem
+
+/// 服务器套件主页（反超 ServerCat）：左侧主机栏 + 右侧详情（概览 / 终端 / 片段）。
+/// 连接会跨页面保活（离开侧栏不断开），返回即时可见——对齐 ServerCat 的 Sessions 常驻语义。
+public struct ServersView: View {
+    @ObservedObject private var model: AppModel
+    @StateObject private var vm: ServersViewModel
+    @ObservedObject private var engine: ServerMonitorEngine
+    @State private var tab: DetailTab = .overview
+    @State private var editingHost: ServerHost?
+    @State private var showingEditor = false
+    @State private var showingAlerts = false
+    @State private var tunnelsHost: ServerHost?
+    @State private var broadcast = false
+
+    enum DetailTab: String, CaseIterable, Hashable {
+        case overview, terminal, files, snippets
+        var title: String {
+            switch self {
+            case .overview: return xLoc("概览")
+            case .terminal: return xLoc("终端")
+            case .files: return xLoc("文件")
+            case .snippets: return xLoc("片段")
+            }
+        }
+    }
+
+    public init(model: AppModel) {
+        self.model = model
+        _vm = StateObject(wrappedValue: ServersViewModel(env: model.env))
+        self.engine = model.env.serverMonitorEngine
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            XHeaderBar(title: xLoc("服务器"), subtitle: xLoc("远程 SSH 监控 · 终端 · 片段")) {
+                HStack(spacing: XSpacing.m) {
+                    if engine.connectedCount > 0 {
+                        HStack(spacing: 5) {
+                            XLiveDot(size: 7)
+                            Text(xLocF("%d 台在线", engine.connectedCount))
+                                .font(XFont.micro).tracking(0.5).foregroundStyle(XColor.success)
+                        }
+                    }
+                    Button { startAdd() } label: {
+                        Label(xLoc("添加主机"), systemImage: "plus")
+                    }.buttonStyle(XPrimaryButtonStyle())
+                    Menu {
+                        Button { vm.importSSHConfig() } label: { Label(xLoc("导入 ~/.ssh/config"), systemImage: "square.and.arrow.down") }
+                        Button { showingAlerts = true } label: { Label(xLoc("告警与推送…"), systemImage: "bell.badge") }
+                        if engine.connectedCount > 0 {
+                            Divider()
+                            Button(role: .destructive) { engine.disconnectAll() } label: { Label(xLoc("全部断开"), systemImage: "stop.circle") }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle").font(.system(size: 17)).foregroundStyle(XColor.textSecondary)
+                    }.menuStyle(.borderlessButton).frame(width: 30)
+                }
+            }
+            Divider().opacity(0.25)
+            HStack(spacing: 0) {
+                hostRail.frame(width: 258)
+                Divider().opacity(0.25)
+                detail.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .sheet(isPresented: $showingEditor) {
+            HostEditorView(vm: vm, editing: editingHost) { showingEditor = false }
+        }
+        .sheet(isPresented: $showingAlerts) {
+            ServerAlertsView(vm: vm) { showingAlerts = false }
+        }
+        .sheet(item: $tunnelsHost) { h in
+            TunnelsView(vm: vm, tunnels: vm.tunnels, host: h, onClose: { tunnelsHost = nil }, gate: { gateAction($0) })
+        }
+        .xToast($vm.toast)
+    }
+
+    // MARK: 主机栏
+
+    private var hostRail: some View {
+        VStack(spacing: 0) {
+            if vm.hosts.isEmpty {
+                Spacer()
+                Text(xLoc("暂无主机")).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: XSpacing.s) {
+                        ForEach(vm.hosts) { host in
+                            HostRailRow(host: host,
+                                        state: engine.state(for: host.id),
+                                        snapshot: engine.snapshot(for: host.id),
+                                        selected: vm.selectedHostID == host.id)
+                                .contentShape(Rectangle())
+                                .onTapGesture { vm.selectedHostID = host.id }
+                                .contextMenu {
+                                    Button(xLoc("编辑")) { startEdit(host) }
+                                    Button(xLoc("删除"), role: .destructive) { vm.deleteHost(host.id) }
+                                }
+                        }
+                    }
+                    .padding(XSpacing.m)
+                }
+            }
+        }
+    }
+
+    // MARK: 详情
+
+    @ViewBuilder private var detail: some View {
+        if let host = vm.selectedHost {
+            VStack(spacing: 0) {
+                detailHeader(host)
+                XSegmentedControl(selection: $tab, options: DetailTab.allCases.map {
+                    .init(tag: $0, label: xLoc($0.title), a11y: xLoc($0.title))
+                })
+                .padding(.horizontal, XSpacing.xl)
+                .padding(.bottom, XSpacing.s)
+
+                switch tab {
+                case .overview:
+                    ServerDashboardView(host: host, engine: engine)
+                case .terminal:
+                    ServerTerminalTab(vm: vm, host: host, engine: engine, broadcast: $broadcast, gate: { gateAction($0) })
+                        .id(host.id)   // 切换主机时重建，重置「已打开终端」状态，避免连到错误主机
+                case .files:
+                    ServerFilesView(host: host, credential: vm.credential(for: host))
+                        .id(host.id)
+                case .snippets:
+                    SnippetsPane(vm: vm, host: host, engine: engine, gate: { gateAction($0) })
+                }
+            }
+        } else {
+            VStack(spacing: XSpacing.l) {
+                XEmptyState(systemImage: "server.rack",
+                            title: xLoc("还没有服务器"),
+                            subtitle: xLoc("添加一台主机，用 SSH 无需装 agent 即可实时监控 CPU / 内存 / 磁盘 / 网络与进程"))
+                Button { startAdd() } label: {
+                    Label(xLoc("添加主机"), systemImage: "plus")
+                }.buttonStyle(XPrimaryButtonStyle())
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func detailHeader(_ host: ServerHost) -> some View {
+        let state = engine.state(for: host.id)
+        return HStack(spacing: XSpacing.m) {
+            XIconTile(systemImage: host.symbol, colors: ServerPalette.colors(host.colorIndex), size: 34)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: XSpacing.s) {
+                    Text(host.name).font(XFont.title2).foregroundStyle(XColor.textPrimary)
+                    if let os = host.lastKnownOS { XBadge(os, color: XColor.info) }
+                }
+                Text(host.endpointLabel).font(XFont.captionMono).foregroundStyle(XColor.textSecondary)
+            }
+            Spacer()
+            if let snap = engine.snapshot(for: host.id), state.isLive {
+                Text(xLocF("运行 %@", SrvFmt.uptime(snap.uptimeSeconds)))
+                    .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+            }
+            connectButton(host, state: state)
+            Menu {
+                Button { tunnelsHost = host } label: { Label(xLoc("端口转发…"), systemImage: "arrow.left.arrow.right") }
+                Button(xLoc("编辑")) { startEdit(host) }
+                Button(xLoc("删除"), role: .destructive) { vm.deleteHost(host.id) }
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.system(size: 18)).foregroundStyle(XColor.textSecondary)
+            }.menuStyle(.borderlessButton).frame(width: 28)
+        }
+        .padding(.horizontal, XSpacing.xl)
+        .padding(.vertical, XSpacing.m)
+    }
+
+    @ViewBuilder private func connectButton(_ host: ServerHost, state: ConnectionState) -> some View {
+        if state.isLive {
+            Button { vm.disconnect(host) } label: { Label(xLoc("断开"), systemImage: "stop.circle") }
+                .buttonStyle(XSecondaryButtonStyle())
+        } else if state.isBusy {
+            HStack(spacing: 6) { XSpinner(size: 13); Text(xLoc("连接中")).font(XFont.caption) }
+                .foregroundStyle(XColor.textSecondary)
+        } else {
+            Button { gateAction { vm.connect(host) } } label: { Label(xLoc("连接"), systemImage: "bolt.fill") }
+                .buttonStyle(XPrimaryButtonStyle())
+        }
+    }
+
+    // MARK: 授权门禁（浏览免费，连接/执行需授权）
+
+    private func gateAction(_ action: () -> Void) {
+        if model.licenseStatus?.state.allowsCommercialUse == true {
+            action()
+        } else {
+            model.showPricing = true
+        }
+    }
+
+    private func startAdd() { editingHost = nil; showingEditor = true }
+    private func startEdit(_ host: ServerHost) { editingHost = host; showingEditor = true }
+}
+
+// MARK: - 主机栏行
+
+private struct HostRailRow: View {
+    let host: ServerHost
+    let state: ConnectionState
+    let snapshot: RemoteSnapshot?
+    let selected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
+            HStack(spacing: XSpacing.s) {
+                Circle().fill(state.dotColor).frame(width: 8, height: 8)
+                    .shadow(color: state.isLive ? state.dotColor.opacity(0.6) : .clear, radius: 3)
+                Text(host.name).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            Text(host.endpointLabel).font(XFont.captionMono).foregroundStyle(XColor.textTertiary).lineLimit(1)
+            if let s = snapshot, state.isLive {
+                HStack(spacing: XSpacing.m) {
+                    miniStat(xLoc("处理器"), SrvFmt.pct(s.cpuUsage), XColor.metricCPU.first ?? XColor.brand)
+                    miniStat(xLoc("内存"), SrvFmt.pct(s.memUsedFraction), XColor.metricMemory.first ?? XColor.brand)
+                }
+            } else if let reason = state.failureReason {
+                Text(reason).font(XFont.micro).foregroundStyle(XColor.danger).lineLimit(2)
+            }
+        }
+        .padding(XSpacing.m)
+        .background(selected ? XColor.surfaceHover : XColor.surface, in: RoundedRectangle(cornerRadius: XRadius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: XRadius.card, style: .continuous)
+                .strokeBorder(selected ? XColor.brand.opacity(0.5) : XColor.border, lineWidth: selected ? 1.5 : 1)
+        )
+    }
+
+    private func miniStat(_ label: String, _ value: String, _ color: Color) -> some View {
+        HStack(spacing: 4) {
+            Text(label).font(XFont.micro).foregroundStyle(XColor.textTertiary)
+            Text(value).font(XFont.microMono).foregroundStyle(color)
+        }
+    }
+}
+
+// MARK: - 命令控制台（macOS 14 回退 / 快速命令：真实远程命令执行 + 片段 + 批量广播）
+
+struct ServerConsoleView: View {
+    @ObservedObject var vm: ServersViewModel
+    let host: ServerHost
+    @ObservedObject var engine: ServerMonitorEngine
+    @Binding var broadcast: Bool
+    let gate: (() -> Void) -> Void
+    @State private var command = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(spacing: XSpacing.s) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(vm.consoleOutput[host.id] ?? xLoc("在下方输入命令并回车，输出会显示在这里。\n提示：可勾选「广播」在所有已连接主机同时执行。"))
+                        .font(XFont.captionMono)
+                        .foregroundStyle(XColor.textPrimary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(XSpacing.m)
+                        .id("consoleBottom")
+                }
+                .background(XColor.surfaceAlt.opacity(0.5), in: RoundedRectangle(cornerRadius: XRadius.card, style: .continuous))
+                .onChange(of: vm.consoleOutput[host.id]) { _, _ in
+                    withAnimation { proxy.scrollTo("consoleBottom", anchor: .bottom) }
+                }
+            }
+
+            HStack(spacing: XSpacing.s) {
+                Toggle(isOn: $broadcast) { Text(xLoc("广播")).font(XFont.caption) }
+                    .toggleStyle(.checkbox)
+                    .help(xLoc("在所有已连接主机上同时执行"))
+                XCapsuleTextField(placeholder: state.isLive ? xLoc("输入命令…") : xLoc("请先连接主机"),
+                                  text: $command, onSubmit: run)
+                    .focused($focused)
+                    .disabled(!state.isLive)
+                Button(action: run) {
+                    if vm.isRunning(host.id) { XSpinner(size: 14) } else { Image(systemName: "return") }
+                }
+                .buttonStyle(XPrimaryButtonStyle())
+                .disabled(!state.isLive || command.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button { vm.clearConsole(host.id) } label: { Image(systemName: "trash") }
+                    .buttonStyle(XSecondaryButtonStyle())
+                    .help(xLoc("清空"))
+            }
+        }
+        .padding(XSpacing.xl)
+    }
+
+    private var state: ConnectionState { engine.state(for: host.id) }
+
+    private func run() {
+        let cmd = command
+        guard !cmd.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        gate {
+            if broadcast { vm.runOnConnected(cmd) } else { vm.runCommand(cmd, on: host) }
+            command = ""
+            focused = true
+        }
+    }
+}
+
+// MARK: - 片段库
+
+private struct SnippetsPane: View {
+    @ObservedObject var vm: ServersViewModel
+    let host: ServerHost
+    @ObservedObject var engine: ServerMonitorEngine
+    let gate: (() -> Void) -> Void
+    @State private var editing: Snippet?
+    @State private var showEditor = false
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: XSpacing.m) {
+                XSectionCard(icon: "chevron.left.forwardslash.chevron.right", title: xLoc("代码片段"),
+                             iconColors: XColor.metricNetwork,
+                             trailing: {
+                                 Button { editing = nil; showEditor = true } label: {
+                                     Label(xLoc("新建"), systemImage: "plus")
+                                 }.buttonStyle(XSecondaryButtonStyle())
+                             }) {
+                    VStack(spacing: XSpacing.s) {
+                        ForEach(vm.snippets) { snip in
+                            SnippetRow(snippet: snip,
+                                       canRun: engine.state(for: host.id).isLive,
+                                       onRun: { gate { vm.runCommand(snip.command, on: host) } },
+                                       onRunAll: { gate { vm.runOnConnected(snip.command) } },
+                                       onEdit: { editing = snip; showEditor = true },
+                                       onDelete: { vm.deleteSnippet(snip.id) })
+                        }
+                        if vm.snippets.isEmpty {
+                            Text(xLoc("还没有片段，点「新建」添加常用命令")).font(XFont.caption)
+                                .foregroundStyle(XColor.textTertiary).padding(.vertical, XSpacing.m)
+                        }
+                    }
+                }
+            }
+            .padding(XSpacing.xl)
+        }
+        .sheet(isPresented: $showEditor) {
+            SnippetEditor(snippet: editing) { snip in vm.saveSnippet(snip); showEditor = false } onCancel: { showEditor = false }
+        }
+    }
+}
+
+private struct SnippetRow: View {
+    let snippet: Snippet
+    let canRun: Bool
+    let onRun: () -> Void
+    let onRunAll: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: XSpacing.m) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(snippet.title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                Text(snippet.command).font(XFont.captionMono).foregroundStyle(XColor.textSecondary).lineLimit(1)
+            }
+            Spacer()
+            Button(action: onRun) { Image(systemName: "play.fill") }
+                .buttonStyle(XSecondaryButtonStyle()).disabled(!canRun).help(xLoc("在当前主机运行"))
+            Menu {
+                Button(xLoc("在所有已连接主机运行"), action: onRunAll)
+                Button(xLoc("编辑"), action: onEdit)
+                Button(xLoc("删除"), role: .destructive, action: onDelete)
+            } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 24)
+        }
+        .padding(XSpacing.m)
+        .background(XColor.surfaceAlt.opacity(0.5), in: RoundedRectangle(cornerRadius: XRadius.card, style: .continuous))
+    }
+}
+
+private struct SnippetEditor: View {
+    @State private var title: String
+    @State private var command: String
+    private let original: Snippet?
+    let onSave: (Snippet) -> Void
+    let onCancel: () -> Void
+
+    init(snippet: Snippet?, onSave: @escaping (Snippet) -> Void, onCancel: @escaping () -> Void) {
+        self.original = snippet
+        _title = State(initialValue: snippet?.title ?? "")
+        _command = State(initialValue: snippet?.command ?? "")
+        self.onSave = onSave
+        self.onCancel = onCancel
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: XSpacing.m) {
+            Text(original == nil ? xLoc("新建片段") : xLoc("编辑片段")).font(XFont.title2)
+            XCapsuleTextField(placeholder: xLoc("标题"), text: $title)
+            TextEditor(text: $command)
+                .font(XFont.captionMono)
+                .frame(height: 120)
+                .padding(XSpacing.s)
+                .background(XColor.surfaceAlt.opacity(0.6), in: RoundedRectangle(cornerRadius: XRadius.control))
+                .overlay(RoundedRectangle(cornerRadius: XRadius.control).strokeBorder(XColor.border))
+            HStack {
+                Spacer()
+                Button(xLoc("取消"), action: onCancel).buttonStyle(XSecondaryButtonStyle())
+                Button(xLoc("保存")) {
+                    var s = original ?? Snippet(title: "", command: "")
+                    s.title = title.isEmpty ? xLoc("未命名") : title
+                    s.command = command
+                    onSave(s)
+                }.buttonStyle(XPrimaryButtonStyle())
+                    .disabled(command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(XSpacing.xl)
+        .frame(width: 460)
+    }
+}

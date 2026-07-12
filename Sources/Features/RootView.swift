@@ -348,6 +348,8 @@ struct DetailView: View {
         case .diskSpeed:    DiskBenchmarkView(device: internalDiskModel, standalone: true)
         case .hardware:     HardwareView(env: model.env)
         case .monitor:      MonitorView(env: model.env)
+        case .servers:      ServersView(model: model)
+        case .downloader:   DownloaderView(model: model)
         case .menuBar:      MenuBarSettingsView(model: model)
         case .settings:     SettingsView(model: model)
         // 未知模块 ID（例如开发用 --open=<拼写错误>）回落到仪表盘，而非过时的「即将推出」占位页。
@@ -452,9 +454,12 @@ public struct MenuBarView: View {
     @ObservedObject var model: AppModel
     /// 高频快照现归 MetricsFeed（AppModel 不再每 tick 重发布，审计 P2）——菜单栏总览须观察本 feed 才能实时更新。
     @ObservedObject var feed: MetricsFeed
+    /// 已连接的远程服务器（菜单栏迷你监视器）——ServerCat 没有菜单栏能力。
+    @ObservedObject var serverEngine: ServerMonitorEngine
     public init(model: AppModel) {
         self.model = model
         self._feed = ObservedObject(wrappedValue: model.liveMetricsFeed)
+        self._serverEngine = ObservedObject(wrappedValue: model.env.serverMonitorEngine)
     }
 
     public var body: some View {
@@ -480,6 +485,8 @@ public struct MenuBarView: View {
                 XSpinner().frame(maxWidth: .infinity).padding(.vertical, XSpacing.l)
             }
 
+            serverCard
+
             HStack(spacing: XSpacing.s) {
                 Button {
                     NSApp.activate(ignoringOtherApps: true)
@@ -495,6 +502,26 @@ public struct MenuBarView: View {
         }
         .padding(XSpacing.m)
         .frame(width: 300)
+    }
+
+    // MARK: - 服务器（迷你监视器）
+
+    @ViewBuilder private var serverCard: some View {
+        let live = serverEngine.liveSummaries
+        if !live.isEmpty {
+            card("server.rack", xLoc("服务器"), "\(live.count)", XColor.accentTeal) {
+                ForEach(live.prefix(4)) { h in
+                    barRow(h.name, "\(Int(h.cpu * 100))%", h.cpu, XColor.metricCPU[0])
+                }
+                Button {
+                    NSApp.activate(ignoringOtherApps: true)
+                    model.selection = .servers
+                    for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
+                } label: {
+                    Text(xLoc("打开服务器")).font(XFont.micro).foregroundStyle(XColor.brand)
+                }.buttonStyle(.plain)
+            }
+        }
     }
 
     // MARK: - 卡片
