@@ -28,6 +28,66 @@ final class MetricsGatingTests: XCTestCase {
             .live)
     }
 
+    func testExitedChurnDoesNotReduceCoverageButDeniedProcessesDo() {
+        let exited = ProcessCoverage(
+            enumerated: 100, sampled: 89, denied: 0, exited: 11)
+        XCTAssertEqual(exited.fraction, 1, accuracy: 0.001)
+        XCTAssertEqual(ProcessSamplingStatus.from(coverage: exited, hasCPU: true), .live)
+
+        let denied = ProcessCoverage(
+            enumerated: 100, sampled: 89, denied: 11, exited: 0)
+        XCTAssertEqual(denied.fraction, 0.89, accuracy: 0.001)
+        XCTAssertEqual(ProcessSamplingStatus.from(coverage: denied, hasCPU: true), .partial)
+
+        XCTAssertEqual(
+            ProcessCoverage(enumerated: 2, sampled: 2, denied: 0, exited: 1).fraction,
+            1,
+            accuracy: 0.001)
+        XCTAssertEqual(
+            ProcessCoverage(enumerated: 0, sampled: 0, denied: 0, exited: 4).fraction,
+            0,
+            accuracy: 0.001)
+    }
+
+    func testNewApplicationSamplingGenerationRejectsOlderSnapshotsAndDefersRefresh() {
+        var lifecycle = ApplicationSamplingLifecycle()
+        let olderGeneration = lifecycle.generation
+        let currentGeneration = lifecycle.prepare()
+
+        XCTAssertFalse(lifecycle.accepts(olderGeneration))
+        XCTAssertTrue(lifecycle.accepts(currentGeneration))
+        XCTAssertFalse(lifecycle.isReadyToSample)
+        XCTAssertFalse(lifecycle.completeReset(
+            for: currentGeneration,
+            samplingInFlight: true,
+            isVisible: true))
+        XCTAssertTrue(lifecycle.isReadyToSample)
+        XCTAssertTrue(lifecycle.finishSampling(isVisible: true))
+        XCTAssertFalse(lifecycle.finishSampling(isVisible: true))
+    }
+
+    func testResetCompletionRefreshesImmediatelyOnlyForCurrentVisibleGeneration() {
+        var lifecycle = ApplicationSamplingLifecycle()
+        let staleGeneration = lifecycle.prepare()
+        let currentGeneration = lifecycle.prepare()
+
+        XCTAssertFalse(lifecycle.completeReset(
+            for: staleGeneration,
+            samplingInFlight: false,
+            isVisible: true))
+        XCTAssertFalse(lifecycle.isReadyToSample)
+        XCTAssertTrue(lifecycle.completeReset(
+            for: currentGeneration,
+            samplingInFlight: false,
+            isVisible: true))
+
+        let hiddenGeneration = lifecycle.prepare()
+        XCTAssertFalse(lifecycle.completeReset(
+            for: hiddenGeneration,
+            samplingInFlight: false,
+            isVisible: false))
+    }
+
     func testSnapshotBecomesStaleAfterTwoRefreshIntervals() {
         let snapshot = ApplicationUsageSnapshot.liveFixture(
             sampledAt: Date(timeIntervalSince1970: 100))

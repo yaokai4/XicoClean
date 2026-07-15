@@ -85,6 +85,44 @@ public extension ApplicationUsageSnapshot {
     }
 }
 
+struct ApplicationSamplingLifecycle: Sendable {
+    private(set) var generation: UInt64 = 0
+    private var resetGeneration: UInt64?
+    private var refreshGeneration: UInt64?
+
+    var isReadyToSample: Bool { resetGeneration == nil }
+
+    mutating func prepare() -> UInt64 {
+        generation &+= 1
+        resetGeneration = generation
+        refreshGeneration = nil
+        return generation
+    }
+
+    func accepts(_ candidate: UInt64) -> Bool {
+        candidate == generation
+    }
+
+    mutating func completeReset(
+        for candidate: UInt64,
+        samplingInFlight: Bool,
+        isVisible: Bool
+    ) -> Bool {
+        guard candidate == generation, resetGeneration == candidate else { return false }
+        resetGeneration = nil
+        guard isVisible else { return false }
+        guard samplingInFlight else { return true }
+        refreshGeneration = candidate
+        return false
+    }
+
+    mutating func finishSampling(isVisible: Bool) -> Bool {
+        guard let pending = refreshGeneration else { return false }
+        refreshGeneration = nil
+        return pending == generation && isReadyToSample && isVisible
+    }
+}
+
 /// 高频实时指标源（菜单栏折线图 / 详情面板专用）。
 ///
 /// 从 AppModel 拆出的独立 ObservableObject：每秒采样只触发本对象的 objectWillChange，
@@ -198,10 +236,11 @@ public final class AppModel: ObservableObject {
     public var gpuInfo: GPUInfo? { get { liveMetricsFeed.gpuInfo } set { liveMetricsFeed.gpuInfo = newValue } }
     private let sensorReader = SensorReader()
     private let hardwareProfiler = HardwareProfileService()
-    private let processes = ProcessSampler()
+    private let processes: ProcessSampler
     private let historyCap = 60
     /// 单飞门闩：上一帧采样未回主线程前不再排下一帧，避免长睡眠唤醒后堆积。
     private var isSampling = false
+    private var applicationSampling = ApplicationSamplingLifecycle()
     /// 是否有「详情消费者」可见——菜单栏弹窗/详情面板已打开。由 MenuBarController 在 popover
     /// 打开/关闭时置位（见 cross_file_notes）。仅菜单栏图标常驻、无弹窗时为 false，届时跳过
     /// 全进程枚举 + 传感器/风扇/磁盘健康/频率等重采样，只采图标折线所需的 cpu/mem/net/gpu（审计 P2 常驻满载）。
@@ -235,9 +274,19 @@ public final class AppModel: ObservableObject {
     }
 
     public func prepareApplicationSampling() {
+        let generation = applicationSampling.prepare()
         liveMetricsFeed.applicationUsage = .warmingUp()
         liveMetricsFeed.objectWillChange.send()
-        Task { await processes.resetBaseline() }
+        let sampler = processes
+        Task { [weak self] in
+            await sampler.resetBaseline()
+            guard let self else { return }
+            let refreshImmediately = self.applicationSampling.completeReset(
+                for: generation,
+                samplingInFlight: self.isSampling,
+                isVisible: self.hasVisibleMetricsConsumer)
+            if refreshImmediately { self.refreshMetrics() }
+        }
     }
     /// 菜单栏专属网络采样器：与硬件页/监视页各自独立，避免共享实例互相污染接口速率基线。
     private let mbNetwork = NetworkInfoService()
@@ -377,8 +426,12 @@ public final class AppModel: ObservableObject {
         return vm
     }
 
-    public init(env: XicoEnvironment = .live()) {
+    public init(
+        env: XicoEnvironment = .live(),
+        processSampler: ProcessSampler = .production()
+    ) {
         self.env = env
+        self.processes = processSampler
         if let raw = UserDefaults.standard.string(forKey: "xico.appearance"),
            let a = AppAppearance(rawValue: raw) {
             appearance = a
@@ -443,6 +496,8 @@ public final class AppModel: ObservableObject {
         // 菜单栏图标常驻但无弹窗/主窗口时（steady state）：只采图标折线所需的 cpu/mem/net/gpu 快照，
         // 跳过全进程枚举 + 传感器/风扇/磁盘健康/频率等昂贵详情采样（审计 P2）。有消费者可见时全量采样。
         let consumer = hasVisibleMetricsConsumer
+        let applicationGeneration = applicationSampling.generation
+        let wantsApplicationUsage = consumer && applicationSampling.isReadyToSample
         // P3·M9：有消费者时详情**每 tick 都采**（此前 %3 → 面板打开后温度/风扇 ~6s 才刷一轮，
         // 实时感明显弱于 iStat）。~90ms 频率阻塞发生在 utility 后台任务，主线程零成本；
         // 无消费者时依旧完全跳过（稳态省电路径不变）。
@@ -462,7 +517,7 @@ public final class AppModel: ObservableObject {
             let info = needMacInfo ? env.liveMetrics.macInfo() : nil
             // 应用排行仅在有可见消费者时才做全进程 rusage 枚举；否则不触碰进程采样器。
             let applicationUsage: ApplicationUsageSnapshot?
-            if consumer {
+            if wantsApplicationUsage {
                 let sampled = await procSampler.sample(
                     limit: MonitoringPreferences.processLimit(),
                     combinesProcesses: MonitoringPreferences.combinesProcesses())
@@ -494,14 +549,18 @@ public final class AppModel: ObservableObject {
                     gpu: hw.gpu())
             }
             let sample = MetricsSample(snapshot: snap, capacity: cap, macInfo: info,
-                                       applicationUsage: applicationUsage, detail: detail)
+                                       applicationUsage: applicationUsage,
+                                       applicationSamplingGeneration: wantsApplicationUsage
+                                           ? applicationGeneration
+                                           : nil,
+                                       detail: detail)
             await MainActor.run { [weak self] in self?.applyMetrics(sample) }
         }
     }
 
     /// 回主线程发布采样结果：只在此处写 @Published，保证主线程无采样开销。
     private func applyMetrics(_ sample: MetricsSample) {
-        defer { isSampling = false }
+        defer { finishMetricsSampling() }
         let s = sample.snapshot
         let feed = liveMetricsFeed
         feed.liveSnapshot = s
@@ -539,7 +598,9 @@ public final class AppModel: ObservableObject {
         lastPageOuts = s.pageOuts
         lastMetricsAt = now0
         // 应用快照仅在有消费者时采到；可见性转换已先清为 warmingUp，隐藏帧不枚举进程。
-        if let applicationUsage = sample.applicationUsage {
+        if let applicationUsage = sample.applicationUsage,
+           let generation = sample.applicationSamplingGeneration,
+           applicationSampling.accepts(generation) {
             feed.applicationUsage = applicationUsage
         }
         if let d = sample.detail {
@@ -567,6 +628,13 @@ public final class AppModel: ObservableObject {
             case .battery: return s.batteryPercent.map { Double($0) / 100 }
             case .cpuTemp: return s.cpuTemp
             }
+        }
+    }
+
+    private func finishMetricsSampling() {
+        isSampling = false
+        if applicationSampling.finishSampling(isVisible: hasVisibleMetricsConsumer) {
+            refreshMetrics()
         }
     }
 
@@ -785,6 +853,7 @@ private struct MetricsSample: Sendable {
     let macInfo: MacInfo?
     /// nil = 本帧无可见消费者，未做全进程枚举。
     let applicationUsage: ApplicationUsageSnapshot?
+    let applicationSamplingGeneration: UInt64?
     let detail: MetricsDetail?
 }
 

@@ -357,7 +357,7 @@ final class MenuBarController: NSObject {
             closeCardPanel()
             return
         }
-        closeCardPanel()
+        closeCardPanel(keepDetailConsumerVisible: cardPanel != nil)
         showCardPanel(id: id, from: sender)
     }
 
@@ -371,6 +371,16 @@ final class MenuBarController: NSObject {
     }
 
     private func showCardPanel(id: String, from button: NSStatusBarButton) {
+        // 先建立采样生命周期，再构造 SwiftUI 内容：rootView 初始化期间读取到的必须是
+        // warming-up/可见态；卡片切换时可见性持续为 true，不制造一次隐藏转换。
+        if AppModel.shouldResetProcessBaseline(
+            wasVisible: model.metricsDetailConsumerVisible,
+            isVisible: true
+        ) {
+            model.prepareApplicationSampling()
+        }
+        model.metricsDetailConsumerVisible = true
+
         let host = NSHostingController(rootView: AnyView(MenuCardContainer { self.panelContent(for: id) }))
         let panel = KeyableCardPanel(contentViewController: host)
         panel.styleMask = [.borderless, .nonactivatingPanel, .fullSizeContentView]
@@ -404,17 +414,9 @@ final class MenuBarController: NSObject {
         cardPanel = panel
         cardPanelID = id
         installDismissMonitors()
-        // 卡片打开即算「详情消费者可见」：恢复温度/风扇/GPU 等详情采样。
-        if AppModel.shouldResetProcessBaseline(
-            wasVisible: model.metricsDetailConsumerVisible,
-            isVisible: true
-        ) {
-            model.prepareApplicationSampling()
-        }
-        model.metricsDetailConsumerVisible = true
     }
 
-    private func closeCardPanel() {
+    private func closeCardPanel(keepDetailConsumerVisible: Bool = false) {
         removeDismissMonitors()
         // 先断引用再收窗：orderOut 可能同步触发 windowDidResignKey → 重入本方法，
         // 引用已清空时重入是无害空转。
@@ -428,7 +430,9 @@ final class MenuBarController: NSObject {
             w.orderOut(nil)
         }
         // 卡片关闭即回稳态采样省电（图钉功能已按用户要求移除，卡片是唯一详情消费者）。
-        model.metricsDetailConsumerVisible = false
+        if !keepDetailConsumerVisible {
+            model.metricsDetailConsumerVisible = false
+        }
     }
 
     // MARK: 关闭手势（点外部 / 点本进程其他窗口 / Esc）
@@ -501,7 +505,7 @@ final class MenuBarController: NSObject {
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard let self, !Task.isCancelled, self.cardPanelID != id,
                   let button = self.statusItems[id]?.button else { return }
-            self.closeCardPanel()
+            self.closeCardPanel(keepDetailConsumerVisible: self.cardPanel != nil)
             self.showCardPanel(id: id, from: button)
         }
     }

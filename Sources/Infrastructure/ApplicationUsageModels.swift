@@ -112,7 +112,11 @@ public struct ProcessCoverage: Sendable, Equatable {
         self.exited = exited
     }
 
-    public var fraction: Double { enumerated > 0 ? Double(sampled) / Double(enumerated) : 0 }
+    public var fraction: Double {
+        let usableCount = max(0, enumerated - exited)
+        guard usableCount > 0 else { return 0 }
+        return min(1, max(0, Double(sampled) / Double(usableCount)))
+    }
 }
 
 public enum ProcessSamplingStatus: String, Sendable { case warmingUp, live, partial, stale, unavailable }

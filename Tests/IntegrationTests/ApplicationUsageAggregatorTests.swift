@@ -214,6 +214,37 @@ final class ApplicationUsageAggregatorTests: XCTestCase {
                        [400_000_000, 450_000_000])
     }
 
+    func testResetWaitsForInFlightSampleAndPrecedesNextSample() async {
+        let records = [
+            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                   cpu: 1_000_000_000, memory: 400_000_000),
+            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                   cpu: 2_000_000_000, memory: 410_000_000),
+            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                   cpu: 3_000_000_000, memory: 420_000_000)
+        ]
+        let provider = ResetBarrierProcessSnapshotProvider(captures: [
+            .fixture(time: 1_000_000_000, records: [records[0]]),
+            .fixture(time: 2_000_000_000, records: [records[1]]),
+            .fixture(time: 3_000_000_000, records: [records[2]])
+        ])
+        let sampler = ProcessSampler(provider: provider, logicalCPUCount: 8)
+
+        let initialSnapshot = await sampler.sample()
+        XCTAssertEqual(initialSnapshot.status, .warmingUp)
+        let inFlightSample = Task { await sampler.sample() }
+        await provider.waitUntilBlockedCaptureStarts()
+        let reset = Task { await sampler.resetBaseline() }
+        for _ in 0..<20 { await Task.yield() }
+        await provider.releaseBlockedCapture()
+
+        let inFlightSnapshot = await inFlightSample.value
+        XCTAssertEqual(inFlightSnapshot.status, .live)
+        await reset.value
+        let afterResetSnapshot = await sampler.sample()
+        XCTAssertEqual(afterResetSnapshot.status, .warmingUp)
+    }
+
     func testLegacyCompatibilityOmitsUnknownAndReusedPIDCPU() {
         let first = record(pid: 42, start: 1, path: "/usr/bin/fixture",
                            cpu: 1_000_000_000, memory: 10_000_000)
@@ -408,6 +439,45 @@ private actor OutOfOrderProcessSnapshotProvider: ProcessSnapshotProviding {
             try? await Task.sleep(for: .milliseconds(100))
         } else {
             try? await Task.sleep(for: .milliseconds(1))
+        }
+        return captures[min(captureIndex, captures.count - 1)]
+    }
+}
+
+private actor ResetBarrierProcessSnapshotProvider: ProcessSnapshotProviding {
+    private let captures: [ProcessCapture]
+    private var index = 0
+    private var blockedCaptureStarted = false
+    private var blockedCaptureWaiters: [CheckedContinuation<Void, Never>] = []
+    private var blockedCaptureContinuation: CheckedContinuation<Void, Never>?
+
+    init(captures: [ProcessCapture]) {
+        self.captures = captures
+    }
+
+    func waitUntilBlockedCaptureStarts() async {
+        if blockedCaptureStarted { return }
+        await withCheckedContinuation { continuation in
+            blockedCaptureWaiters.append(continuation)
+        }
+    }
+
+    func releaseBlockedCapture() {
+        blockedCaptureContinuation?.resume()
+        blockedCaptureContinuation = nil
+    }
+
+    func capture() async -> ProcessCapture {
+        let captureIndex = index
+        index += 1
+        if captureIndex == 1 {
+            blockedCaptureStarted = true
+            let waiters = blockedCaptureWaiters
+            blockedCaptureWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+            await withCheckedContinuation { continuation in
+                blockedCaptureContinuation = continuation
+            }
         }
         return captures[min(captureIndex, captures.count - 1)]
     }

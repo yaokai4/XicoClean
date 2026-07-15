@@ -21,6 +21,22 @@ final class HelperProcessSamplingTests: XCTestCase {
         XCTAssertEqual(capture.failures[2], .permissionDenied)
         XCTAssertEqual(capture.source, .local)
     }
+
+    func testProductionSamplerPublishesHelperEnhancedSource() async {
+        let local = FakeProvider(
+            capture: .fixture(records: [.pid(1)], failures: [2: .permissionDenied]))
+        let helper = FakePrivilegedSampler(response: ProcessHelperBatchResponse(
+            requestedCount: 1, records: [.pid(2)]))
+        let sampler = ProcessSampler.production(
+            local: local,
+            helper: helper,
+            logicalCPUCount: 8)
+
+        let snapshot = await sampler.sample()
+
+        XCTAssertEqual(snapshot.source, .helperEnhanced)
+        XCTAssertEqual(snapshot.coverage.sampled, 2)
+    }
 }
 
 private struct FakeProvider: ProcessSnapshotProviding {

@@ -31,13 +31,23 @@ public actor ProcessSampler {
     nonisolated private let legacy: LegacyProcessSampler
 
     public init(
-        provider: any ProcessSnapshotProviding = LocalProcessSnapshotProvider(),
+        provider: any ProcessSnapshotProviding = HybridProcessSnapshotProvider(),
         logicalCPUCount: Int = ProcessInfo.processInfo.activeProcessorCount
     ) {
         self.provider = provider
         self.resolver = ApplicationOwnershipResolver()
         self.aggregator = ApplicationUsageAggregator(logicalCPUCount: logicalCPUCount)
         self.legacy = LegacyProcessSampler()
+    }
+
+    public nonisolated static func production(
+        local: any ProcessSnapshotProviding = LocalProcessSnapshotProvider(),
+        helper: any PrivilegedProcessSampling = HelperProxy(),
+        logicalCPUCount: Int = ProcessInfo.processInfo.activeProcessorCount
+    ) -> ProcessSampler {
+        ProcessSampler(
+            provider: HybridProcessSnapshotProvider(local: local, helper: helper),
+            logicalCPUCount: logicalCPUCount)
     }
 
     init(
@@ -51,7 +61,9 @@ public actor ProcessSampler {
         self.legacy = LegacyProcessSampler(capture: legacyCapture)
     }
 
-    public func resetBaseline() {
+    public func resetBaseline() async {
+        await acquireSamplePermit()
+        defer { releaseSamplePermit() }
         cpu.reset()
     }
 
