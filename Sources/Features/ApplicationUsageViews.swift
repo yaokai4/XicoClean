@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Foundation
+import Darwin
 import Domain
 import Infrastructure
 import DesignSystem
@@ -22,6 +23,196 @@ public extension ApplicationUsageFocus {
 public extension ProcessCoverage {
     var displayText: String {
         xLocF("数据覆盖 %d%%", Int((fraction * 100).rounded()))
+    }
+}
+
+public enum ApplicationUsageListPresentation {
+    public static func usages(
+        focus: ApplicationUsageFocus,
+        snapshot: ApplicationUsageSnapshot
+    ) -> [ApplicationUsage] {
+        switch focus {
+        case .cpu:
+            if snapshot.status == .warmingUp, snapshot.byCPU.isEmpty {
+                return snapshot.byMemory
+            }
+            return snapshot.byCPU
+        case .memory:
+            return snapshot.byMemory
+        }
+    }
+
+    public static func rowLimit(configuredLimit: Int) -> Int {
+        [4, 6, 10, 20].contains(configuredLimit) ? configuredLimit : 6
+    }
+
+    public static func viewportHeight(
+        rowCount: Int,
+        configuredLimit: Int,
+        density: MonitoringPanelDensity
+    ) -> CGFloat {
+        let rowHeight: CGFloat
+        let maximum: CGFloat
+        switch density {
+        case .compact: (rowHeight, maximum) = (34, 220)
+        case .balanced: (rowHeight, maximum) = (42, 294)
+        case .detailed: (rowHeight, maximum) = (48, 336)
+        }
+        let boundedCount = min(max(0, rowCount), rowLimit(configuredLimit: configuredLimit))
+        return min(maximum, CGFloat(boundedCount) * rowHeight)
+    }
+}
+
+public struct MemoryPanelHistoryAccumulator: Sendable, Equatable {
+    public private(set) var pressure: [Double] = []
+    public private(set) var compression: [Double] = []
+    public private(set) var swap: [Double] = []
+    private let capacity: Int
+
+    public init(capacity: Int = 60) {
+        self.capacity = max(0, capacity)
+    }
+
+    public mutating func record(
+        pressureIndex: Double?,
+        totalBytes: Int64,
+        compressedBytes: Int64,
+        swapUsedBytes: Int64,
+        swapTotalBytes: Int64
+    ) {
+        // A non-nil index proves that the memory and swap inputs for this same frame were complete.
+        guard let pressureIndex, pressureIndex.isFinite, totalBytes > 0 else { return }
+        let clamp: (Double) -> Double = { min(1, max(0, $0)) }
+        pressure.append(clamp(pressureIndex))
+        compression.append(clamp(Double(max(0, compressedBytes)) / Double(totalBytes)))
+        swap.append(swapTotalBytes > 0
+            ? clamp(Double(max(0, swapUsedBytes)) / Double(swapTotalBytes))
+            : 0)
+        trimToCapacity()
+    }
+
+    private mutating func trimToCapacity() {
+        if pressure.count > capacity { pressure.removeFirst(pressure.count - capacity) }
+        if compression.count > capacity { compression.removeFirst(compression.count - capacity) }
+        if swap.count > capacity { swap.removeFirst(swap.count - capacity) }
+    }
+}
+
+@MainActor
+public final class ApplicationIconCache {
+    public static let shared = ApplicationIconCache()
+    private var storage: [String: NSImage] = [:]
+
+    public init() {}
+
+    public func image(
+        for path: String,
+        loader: (String) -> NSImage?
+    ) -> NSImage? {
+        if let cached = storage[path] { return cached }
+        guard let loaded = loader(path) else { return nil }
+        storage[path] = loaded
+        return loaded
+    }
+}
+
+public enum ApplicationInspectorLifecycleState: Equatable, Sendable {
+    case live
+    case stale
+    case exited
+}
+
+public struct ApplicationInspectorLifecycleResolver {
+    private let isBundleRunning: (String) -> Bool
+    private let processExists: (Int32) -> Bool
+
+    public init(
+        isBundleRunning: @escaping (String) -> Bool,
+        processExists: @escaping (Int32) -> Bool
+    ) {
+        self.isBundleRunning = isBundleRunning
+        self.processExists = processExists
+    }
+
+    public static var system: Self {
+        Self(
+            isBundleRunning: { bundleIdentifier in
+                NSWorkspace.shared.runningApplications.contains {
+                    $0.bundleIdentifier == bundleIdentifier
+                }
+            },
+            processExists: { pid in
+                if kill(pid, 0) == 0 { return true }
+                return errno == EPERM
+            })
+    }
+
+    public func state(
+        live: ApplicationUsage?,
+        last: ApplicationUsage?
+    ) -> ApplicationInspectorLifecycleState {
+        if live != nil { return .live }
+        guard let last,
+              last.id.rawValue.hasPrefix("bundle:"),
+              let bundleIdentifier = last.bundleIdentifier,
+              !last.members.isEmpty,
+              !isBundleRunning(bundleIdentifier),
+              last.members.allSatisfy({ !processExists($0.identity.pid) })
+        else { return .stale }
+        return .exited
+    }
+}
+
+@MainActor
+public enum MonitoringCardWindowRelationship {
+    public static func isInside(eventWindow: NSWindow?, card: NSWindow) -> Bool {
+        guard let eventWindow else { return false }
+        return eventWindow === card
+            || eventWindow.sheetParent === card
+            || card.attachedSheet === eventWindow
+    }
+
+    public static func shouldDismissWhenResigning(card: NSWindow) -> Bool {
+        card.attachedSheet == nil
+    }
+
+    public static func shouldCloseForEscape(card: NSWindow) -> Bool {
+        card.attachedSheet == nil
+    }
+}
+
+public enum MonitoringCardGeometry {
+    public static func frame(
+        fittingSize: CGSize,
+        anchorFrame: CGRect,
+        visibleFrame: CGRect,
+        margin: CGFloat = 8,
+        gap: CGFloat = 6
+    ) -> CGRect {
+        let availableWidth = max(1, visibleFrame.width - margin * 2)
+        let availableHeight = max(1, visibleFrame.height - margin * 2)
+        let width = min(max(fittingSize.width, 300), availableWidth)
+        let height = min(max(fittingSize.height, 200), availableHeight)
+        let proposedX = anchorFrame.midX - width / 2
+        let proposedY = anchorFrame.minY - gap - height
+        let x = min(max(proposedX, visibleFrame.minX + margin), visibleFrame.maxX - margin - width)
+        let y = min(max(proposedY, visibleFrame.minY + margin), visibleFrame.maxY - margin - height)
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+public struct XicoPressureGaugePresentation: Equatable, Sendable {
+    public let hasValue: Bool
+    public let fraction: Double
+
+    public init(index: Double?) {
+        guard let index, index.isFinite else {
+            hasValue = false
+            fraction = 0
+            return
+        }
+        hasValue = true
+        fraction = min(1, max(0, index))
     }
 }
 
@@ -86,7 +277,7 @@ public struct ApplicationUsageList: View {
     }
 
     private var usages: [ApplicationUsage] {
-        focus == .cpu ? snapshot.byCPU : snapshot.byMemory
+        ApplicationUsageListPresentation.usages(focus: focus, snapshot: snapshot)
     }
 
     private var displayStatus: ProcessSamplingStatus {
@@ -97,6 +288,13 @@ public struct ApplicationUsageList: View {
 
     private var largestMemory: Int64 {
         max(1, usages.map(\.physicalFootprintBytes).max() ?? 1)
+    }
+
+    private var viewportHeight: CGFloat {
+        ApplicationUsageListPresentation.viewportHeight(
+            rowCount: usages.count,
+            configuredLimit: MonitoringPreferences.processLimit(),
+            density: MonitoringPreferences.density())
     }
 
     public var body: some View {
@@ -121,11 +319,17 @@ public struct ApplicationUsageList: View {
                     waitingBlock
                 } else {
                     columnHeader
-                    VStack(spacing: 3) {
-                        ForEach(usages) { usage in
-                            usageRow(usage)
+                    ScrollView(.vertical) {
+                        LazyVStack(spacing: 3) {
+                            ForEach(usages) { usage in
+                                usageRow(usage)
+                            }
                         }
                     }
+                    .frame(
+                        minHeight: min(84, viewportHeight),
+                        idealHeight: viewportHeight,
+                        maxHeight: viewportHeight)
                 }
             }
         }
@@ -257,11 +461,12 @@ public struct ApplicationUsageList: View {
 
 private struct ApplicationIcon: View {
     let bundlePath: String?
+    @State private var image: NSImage?
 
     var body: some View {
         Group {
-            if let bundlePath, FileManager.default.fileExists(atPath: bundlePath) {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: bundlePath))
+            if let image {
+                Image(nsImage: image)
                     .resizable()
                     .interpolation(.high)
             } else {
@@ -274,6 +479,13 @@ private struct ApplicationIcon: View {
         }
         .frame(width: 18, height: 18)
         .accessibilityHidden(true)
+        .task(id: bundlePath) {
+            image = nil
+            guard let bundlePath else { return }
+            image = ApplicationIconCache.shared.image(for: bundlePath) {
+                NSWorkspace.shared.icon(forFile: $0)
+            }
+        }
     }
 }
 
@@ -282,6 +494,7 @@ public struct ApplicationUsageInspector: View {
     private let identity: ApplicationIdentity
     private let cpuMode: CPUDisplayMode
     private let memoryStyle: MemoryUnitStyle
+    private let lifecycleResolver: ApplicationInspectorLifecycleResolver
     @State private var lastUsage: ApplicationUsage?
     @State private var lastSnapshot: ApplicationUsageSnapshot?
 
@@ -289,12 +502,14 @@ public struct ApplicationUsageInspector: View {
         feed: MetricsFeed,
         identity: ApplicationIdentity,
         cpuMode: CPUDisplayMode,
-        memoryStyle: MemoryUnitStyle
+        memoryStyle: MemoryUnitStyle,
+        lifecycleResolver: ApplicationInspectorLifecycleResolver = .system
     ) {
         self._feed = ObservedObject(wrappedValue: feed)
         self.identity = identity
         self.cpuMode = cpuMode
         self.memoryStyle = memoryStyle
+        self.lifecycleResolver = lifecycleResolver
     }
 
     private var liveUsage: ApplicationUsage? {
@@ -305,11 +520,8 @@ public struct ApplicationUsageInspector: View {
         liveUsage ?? lastUsage
     }
 
-    /// Falling out of a capped ranking is not proof that an application exited. Confirm GUI app
-    /// lifecycle by its representative root PID; background-only groups remain honestly stale.
-    private var isConfirmedExited: Bool {
-        guard liveUsage == nil, let usage = lastUsage, usage.bundlePath != nil else { return false }
-        return NSRunningApplication(processIdentifier: usage.representativePID) == nil
+    private var lifecycleState: ApplicationInspectorLifecycleState {
+        lifecycleResolver.state(live: liveUsage, last: lastUsage)
     }
 
     public var body: some View {
@@ -348,9 +560,9 @@ public struct ApplicationUsageInspector: View {
                         }
                     }
                     Spacer()
-                    if isConfirmedExited {
+                    if lifecycleState == .exited {
                         XSamplingStatusPill(xLoc("已退出"), tone: .attention)
-                    } else if liveUsage == nil {
+                    } else if lifecycleState == .stale {
                         XSamplingStatusPill(xLoc("数据已过期"), tone: .attention)
                     } else {
                         inspectorSamplingPill

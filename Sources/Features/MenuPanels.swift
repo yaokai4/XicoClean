@@ -156,9 +156,7 @@ public struct MenuMetricPanel: View {
     @AppStorage(MonitoringPreferences.densityKey) private var densityRaw = MonitoringPanelDensity.balanced.rawValue
     @State private var selectedApplication: ApplicationIdentity?
     @State private var memoryHistoryMetricRaw = MemoryPanelHistoryMetric.pressure.rawValue
-    @State private var pressureHistory: [Double] = []
-    @State private var compressionHistory: [Double] = []
-    @State private var swapHistory: [Double] = []
+    @State private var memoryHistory = MemoryPanelHistoryAccumulator()
 
     private var window: HistoryWindow { HistoryWindow(rawValue: windowRaw) ?? .live }
     private var cpuMode: CPUDisplayMode { CPUDisplayMode(rawValue: cpuModeRaw) ?? .normalized }
@@ -239,6 +237,7 @@ public struct MenuMetricPanel: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(xLoc("退出"))
             }
+            .layoutPriority(2)
         }
         .padding(XSpacing.m)
         .frame(width: panelWidth)
@@ -406,7 +405,7 @@ public struct MenuMetricPanel: View {
             XMonitoringSection {
                 VStack(alignment: .leading, spacing: XSpacing.s) {
                     HStack {
-                        Text("CPU · \(xLoc("实时"))")
+                        Text("CPU · \(xLoc(window.title))")
                             .font(XFont.captionEmphasis)
                             .foregroundStyle(XColor.textPrimary)
                         Spacer()
@@ -500,14 +499,15 @@ public struct MenuMetricPanel: View {
 
     @ViewBuilder private func memoryContent(_ s: SystemSnapshot) -> some View {
         let pressureIndexText = MemoryPressureDisplayCopy.percentage(s.memoryPressureIndex)
+        let pressureGauge = XicoPressureGaugePresentation(index: s.memoryPressureIndex)
         VStack(alignment: .leading, spacing: XSpacing.m) {
             XMonitoringSection {
                 VStack(alignment: .leading, spacing: XSpacing.m) {
                     HStack(spacing: XSpacing.m) {
                         VStack(spacing: 2) {
                             XSemanticGauge(
-                                fraction: s.pressureFractionPreferred,
-                                color: pressureColor(s),
+                                fraction: pressureGauge.fraction,
+                                color: pressureGauge.hasValue ? XColor.auroraViolet : XColor.textTertiary,
                                 size: 62,
                                 lineWidth: 7) {
                                 Text(pressureIndexText).font(XFont.monoMini)
@@ -621,9 +621,9 @@ public struct MenuMetricPanel: View {
 
     private var selectedMemoryHistory: [Double] {
         switch memoryHistoryMetric {
-        case .pressure: return pressureHistory
-        case .compression: return compressionHistory
-        case .swap: return swapHistory
+        case .pressure: return memoryHistory.pressure
+        case .compression: return memoryHistory.compression
+        case .swap: return memoryHistory.swap
         }
     }
 
@@ -664,14 +664,12 @@ public struct MenuMetricPanel: View {
     }
 
     private func recordMemoryHistory(_ snapshot: SystemSnapshot) {
-        guard snapshot.memoryTotal > 0 else { return }
-        pressureHistory.append(snapshot.memoryPressureIndex ?? snapshot.memoryPressureFraction)
-        compressionHistory.append(
-            min(1, max(0, Double(snapshot.memoryCompressed) / Double(snapshot.memoryTotal))))
-        swapHistory.append(snapshot.swapUsedFraction)
-        if pressureHistory.count > 60 { pressureHistory.removeFirst(pressureHistory.count - 60) }
-        if compressionHistory.count > 60 { compressionHistory.removeFirst(compressionHistory.count - 60) }
-        if swapHistory.count > 60 { swapHistory.removeFirst(swapHistory.count - 60) }
+        memoryHistory.record(
+            pressureIndex: snapshot.memoryPressureIndex,
+            totalBytes: snapshot.memoryTotal,
+            compressedBytes: snapshot.memoryCompressed,
+            swapUsedBytes: snapshot.swapUsed,
+            swapTotalBytes: snapshot.swapTotal)
     }
 
     // MARK: - 网络面板（大数字 + 会话峰值/累计 + 双线折线 + 接口清单）

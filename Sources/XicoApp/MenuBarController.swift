@@ -369,7 +369,11 @@ final class MenuBarController: NSObject {
     /// cancelOperation = Esc 兜底：即使事件监视器失效（引用错位等异常态），键窗自己也能关。
     private final class KeyableCardPanel: NSPanel {
         override var canBecomeKey: Bool { true }
-        override func cancelOperation(_ sender: Any?) { close() }
+        override func cancelOperation(_ sender: Any?) {
+            // An attached inspector owns Escape while it is active. Never tear down its parent card.
+            guard attachedSheet == nil else { return }
+            close()
+        }
     }
 
     private func showCardPanel(id: String, from button: NSStatusBarButton) {
@@ -394,17 +398,20 @@ final class MenuBarController: NSObject {
         panel.delegate = self
 
         // 定位：状态项按钮正下方 6pt，水平居中并夹在屏幕可见区内。
-        let size = host.view.fittingSize
-        let w = max(size.width, 300), h = max(size.height, 200)
-        panel.setContentSize(NSSize(width: w, height: h))
-        if let btnWindow = button.window {
+        let fittingSize = host.view.fittingSize
+        if let btnWindow = button.window,
+           let screen = btnWindow.screen ?? NSScreen.main {
             let btnFrame = btnWindow.convertToScreen(button.convert(button.bounds, to: nil))
-            let screen = btnWindow.screen ?? NSScreen.main
-            let visible = screen?.visibleFrame ?? .zero
-            var x = btnFrame.midX - w / 2
-            x = min(max(x, visible.minX + 8), visible.maxX - w - 8)
-            let y = btnFrame.minY - 6 - h
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
+            let frame = MonitoringCardGeometry.frame(
+                fittingSize: fittingSize,
+                anchorFrame: btnFrame,
+                visibleFrame: screen.visibleFrame)
+            panel.setContentSize(frame.size)
+            panel.setFrameOrigin(frame.origin)
+        } else {
+            panel.setContentSize(NSSize(
+                width: max(fittingSize.width, 300),
+                height: max(fittingSize.height, 200)))
         }
         panel.makeKeyAndOrderFront(nil)
         cardPanel = panel
@@ -451,13 +458,18 @@ final class MenuBarController: NSObject {
         ) { [weak self] event in
             guard let self, let card = self.cardPanel else { return event }
             let statusWindows = self.statusItems.values.compactMap { $0.button?.window }
-            if event.window === card { return event }                                    // 卡片内交互
+            if MonitoringCardWindowRelationship.isInside(eventWindow: event.window, card: card) {
+                return event                                                               // 卡片或 attached sheet 内交互
+            }
             if statusWindows.contains(where: { $0 === event.window }) { return event }   // 状态项自己管开关
             self.closeCardPanel()
             return event
         }
         escKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            guard let self, self.cardPanel != nil, event.keyCode == 53 else { return event }   // 53 = Esc
+            guard let self, let card = self.cardPanel, event.keyCode == 53 else { return event }   // 53 = Esc
+            guard MonitoringCardWindowRelationship.shouldCloseForEscape(card: card) else {
+                return event   // attached sheet keeps Escape in its responder chain
+            }
             self.closeCardPanel()
             return nil
         }
@@ -582,6 +594,7 @@ extension MenuBarController: NSWindowDelegate {
     /// 点击本进程其他窗口、其他 App、切换 App 都会触发，不依赖事件监视器。
     func windowDidResignKey(_ notification: Notification) {
         guard let win = notification.object as? NSWindow, win === cardPanel else { return }
+        guard MonitoringCardWindowRelationship.shouldDismissWhenResigning(card: win) else { return }
         closeCardPanel()
     }
 
