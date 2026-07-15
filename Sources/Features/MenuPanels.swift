@@ -215,7 +215,7 @@ public struct MenuMetricPanel: View {
     private func insight(_ s: SystemSnapshot) -> String? {
         switch metric {
         case .memory:
-            if s.memoryPressure >= 4 || (s.memoryPressurePercent ?? 0) >= 0.7 {
+            if s.memoryPressure >= 4 || (s.memoryPressureIndex ?? 0) >= 0.7 {
                 if let top = model.topByMemory.first {
                     return xLocF("内存压力偏高——%@ 占 %@，建议关闭或一键清理", top.name, top.memoryBytes.formattedMemory)
                 }
@@ -442,8 +442,8 @@ public struct MenuMetricPanel: View {
                 // 压力环：色随等级（正常绿 / 警告橙 / 危险红）。中心状态词随长语言自动缩放不换行。
                 XMiniRing(fraction: s.pressureFractionPreferred, colors: pressureColors(s), size: 62, lineWidth: 7) {
                     VStack(spacing: 0) {
-                        // 连续压力值（kern.memorystatus_level，与 iStat 同源）优先显示百分数。
-                        if let pct = s.memoryPressurePercent {
+                        // 明确命名的 Xico 压力指数；指数不可用时显示内核三态，不伪装百分数。
+                        if let pct = s.memoryPressureIndex {
                             Text("\(Int((pct * 100).rounded()))%").font(XFont.monoMini)
                                 .foregroundStyle(XColor.textPrimary)
                         } else {

@@ -209,10 +209,10 @@ final class MenuBarController: NSObject {
                                                  memFraction: s?.memoryUsedFraction,
                                                  perCore: s?.perCore ?? [])
         case "memory":
-            // 口径（P8）：默认「压力」（kern.memorystatus_level 连续值，与 iStat 菜单栏一致）；
-            // 可在设置切回「占用」。压力读不到时自动退回占用。
+            // 默认显示明确命名的 Xico 压力指数；可在设置切回物理占用。
+            // 指数采样不可用时退回占用，避免把三态标签伪装成精确百分比。
             let usePressure = UserDefaults.standard.string(forKey: "xico.mb.memory.metric") != "used"
-            let memFraction = usePressure ? (s?.memoryPressurePercent ?? s?.memoryUsedFraction ?? 0)
+            let memFraction = usePressure ? (s?.memoryPressureIndex ?? s?.memoryUsedFraction ?? 0)
                                           : (s?.memoryUsedFraction ?? 0)
             return MenuBarGlyph.memory(fraction: memFraction,
                                        history: model.memHistory, style: style, colored: colored)
