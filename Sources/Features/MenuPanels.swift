@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import Domain
 import Infrastructure
 import DesignSystem
@@ -70,7 +71,7 @@ private struct StackedCPUBars: View {
             guard n > 0 else { return }
             let gap: CGFloat = 1
             let barW = max(1, (size.width - CGFloat(n - 1) * gap) / CGFloat(n))
-            let userColor = XColor.ring(2), sysColor = XColor.ring(0)
+            let userColor = XColor.auroraBlue, sysColor = XColor.accentPink
             for i in 0..<n {
                 let x = CGFloat(i) * (barW + gap)
                 let uh = size.height * CGFloat(min(max(u[u.count - n + i], 0), 1))
@@ -84,6 +85,20 @@ private struct StackedCPUBars: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+private enum MemoryPanelHistoryMetric: String, CaseIterable {
+    case pressure
+    case compression
+    case swap
+
+    var title: String {
+        switch self {
+        case .pressure: return xLoc("压力")
+        case .compression: return xLoc("压缩")
+        case .swap: return xLoc("交换区")
+        }
     }
 }
 
@@ -114,8 +129,8 @@ public enum MenuMetric: Sendable {
     }
     var colors: [Color] {
         switch self {
-        case .cpu: return XColor.metricCPU
-        case .memory: return XColor.metricMemory
+        case .cpu: return [XColor.auroraBlue]
+        case .memory: return [XColor.auroraViolet]
         case .network: return XColor.metricNetwork
         case .temperature: return [XColor.warning, XColor.accentPink]
         case .disk: return XColor.metricDisk
@@ -136,8 +151,26 @@ public struct MenuMetricPanel: View {
     @State private var freeMemNote: String?
     /// 折线时间窗（实时 / 15 分 / 1 时），全部面板共享同一偏好（P3·M4）。
     @AppStorage("xico.mb.panel.window") private var windowRaw = "live"
+    @AppStorage(MonitoringPreferences.cpuModeKey) private var cpuModeRaw = CPUDisplayMode.normalized.rawValue
+    @AppStorage(MonitoringPreferences.memoryUnitKey) private var memoryStyleRaw = MemoryUnitStyle.binary.rawValue
+    @AppStorage(MonitoringPreferences.densityKey) private var densityRaw = MonitoringPanelDensity.balanced.rawValue
+    @State private var selectedApplication: ApplicationIdentity?
+    @State private var memoryHistoryMetricRaw = MemoryPanelHistoryMetric.pressure.rawValue
+    @State private var pressureHistory: [Double] = []
+    @State private var compressionHistory: [Double] = []
+    @State private var swapHistory: [Double] = []
 
     private var window: HistoryWindow { HistoryWindow(rawValue: windowRaw) ?? .live }
+    private var cpuMode: CPUDisplayMode { CPUDisplayMode(rawValue: cpuModeRaw) ?? .normalized }
+    private var memoryStyle: MemoryUnitStyle { MemoryUnitStyle(rawValue: memoryStyleRaw) ?? .binary }
+    private var density: MonitoringPanelDensity { MonitoringPanelDensity(rawValue: densityRaw) ?? .balanced }
+    private var panelWidth: CGFloat {
+        switch density {
+        case .compact: return 320
+        case .balanced: return 336
+        case .detailed: return 380
+        }
+    }
 
     public init(model: AppModel, metric: MenuMetric) {
         self.model = model
@@ -208,7 +241,18 @@ public struct MenuMetricPanel: View {
             }
         }
         .padding(XSpacing.m)
-        .frame(width: 320)
+        .frame(width: panelWidth)
+        .onReceive(feed.snapshotPublisher.compactMap { $0 }) { snapshot in
+            guard metric == .memory else { return }
+            recordMemoryHistory(snapshot)
+        }
+        .sheet(item: $selectedApplication) { identity in
+            ApplicationUsageInspector(
+                feed: feed,
+                identity: identity,
+                cpuMode: cpuMode,
+                memoryStyle: memoryStyle)
+        }
     }
 
     /// 打开主窗口的系统监视页。
@@ -325,62 +369,78 @@ public struct MenuMetricPanel: View {
         }
     }
 
-    // MARK: - CPU 面板（每核心迷你环 + 频率 + 负载 + GPU 环 + 开机时长 + 进程榜）
+    // MARK: - CPU 面板（CPU 单一主叙事 + 应用双指标排行）
 
     @ViewBuilder private func cpuContent(_ s: SystemSnapshot) -> some View {
         VStack(alignment: .leading, spacing: XSpacing.m) {
-            HStack(spacing: XSpacing.m) {
-                ringGauge(s.cpuUsage)
+            XMonitoringSection {
+                VStack(alignment: .leading, spacing: XSpacing.m) {
+                    HStack(spacing: XSpacing.m) {
+                        semanticGauge(s.cpuUsage, color: XColor.auroraBlue)
+                        VStack(alignment: .leading, spacing: XSpacing.s) {
+                            HStack(spacing: XSpacing.l) {
+                                metricChip(xLoc("用户"), "\(Int(s.cpuUser * 100))%")
+                                metricChip(xLoc("系统"), "\(Int(s.cpuSystem * 100))%")
+                            }
+                            HStack(spacing: XSpacing.l) {
+                                metricChip(xLoc("平均负载"), loadTriple(s))
+                                if let t = s.cpuTemp {
+                                    metricChip(xLoc("温度"), String(format: "%.0f°C", t))
+                                }
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    freqLine
+                    if !s.perCore.isEmpty {
+                        Divider().padding(.vertical, 1)
+                        perCoreRings(s.perCore)
+                        Text(coreCaption).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                    }
+                    HStack(spacing: XSpacing.l) {
+                        metricChip(xLoc("已运行"), model.macInfo?.uptime ?? "—")
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            XMonitoringSection {
                 VStack(alignment: .leading, spacing: XSpacing.s) {
-                    HStack(spacing: XSpacing.l) {
-                        metricChip(xLoc("用户"), "\(Int(s.cpuUser * 100))%")
-                        metricChip(xLoc("系统"), "\(Int(s.cpuSystem * 100))%")
+                    HStack {
+                        Text("CPU · \(xLoc("实时"))")
+                            .font(XFont.captionEmphasis)
+                            .foregroundStyle(XColor.textPrimary)
+                        Spacer()
+                        windowPicker
                     }
-                    HStack(spacing: XSpacing.l) {
-                        metricChip(xLoc("平均负载"), loadTriple(s))
-                        if let t = s.cpuTemp { metricChip(xLoc("温度"), String(format: "%.0f°C", t)) }
+                    // 实时窗保留用户/系统拆分；长窗使用单一 CPU 蓝总占用线。
+                    if window == .live, feed.cpuUserHistory.count > 1 {
+                        StackedCPUBars(user: feed.cpuUserHistory, system: feed.cpuSysHistory)
+                            .frame(height: 40)
+                            .accessibilityLabel(xLoc("处理器占用历史曲线"))
+                    } else {
+                        historyChart(feed.rings.cpu, colors: [XColor.auroraBlue], height: 40)
+                            .accessibilityLabel(xLoc("处理器占用历史曲线"))
+                    }
+                    HStack(spacing: XSpacing.m) {
+                        HStack(spacing: 3) {
+                            Circle().fill(XColor.auroraBlue).frame(width: 6, height: 6)
+                            Text(xLoc("用户")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                        }
+                        HStack(spacing: 3) {
+                            Circle().fill(XColor.accentPink).frame(width: 6, height: 6)
+                            Text(xLoc("系统")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                        }
+                        Spacer()
                     }
                 }
-                Spacer(minLength: 0)
             }
-            freqLine
-            if !s.perCore.isEmpty {
-                Divider().padding(.vertical, 1)
-                perCoreRings(s.perCore)
-                Text(coreCaption).font(XFont.caption).foregroundStyle(XColor.textTertiary)
-            }
-            Divider().padding(.vertical, 1)
-            HStack(spacing: XSpacing.m) {
-                if let g = s.gpuUsage { gpuSegment(g) }
-                Spacer(minLength: 0)
-                metricChip(xLoc("已运行"), model.macInfo?.uptime ?? "—")
-            }
-            HStack {
-                Spacer()
-                windowPicker
-            }
-            // 实时窗：用户/系统双色堆叠条（iStat 招牌视图——一眼分清负载来源）；
-            // 15 分/1 时窗：总占用折线（桶均值没有用户/系统拆分，诚实退回单线）。
-            if window == .live, feed.cpuUserHistory.count > 1 {
-                StackedCPUBars(user: feed.cpuUserHistory, system: feed.cpuSysHistory)
-                    .frame(height: 40)
-                    .accessibilityLabel(xLoc("处理器占用历史曲线"))
-            } else {
-                historyChart(feed.rings.cpu, colors: XColor.ringColors, height: 40)
-                    .accessibilityLabel(xLoc("处理器占用历史曲线"))
-            }
-            HStack(spacing: XSpacing.m) {
-                HStack(spacing: 3) {
-                    Circle().fill(XColor.ring(2)).frame(width: 6, height: 6)
-                    Text(xLoc("用户")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
-                }
-                HStack(spacing: 3) {
-                    Circle().fill(XColor.ring(0)).frame(width: 6, height: 6)
-                    Text(xLoc("系统")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
-                }
-                Spacer()
-            }
-            processList(model.topByCPU, kind: .cpu)
+            ApplicationUsageList(
+                focus: .cpu,
+                snapshot: feed.applicationUsage,
+                cpuMode: cpuMode,
+                memoryStyle: memoryStyle,
+                totalMemory: s.memoryTotal,
+                onSelect: { selectedApplication = $0 })
         }
     }
 
@@ -406,10 +466,10 @@ public struct MenuMetricPanel: View {
         return LazyVGrid(columns: cols, spacing: XSpacing.s) {
             ForEach(Array(cores.enumerated()), id: \.offset) { idx, v in
                 VStack(spacing: 2) {
-                    XMiniRing(fraction: v, colors: XColor.gauge(v), size: 28, lineWidth: 3.5)
+                    XMiniRing(fraction: v, colors: [XColor.auroraBlue], size: 28, lineWidth: 3.5)
                     HStack(spacing: 2) {
                         if hasClusters && clusters[idx] {
-                            Circle().fill(XColor.metricCPU[0]).frame(width: 3, height: 3)  // 性能核标记
+                            Circle().fill(XColor.auroraBlue).frame(width: 3, height: 3)  // 性能核标记
                         }
                         Text("\(idx)").font(XFont.nano).foregroundStyle(XColor.textTertiary)
                     }
@@ -419,16 +479,6 @@ public struct MenuMetricPanel: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(xLoc("每核心占用"))
         .accessibilityValue(xLocF("平均 %d%%", Int((cores.reduce(0, +) / Double(max(cores.count, 1))) * 100)))
-    }
-
-    private func gpuSegment(_ g: Double) -> some View {
-        HStack(spacing: XSpacing.s) {
-            XMiniRing(fraction: g, colors: XColor.metricGPU, size: 34, lineWidth: 4) {
-                Text("\(Int((g * 100).rounded()))").font(XFont.monoMini)
-                    .foregroundStyle(XColor.textPrimary)
-            }
-            Text("GPU").font(XFont.caption).foregroundStyle(XColor.textSecondary)
-        }
     }
 
     private func loadTriple(_ s: SystemSnapshot) -> String {
@@ -446,74 +496,91 @@ public struct MenuMetricPanel: View {
         return xLocF("%d 逻辑核心 · 每核实时", m.cores)
     }
 
-    // MARK: - 内存面板（压力环 + 用量环 + 分段条 + 完整图例 + 分页 + 交换 + 进程榜）
+    // MARK: - 内存面板（压力语义 + 物理组成 + 真实历史 + 应用双指标排行）
 
     @ViewBuilder private func memoryContent(_ s: SystemSnapshot) -> some View {
         let pressureIndexText = MemoryPressureDisplayCopy.percentage(s.memoryPressureIndex)
         VStack(alignment: .leading, spacing: XSpacing.m) {
-            HStack(spacing: XSpacing.m) {
-                VStack(spacing: 2) {
-                    XMiniRing(fraction: s.pressureFractionPreferred, colors: pressureColors(s), size: 62, lineWidth: 7) {
-                        Text(pressureIndexText).font(XFont.monoMini)
-                            .foregroundStyle(XColor.textPrimary)
+            XMonitoringSection {
+                VStack(alignment: .leading, spacing: XSpacing.m) {
+                    HStack(spacing: XSpacing.m) {
+                        VStack(spacing: 2) {
+                            XSemanticGauge(
+                                fraction: s.pressureFractionPreferred,
+                                color: pressureColor(s),
+                                size: 62,
+                                lineWidth: 7) {
+                                Text(pressureIndexText).font(XFont.monoMini)
+                                    .foregroundStyle(XColor.textPrimary)
+                            }
+                            Text(xLoc(MemoryPressureDisplayCopy.indexLabel)).font(XFont.nano)
+                                .foregroundStyle(XColor.textTertiary)
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.indexLabel))
+                        .accessibilityValue(pressureIndexText)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(xLoc(MemoryPressureDisplayCopy.stateLabel)).font(XFont.nano)
+                                .foregroundStyle(XColor.textTertiary)
+                            Text(xLoc(s.memoryPressureLabel)).font(XFont.captionEmphasis)
+                                .foregroundStyle(pressureColor(s))
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.stateLabel))
+                        .accessibilityValue(xLoc(s.memoryPressureLabel))
+                        semanticGauge(s.memoryUsedFraction, color: XColor.auroraViolet)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(s.memoryUsed.formattedMemory(style: memoryStyle))
+                                .font(XFont.monoLarge)
+                                .foregroundStyle(XColor.textPrimary)
+                            Text(xLocF("/ %@", s.memoryTotal.formattedMemory(style: memoryStyle)))
+                                .font(XFont.caption)
+                                .foregroundStyle(XColor.textSecondary)
+                        }
+                        Spacer(minLength: 0)
                     }
-                    Text(xLoc(MemoryPressureDisplayCopy.indexLabel)).font(XFont.nano)
-                        .foregroundStyle(XColor.textTertiary)
-                        .lineLimit(1).minimumScaleFactor(0.7)
+                    memSegmentBar(s)
+                    memLegendRow(xLoc("应用内存"), s.memoryApp, XColor.memApp)
+                    memLegendRow(xLoc("联动内存"), s.memoryWired, XColor.memWired)
+                    memLegendRow(xLoc("已压缩"), s.memoryCompressed, XColor.memCompressed)
+                    memLegendRow(xLoc("缓存文件"), s.memoryCached, XColor.memCached)
+                    memLegendRow(xLoc("可用"), s.memoryAvailable, XColor.memFree)
                 }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.indexLabel))
-                .accessibilityValue(pressureIndexText)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(xLoc(MemoryPressureDisplayCopy.stateLabel)).font(XFont.nano)
-                        .foregroundStyle(XColor.textTertiary)
-                    Text(xLoc(s.memoryPressureLabel)).font(XFont.captionEmphasis)
-                        .foregroundStyle(XColor.textPrimary)
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.stateLabel))
-                .accessibilityValue(xLoc(s.memoryPressureLabel))
-                // 用量环 + 已用 / 总量。
-                ringGauge(s.memoryUsedFraction)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(s.memoryUsed.formattedMemory).font(XFont.monoLarge).foregroundStyle(XColor.textPrimary)
-                    Text(xLocF("/ %@", s.memoryTotal.formattedMemory)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                }
-                Spacer(minLength: 0)
             }
-            memSegmentBar(s)
-            // 完整图例：应用 / 联动 / 压缩 / 缓存 / 可用（可用 = 空闲轨道，对齐活动监视器口径）。
-            memLegendRow(xLoc("应用内存"), s.memoryApp, XColor.memApp)
-            memLegendRow(xLoc("联动内存"), s.memoryWired, XColor.memWired)
-            memLegendRow(xLoc("已压缩"), s.memoryCompressed, XColor.memCompressed)
-            memLegendRow(xLoc("可用"), memoryFree(s) + s.memoryCached, XColor.memFree)
-            Text(xLocF("可用中含 %@ 缓存文件，系统随取随回收", s.memoryCached.formattedMemory))
-                .font(XFont.nano).foregroundStyle(XColor.textTertiary)
-            Divider().padding(.vertical, 1)
-            // 换入/换出显示**速率**（P0 修复：此前是自开机累计字节，参考意义弱、数字吓人）。
-            // 首帧无前值 → "—"，绝不显示爆表累计值。
-            HStack(spacing: XSpacing.l) {
-                metricChip(xLoc("换入分页"), feed.pageInRate.map(\.formattedRate) ?? "—")
-                metricChip(xLoc("换出分页"), feed.pageOutRate.map(\.formattedRate) ?? "—")
-                Spacer(minLength: 0)
+
+            XMonitoringSection {
+                VStack(alignment: .leading, spacing: XSpacing.s) {
+                    HStack(spacing: XSpacing.l) {
+                        metricChip(xLoc("换入分页"), feed.pageInRate.map(\.formattedRate) ?? "—")
+                        metricChip(xLoc("换出分页"), feed.pageOutRate.map(\.formattedRate) ?? "—")
+                        Spacer(minLength: 0)
+                    }
+                    if s.swapTotal > 0 { swapBar(s) }
+                }
             }
-            if s.swapTotal > 0 { swapBar(s) }
-            processList(model.topByMemory, kind: .memory)
+
+            memoryHistorySection
+
+            ApplicationUsageList(
+                focus: .memory,
+                snapshot: feed.applicationUsage,
+                cpuMode: cpuMode,
+                memoryStyle: memoryStyle,
+                totalMemory: s.memoryTotal,
+                onSelect: { selectedApplication = $0 })
         }
     }
 
     private func memSegmentBar(_ s: SystemSnapshot) -> some View {
         let total = max(1.0, Double(s.memoryTotal))
-        // 缓存不再画成「占用段」——缓存随取随回收，计入可用（iStat/活动监视器同口径）。
+        // Available already includes cached files. Only mutually exclusive used categories become
+        // colored segments; the unfilled track is available, while cached remains an explicit row.
         return XSegmentBar(segments: [
             .init(id: "app", fraction: Double(s.memoryApp) / total,        color: XColor.memApp),
-            .init(id: "wired", fraction: Double(s.memoryWired) / total,      color: XColor.memWired),
+            .init(id: "wired", fraction: Double(s.memoryWired) / total,    color: XColor.memWired),
             .init(id: "comp", fraction: Double(s.memoryCompressed) / total, color: XColor.memCompressed),
         ], height: 9)
-    }
-
-    private func memoryFree(_ s: SystemSnapshot) -> Int64 {
-        max(0, s.memoryTotal - s.memoryApp - s.memoryWired - s.memoryCompressed - s.memoryCached)
     }
 
     private func memLegendRow(_ label: String, _ bytes: Int64, _ color: Color) -> some View {
@@ -521,7 +588,7 @@ public struct MenuMetricPanel: View {
             Circle().fill(color).frame(width: 7, height: 7)
             Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             Spacer()
-            Text(bytes.formattedMemory).font(XFont.mono).foregroundStyle(XColor.textPrimary)
+            Text(bytes.formattedMemory(style: memoryStyle)).font(XFont.mono).foregroundStyle(XColor.textPrimary)
         }
     }
 
@@ -530,19 +597,81 @@ public struct MenuMetricPanel: View {
             HStack {
                 Text(xLoc("交换区")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
                 Spacer()
-                Text(xLocF("%@ / %@", s.swapUsed.formattedMemory, s.swapTotal.formattedMemory))
+                Text(xLocF(
+                    "%@ / %@",
+                    s.swapUsed.formattedMemory(style: memoryStyle),
+                    s.swapTotal.formattedMemory(style: memoryStyle)))
                     .font(XFont.mono).foregroundStyle(XColor.textPrimary)
             }
             XDiskBar(usedFraction: s.swapUsedFraction, label: "", height: 6)
         }
     }
 
-    private func pressureColors(_ s: SystemSnapshot) -> [Color] {
+    private func pressureColor(_ s: SystemSnapshot) -> Color {
         switch s.memoryPressure {
-        case 4: return [XColor.danger, XColor.accentPink]
-        case 2: return [XColor.warning, XColor.accentPink]
-        default: return [XColor.success, XColor.accentTeal]
+        case 4: return XColor.danger
+        case 2: return XColor.warning
+        default: return XColor.success
         }
+    }
+
+    private var memoryHistoryMetric: MemoryPanelHistoryMetric {
+        MemoryPanelHistoryMetric(rawValue: memoryHistoryMetricRaw) ?? .pressure
+    }
+
+    private var selectedMemoryHistory: [Double] {
+        switch memoryHistoryMetric {
+        case .pressure: return pressureHistory
+        case .compression: return compressionHistory
+        case .swap: return swapHistory
+        }
+    }
+
+    private var memoryHistorySection: some View {
+        XMonitoringSection {
+            VStack(alignment: .leading, spacing: XSpacing.s) {
+                HStack {
+                    Text("\(xLoc("内存")) · 60 s")
+                        .font(XFont.captionEmphasis)
+                        .foregroundStyle(XColor.textPrimary)
+                    Spacer()
+                    XSegmentedControl(
+                        selection: $memoryHistoryMetricRaw,
+                        options: MemoryPanelHistoryMetric.allCases.map {
+                            .init(tag: $0.rawValue, label: $0.title, a11y: $0.title)
+                        })
+                    .scaleEffect(0.86, anchor: .trailing)
+                }
+                if selectedMemoryHistory.count > 1 {
+                    XLineChart(
+                        values: selectedMemoryHistory,
+                        colors: [XColor.auroraViolet],
+                        showGrid: true,
+                        hoverLabel: { index in
+                            guard selectedMemoryHistory.indices.contains(index) else { return "" }
+                            return "\(Int((selectedMemoryHistory[index] * 100).rounded()))%"
+                        })
+                    .frame(height: 44)
+                    .accessibilityLabel(memoryHistoryMetric.title)
+                } else {
+                    Text(xLoc("采样中"))
+                        .font(XFont.caption)
+                        .foregroundStyle(XColor.textTertiary)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
+                }
+            }
+        }
+    }
+
+    private func recordMemoryHistory(_ snapshot: SystemSnapshot) {
+        guard snapshot.memoryTotal > 0 else { return }
+        pressureHistory.append(snapshot.memoryPressureIndex ?? snapshot.memoryPressureFraction)
+        compressionHistory.append(
+            min(1, max(0, Double(snapshot.memoryCompressed) / Double(snapshot.memoryTotal))))
+        swapHistory.append(snapshot.swapUsedFraction)
+        if pressureHistory.count > 60 { pressureHistory.removeFirst(pressureHistory.count - 60) }
+        if compressionHistory.count > 60 { compressionHistory.removeFirst(compressionHistory.count - 60) }
+        if swapHistory.count > 60 { swapHistory.removeFirst(swapHistory.count - 60) }
     }
 
     // MARK: - 网络面板（大数字 + 会话峰值/累计 + 双线折线 + 接口清单）
@@ -602,42 +731,15 @@ public struct MenuMetricPanel: View {
         }
     }
 
-    private enum ProcKind { case cpu, memory }
-    private func processList(_ procs: [ProcessUsage], kind: ProcKind) -> some View {
-        let shown = Array(procs.prefix(4))
-        let maxMem = max(shown.map(\.memoryBytes).max() ?? 1, 1)
-        return VStack(spacing: 3) {
-            ForEach(shown) { p in
-                let frac = kind == .cpu ? min(p.cpuPercent / 100, 1) : Double(p.memoryBytes) / Double(maxMem)
-                HStack(spacing: XSpacing.s) {
-                    // App 图标（学 iStat：进程行带图标一眼认出是谁）；后台进程无图标时用齿轮。
-                    if let icon = NSRunningApplication(processIdentifier: p.id)?.icon {
-                        Image(nsImage: icon).resizable().frame(width: 15, height: 15)
-                    } else {
-                        Image(systemName: "gearshape.fill").font(XFont.nano)
-                            .foregroundStyle(XColor.textTertiary).frame(width: 15)
-                    }
-                    Text(p.name).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-                        .lineLimit(1).truncationMode(.middle)
-                    Spacer()
-                    Text(kind == .cpu ? String(format: "%.1f%%", p.cpuPercent) : p.memoryBytes.formattedMemory)
-                        .font(XFont.monoMini)
-                        .foregroundStyle(XColor.textPrimary)
-                }
-                .padding(.vertical, 2).padding(.horizontal, 6)
-                // 行内占用条：一眼看出谁在吃资源（对标 iStat 的进程条）。
-                .background(alignment: .leading) {
-                    GeometryReader { geo in
-                        Capsule().fill((kind == .cpu ? XColor.metricCPU[0] : XColor.metricMemory[0]).opacity(0.12))
-                            .frame(width: max(0, geo.size.width * frac))
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: XRadius.chip))
-                }
-            }
+    private func semanticGauge(_ fraction: Double, color: Color) -> some View {
+        XSemanticGauge(fraction: fraction, color: color, size: 60, lineWidth: 7) {
+            Text("\(Int((fraction * 100).rounded()))%")
+                .font(XFont.monoMid)
+                .foregroundStyle(XColor.textPrimary)
         }
     }
 
-    /// 彩虹极光圆环 + 中心百分数（详情面板里的「数据」用 App 同款彩色）
+    /// 非 CPU/内存面板保留现有主题环；精密 CPU/内存主指标只使用 semanticGauge。
     private func ringGauge(_ fraction: Double) -> some View {
         XMiniRing(fraction: fraction, colors: XColor.ringColors, size: 60, lineWidth: 7) {
             Text("\(Int((fraction * 100).rounded()))%")

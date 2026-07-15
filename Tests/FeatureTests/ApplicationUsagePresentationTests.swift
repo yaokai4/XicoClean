@@ -4,6 +4,20 @@ import XCTest
 import Domain
 
 final class ApplicationUsagePresentationTests: XCTestCase {
+    func testCPUColumnOrderIsApplicationCPUMemory() {
+        XCTAssertEqual(ApplicationUsageFocus.cpu.columnTitles, ["应用", "CPU", "内存"])
+    }
+
+    func testMemoryColumnOrderIsApplicationMemoryCPU() {
+        XCTAssertEqual(ApplicationUsageFocus.memory.columnTitles, ["应用", "内存", "CPU"])
+    }
+
+    func testPartialCoverageCopyIncludesPercentage() {
+        XCTAssertEqual(
+            ProcessCoverage(enumerated: 100, sampled: 82, denied: 18, exited: 0).displayText,
+            "数据覆盖 82%")
+    }
+
     func testCPURowShowsCPUPrimaryAndMemorySecondary() {
         let row = ApplicationUsageRowPresentation.make(
             usage: .fixture(cpuRaw: 80, cpuNormalized: 10, memory: 1_073_741_824),
