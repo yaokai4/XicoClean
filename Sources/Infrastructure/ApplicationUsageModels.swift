@@ -57,3 +57,63 @@ public struct PIDEnumerator: Sendable {
 public protocol ProcessSnapshotProviding: Sendable {
     func capture() async -> ProcessCapture
 }
+
+public struct ApplicationIdentity: Hashable, Codable, Sendable, Identifiable {
+    public let rawValue: String
+    public var id: String { rawValue }
+}
+
+public enum CPUDisplayMode: String, CaseIterable, Codable, Sendable {
+    case normalized
+    case totalCore
+}
+
+public struct ApplicationMemberUsage: Identifiable, Sendable {
+    public let identity: ProcessIdentity
+    public let name: String
+    public let cpuRawPercent: Double?
+    public let physicalFootprintBytes: Int64
+    public var id: ProcessIdentity { identity }
+}
+
+public struct ApplicationUsageTrend: Sendable {
+    public var cpuRaw: [Double]
+    public var memoryBytes: [Int64]
+}
+
+public struct ApplicationUsage: Identifiable, Sendable {
+    public let id: ApplicationIdentity
+    public let displayName: String
+    public let bundleIdentifier: String?
+    public let bundlePath: String?
+    public let representativePID: Int32
+    public let members: [ApplicationMemberUsage]
+    public let cpuRawPercent: Double?
+    public let cpuNormalizedPercent: Double?
+    public let physicalFootprintBytes: Int64
+    public let peakFootprintBytes: Int64
+    public var trend: ApplicationUsageTrend
+    public var memberCount: Int { members.count }
+    public func cpuPercent(mode: CPUDisplayMode) -> Double? {
+        mode == .normalized ? cpuNormalizedPercent : cpuRawPercent
+    }
+}
+
+public struct ProcessCoverage: Sendable, Equatable {
+    public let enumerated: Int
+    public let sampled: Int
+    public let denied: Int
+    public let exited: Int
+    public var fraction: Double { enumerated > 0 ? Double(sampled) / Double(enumerated) : 0 }
+}
+
+public enum ProcessSamplingStatus: String, Sendable { case warmingUp, live, partial, stale, unavailable }
+
+public struct ApplicationUsageSnapshot: Sendable {
+    public let byCPU: [ApplicationUsage]
+    public let byMemory: [ApplicationUsage]
+    public let status: ProcessSamplingStatus
+    public let coverage: ProcessCoverage
+    public let sampledAt: Date
+    public let source: ProcessCaptureSource
+}
