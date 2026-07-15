@@ -129,6 +129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        if CommandLine.arguments.contains("--monitoring-shots") {
+            renderMonitoringShots()
+            NSApp.terminate(nil)
+            return
+        }
         #endif
         // 单实例守卫：更新替换 App 或多路径安装时旧实例可能仍在运行——两个进程会各画一套
         // 菜单栏状态项（用户报告的「莫名冒出两个一样的监控」）。

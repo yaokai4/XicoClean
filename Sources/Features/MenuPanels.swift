@@ -241,8 +241,12 @@ public struct MenuMetricPanel: View {
         }
         .padding(XSpacing.m)
         .frame(width: panelWidth)
-        .onReceive(feed.snapshotPublisher.compactMap { $0 }) { snapshot in
-            guard metric == .memory else { return }
+        .onAppear {
+            guard metric == .memory, let snapshot = feed.liveSnapshot else { return }
+            recordMemoryHistory(snapshot)
+        }
+        .onChange(of: feed.applicationUsage.sampledAt) {
+            guard metric == .memory, let snapshot = feed.liveSnapshot else { return }
             recordMemoryHistory(snapshot)
         }
         .sheet(item: $selectedApplication) { identity in
@@ -376,6 +380,9 @@ public struct MenuMetricPanel: View {
                 VStack(alignment: .leading, spacing: XSpacing.m) {
                     HStack(spacing: XSpacing.m) {
                         semanticGauge(s.cpuUsage, color: XColor.auroraBlue)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(xLoc("处理器"))
+                            .accessibilityValue("\(Int((s.cpuUsage * 100).rounded()))%")
                         VStack(alignment: .leading, spacing: XSpacing.s) {
                             HStack(spacing: XSpacing.l) {
                                 metricChip(xLoc("用户"), "\(Int(s.cpuUser * 100))%")
@@ -415,10 +422,14 @@ public struct MenuMetricPanel: View {
                     if window == .live, feed.cpuUserHistory.count > 1 {
                         StackedCPUBars(user: feed.cpuUserHistory, system: feed.cpuSysHistory)
                             .frame(height: 40)
+                            .accessibilityElement(children: .ignore)
                             .accessibilityLabel(xLoc("处理器占用历史曲线"))
+                            .accessibilityValue("\(Int((s.cpuUsage * 100).rounded()))%")
                     } else {
                         historyChart(feed.rings.cpu, colors: [XColor.auroraBlue], height: 40)
+                            .accessibilityElement(children: .ignore)
                             .accessibilityLabel(xLoc("处理器占用历史曲线"))
+                            .accessibilityValue("\(Int((s.cpuUsage * 100).rounded()))%")
                     }
                     HStack(spacing: XSpacing.m) {
                         HStack(spacing: 3) {
@@ -530,12 +541,17 @@ public struct MenuMetricPanel: View {
                         .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.stateLabel))
                         .accessibilityValue(xLoc(s.memoryPressureLabel))
                         semanticGauge(s.memoryUsedFraction, color: XColor.auroraViolet)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(xLoc("内存"))
+                            .accessibilityValue("\(Int((s.memoryUsedFraction * 100).rounded()))%")
                         VStack(alignment: .leading, spacing: 2) {
                             Text(s.memoryUsed.formattedMemory(style: memoryStyle))
                                 .font(XFont.monoLarge)
+                                .monospacedDigit()
                                 .foregroundStyle(XColor.textPrimary)
                             Text(xLocF("/ %@", s.memoryTotal.formattedMemory(style: memoryStyle)))
                                 .font(XFont.caption)
+                                .monospacedDigit()
                                 .foregroundStyle(XColor.textSecondary)
                         }
                         Spacer(minLength: 0)
@@ -581,6 +597,7 @@ public struct MenuMetricPanel: View {
             .init(id: "wired", fraction: Double(s.memoryWired) / total,    color: XColor.memWired),
             .init(id: "comp", fraction: Double(s.memoryCompressed) / total, color: XColor.memCompressed),
         ], height: 9)
+        .accessibilityHidden(true)
     }
 
     private func memLegendRow(_ label: String, _ bytes: Int64, _ color: Color) -> some View {
@@ -589,6 +606,7 @@ public struct MenuMetricPanel: View {
             Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
             Spacer()
             Text(bytes.formattedMemory(style: memoryStyle)).font(XFont.mono).foregroundStyle(XColor.textPrimary)
+                .monospacedDigit()
         }
     }
 
@@ -640,7 +658,8 @@ public struct MenuMetricPanel: View {
                         options: MemoryPanelHistoryMetric.allCases.map {
                             .init(tag: $0.rawValue, label: $0.title, a11y: $0.title)
                         })
-                    .scaleEffect(0.86, anchor: .trailing)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .scaleEffect(0.80, anchor: .trailing)
                 }
                 if selectedMemoryHistory.count > 1 {
                     XLineChart(
@@ -652,12 +671,17 @@ public struct MenuMetricPanel: View {
                             return "\(Int((selectedMemoryHistory[index] * 100).rounded()))%"
                         })
                     .frame(height: 44)
+                    .accessibilityElement(children: .ignore)
                     .accessibilityLabel(memoryHistoryMetric.title)
+                    .accessibilityValue("\(Int(((selectedMemoryHistory.last ?? 0) * 100).rounded()))%")
                 } else {
                     Text(xLoc("采样中"))
                         .font(XFont.caption)
                         .foregroundStyle(XColor.textTertiary)
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(memoryHistoryMetric.title)
+                        .accessibilityValue(xLoc("采样中"))
                 }
             }
         }
@@ -782,6 +806,7 @@ public struct MenuMetricPanel: View {
             Text(label).font(XFont.caption).foregroundStyle(XColor.textTertiary)
                 .lineLimit(1).minimumScaleFactor(0.85)
             Text(value).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
+                .monospacedDigit()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

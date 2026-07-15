@@ -248,6 +248,11 @@ final class MetricsGatingTests: XCTestCase {
         }
     }
 
+    func testFocusedMonitoringShotsSkipInteractiveLicenseKeychain() {
+        XCTAssertTrue(AppModel.isOfflineRender(arguments: ["Xico", "--monitoring-shots"]))
+        XCTAssertFalse(AppModel.isOfflineRender(arguments: ["Xico"]))
+    }
+
     func testCanonicalMonitoringKeysTakePrecedenceOverLegacyTaskFourKeys() {
         withMonitoringDefaults { defaults in
             defaults.set(false, forKey: "xico.monitoring.combinesProcesses")

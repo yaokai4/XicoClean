@@ -44,15 +44,18 @@ public struct XMonitoringSection<Content: View>: View {
 public struct XSamplingStatusPill: View {
     private let text: String
     private let tone: XSamplingTone
+    private let accessibilityDetail: String?
 
-    public init(_ text: String, tone: XSamplingTone) {
+    public init(_ text: String, tone: XSamplingTone, accessibilityDetail: String? = nil) {
         self.text = text
         self.tone = tone
+        self.accessibilityDetail = accessibilityDetail
     }
 
     public var body: some View {
         HStack(spacing: XSpacing.xs) {
             Circle().fill(tone.color).frame(width: 6, height: 6)
+                .accessibilityHidden(true)
             Text(text).font(XFont.nano).lineLimit(1)
         }
         .foregroundStyle(tone.color)
@@ -60,7 +63,7 @@ public struct XSamplingStatusPill: View {
         .padding(.vertical, 3)
         .background(Capsule().fill(tone.color.opacity(XAlpha.tint)))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(text)
+        .accessibilityLabel([text, accessibilityDetail].compactMap { $0 }.joined(separator: "，"))
     }
 }
 
@@ -89,10 +92,12 @@ public struct XSemanticGauge<Center: View>: View {
     public var body: some View {
         ZStack {
             Circle().stroke(color.opacity(XAlpha.ghost), lineWidth: lineWidth)
+                .accessibilityHidden(true)
             Circle()
                 .trim(from: 0, to: fraction)
                 .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
+                .accessibilityHidden(true)
             center
         }
         .frame(width: size, height: size)
@@ -128,6 +133,7 @@ public struct XAlignedValueColumn: View {
             Text(label).font(XFont.nano).foregroundStyle(XColor.textTertiary)
             Text(value)
                 .font(emphasized ? XFont.captionEmphasis.monospacedDigit() : XFont.microMono)
+                .monospacedDigit()
                 .foregroundStyle(emphasized ? XColor.textPrimary : XColor.textSecondary)
                 .lineLimit(1)
         }

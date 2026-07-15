@@ -478,6 +478,10 @@ public final class AppModel: ObservableObject {
     ) {
         self.env = env
         self.processes = processSampler
+        // 离屏 QA 工具以裸调试二进制运行时没有正式 App 的 Keychain ACL；若仍读取许可锚点，
+        // Security.framework 会等待钥匙串授权并让截图命令永久悬挂。仅这些显式调试入口跳过
+        // 许可/在线复验/哨兵副作用；正常 App、测试与发布构建路径完全不变。
+        let offlineRender = Self.isOfflineRender(arguments: CommandLine.arguments)
         if let raw = UserDefaults.standard.string(forKey: "xico.appearance"),
            let a = AppAppearance(rawValue: raw) {
             appearance = a
@@ -504,14 +508,16 @@ public final class AppModel: ObservableObject {
             appearance = a
         }
         refreshPermissions()
-        refreshLicense()
-        revalidateLicenseOnline()
-        // 菜单栏长驻进程可能数周不重启——每 6h 唤醒一次复验入口
-        // （内部仍按 72h 节流，绝大多数唤醒直接返回，不产生网络请求）。
-        Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.revalidateLicenseOnline() }
+        if !offlineRender {
+            refreshLicense()
+            revalidateLicenseOnline()
+            // 菜单栏长驻进程可能数周不重启——每 6h 唤醒一次复验入口
+            // （内部仍按 72h 节流，绝大多数唤醒直接返回，不产生网络请求）。
+            Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.revalidateLicenseOnline() }
+            }
+            setTrashSentinel(enabled: Self.trashSentinelEnabled)
         }
-        setTrashSentinel(enabled: Self.trashSentinelEnabled)
         refreshMetrics()
         NotificationCenter.default.addObserver(forName: .xicoDidClean, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refreshMetrics() }
@@ -522,10 +528,20 @@ public final class AppModel: ObservableObject {
                                                object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshPermissions()
-                self?.refreshLicense()
-                self?.revalidateLicenseOnline()
+                if !offlineRender {
+                    self?.refreshLicense()
+                    self?.revalidateLicenseOnline()
+                }
             }
         }
+    }
+
+    nonisolated static func isOfflineRender(arguments: [String]) -> Bool {
+        let offlineFlags: Set<String> = [
+            "--shots", "--webshots", "--menubar", "--glyphs", "--layout",
+            "--liveshots", "--auditshots", "--monitoring-shots", "--icon",
+        ]
+        return arguments.contains { offlineFlags.contains($0) }
     }
 
     public func refreshPermissions() {

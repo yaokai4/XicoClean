@@ -211,6 +211,58 @@ final class ApplicationUsagePresentationTests: XCTestCase {
         XCTAssertTrue(valid.hasValue)
         XCTAssertEqual(valid.fraction, 0.72)
     }
+
+    func testApplicationRowAccessibilityReadsNameCountCPUStateAndMemoryInOrder() {
+        let usage = ApplicationUsage.fixture(
+            cpuRaw: nil,
+            cpuNormalized: nil,
+            memory: 1_073_741_824,
+            pids: [7, 8])
+        let row = ApplicationUsageRowPresentation.make(
+            usage: usage,
+            focus: .memory,
+            cpuMode: .normalized,
+            memoryStyle: .binary)
+
+        XCTAssertEqual(
+            ApplicationUsageAccessibility.rowLabel(usage: usage, presentation: row, focus: .memory),
+            "Fixture，2 个进程，CPU 采样中，内存 1.00 GiB")
+    }
+
+    func testSamplingStatusAccessibilityAlwaysIncludesCoverage() {
+        let coverage = ProcessCoverage(enumerated: 100, sampled: 82, denied: 18, exited: 0)
+        XCTAssertEqual(
+            ApplicationUsageAccessibility.statusLabel(status: .partial, coverage: coverage),
+            "部分数据，数据覆盖 82%")
+        XCTAssertEqual(
+            ApplicationUsageAccessibility.statusLabel(status: .live, coverage: coverage),
+            "实时，数据覆盖 82%")
+    }
+
+    func testChartAccessibilityExposesConciseLabelAndLatestValue() {
+        XCTAssertEqual(
+            ApplicationUsageAccessibility.chart(label: "CPU", latestValue: "42.0%"),
+            .init(label: "CPU", value: "42.0%"))
+        XCTAssertEqual(
+            ApplicationUsageAccessibility.chart(label: "内存", latestValue: nil),
+            .init(label: "内存", value: "采样中"))
+    }
+
+    func testDebugMonitoringFixtureBuildsDeterministicMembersAndTrend() {
+        let fixture = ApplicationUsage.monitoringFixture(
+            id: "atlas",
+            name: "Atlas Studio",
+            cpuRaw: 96,
+            cpuNormalized: 12,
+            memory: 1_200_000_000,
+            memberCount: 2)
+
+        XCTAssertEqual(fixture.id.rawValue, "fixture:atlas")
+        XCTAssertEqual(fixture.displayName, "Atlas Studio")
+        XCTAssertEqual(fixture.members.map(\.identity.pid), [9_000, 9_001])
+        XCTAssertEqual(fixture.trend.cpuRaw.count, 60)
+        XCTAssertEqual(fixture.trend.memoryBytes.count, 60)
+    }
 }
 
 @MainActor

@@ -252,6 +252,52 @@ public struct ApplicationUsageRowPresentation: Equatable, Sendable {
     }
 }
 
+public enum ApplicationUsageAccessibility {
+    public struct Chart: Equatable, Sendable {
+        public let label: String
+        public let value: String
+
+        public init(label: String, value: String) {
+            self.label = label
+            self.value = value
+        }
+    }
+
+    public static func rowLabel(
+        usage: ApplicationUsage,
+        presentation: ApplicationUsageRowPresentation,
+        focus: ApplicationUsageFocus
+    ) -> String {
+        let cpu = focus == .cpu ? presentation.primaryText : presentation.secondaryText
+        let memory = focus == .memory ? presentation.primaryText : presentation.secondaryText
+        return [
+            usage.displayName,
+            xLocF("%d 个进程", usage.memberCount),
+            "CPU \(cpu)",
+            "\(xLoc("内存")) \(memory)",
+        ].joined(separator: "，")
+    }
+
+    public static func statusLabel(
+        status: ProcessSamplingStatus,
+        coverage: ProcessCoverage
+    ) -> String {
+        let state: String
+        switch status {
+        case .live: state = xLoc("实时")
+        case .warmingUp: state = xLoc("采样中")
+        case .partial: state = xLoc("部分数据")
+        case .stale: state = xLoc("数据已过期")
+        case .unavailable: state = xLoc("数据不可用")
+        }
+        return "\(state)，\(coverage.displayText)"
+    }
+
+    public static func chart(label: String, latestValue: String?) -> Chart {
+        Chart(label: label, value: latestValue ?? xLoc("采样中"))
+    }
+}
+
 public struct ApplicationUsageList: View {
     private let focus: ApplicationUsageFocus
     private let snapshot: ApplicationUsageSnapshot
@@ -309,6 +355,7 @@ public struct ApplicationUsageList: View {
                         Text(snapshot.coverage.displayText)
                             .font(XFont.nano)
                             .foregroundStyle(XColor.textTertiary)
+                            .accessibilityHidden(true)
                     }
                     Spacer(minLength: 0)
                 }
@@ -393,6 +440,7 @@ public struct ApplicationUsageList: View {
                 .frame(width: 66, alignment: .trailing)
                 Text(presentation.secondaryText)
                     .font(XFont.microMono)
+                    .monospacedDigit()
                     .foregroundStyle(XColor.textSecondary)
                     .frame(width: 66, alignment: .trailing)
             }
@@ -404,35 +452,31 @@ public struct ApplicationUsageList: View {
                     RoundedRectangle(cornerRadius: XRadius.chip, style: .continuous)
                         .fill(metricColor.opacity(0.10))
                         .frame(width: proxy.size.width * presentation.fillFraction)
+                        .accessibilityHidden(true)
                 }
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(rowAccessibilityLabel(usage, presentation: presentation))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(ApplicationUsageAccessibility.rowLabel(
+            usage: usage,
+            presentation: presentation,
+            focus: focus))
         .help(xLoc("应用检查器"))
-    }
-
-    private func rowAccessibilityLabel(
-        _ usage: ApplicationUsage,
-        presentation: ApplicationUsageRowPresentation
-    ) -> String {
-        let cpu = focus == .cpu ? presentation.primaryText : presentation.secondaryText
-        let memory = focus == .memory ? presentation.primaryText : presentation.secondaryText
-        return "\(usage.displayName)，\(xLocF("%d 个进程", usage.memberCount))，CPU \(cpu)，\(xLoc("内存")) \(memory)"
     }
 
     @ViewBuilder private var samplingPill: some View {
         switch displayStatus {
         case .live:
-            XSamplingStatusPill(xLoc("实时"), tone: .live)
+            XSamplingStatusPill(xLoc("实时"), tone: .live, accessibilityDetail: snapshot.coverage.displayText)
         case .warmingUp:
-            XSamplingStatusPill(xLoc("采样中"), tone: .warming)
+            XSamplingStatusPill(xLoc("采样中"), tone: .warming, accessibilityDetail: snapshot.coverage.displayText)
         case .partial:
-            XSamplingStatusPill(xLoc("部分数据"), tone: .attention)
+            XSamplingStatusPill(xLoc("部分数据"), tone: .attention, accessibilityDetail: snapshot.coverage.displayText)
         case .stale:
-            XSamplingStatusPill(xLoc("数据已过期"), tone: .attention)
+            XSamplingStatusPill(xLoc("数据已过期"), tone: .attention, accessibilityDetail: snapshot.coverage.displayText)
         case .unavailable:
-            XSamplingStatusPill(xLoc("数据不可用"), tone: .unavailable)
+            XSamplingStatusPill(xLoc("数据不可用"), tone: .unavailable, accessibilityDetail: snapshot.coverage.displayText)
         }
     }
 
@@ -561,9 +605,15 @@ public struct ApplicationUsageInspector: View {
                     }
                     Spacer()
                     if lifecycleState == .exited {
-                        XSamplingStatusPill(xLoc("已退出"), tone: .attention)
+                        XSamplingStatusPill(
+                            xLoc("已退出"),
+                            tone: .attention,
+                            accessibilityDetail: (lastSnapshot ?? feed.applicationUsage).coverage.displayText)
                     } else if lifecycleState == .stale {
-                        XSamplingStatusPill(xLoc("数据已过期"), tone: .attention)
+                        XSamplingStatusPill(
+                            xLoc("数据已过期"),
+                            tone: .attention,
+                            accessibilityDetail: (lastSnapshot ?? feed.applicationUsage).coverage.displayText)
                     } else {
                         inspectorSamplingPill
                     }
@@ -624,24 +674,45 @@ public struct ApplicationUsageInspector: View {
                     .font(XFont.captionEmphasis)
                     .foregroundStyle(XColor.textPrimary)
                 HStack(spacing: XSpacing.m) {
-                    trendChart(title: "CPU", values: cpu, color: XColor.auroraBlue)
-                    trendChart(title: xLoc("内存"), values: memory, color: XColor.auroraViolet)
+                    trendChart(
+                        title: "CPU",
+                        values: cpu,
+                        latestValue: usage.cpuPercent(mode: cpuMode).map { String(format: "%.1f%%", $0) },
+                        color: XColor.auroraBlue)
+                    trendChart(
+                        title: xLoc("内存"),
+                        values: memory,
+                        latestValue: usage.trend.memoryBytes.last?.formattedMemory(style: memoryStyle),
+                        color: XColor.auroraViolet)
                 }
             }
         }
     }
 
-    private func trendChart(title: String, values: [Double], color: Color) -> some View {
-        VStack(alignment: .leading, spacing: XSpacing.xs) {
+    private func trendChart(
+        title: String,
+        values: [Double],
+        latestValue: String?,
+        color: Color
+    ) -> some View {
+        let accessibility = ApplicationUsageAccessibility.chart(label: title, latestValue: latestValue)
+        return VStack(alignment: .leading, spacing: XSpacing.xs) {
             Text(title).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                .accessibilityHidden(true)
             if values.count > 1 {
                 XLineChart(values: values, colors: [color], showGrid: true)
                     .frame(height: 86)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(accessibility.label)
+                    .accessibilityValue(accessibility.value)
             } else {
                 Text(xLoc("采样中"))
                     .font(XFont.caption)
                     .foregroundStyle(XColor.textTertiary)
                     .frame(maxWidth: .infinity, minHeight: 86)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(accessibility.label)
+                    .accessibilityValue(accessibility.value)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -663,14 +734,17 @@ public struct ApplicationUsageInspector: View {
                 ForEach(usage.members) { member in
                     HStack(spacing: XSpacing.s) {
                         Text("\(member.identity.pid)")
+                            .monospacedDigit()
                             .frame(width: 52, alignment: .leading)
                         Text(member.name)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Text(formatCPU(member.cpuRawPercent))
+                            .monospacedDigit()
                             .frame(width: 72, alignment: .trailing)
                         Text(member.physicalFootprintBytes.formattedMemory(style: memoryStyle))
+                            .monospacedDigit()
                             .frame(width: 88, alignment: .trailing)
                     }
                     .font(XFont.captionMono)
@@ -720,6 +794,7 @@ public struct ApplicationUsageInspector: View {
                 .frame(width: 16)
             Spacer()
             Text(value).font(XFont.captionMono).foregroundStyle(XColor.textSecondary)
+                .monospacedDigit()
         }
     }
 
@@ -729,15 +804,25 @@ public struct ApplicationUsageInspector: View {
             refreshInterval: MonitoringPreferences.refreshInterval().rawValue
         ) {
         case .live:
-            XSamplingStatusPill(xLoc("实时"), tone: .live)
+            XSamplingStatusPill(
+                xLoc("实时"), tone: .live,
+                accessibilityDetail: feed.applicationUsage.coverage.displayText)
         case .warmingUp:
-            XSamplingStatusPill(xLoc("采样中"), tone: .warming)
+            XSamplingStatusPill(
+                xLoc("采样中"), tone: .warming,
+                accessibilityDetail: feed.applicationUsage.coverage.displayText)
         case .partial:
-            XSamplingStatusPill(xLoc("部分数据"), tone: .attention)
+            XSamplingStatusPill(
+                xLoc("部分数据"), tone: .attention,
+                accessibilityDetail: feed.applicationUsage.coverage.displayText)
         case .stale:
-            XSamplingStatusPill(xLoc("数据已过期"), tone: .attention)
+            XSamplingStatusPill(
+                xLoc("数据已过期"), tone: .attention,
+                accessibilityDetail: feed.applicationUsage.coverage.displayText)
         case .unavailable:
-            XSamplingStatusPill(xLoc("数据不可用"), tone: .unavailable)
+            XSamplingStatusPill(
+                xLoc("数据不可用"), tone: .unavailable,
+                accessibilityDetail: feed.applicationUsage.coverage.displayText)
         }
     }
 

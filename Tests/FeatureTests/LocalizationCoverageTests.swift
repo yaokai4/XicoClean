@@ -14,6 +14,49 @@ import Foundation
 ///    数量相等并不足以防泄漏，故两条同时校验。
 final class LocalizationCoverageTests: XCTestCase {
 
+    /// Precision Monitoring 首个切片的公开文案契约。这个清单刻意保持为 20 项；
+    /// 新文案必须经过产品审阅后再加入，避免截图工具或辅助功能字符串悄悄扩张翻译面。
+    private static let monitoringKeyInventory = [
+        "Xico 压力指数",
+        "采样中",
+        "实时",
+        "部分数据",
+        "数据已过期",
+        "数据不可用",
+        "数据覆盖 %d%%",
+        "应用检查器",
+        "物理内存",
+        "峰值内存",
+        "应用聚合",
+        "独立进程",
+        "%d 个进程",
+        "采样来源",
+        "本地采样",
+        "助手增强",
+        "已退出",
+        "十进制 GB",
+        "二进制 GiB",
+        "合并子进程",
+    ]
+
+    /// Task 6 为设置页先占位的文案。Task 8 必须一次性偿还所有非中文翻译债。
+    private static let monitoringPlaceholderDebt = [
+        "CPU · 口径",
+        "二进制 GiB / MiB",
+        "内存单位",
+        "十进制 GB / MB",
+        "合并应用进程",
+        "均衡",
+        "密度",
+        "归一化 0–100%",
+        "总核心 0–N×100%",
+        "排行数量",
+        "省电（5 秒）",
+        "紧凑",
+        "详细",
+        "采样中",
+    ]
+
     /// 全部 11 种语言（与 DesignSystem/Resources/*.lproj 一一对应）。
     private static let locales = [
         "en", "zh-Hans", "zh-Hant", "ja", "ko",
@@ -49,12 +92,24 @@ final class LocalizationCoverageTests: XCTestCase {
 
     /// 用 PropertyList 解析（`.strings` 即老式 plist），取其 key 集合。
     private func keys(of locale: String) throws -> Set<String> {
+        Set(try table(of: locale).keys)
+    }
+
+    private func table(of locale: String) throws -> [String: String] {
         let url = stringsURL(locale)
         let data = try Data(contentsOf: url)
         let obj = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
         let dict = try XCTUnwrap(obj as? [String: String],
                                  "\(locale) Localizable.strings 应解析为字符串字典")
-        return Set(dict.keys)
+        return dict
+    }
+
+    private func formatSpecifiers(in string: String) throws -> [String] {
+        let regex = try NSRegularExpression(
+            pattern: #"%(?:%|@|d|(?:\.\d+)?[fiu])"#)
+        let ns = string as NSString
+        return regex.matches(in: string, range: NSRange(location: 0, length: ns.length))
+            .map { ns.substring(with: $0.range) }
     }
 
     /// 反转义源码字面量里的常见转义序列，使其与 PropertyList 解析出的真实字符 key 对齐。
@@ -164,6 +219,48 @@ final class LocalizationCoverageTests: XCTestCase {
         }
     }
 
+    /// (3) Precision Monitoring 公开键清单必须恰好为设计批准的 20 项，且 11 种语言全部覆盖。
+    func testPrecisionMonitoringInventoryIsExactAndComplete() throws {
+        XCTAssertEqual(Self.monitoringKeyInventory.count, 20)
+        XCTAssertEqual(Set(Self.monitoringKeyInventory).count, 20, "监控键清单不得重复")
+
+        let expected = Set(Self.monitoringKeyInventory)
+        for locale in Self.locales {
+            let missing = expected.subtracting(try keys(of: locale)).sorted()
+            XCTAssertTrue(
+                missing.isEmpty,
+                "\(locale) 缺少 Precision Monitoring 键：\(missing.joined(separator: "、"))")
+        }
+    }
+
+    /// (4) 翻译不能破坏 printf 占位符；`%d` 与字面量百分号 `%%` 都必须原样保留。
+    func testPrecisionMonitoringTranslationsPreserveFormatSpecifiers() throws {
+        for locale in Self.locales {
+            let translations = try table(of: locale)
+            for key in Self.monitoringKeyInventory {
+                let value = try XCTUnwrap(translations[key], "\(locale) 缺少 \(key)")
+                XCTAssertEqual(
+                    try formatSpecifiers(in: value),
+                    try formatSpecifiers(in: key),
+                    "\(locale) 的 \(key) 破坏了格式符")
+            }
+        }
+    }
+
+    /// (5) 十种非简体中文语言不得继续显示中文 source placeholder。
+    /// 专名与单位可以保留在译文中，但整句仍必须由该语言完成本地化。
+    func testMonitoringTranslationsDoNotLeakSourcePlaceholders() throws {
+        let required = Set(Self.monitoringKeyInventory + Self.monitoringPlaceholderDebt)
+        for locale in Self.locales where locale != Self.baseLocale {
+            let translations = try table(of: locale)
+            for key in required {
+                let value = try XCTUnwrap(translations[key], "\(locale) 缺少 \(key)")
+                XCTAssertFalse(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                XCTAssertNotEqual(value, key, "\(locale) 仍在显示中文占位：\(key)")
+            }
+        }
+    }
+
     // MARK: - definitions.json 派生 key
 
     /// definitions.json 的绝对路径（Sources/Domain/Resources/definitions.json）。
@@ -191,7 +288,7 @@ final class LocalizationCoverageTests: XCTestCase {
         return out
     }
 
-    /// (3) definitions.json 里每个 title/description（经 xLoc 显示）都必须存在于基准 zh-Hans 表，
+    /// (6) definitions.json 里每个 title/description（经 xLoc 显示）都必须存在于基准 zh-Hans 表，
     /// 否则这 ~112 条会向 10 个非中文语言泄漏原始中文。
     func testDefinitionsJSONKeysAreLocalized() throws {
         let base = try keys(of: Self.baseLocale)

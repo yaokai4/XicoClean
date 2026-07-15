@@ -98,6 +98,169 @@ func renderLiveShots() {
     FileHandle.standardError.write("rendered live shots to \(dir.path)\n".data(using: .utf8)!)
 }
 
+/// Precision Monitoring focused QA: exact six-state evidence set at the production 336 pt width.
+/// Live panels receive two full one-second sampling intervals after attachment; degraded-state
+/// panels use deterministic DEBUG fixtures and settle before the stale threshold.
+@MainActor
+func renderMonitoringShots() {
+    let dir = URL(fileURLWithPath: "/tmp/xico-monitoring-shots")
+    try? FileManager.default.removeItem(at: dir)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+    let defaults = UserDefaults.standard
+    let controlledKeys = [
+        MonitoringPreferences.refreshIntervalKey,
+        MonitoringPreferences.processLimitKey,
+        MonitoringPreferences.densityKey,
+    ]
+    let savedDefaults = Dictionary(uniqueKeysWithValues: controlledKeys.map { ($0, defaults.object(forKey: $0)) })
+    defer {
+        for key in controlledKeys {
+            if let value = savedDefaults[key] ?? nil { defaults.set(value, forKey: key) }
+            else { defaults.removeObject(forKey: key) }
+        }
+    }
+    MonitoringPreferences.setRefreshInterval(.oneSecond)
+    defaults.set(4, forKey: MonitoringPreferences.processLimitKey)
+    defaults.set(MonitoringPanelDensity.balanced.rawValue, forKey: MonitoringPreferences.densityKey)
+
+    let env = XicoEnvironment.live()
+    let liveModel = AppModel(env: env)
+    liveModel.setMetricsDetailConsumerVisible(true)
+    liveModel.prepareApplicationSampling()
+    liveModel.refreshMetrics()
+    liveModel.startMetricsTimer()
+
+    let liveShots: [(String, MenuMetric, ColorScheme)] = [
+        ("cpu-dark", .cpu, .dark),
+        ("cpu-light", .cpu, .light),
+        ("memory-dark", .memory, .dark),
+        ("memory-light", .memory, .light),
+    ]
+    for (name, metric, scheme) in liveShots {
+        renderMonitoringPage(
+            name: name,
+            model: liveModel,
+            metric: metric,
+            scheme: scheme,
+            settle: 2.4,
+            directory: dir)
+    }
+
+    let fixtureModel = AppModel(env: env)
+    fixtureModel.refreshMetrics()
+    let systemDeadline = Date().addingTimeInterval(3)
+    while fixtureModel.liveSnapshot == nil, Date() < systemDeadline {
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+    }
+
+    let atlasWarming = ApplicationUsage.monitoringFixture(
+        id: "atlas-warming", name: "Atlas Studio", cpuRaw: nil, cpuNormalized: nil,
+        memory: 1_820_000_000, memberCount: 3)
+    let safariWarming = ApplicationUsage.monitoringFixture(
+        id: "safari-warming", name: "Safari", cpuRaw: nil, cpuNormalized: nil,
+        memory: 780_000_000, memberCount: 2)
+    fixtureModel.liveMetricsFeed.applicationUsage = ApplicationUsageSnapshot(
+        byCPU: [],
+        byMemory: [atlasWarming, safariWarming],
+        status: .warmingUp,
+        coverage: ProcessCoverage(enumerated: 96, sampled: 0, denied: 0, exited: 0),
+        sampledAt: Date(),
+        source: .local)
+    fixtureModel.liveMetricsFeed.objectWillChange.send()
+    renderMonitoringPage(
+        name: "cpu-warming-dark",
+        model: fixtureModel,
+        metric: .cpu,
+        scheme: .dark,
+        settle: 0.35,
+        directory: dir)
+
+    let xcode = ApplicationUsage.monitoringFixture(
+        id: "xcode", name: "Xcode", cpuRaw: 112, cpuNormalized: 14,
+        memory: 3_240_000_000, memberCount: 4)
+    let atlas = ApplicationUsage.monitoringFixture(
+        id: "atlas", name: "Atlas Studio", cpuRaw: 56, cpuNormalized: 7,
+        memory: 1_860_000_000, memberCount: 3)
+    let safari = ApplicationUsage.monitoringFixture(
+        id: "safari", name: "Safari", cpuRaw: 24, cpuNormalized: 3,
+        memory: 920_000_000, memberCount: 2)
+    let partial = ApplicationUsageSnapshot(
+        byCPU: [xcode, atlas, safari],
+        byMemory: [xcode, atlas, safari],
+        status: .partial,
+        coverage: ProcessCoverage(enumerated: 100, sampled: 76, denied: 24, exited: 0),
+        sampledAt: Date(),
+        source: .helperEnhanced)
+    fixtureModel.liveMetricsFeed.applicationUsage = partial
+    fixtureModel.liveMetricsFeed.objectWillChange.send()
+    renderMonitoringPage(
+        name: "memory-partial-dark",
+        model: fixtureModel,
+        metric: .memory,
+        scheme: .dark,
+        settle: 0.35,
+        directory: dir)
+
+    liveModel.setMetricsDetailConsumerVisible(false)
+    FileHandle.standardError.write("rendered monitoring shots to \(dir.path)\n".data(using: .utf8)!)
+}
+
+@MainActor
+private func renderMonitoringPage(
+    name: String,
+    model: AppModel,
+    metric: MenuMetric,
+    scheme: ColorScheme,
+    settle: TimeInterval,
+    directory: URL
+) {
+    let height: CGFloat
+    if metric == .memory { height = 820 }
+    else if name.contains("warming") { height = 520 }
+    else { height = 736 }
+    let size = CGSize(width: 336, height: height)
+    let panel = MenuMetricPanel(model: model, metric: metric)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(XColor.surface))
+    let root = ZStack(alignment: .top) {
+        AppBackground()
+        panel
+    }
+    .frame(width: size.width, height: size.height, alignment: .top)
+    .clipped()
+    .environment(\.colorScheme, scheme)
+    .environment(\.locale, XLocale.swiftUILocale)
+    .tint(XColor.brand)
+    .accentColor(XColor.brand)
+
+    let hosting = NSHostingView(rootView: root)
+    hosting.frame = NSRect(origin: .zero, size: size)
+    let window = NSWindow(
+        contentRect: hosting.frame,
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false)
+    window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+    window.contentView = hosting
+    window.setFrameOrigin(NSPoint(x: -4_000, y: -4_000))
+    window.orderFront(nil)
+
+    let deadline = Date().addingTimeInterval(settle)
+    while Date() < deadline {
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+    }
+    hosting.layoutSubtreeIfNeeded()
+    if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+        if let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: directory.appendingPathComponent("\(name).png"))
+        }
+    }
+    window.orderOut(nil)
+}
+
 /// 渲染单页（供主题验证等临时快照复用）。
 @MainActor
 private func renderPage(name: String, view: AnyView, size: CGSize, dir: URL, scheme: ColorScheme) {

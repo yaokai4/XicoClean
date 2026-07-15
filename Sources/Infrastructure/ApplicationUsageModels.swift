@@ -145,3 +145,53 @@ public struct ApplicationUsageSnapshot: Sendable {
         self.source = source
     }
 }
+
+#if DEBUG
+/// Narrow deterministic factory used by focused off-screen monitoring QA.
+/// It is compiled out of release builds so fixture construction cannot become production API.
+public extension ApplicationUsage {
+    static func monitoringFixture(
+        id: String,
+        name: String,
+        cpuRaw: Double?,
+        cpuNormalized: Double?,
+        memory: Int64,
+        memberCount: Int = 1
+    ) -> Self {
+        let count = max(1, memberCount)
+        let safeMemory = max(0, memory)
+        let baseMemory = safeMemory / Int64(count)
+        let remainder = safeMemory % Int64(count)
+        let members = (0..<count).map { index in
+            let pid = Int32(9_000 + index)
+            let started = UInt64(1_000 + index)
+            let memberName = index == 0 ? name : name + " Helper " + String(index)
+            let memberCPU = cpuRaw.map { $0 / Double(count) }
+            let memberMemory = baseMemory + (index == 0 ? remainder : 0)
+            return ApplicationMemberUsage(
+                identity: ProcessIdentity(pid: pid, startTimeNanoseconds: started),
+                name: memberName,
+                cpuRawPercent: memberCPU,
+                physicalFootprintBytes: memberMemory)
+        }
+        let cpuTrend = cpuRaw.map { value in
+            (0..<60).map { index in value * (0.72 + Double(index % 12) * 0.02) }
+        } ?? []
+        let memoryTrend = (0..<60).map { index in
+            Int64(Double(safeMemory) * (0.88 + Double(index % 10) * 0.01))
+        }
+        return Self(
+            id: ApplicationIdentity(rawValue: "fixture:\(id)"),
+            displayName: name,
+            bundleIdentifier: nil,
+            bundlePath: nil,
+            representativePID: members[0].identity.pid,
+            members: members,
+            cpuRawPercent: cpuRaw,
+            cpuNormalizedPercent: cpuNormalized,
+            physicalFootprintBytes: safeMemory,
+            peakFootprintBytes: Int64(Double(safeMemory) * 1.18),
+            trend: ApplicationUsageTrend(cpuRaw: cpuTrend, memoryBytes: memoryTrend))
+    }
+}
+#endif
