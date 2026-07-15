@@ -104,6 +104,14 @@ public struct ProcessCoverage: Sendable, Equatable {
     public let sampled: Int
     public let denied: Int
     public let exited: Int
+
+    public init(enumerated: Int, sampled: Int, denied: Int, exited: Int) {
+        self.enumerated = enumerated
+        self.sampled = sampled
+        self.denied = denied
+        self.exited = exited
+    }
+
     public var fraction: Double { enumerated > 0 ? Double(sampled) / Double(enumerated) : 0 }
 }
 
@@ -116,4 +124,20 @@ public struct ApplicationUsageSnapshot: Sendable {
     public let coverage: ProcessCoverage
     public let sampledAt: Date
     public let source: ProcessCaptureSource
+
+    public init(
+        byCPU: [ApplicationUsage],
+        byMemory: [ApplicationUsage],
+        status: ProcessSamplingStatus,
+        coverage: ProcessCoverage,
+        sampledAt: Date,
+        source: ProcessCaptureSource
+    ) {
+        self.byCPU = byCPU
+        self.byMemory = byMemory
+        self.status = status
+        self.coverage = coverage
+        self.sampledAt = sampledAt
+        self.source = source
+    }
 }

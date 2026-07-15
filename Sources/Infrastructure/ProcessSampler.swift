@@ -8,6 +8,13 @@ public struct ProcessUsage: Sendable, Identifiable {
     public let name: String
     public let cpuPercent: Double
     public let memoryBytes: Int64
+
+    public init(id: Int32, name: String, cpuPercent: Double, memoryBytes: Int64) {
+        self.id = id
+        self.name = name
+        self.cpuPercent = cpuPercent
+        self.memoryBytes = memoryBytes
+    }
 }
 
 public actor ProcessSampler {

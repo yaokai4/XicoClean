@@ -44,6 +44,47 @@ public enum AppAppearance: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public extension ProcessSamplingStatus {
+    static func from(coverage: ProcessCoverage, hasCPU: Bool) -> Self {
+        guard coverage.enumerated > 0 else { return .unavailable }
+        guard hasCPU else { return .warmingUp }
+        return coverage.fraction < 0.90 ? .partial : .live
+    }
+}
+
+public extension ApplicationUsageSnapshot {
+    static func unavailable(now: Date = Date()) -> Self {
+        Self(
+            byCPU: [],
+            byMemory: [],
+            status: .unavailable,
+            coverage: .init(enumerated: 0, sampled: 0, denied: 0, exited: 0),
+            sampledAt: now,
+            source: .local)
+    }
+
+    static func warmingUp(now: Date = Date()) -> Self {
+        Self(
+            byCPU: [],
+            byMemory: [],
+            status: .warmingUp,
+            coverage: .init(enumerated: 0, sampled: 0, denied: 0, exited: 0),
+            sampledAt: now,
+            source: .local)
+    }
+
+    func application(id: ApplicationIdentity) -> ApplicationUsage? {
+        byCPU.first(where: { $0.id == id }) ?? byMemory.first(where: { $0.id == id })
+    }
+
+    func effectiveStatus(now: Date, refreshInterval: TimeInterval) -> ProcessSamplingStatus {
+        guard status != .unavailable else { return .unavailable }
+        return now.timeIntervalSince(sampledAt) > max(0.1, refreshInterval) * 2
+            ? .stale
+            : status
+    }
+}
+
 /// 高频实时指标源（菜单栏折线图 / 详情面板专用）。
 ///
 /// 从 AppModel 拆出的独立 ObservableObject：每秒采样只触发本对象的 objectWillChange，
@@ -63,9 +104,10 @@ public final class MetricsFeed: ObservableObject {
     @Published public var netUpHistory: [Double] = []
     @Published public var diskReadHistory: [Double] = []
     @Published public var diskWriteHistory: [Double] = []
-    // 菜单栏详情面板的进程榜
-    @Published public var topByCPU: [ProcessUsage] = []
-    @Published public var topByMemory: [ProcessUsage] = []
+    // 菜单栏详情面板的应用级快照与排行
+    public var applicationUsage = ApplicationUsageSnapshot.unavailable()
+    public var topByCPU: [ApplicationUsage] { applicationUsage.byCPU }
+    public var topByMemory: [ApplicationUsage] { applicationUsage.byMemory }
     // CPU 频率（性能核 / 能效核，MHz）
     @Published public var cpuFreqP: Double?
     @Published public var cpuFreqE: Double?
@@ -138,8 +180,12 @@ public final class AppModel: ObservableObject {
     public var netUpHistory: [Double] { get { liveMetricsFeed.netUpHistory } set { liveMetricsFeed.netUpHistory = newValue } }
     public var diskReadHistory: [Double] { get { liveMetricsFeed.diskReadHistory } set { liveMetricsFeed.diskReadHistory = newValue } }
     public var diskWriteHistory: [Double] { get { liveMetricsFeed.diskWriteHistory } set { liveMetricsFeed.diskWriteHistory = newValue } }
-    public var topByCPU: [ProcessUsage] { get { liveMetricsFeed.topByCPU } set { liveMetricsFeed.topByCPU = newValue } }
-    public var topByMemory: [ProcessUsage] { get { liveMetricsFeed.topByMemory } set { liveMetricsFeed.topByMemory = newValue } }
+    public var applicationTopByCPU: [ApplicationUsage] { liveMetricsFeed.topByCPU }
+    public var applicationTopByMemory: [ApplicationUsage] { liveMetricsFeed.topByMemory }
+    // Transitional projections for the existing menu rows. The application snapshot remains the
+    // sole stored source of truth; Task 7 will move those rows to the application-level properties.
+    public var topByCPU: [ProcessUsage] { liveMetricsFeed.topByCPU.map(Self.legacyProcessUsage) }
+    public var topByMemory: [ProcessUsage] { liveMetricsFeed.topByMemory.map(Self.legacyProcessUsage) }
     public var cpuFreqP: Double? { get { liveMetricsFeed.cpuFreqP } set { liveMetricsFeed.cpuFreqP = newValue } }
     public var cpuFreqE: Double? { get { liveMetricsFeed.cpuFreqE } set { liveMetricsFeed.cpuFreqE = newValue } }
     public var netDownPeak: Double { get { liveMetricsFeed.netDownPeak } set { liveMetricsFeed.netDownPeak = newValue } }
@@ -154,8 +200,6 @@ public final class AppModel: ObservableObject {
     private let hardwareProfiler = HardwareProfileService()
     private let processes = ProcessSampler()
     private let historyCap = 60
-    /// 菜单栏采样统一走后台队列，绝不在主线程做全系统 + 全进程 rusage 采样（审计 P1）。
-    private let sampleQueue = DispatchQueue(label: "app.xico.mb.sample", qos: .utility)
     /// 单飞门闩：上一帧采样未回主线程前不再排下一帧，避免长睡眠唤醒后堆积。
     private var isSampling = false
     /// 是否有「详情消费者」可见——菜单栏弹窗/详情面板已打开。由 MenuBarController 在 popover
@@ -176,6 +220,24 @@ public final class AppModel: ObservableObject {
     /// 回归点（审计 P1）：弹窗打开时即便无可见主窗口也必须为 true，否则温度/风扇/GPU 等详情停采。
     nonisolated static func detailConsumerVisible(consumerVisible: Bool, hasVisibleMainWindow: Bool) -> Bool {
         consumerVisible || hasVisibleMainWindow
+    }
+
+    public nonisolated static func shouldResetProcessBaseline(wasVisible: Bool, isVisible: Bool) -> Bool {
+        !wasVisible && isVisible
+    }
+
+    private nonisolated static func legacyProcessUsage(_ usage: ApplicationUsage) -> ProcessUsage {
+        ProcessUsage(
+            id: usage.representativePID,
+            name: usage.displayName,
+            cpuPercent: usage.cpuNormalizedPercent ?? 0,
+            memoryBytes: usage.physicalFootprintBytes)
+    }
+
+    public func prepareApplicationSampling() {
+        liveMetricsFeed.applicationUsage = .warmingUp()
+        liveMetricsFeed.objectWillChange.send()
+        Task { await processes.resetBaseline() }
     }
     /// 菜单栏专属网络采样器：与硬件页/监视页各自独立，避免共享实例互相污染接口速率基线。
     private let mbNetwork = NetworkInfoService()
@@ -371,18 +433,18 @@ public final class AppModel: ObservableObject {
         hasFullDiskAccess = env.permissions.hasFullDiskAccess()
     }
 
-    /// 菜单栏采样入口。全系统 + 全进程 rusage 采样在后台队列执行，仅回主线程发布快照（审计 P1）。
+    /// 菜单栏采样入口。全系统 + 全进程 rusage 采样在后台任务执行，仅回主线程发布快照（审计 P1）。
     public func refreshMetrics() {
         guard !isSampling else { return }   // 单飞：上一帧未落地前不排下一帧
         // 冷启动首帧不再同步跑重快照（会阻塞主线程做全传感器/IORegistry/sysctl 采样，审计 P3）——
-        // 首帧交给下方后台队列异步填充，界面短暂显示占位（XSpinner）后即刷新。
+        // 首帧交给下方后台任务异步填充，界面短暂显示占位（XSpinner）后即刷新。
         isSampling = true
         detailTick &+= 1
         // 菜单栏图标常驻但无弹窗/主窗口时（steady state）：只采图标折线所需的 cpu/mem/net/gpu 快照，
         // 跳过全进程枚举 + 传感器/风扇/磁盘健康/频率等昂贵详情采样（审计 P2）。有消费者可见时全量采样。
         let consumer = hasVisibleMetricsConsumer
         // P3·M9：有消费者时详情**每 tick 都采**（此前 %3 → 面板打开后温度/风扇 ~6s 才刷一轮，
-        // 实时感明显弱于 iStat）。~90ms 频率阻塞发生在后台 sampleQueue，主线程零成本；
+        // 实时感明显弱于 iStat）。~90ms 频率阻塞发生在 utility 后台任务，主线程零成本；
         // 无消费者时依旧完全跳过（稳态省电路径不变）。
         let wantDetail = consumer
         let needMacInfo = (macInfo == nil)
@@ -392,14 +454,33 @@ public final class AppModel: ObservableObject {
         let sensors = sensorReader
         let hw = hardwareProfiler
         let home = FileManager.default.homeDirectoryForCurrentUser
-        sampleQueue.async {
+        Task.detached(priority: .utility) {
             // steady state（无弹窗/主窗口 → consumer=false）：跳过 GPU/温度/风扇/电池等昂贵详情读取，
             // 只采图标折线所需的 cpu/mem/net。此前漏传该标志导致优化形同虚设、常驻空耗电（审计 P1）。
             let snap = env.liveMetrics.sample(consumerVisible: consumer)
             let cap = env.fs.volumeCapacity(for: home)
             let info = needMacInfo ? env.liveMetrics.macInfo() : nil
-            // 进程榜仅在有可见消费者时才做全进程 rusage 枚举（proc_listallpids）；否则保留上帧不刷新。
-            let top = consumer ? procSampler.sample(top: 4) : nil
+            // 应用排行仅在有可见消费者时才做全进程 rusage 枚举；否则不触碰进程采样器。
+            let applicationUsage: ApplicationUsageSnapshot?
+            if consumer {
+                let sampled = await procSampler.sample(
+                    limit: MonitoringPreferences.processLimit(),
+                    combinesProcesses: MonitoringPreferences.combinesProcesses())
+                let status = sampled.status == .unavailable
+                    ? .unavailable
+                    : ProcessSamplingStatus.from(
+                        coverage: sampled.coverage,
+                        hasCPU: sampled.status != .warmingUp)
+                applicationUsage = ApplicationUsageSnapshot(
+                    byCPU: sampled.byCPU,
+                    byMemory: sampled.byMemory,
+                    status: status,
+                    coverage: sampled.coverage,
+                    sampledAt: sampled.sampledAt,
+                    source: sampled.source)
+            } else {
+                applicationUsage = nil
+            }
             var detail: MetricsDetail?
             if wantDetail {
                 // 温度/风扇/磁盘卷：温度与磁盘专属面板的数据源（首个 storageHealth 会触发一次
@@ -413,8 +494,8 @@ public final class AppModel: ObservableObject {
                     gpu: hw.gpu())
             }
             let sample = MetricsSample(snapshot: snap, capacity: cap, macInfo: info,
-                                       topByCPU: top?.byCPU, topByMemory: top?.byMemory, detail: detail)
-            Task { @MainActor [weak self] in self?.applyMetrics(sample) }
+                                       applicationUsage: applicationUsage, detail: detail)
+            await MainActor.run { [weak self] in self?.applyMetrics(sample) }
         }
     }
 
@@ -457,9 +538,10 @@ public final class AppModel: ObservableObject {
         lastPageIns = s.pageIns
         lastPageOuts = s.pageOuts
         lastMetricsAt = now0
-        // 进程榜仅在有消费者时采到（否则为 nil）——保留上帧，避免弹窗打开瞬间空表。
-        if let byCPU = sample.topByCPU { feed.topByCPU = byCPU }
-        if let byMemory = sample.topByMemory { feed.topByMemory = byMemory }
+        // 应用快照仅在有消费者时采到；可见性转换已先清为 warmingUp，隐藏帧不枚举进程。
+        if let applicationUsage = sample.applicationUsage {
+            feed.applicationUsage = applicationUsage
+        }
         if let d = sample.detail {
             if let f = d.freq { feed.cpuFreqP = f.performance; feed.cpuFreqE = f.efficiency }
             feed.networkInterfaces = d.interfaces
@@ -701,9 +783,8 @@ private struct MetricsSample: Sendable {
     let snapshot: SystemSnapshot
     let capacity: VolumeCapacity?
     let macInfo: MacInfo?
-    /// nil = 本帧无可见消费者，未做全进程枚举（保留上帧进程榜）。
-    let topByCPU: [ProcessUsage]?
-    let topByMemory: [ProcessUsage]?
+    /// nil = 本帧无可见消费者，未做全进程枚举。
+    let applicationUsage: ApplicationUsageSnapshot?
     let detail: MetricsDetail?
 }
 

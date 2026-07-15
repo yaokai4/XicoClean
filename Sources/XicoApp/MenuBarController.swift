@@ -405,6 +405,12 @@ final class MenuBarController: NSObject {
         cardPanelID = id
         installDismissMonitors()
         // 卡片打开即算「详情消费者可见」：恢复温度/风扇/GPU 等详情采样。
+        if AppModel.shouldResetProcessBaseline(
+            wasVisible: model.metricsDetailConsumerVisible,
+            isVisible: true
+        ) {
+            model.prepareApplicationSampling()
+        }
         model.metricsDetailConsumerVisible = true
     }
 
