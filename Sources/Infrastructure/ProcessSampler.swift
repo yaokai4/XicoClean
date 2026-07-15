@@ -26,6 +26,7 @@ public actor ProcessSampler {
     private var trendLastSeen: [ApplicationIdentity: UInt64] = [:]
     private var previousCPUOrder: [ApplicationIdentity] = []
     private var previousMemoryOrder: [ApplicationIdentity] = []
+    private var baselineEpoch: UInt64 = 0
     private var sampleInProgress = false
     private var sampleWaiters: [CheckedContinuation<Void, Never>] = []
     nonisolated private let legacy: LegacyProcessSampler
@@ -61,10 +62,13 @@ public actor ProcessSampler {
         self.legacy = LegacyProcessSampler(capture: legacyCapture)
     }
 
-    public func resetBaseline() async {
+    @discardableResult
+    public func resetBaseline() async -> UInt64 {
         await acquireSamplePermit()
         defer { releaseSamplePermit() }
         cpu.reset()
+        baselineEpoch &+= 1
+        return baselineEpoch
     }
 
     public func sample(
@@ -74,6 +78,25 @@ public actor ProcessSampler {
         await acquireSamplePermit()
         defer { releaseSamplePermit() }
 
+        return await sampleWithPermit(limit: limit, combinesProcesses: combinesProcesses)
+    }
+
+    public func sample(
+        limit: Int = 6,
+        combinesProcesses: Bool = true,
+        requiringBaselineEpoch expectedEpoch: UInt64
+    ) async -> ApplicationUsageSnapshot? {
+        await acquireSamplePermit()
+        defer { releaseSamplePermit() }
+
+        guard expectedEpoch == baselineEpoch else { return nil }
+        return await sampleWithPermit(limit: limit, combinesProcesses: combinesProcesses)
+    }
+
+    private func sampleWithPermit(
+        limit: Int,
+        combinesProcesses: Bool
+    ) async -> ApplicationUsageSnapshot {
         let capture = await provider.capture()
         let cpuRates = cpu.rates(for: capture)
         let ownership = resolver.resolve(capture.records)

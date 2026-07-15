@@ -373,13 +373,7 @@ final class MenuBarController: NSObject {
     private func showCardPanel(id: String, from button: NSStatusBarButton) {
         // 先建立采样生命周期，再构造 SwiftUI 内容：rootView 初始化期间读取到的必须是
         // warming-up/可见态；卡片切换时可见性持续为 true，不制造一次隐藏转换。
-        if AppModel.shouldResetProcessBaseline(
-            wasVisible: model.metricsDetailConsumerVisible,
-            isVisible: true
-        ) {
-            model.prepareApplicationSampling()
-        }
-        model.metricsDetailConsumerVisible = true
+        model.setMetricsDetailConsumerVisible(true)
 
         let host = NSHostingController(rootView: AnyView(MenuCardContainer { self.panelContent(for: id) }))
         let panel = KeyableCardPanel(contentViewController: host)
@@ -431,7 +425,7 @@ final class MenuBarController: NSObject {
         }
         // 卡片关闭即回稳态采样省电（图钉功能已按用户要求移除，卡片是唯一详情消费者）。
         if !keepDetailConsumerVisible {
-            model.metricsDetailConsumerVisible = false
+            model.setMetricsDetailConsumerVisible(false)
         }
     }
 
@@ -596,7 +590,7 @@ extension MenuBarController: NSWindowDelegate {
         removeDismissMonitors()
         cardPanel = nil
         cardPanelID = nil
-        model.metricsDetailConsumerVisible = false
+        model.setMetricsDetailConsumerVisible(false)
     }
 }
 

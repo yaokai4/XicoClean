@@ -15,6 +15,21 @@ final class MetricsGatingTests: XCTestCase {
         XCTAssertFalse(AppModel.shouldResetProcessBaseline(wasVisible: true, isVisible: true))
     }
 
+    func testOpeningCardWhileMainWindowIsVisibleDoesNotResetAggregateVisibility() {
+        XCTAssertFalse(AppModel.shouldPrepareApplicationSampling(
+            cardWasVisible: false,
+            cardIsVisible: true,
+            hasVisibleMainWindow: true))
+        XCTAssertTrue(AppModel.shouldPrepareApplicationSampling(
+            cardWasVisible: false,
+            cardIsVisible: true,
+            hasVisibleMainWindow: false))
+        XCTAssertFalse(AppModel.shouldPrepareApplicationSampling(
+            cardWasVisible: true,
+            cardIsVisible: true,
+            hasVisibleMainWindow: false))
+    }
+
     func testCoverageBelowNinetyPercentIsPartial() {
         XCTAssertEqual(
             ProcessSamplingStatus.from(
@@ -51,6 +66,7 @@ final class MetricsGatingTests: XCTestCase {
 
     func testNewApplicationSamplingGenerationRejectsOlderSnapshotsAndDefersRefresh() {
         var lifecycle = ApplicationSamplingLifecycle()
+        XCTAssertEqual(lifecycle.baselineEpoch, 0)
         let olderGeneration = lifecycle.generation
         let currentGeneration = lifecycle.prepare()
 
@@ -59,8 +75,10 @@ final class MetricsGatingTests: XCTestCase {
         XCTAssertFalse(lifecycle.isReadyToSample)
         XCTAssertFalse(lifecycle.completeReset(
             for: currentGeneration,
+            baselineEpoch: 7,
             samplingInFlight: true,
             isVisible: true))
+        XCTAssertEqual(lifecycle.baselineEpoch, 7)
         XCTAssertTrue(lifecycle.isReadyToSample)
         XCTAssertTrue(lifecycle.finishSampling(isVisible: true))
         XCTAssertFalse(lifecycle.finishSampling(isVisible: true))
@@ -73,17 +91,21 @@ final class MetricsGatingTests: XCTestCase {
 
         XCTAssertFalse(lifecycle.completeReset(
             for: staleGeneration,
+            baselineEpoch: 6,
             samplingInFlight: false,
             isVisible: true))
         XCTAssertFalse(lifecycle.isReadyToSample)
         XCTAssertTrue(lifecycle.completeReset(
             for: currentGeneration,
+            baselineEpoch: 7,
             samplingInFlight: false,
             isVisible: true))
+        XCTAssertEqual(lifecycle.baselineEpoch, 7)
 
         let hiddenGeneration = lifecycle.prepare()
         XCTAssertFalse(lifecycle.completeReset(
             for: hiddenGeneration,
+            baselineEpoch: 8,
             samplingInFlight: false,
             isVisible: false))
     }

@@ -240,9 +240,49 @@ final class ApplicationUsageAggregatorTests: XCTestCase {
 
         let inFlightSnapshot = await inFlightSample.value
         XCTAssertEqual(inFlightSnapshot.status, .live)
-        await reset.value
+        _ = await reset.value
         let afterResetSnapshot = await sampler.sample()
         XCTAssertEqual(afterResetSnapshot.status, .warmingUp)
+    }
+
+    func testStaleEpochRequestSkipsCaptureAndPreservesPostResetWarmup() async {
+        let records = [
+            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                   cpu: 1_000_000_000, memory: 400_000_000),
+            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                   cpu: 2_000_000_000, memory: 410_000_000),
+            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                   cpu: 3_000_000_000, memory: 420_000_000)
+        ]
+        let provider = FixtureProcessSnapshotProvider(captures: [
+            .fixture(time: 1_000_000_000, records: [records[0]]),
+            .fixture(time: 2_000_000_000, records: [records[1]]),
+            .fixture(time: 3_000_000_000, records: [records[2]])
+        ])
+        let sampler = ProcessSampler(provider: provider, logicalCPUCount: 8)
+
+        let initial = await sampler.sample(requiringBaselineEpoch: 0)
+        XCTAssertEqual(initial?.status, .warmingUp)
+
+        let gate = AsyncTestGate()
+        let delayedStaleRequest = Task {
+            await gate.wait()
+            return await sampler.sample(requiringBaselineEpoch: 0)
+        }
+        let newEpoch = await sampler.resetBaseline()
+        await gate.open()
+
+        let staleSnapshot = await delayedStaleRequest.value
+        let captureCountAfterStaleRequest = await provider.captureCount
+        XCTAssertNil(staleSnapshot)
+        XCTAssertEqual(captureCountAfterStaleRequest, 1)
+
+        let firstAccepted = await sampler.sample(requiringBaselineEpoch: newEpoch)
+        let secondAccepted = await sampler.sample(requiringBaselineEpoch: newEpoch)
+        XCTAssertEqual(firstAccepted?.status, .warmingUp)
+        XCTAssertEqual(secondAccepted?.status, .live)
+        let finalCaptureCount = await provider.captureCount
+        XCTAssertEqual(finalCaptureCount, 3)
     }
 
     func testLegacyCompatibilityOmitsUnknownAndReusedPIDCPU() {
@@ -405,9 +445,30 @@ private actor FixtureProcessSnapshotProvider: ProcessSnapshotProviding {
         self.captures = captures
     }
 
+    var captureCount: Int { index }
+
     func capture() async -> ProcessCapture {
         defer { index += 1 }
         return captures[min(index, captures.count - 1)]
+    }
+}
+
+private actor AsyncTestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
     }
 }
 

@@ -87,6 +87,7 @@ public extension ApplicationUsageSnapshot {
 
 struct ApplicationSamplingLifecycle: Sendable {
     private(set) var generation: UInt64 = 0
+    private(set) var baselineEpoch: UInt64 = 0
     private var resetGeneration: UInt64?
     private var refreshGeneration: UInt64?
 
@@ -105,10 +106,12 @@ struct ApplicationSamplingLifecycle: Sendable {
 
     mutating func completeReset(
         for candidate: UInt64,
+        baselineEpoch: UInt64,
         samplingInFlight: Bool,
         isVisible: Bool
     ) -> Bool {
         guard candidate == generation, resetGeneration == candidate else { return false }
+        self.baselineEpoch = baselineEpoch
         resetGeneration = nil
         guard isVisible else { return false }
         guard samplingInFlight else { return true }
@@ -249,9 +252,12 @@ public final class AppModel: ObservableObject {
     private var hasVisibleMetricsConsumer: Bool {
         Self.detailConsumerVisible(
             consumerVisible: metricsDetailConsumerVisible,
-            hasVisibleMainWindow: NSApp.windows.contains {
-                $0.isVisible && $0.canBecomeMain && $0.occlusionState.contains(.visible)
-            })
+            hasVisibleMainWindow: hasVisibleMainWindow)
+    }
+    private var hasVisibleMainWindow: Bool {
+        NSApp.windows.contains {
+            $0.isVisible && $0.canBecomeMain && $0.occlusionState.contains(.visible)
+        }
     }
 
     /// 详情采样可见性的纯判定（无副作用，供回归测试直接调用，无需构造整个 AppModel）。
@@ -263,6 +269,32 @@ public final class AppModel: ObservableObject {
 
     public nonisolated static func shouldResetProcessBaseline(wasVisible: Bool, isVisible: Bool) -> Bool {
         !wasVisible && isVisible
+    }
+
+    nonisolated static func shouldPrepareApplicationSampling(
+        cardWasVisible: Bool,
+        cardIsVisible: Bool,
+        hasVisibleMainWindow: Bool
+    ) -> Bool {
+        shouldResetProcessBaseline(
+            wasVisible: detailConsumerVisible(
+                consumerVisible: cardWasVisible,
+                hasVisibleMainWindow: hasVisibleMainWindow),
+            isVisible: detailConsumerVisible(
+                consumerVisible: cardIsVisible,
+                hasVisibleMainWindow: hasVisibleMainWindow))
+    }
+
+    public func setMetricsDetailConsumerVisible(_ isVisible: Bool) {
+        let wasAggregateVisible = hasVisibleMetricsConsumer
+        metricsDetailConsumerVisible = isVisible
+        let isAggregateVisible = hasVisibleMetricsConsumer
+        if Self.shouldResetProcessBaseline(
+            wasVisible: wasAggregateVisible,
+            isVisible: isAggregateVisible
+        ) {
+            prepareApplicationSampling()
+        }
     }
 
     private nonisolated static func legacyProcessUsage(_ usage: ApplicationUsage) -> ProcessUsage {
@@ -279,10 +311,11 @@ public final class AppModel: ObservableObject {
         liveMetricsFeed.objectWillChange.send()
         let sampler = processes
         Task { [weak self] in
-            await sampler.resetBaseline()
+            let baselineEpoch = await sampler.resetBaseline()
             guard let self else { return }
             let refreshImmediately = self.applicationSampling.completeReset(
                 for: generation,
+                baselineEpoch: baselineEpoch,
                 samplingInFlight: self.isSampling,
                 isVisible: self.hasVisibleMetricsConsumer)
             if refreshImmediately { self.refreshMetrics() }
@@ -497,6 +530,7 @@ public final class AppModel: ObservableObject {
         // 跳过全进程枚举 + 传感器/风扇/磁盘健康/频率等昂贵详情采样（审计 P2）。有消费者可见时全量采样。
         let consumer = hasVisibleMetricsConsumer
         let applicationGeneration = applicationSampling.generation
+        let applicationBaselineEpoch = applicationSampling.baselineEpoch
         let wantsApplicationUsage = consumer && applicationSampling.isReadyToSample
         // P3·M9：有消费者时详情**每 tick 都采**（此前 %3 → 面板打开后温度/风扇 ~6s 才刷一轮，
         // 实时感明显弱于 iStat）。~90ms 频率阻塞发生在 utility 后台任务，主线程零成本；
@@ -520,19 +554,24 @@ public final class AppModel: ObservableObject {
             if wantsApplicationUsage {
                 let sampled = await procSampler.sample(
                     limit: MonitoringPreferences.processLimit(),
-                    combinesProcesses: MonitoringPreferences.combinesProcesses())
-                let status = sampled.status == .unavailable
-                    ? .unavailable
-                    : ProcessSamplingStatus.from(
+                    combinesProcesses: MonitoringPreferences.combinesProcesses(),
+                    requiringBaselineEpoch: applicationBaselineEpoch)
+                if let sampled {
+                    let status = sampled.status == .unavailable
+                        ? .unavailable
+                        : ProcessSamplingStatus.from(
+                            coverage: sampled.coverage,
+                            hasCPU: sampled.status != .warmingUp)
+                    applicationUsage = ApplicationUsageSnapshot(
+                        byCPU: sampled.byCPU,
+                        byMemory: sampled.byMemory,
+                        status: status,
                         coverage: sampled.coverage,
-                        hasCPU: sampled.status != .warmingUp)
-                applicationUsage = ApplicationUsageSnapshot(
-                    byCPU: sampled.byCPU,
-                    byMemory: sampled.byMemory,
-                    status: status,
-                    coverage: sampled.coverage,
-                    sampledAt: sampled.sampledAt,
-                    source: sampled.source)
+                        sampledAt: sampled.sampledAt,
+                        source: sampled.source)
+                } else {
+                    applicationUsage = nil
+                }
             } else {
                 applicationUsage = nil
             }
@@ -550,7 +589,7 @@ public final class AppModel: ObservableObject {
             }
             let sample = MetricsSample(snapshot: snap, capacity: cap, macInfo: info,
                                        applicationUsage: applicationUsage,
-                                       applicationSamplingGeneration: wantsApplicationUsage
+                                       applicationSamplingGeneration: applicationUsage != nil
                                            ? applicationGeneration
                                            : nil,
                                        detail: detail)
