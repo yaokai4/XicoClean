@@ -32,6 +32,36 @@ final class MetricsGatingTests: XCTestCase {
         XCTAssertEqual(feed.memoryHistory(for: "used"), [0.25, 0.50])
     }
 
+    @MainActor
+    func testUsedToPressureTransitionRejectsIncompleteHistoryUntilCompleteIndexArrives() {
+        let feed = MetricsFeed()
+        feed.memHistory = [0.25]
+
+        feed.recordMemoryPressureIndex(nil, cap: 2)
+
+        XCTAssertEqual(feed.memoryHistory(for: "used"), [0.25])
+        XCTAssertEqual(feed.memoryHistory(for: "pressure"), [])
+
+        feed.recordMemoryPressureIndex(0.65, cap: 2)
+
+        XCTAssertEqual(feed.memoryHistory(for: "pressure"), [0.65])
+    }
+
+    @MainActor
+    func testPressureHistoryPreservesValidPointsRejectsNilAndCapsOldest() {
+        let feed = MetricsFeed()
+        feed.memoryPressureHistory = [0.25]
+
+        feed.recordMemoryPressureIndex(nil, cap: 2)
+        XCTAssertEqual(feed.memoryPressureHistory, [0.25])
+
+        feed.recordMemoryPressureIndex(0.50, cap: 2)
+        XCTAssertEqual(feed.memoryPressureHistory, [0.25, 0.50])
+
+        feed.recordMemoryPressureIndex(0.75, cap: 2)
+        XCTAssertEqual(feed.memoryPressureHistory, [0.50, 0.75])
+    }
+
     func testOpeningDetailConsumerRequestsFreshProcessBaseline() {
         XCTAssertTrue(AppModel.shouldResetProcessBaseline(wasVisible: false, isVisible: true))
         XCTAssertFalse(AppModel.shouldResetProcessBaseline(wasVisible: true, isVisible: true))

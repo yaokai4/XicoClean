@@ -30,7 +30,8 @@ public struct SystemSnapshot: Sendable {
     public let swapUsed: Int64
     public let swapTotal: Int64
     public let memoryPressure: Int      // 1=正常 2=警告 4=危险（kern.memorystatus_vm_pressure_level）
-    /// Xico 压力指数 0...1：综合内核可用度、压力状态、可用/压缩内存与交换区占用；采样失败为 nil。
+    /// Xico 压力指数 0...1：综合内核可用度、压力状态、可用/压缩内存与交换区占用；
+    /// 内存采样失败或交换区等必需输入未采样时为 nil。
     public let memoryPressureIndex: Double?
     public let pageIns: Int64           // 累计换入字节
     public let pageOuts: Int64          // 累计换出字节
@@ -120,7 +121,7 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         let cpu = sampleCPU()
         let cores = samplePerCore()
         let mem = sampleMemory()
-        let swap: (used: Int64, total: Int64) = needSwap ? sampleSwap() : (0, 0)
+        let swap: (used: Int64, total: Int64, isValid: Bool) = needSwap ? sampleSwap() : (0, 0, false)
         let net = sampleNetwork()
         let disk = sampleDiskIO()
         let load = loadAverage()
@@ -138,18 +139,20 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         let batteryMinutes: Int? = needBattery ? batteryTimeRemaining() : nil
         let fan: Int? = consumerVisible ? smc.fanRPM() : nil
         let pressureState = memoryPressureLevel()
-        let pressureIndex: Double?
-        if mem.isValid, mem.total > 0 {
-            pressureIndex = MemoryPressureIndex.score(
-                kernelAvailableLevel: memoryStatusAvailableLevel(),
-                pressureState: pressureState,
-                availableFraction: Double(mem.available) / Double(mem.total),
-                compressedFraction: Double(mem.compressed) / Double(mem.total),
-                swapFraction: swap.total > 0 ? Double(swap.used) / Double(swap.total) : 0
-            )
-        } else {
-            pressureIndex = nil
-        }
+        let pressureIndex = Self.pressureIndexForSample(
+            memoryIsValid: mem.isValid,
+            memoryTotal: mem.total,
+            memoryAvailable: mem.available,
+            memoryCompressed: mem.compressed,
+            swapWasSampled: Self.hasCompleteSwapSample(
+                wasRequested: needSwap,
+                sampleIsValid: swap.isValid
+            ),
+            swapUsed: swap.used,
+            swapTotal: swap.total,
+            kernelAvailableLevel: memoryStatusAvailableLevel(),
+            pressureState: pressureState
+        )
         return SystemSnapshot(
             cpuUsage: cpu.busy, perCore: cores, cpuUser: cpu.user, cpuSystem: cpu.system,
             load1: load.0, load5: load.1, load15: load.2,
@@ -175,6 +178,31 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         memoryMetric: String?
     ) -> Bool {
         consumerVisible || (memoryGlyphEnabled && memoryMetric != "used")
+    }
+
+    static func hasCompleteSwapSample(wasRequested: Bool, sampleIsValid: Bool) -> Bool {
+        wasRequested && sampleIsValid
+    }
+
+    static func pressureIndexForSample(
+        memoryIsValid: Bool,
+        memoryTotal: Int64,
+        memoryAvailable: Int64,
+        memoryCompressed: Int64,
+        swapWasSampled: Bool,
+        swapUsed: Int64,
+        swapTotal: Int64,
+        kernelAvailableLevel: Int?,
+        pressureState: Int
+    ) -> Double? {
+        guard memoryIsValid, memoryTotal > 0, swapWasSampled else { return nil }
+        return MemoryPressureIndex.score(
+            kernelAvailableLevel: kernelAvailableLevel,
+            pressureState: pressureState,
+            availableFraction: Double(memoryAvailable) / Double(memoryTotal),
+            compressedFraction: Double(memoryCompressed) / Double(memoryTotal),
+            swapFraction: swapTotal > 0 ? Double(swapUsed) / Double(swapTotal) : 0
+        )
     }
 
     /// 某菜单栏字形是否启用（直接读 `xico.mb.<id>` UserDefaults，与 MenuBarController 同源）。
@@ -376,13 +404,13 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         return Int(level)
     }
 
-    private func sampleSwap() -> (used: Int64, total: Int64) {
+    private func sampleSwap() -> (used: Int64, total: Int64, isValid: Bool) {
         var usage = xsw_usage()
         var size = MemoryLayout<xsw_usage>.stride
         var mib: [Int32] = [CTL_VM, VM_SWAPUSAGE]
         let r = sysctl(&mib, 2, &usage, &size, nil, 0)
-        guard r == 0 else { return (0, 0) }
-        return (Int64(usage.xsu_used), Int64(usage.xsu_total))
+        guard r == 0 else { return (0, 0, false) }
+        return (Int64(usage.xsu_used), Int64(usage.xsu_total), true)
     }
 
     private func loadAverage() -> (Double, Double, Double) {

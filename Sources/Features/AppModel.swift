@@ -184,6 +184,13 @@ public final class MetricsFeed: ObservableObject {
     public func memoryHistory(for metric: String?) -> [Double] {
         metric == "used" ? memHistory : memoryPressureHistory
     }
+
+    public func recordMemoryPressureIndex(_ index: Double?, cap: Int) {
+        guard let index else { return }
+        memoryPressureHistory.append(index)
+        let overflow = memoryPressureHistory.count - max(0, cap)
+        if overflow > 0 { memoryPressureHistory.removeFirst(overflow) }
+    }
 }
 
 /// 应用级状态：环境、当前选中模块、权限、实时指标。
@@ -615,7 +622,7 @@ public final class AppModel: ObservableObject {
         push(&feed.cpuUserHistory, s.cpuUser)
         push(&feed.cpuSysHistory, s.cpuSystem)
         push(&feed.memHistory, s.memoryUsedFraction)
-        push(&feed.memoryPressureHistory, s.memoryPressureIndex ?? s.memoryUsedFraction)
+        feed.recordMemoryPressureIndex(s.memoryPressureIndex, cap: historyCap)
         push(&feed.gpuHistory, s.gpuUsage ?? 0)
         push(&feed.netDownHistory, s.netDownBytesPerSec)
         push(&feed.netUpHistory, s.netUpBytesPerSec)

@@ -148,4 +148,56 @@ final class MemoryMetricsTests: XCTestCase {
             )
         )
     }
+
+    func testPressureIndexRequiresMemoryAndSwapFromTheSameCompleteSample() {
+        let skippedSwapIsComplete = LiveMetricsSampler.hasCompleteSwapSample(
+            wasRequested: false,
+            sampleIsValid: false
+        )
+        let failedSwapIsComplete = LiveMetricsSampler.hasCompleteSwapSample(
+            wasRequested: true,
+            sampleIsValid: false
+        )
+        let successfulSwapIsComplete = LiveMetricsSampler.hasCompleteSwapSample(
+            wasRequested: true,
+            sampleIsValid: true
+        )
+        let withoutSwap = LiveMetricsSampler.pressureIndexForSample(
+            memoryIsValid: true,
+            memoryTotal: 1_000,
+            memoryAvailable: 300,
+            memoryCompressed: 100,
+            swapWasSampled: skippedSwapIsComplete,
+            swapUsed: 0,
+            swapTotal: 0,
+            kernelAvailableLevel: 35,
+            pressureState: 1
+        )
+        let withFailedSwap = LiveMetricsSampler.pressureIndexForSample(
+            memoryIsValid: true,
+            memoryTotal: 1_000,
+            memoryAvailable: 300,
+            memoryCompressed: 100,
+            swapWasSampled: failedSwapIsComplete,
+            swapUsed: 0,
+            swapTotal: 0,
+            kernelAvailableLevel: 35,
+            pressureState: 1
+        )
+        let withSwap = LiveMetricsSampler.pressureIndexForSample(
+            memoryIsValid: true,
+            memoryTotal: 1_000,
+            memoryAvailable: 300,
+            memoryCompressed: 100,
+            swapWasSampled: successfulSwapIsComplete,
+            swapUsed: 0,
+            swapTotal: 0,
+            kernelAvailableLevel: 35,
+            pressureState: 1
+        )
+
+        XCTAssertNil(withoutSwap)
+        XCTAssertNil(withFailedSwap)
+        XCTAssertNotNil(withSwap)
+    }
 }
