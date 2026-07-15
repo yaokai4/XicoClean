@@ -51,8 +51,7 @@ public final class SensorReader: @unchecked Sendable {
     /// 热传感器（审计 P3）。改为读 `xico.mb.interval`（默认 2s）并下探 0.1s——既覆盖同一采样周期内
     /// summary()/temperatures() 的相继调用、也让相邻 tick 复用同一次枚举，下限 0.5s 兜底。
     private var cacheTTL: TimeInterval {
-        let configured = UserDefaults.standard.double(forKey: "xico.mb.interval")
-        let interval = configured > 0 ? configured : 2.0
+        let interval = MonitoringRefreshIntervalStore.read().rawValue
         return max(0.5, interval - 0.1)
     }
 

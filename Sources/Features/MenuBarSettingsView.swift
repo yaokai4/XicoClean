@@ -12,7 +12,8 @@ import DesignSystem
 public struct MenuBarSettingsView: View {
     @ObservedObject var model: AppModel
     // 僵尸键清理沿革见 SettingsView 旧注：全局 xico.mb.style 与逐项 .border 键已废除。
-    @AppStorage("xico.mb.interval") private var mbInterval = 2.0
+    @AppStorage(MonitoringPreferences.refreshIntervalKey)
+    private var mbIntervalRaw = MonitoringPreferences.refreshInterval().rawValue
     // 默认单色（模板图，随菜单栏深浅自动黑/白）——克制、像 Sensei/iStat 默认那样不刺眼。
     @AppStorage("xico.mb.colored") private var mbColored = false
     @AppStorage("xico.mb.order") private var mbOrderCSV = ""
@@ -156,6 +157,15 @@ public struct MenuBarSettingsView: View {
                        })
     }
 
+    private var globalRefreshIntervalBinding: Binding<MonitoringRefreshInterval> {
+        Binding(
+            get: { MonitoringPreferences.refreshInterval() },
+            set: { interval in
+                mbIntervalRaw = interval.rawValue
+                model.applyRefreshInterval(interval)
+            })
+    }
+
     // MARK: 第一层：一键预设（真实字形缩影预览）
 
     private var presetsCard: some View {
@@ -209,14 +219,13 @@ public struct MenuBarSettingsView: View {
                 HStack {
                     Text(xLoc("更新频率")).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                     Spacer()
-                    Picker("", selection: $mbInterval) {
-                        Text(xLoc("快速（1 秒）")).tag(1.0)
-                        Text(xLoc("标准（2 秒）")).tag(2.0)
-                        Text(xLoc("省电（5 秒）")).tag(5.0)
+                    Picker("", selection: globalRefreshIntervalBinding) {
+                        Text(xLoc("快速（1 秒）")).tag(MonitoringRefreshInterval.oneSecond)
+                        Text(xLoc("标准（2 秒）")).tag(MonitoringRefreshInterval.twoSeconds)
+                        Text(xLoc("省电（5 秒）")).tag(MonitoringRefreshInterval.fiveSeconds)
                     }
                     .labelsHidden().pickerStyle(.menu).frame(width: 150)
                     .accessibilityLabel(xLoc("更新频率"))
-                    .onChange(of: mbInterval) { model.applyRefreshInterval(mbInterval) }
                 }
                 Divider().padding(.vertical, XSpacing.xxs)
                 // 交互与口径（P1）：悬停预览 / 全局快捷键 / 彩色垫底 / VPN 计入。

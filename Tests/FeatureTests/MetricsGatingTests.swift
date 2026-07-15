@@ -196,6 +196,47 @@ final class MetricsGatingTests: XCTestCase {
         }
     }
 
+    func testGlobalRefreshDefaultsToOneSecondWhenMissing() {
+        withMonitoringDefaults { defaults in
+            XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), .oneSecond)
+            XCTAssertNil(defaults.object(forKey: MonitoringPreferences.refreshIntervalKey))
+        }
+    }
+
+    func testGlobalRefreshPreservesEverySupportedChoice() {
+        withMonitoringDefaults { defaults in
+            for interval in MonitoringRefreshInterval.allCases {
+                defaults.set(interval.rawValue, forKey: MonitoringPreferences.refreshIntervalKey)
+
+                XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), interval)
+                XCTAssertEqual(
+                    defaults.double(forKey: MonitoringPreferences.refreshIntervalKey),
+                    interval.rawValue)
+            }
+        }
+    }
+
+    func testGlobalRefreshMigratesLegacyThreeSecondsToTwoSeconds() {
+        withMonitoringDefaults { defaults in
+            defaults.set(3.0, forKey: MonitoringPreferences.refreshIntervalKey)
+
+            XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), .twoSeconds)
+            XCTAssertEqual(defaults.double(forKey: MonitoringPreferences.refreshIntervalKey), 2.0)
+        }
+    }
+
+    func testGlobalRefreshMigratesInvalidValuesToClosestSupportedChoice() {
+        withMonitoringDefaults { defaults in
+            defaults.set(-4.0, forKey: MonitoringPreferences.refreshIntervalKey)
+            XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), .oneSecond)
+            XCTAssertEqual(defaults.double(forKey: MonitoringPreferences.refreshIntervalKey), 1.0)
+
+            defaults.set(99.0, forKey: MonitoringPreferences.refreshIntervalKey)
+            XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), .fiveSeconds)
+            XCTAssertEqual(defaults.double(forKey: MonitoringPreferences.refreshIntervalKey), 5.0)
+        }
+    }
+
     func testCanonicalMonitoringKeysTakePrecedenceOverLegacyTaskFourKeys() {
         withMonitoringDefaults { defaults in
             defaults.set(false, forKey: "xico.monitoring.combinesProcesses")
@@ -226,6 +267,7 @@ final class MetricsGatingTests: XCTestCase {
         XCTAssertEqual(MonitoringPreferences.processLimitKey, "xico.monitor.processLimit")
         XCTAssertEqual(MonitoringPreferences.densityKey, "xico.monitor.density")
         XCTAssertEqual(MonitoringPreferences.memoryUnitKey, "xico.monitor.memoryUnit")
+        XCTAssertEqual(MonitoringPreferences.refreshIntervalKey, "xico.mb.interval")
     }
 
     /// 回归核心：弹窗打开(consumerVisible=true) 时，即便无可见主窗口，也必须触发详情采样。

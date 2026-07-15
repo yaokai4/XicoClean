@@ -808,8 +808,7 @@ public final class AppModel: ObservableObject {
         // 预热 system_profiler（2026-07 卡死修复）：把首次 storageHealth()/gpu() 的 1–3 秒冷启动
         // 阻塞从「用户点开监视/状态栏面板」的关键路径挪到启动空闲期后台跑掉，避免点开瞬间冻结。
         hardwareProfiler.prewarmProfiler()
-        let stored = UserDefaults.standard.double(forKey: "xico.mb.interval")
-        var interval = stored > 0 ? stored : 2.0   // 默认标准 2 秒
+        var interval = MonitoringPreferences.refreshInterval().rawValue
         // 独立刷新率真驱动（P1）：某启用项设了比全局更快的刷新率 → 采样节拍提速到该项频率。
         // 此前 updateImages 只能降频跳拍、无法超过全局节拍，「1 秒」设置形同虚设。
         let d = UserDefaults.standard
@@ -829,8 +828,8 @@ public final class AppModel: ObservableObject {
     }
 
     /// 应用新的刷新频率（设置页「更新频率」），立即重启菜单栏采样定时器。
-    public func applyRefreshInterval(_ seconds: Double) {
-        UserDefaults.standard.set(seconds, forKey: "xico.mb.interval")
+    public func applyRefreshInterval(_ interval: MonitoringRefreshInterval) {
+        MonitoringPreferences.setRefreshInterval(interval)
         if timer != nil { startMetricsTimer() }
     }
 

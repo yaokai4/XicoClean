@@ -14,6 +14,7 @@ public enum MonitoringPreferences {
     public static let processLimitKey = "xico.monitor.processLimit"
     public static let densityKey = "xico.monitor.density"
     public static let memoryUnitKey = "xico.monitor.memoryUnit"
+    public static let refreshIntervalKey = MonitoringRefreshIntervalStore.key
 
     private static let legacyCombinesProcessesKey = "xico.monitoring.combinesProcesses"
     private static let legacyProcessLimitKey = "xico.monitoring.processLimit"
@@ -47,5 +48,18 @@ public enum MonitoringPreferences {
 
     public static func memoryUnit(_ defaults: UserDefaults = .standard) -> MemoryUnitStyle {
         MemoryUnitStyle(rawValue: defaults.string(forKey: memoryUnitKey) ?? "binary") ?? .binary
+    }
+
+    public static func refreshInterval(
+        _ defaults: UserDefaults = .standard
+    ) -> MonitoringRefreshInterval {
+        MonitoringRefreshIntervalStore.read(defaults)
+    }
+
+    public static func setRefreshInterval(
+        _ interval: MonitoringRefreshInterval,
+        _ defaults: UserDefaults = .standard
+    ) {
+        MonitoringRefreshIntervalStore.write(interval, defaults)
     }
 }
