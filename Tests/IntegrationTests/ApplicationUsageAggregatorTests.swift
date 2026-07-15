@@ -17,6 +17,46 @@ final class ApplicationUsageAggregatorTests: XCTestCase {
                        "/Applications/Google Chrome.app")
     }
 
+    func testBundleMetadataUsesPreferredLocalizedDisplayName() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let application = root.appendingPathComponent("Fixture.app", isDirectory: true)
+        let contents = application.appendingPathComponent("Contents", isDirectory: true)
+        let localization = contents
+            .appendingPathComponent("Resources", isDirectory: true)
+            .appendingPathComponent("zh-Hans.lproj", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: localization,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let info: [String: Any] = [
+            "CFBundleIdentifier": "com.example.localized",
+            "CFBundleName": "Fixture English",
+            "CFBundleDevelopmentRegion": "en",
+            "CFBundleLocalizations": ["en", "zh-Hans"],
+        ]
+        let infoData = try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: .xml,
+            options: 0
+        )
+        try infoData.write(to: contents.appendingPathComponent("Info.plist"))
+        let localizedData = try PropertyListSerialization.data(
+            fromPropertyList: ["CFBundleDisplayName": "本地化名称"],
+            format: .xml,
+            options: 0
+        )
+        try localizedData.write(to: localization.appendingPathComponent("InfoPlist.strings"))
+
+        let metadata = BundleApplicationMetadataProvider(
+            preferredLanguages: { ["zh-Hans"] }
+        ).metadata(forApplicationAt: application.path)
+
+        XCTAssertEqual(metadata.bundleIdentifier, "com.example.localized")
+        XCTAssertEqual(metadata.displayName, "本地化名称")
+    }
+
     func testBundleMetadataAndParentChainDefineApplicationOwnership() {
         let applicationPath = "/Applications/Demo.app"
         let records = [
@@ -39,6 +79,139 @@ final class ApplicationUsageAggregatorTests: XCTestCase {
         XCTAssertEqual(root?.displayName, "Demo Display Name")
         XCTAssertEqual(root?.bundlePath, applicationPath)
         XCTAssertEqual(child, root)
+    }
+
+    func testApplicationMetadataIsReadOncePerBundlePath() {
+        let applicationPath = "/Applications/Fixture.app"
+        let records = (0..<1_200).map { index in
+            record(
+                pid: Int32(10_000 + index),
+                path: "\(applicationPath)/Contents/Frameworks/worker-\(index)",
+                cpu: UInt64(index),
+                memory: Int64(index)
+            )
+        }
+        let provider = CountingMetadataProvider(metadata: ApplicationMetadata(
+            bundleIdentifier: "com.example.fixture",
+            displayName: "Fixture"
+        ))
+
+        let resolver = ApplicationOwnershipResolver(metadataProvider: provider)
+        let ownership = resolver.resolve(records)
+        let nextFrameOwnership = resolver.resolve(records)
+
+        XCTAssertEqual(ownership.count, records.count)
+        XCTAssertEqual(nextFrameOwnership.count, records.count)
+        XCTAssertEqual(provider.invocationCount, 1)
+    }
+
+    func testResolvedBundleOwnershipIsReusedForTheSameProcessIdentity() {
+        let pathResolver = CountingApplicationPathResolver()
+        let resolver = ApplicationOwnershipResolver(
+            metadataProvider: DictionaryMetadataProvider(metadataByPath: [:]),
+            applicationPathResolver: { pathResolver.resolve($0) }
+        )
+        let process = record(
+            pid: 10,
+            start: 7,
+            path: "/Applications/Fixture.app/Contents/MacOS/Fixture",
+            cpu: 1,
+            memory: 1
+        )
+
+        _ = resolver.resolve([process])
+        let secondFrame = resolver.resolve([process])
+
+        XCTAssertEqual(pathResolver.invocationCount, 1)
+        XCTAssertEqual(resolver.cacheMissCount, 1)
+        XCTAssertEqual(
+            secondFrame[ProcessIdentity(pid: 10, startTimeNanoseconds: 7)]?.bundlePath,
+            "/Applications/Fixture.app"
+        )
+    }
+
+    func testReusedPIDWithNewStartTimeRecomputesOwnership() {
+        let pathResolver = CountingApplicationPathResolver()
+        let resolver = ApplicationOwnershipResolver(
+            metadataProvider: DictionaryMetadataProvider(metadataByPath: [:]),
+            applicationPathResolver: { pathResolver.resolve($0) }
+        )
+        let first = record(
+            pid: 10,
+            start: 7,
+            path: "/Applications/First.app/Contents/MacOS/First",
+            cpu: 1,
+            memory: 1
+        )
+        let reused = record(
+            pid: 10,
+            start: 8,
+            path: "/Applications/Second.app/Contents/MacOS/Second",
+            cpu: 1,
+            memory: 1
+        )
+
+        let firstFrame = resolver.resolve([first])
+        let secondFrame = resolver.resolve([reused])
+
+        XCTAssertEqual(pathResolver.invocationCount, 2)
+        XCTAssertEqual(
+            firstFrame[ProcessIdentity(pid: 10, startTimeNanoseconds: 7)]?.bundlePath,
+            "/Applications/First.app"
+        )
+        XCTAssertEqual(
+            secondFrame[ProcessIdentity(pid: 10, startTimeNanoseconds: 8)]?.bundlePath,
+            "/Applications/Second.app"
+        )
+    }
+
+    func testFallbackOwnershipCanBeCorrectedWhenParentApplicationAppears() {
+        let resolver = ApplicationOwnershipResolver()
+        let child = record(
+            pid: 11,
+            parent: 10,
+            start: 7,
+            path: "/usr/bin/fixture-worker",
+            cpu: 1,
+            memory: 1
+        )
+        let initial = resolver.resolve([child])
+        XCTAssertNil(initial[ProcessIdentity(pid: 11, startTimeNanoseconds: 7)]?.bundlePath)
+
+        let parent = record(
+            pid: 10,
+            start: 3,
+            path: "/Applications/Fixture.app/Contents/MacOS/Fixture",
+            cpu: 1,
+            memory: 1
+        )
+        let corrected = resolver.resolve([parent, child])
+
+        XCTAssertEqual(
+            corrected[ProcessIdentity(pid: 11, startTimeNanoseconds: 7)]?.bundlePath,
+            "/Applications/Fixture.app"
+        )
+    }
+
+    func testCompleteLaunchdFallbackOwnershipIsReusedAcrossFrames() {
+        let pathResolver = CountingApplicationPathResolver()
+        let resolver = ApplicationOwnershipResolver(
+            metadataProvider: DictionaryMetadataProvider(metadataByPath: [:]),
+            applicationPathResolver: { pathResolver.resolve($0) }
+        )
+        let daemon = record(
+            pid: 42,
+            parent: 1,
+            start: 7,
+            path: "/usr/libexec/fixture-daemon",
+            cpu: 1,
+            memory: 1
+        )
+
+        _ = resolver.resolve([daemon])
+        _ = resolver.resolve([daemon])
+
+        XCTAssertEqual(pathResolver.invocationCount, 1)
     }
 
     func testApplicationAggregationSumsMembers() {
@@ -113,6 +286,61 @@ final class ApplicationUsageAggregatorTests: XCTestCase {
         }
     }
 
+    func testBoundedRankingMatchesExactPrefixAndKeepsDistantHighValue() {
+        var usages = (0..<240).map { index in
+            ApplicationUsage.fixture(
+                id: String(format: "ordinary-%03d", index),
+                rawCPU: Double(index % 60),
+                memory: Int64(10_000 + index)
+            )
+        }
+        let distantHighValue = ApplicationUsage.fixture(
+            id: "distant-high-value",
+            rawCPU: 10_000,
+            memory: 1
+        )
+        usages.append(distantHighValue)
+        let previousOrder = usages.reversed().map(\.id)
+
+        let exact = UsageRanker.order(
+            usages,
+            metric: .cpu,
+            previousOrder: previousOrder
+        )
+        let bounded = UsageRanker.order(
+            usages,
+            metric: .cpu,
+            previousOrder: previousOrder,
+            limit: 20
+        )
+
+        XCTAssertEqual(bounded.map(\.id), Array(exact.prefix(20)).map(\.id))
+        XCTAssertEqual(bounded.first?.id, distantHighValue.id)
+    }
+
+    func testBoundedRankingPreservesFiniteNaNAndNilExactPrefix() {
+        let finite = ApplicationUsage.fixture(id: "finite", rawCPU: 42, memory: 3)
+        let nan = ApplicationUsage.fixture(id: "nan", rawCPU: .nan, memory: 2)
+        let missing = ApplicationUsage.fixture(id: "missing", rawCPU: nil, memory: 1)
+        let usages = [finite, nan, missing]
+        let previousOrder = [finite.id, missing.id, nan.id]
+
+        let exact = UsageRanker.order(
+            usages,
+            metric: .cpu,
+            previousOrder: previousOrder
+        )
+        let bounded = UsageRanker.order(
+            usages,
+            metric: .cpu,
+            previousOrder: previousOrder,
+            limit: 2
+        )
+
+        XCTAssertEqual(exact.map(\.id), [finite.id, nan.id, missing.id])
+        XCTAssertEqual(bounded.map(\.id), Array(exact.prefix(2)).map(\.id))
+    }
+
     func testCombineProcessesDisabledKeepsMembersSeparate() {
         let records = [
             record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
@@ -160,6 +388,33 @@ final class ApplicationUsageAggregatorTests: XCTestCase {
         }
     }
 
+    func testCyclicMemberHierarchyFallsBackToDeterministicPIDOrder() {
+        let first = record(
+            pid: 10,
+            parent: 11,
+            path: "/Applications/Demo.app/Contents/MacOS/first",
+            cpu: 1,
+            memory: 1
+        )
+        let second = record(
+            pid: 11,
+            parent: 10,
+            path: "/Applications/Demo.app/Contents/MacOS/second",
+            cpu: 1,
+            memory: 1
+        )
+        let ownership = ApplicationOwnershipResolver().resolve([second, first])
+
+        let usage = ApplicationUsageAggregator(logicalCPUCount: 8).aggregate(
+            records: [second, first],
+            ownership: ownership,
+            cpuRawByProcess: [:],
+            combinesProcesses: true
+        ).first!
+
+        XCTAssertEqual(usage.members.map { $0.identity.pid }, [10, 11])
+    }
+
     func testSamplerWarmsUpWithMemoryRowsThenPublishesLiveCPU() async {
         let records = [
             record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
@@ -186,6 +441,38 @@ final class ApplicationUsageAggregatorTests: XCTestCase {
         XCTAssertEqual(live.byCPU.first?.cpuRawPercent ?? -.infinity,
                        100, accuracy: 0.001)
         XCTAssertEqual(live.byMemory.first?.physicalFootprintBytes, 450_000_000)
+    }
+
+    func testPrewarmIsIdempotentAndDoesNotSeedTheCPUBaseline() async {
+        let records = [
+            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                   cpu: 1_000_000_000, memory: 400_000_000),
+            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                   cpu: 2_000_000_000, memory: 410_000_000),
+            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                   cpu: 3_000_000_000, memory: 420_000_000),
+        ]
+        let provider = FixtureProcessSnapshotProvider(captures: [
+            .fixture(time: 1_000_000_000, records: [records[0]]),
+            .fixture(time: 2_000_000_000, records: [records[1]]),
+            .fixture(time: 3_000_000_000, records: [records[2]]),
+        ])
+        let sampler = ProcessSampler(provider: provider, logicalCPUCount: 8)
+
+        await sampler.prewarm()
+        await sampler.prewarm()
+        let captureCountAfterPrewarm = await provider.captureCount
+        XCTAssertEqual(captureCountAfterPrewarm, 1)
+
+        let firstVisible = await sampler.sample()
+        let nextTick = await sampler.sample()
+        XCTAssertEqual(firstVisible.status, .warmingUp)
+        XCTAssertEqual(nextTick.status, .live)
+        XCTAssertEqual(
+            nextTick.byCPU.first?.cpuRawPercent ?? -.infinity,
+            100,
+            accuracy: 0.001
+        )
     }
 
     func testSamplerSerializesConcurrentOutOfOrderCaptures() async {
@@ -423,7 +710,7 @@ private extension ProcessCapture {
 }
 
 private extension ApplicationUsage {
-    static func fixture(id: String, rawCPU: Double, memory: Int64) -> Self {
+    static func fixture(id: String, rawCPU: Double?, memory: Int64) -> Self {
         let process = ProcessIdentity(pid: Int32(id.utf8.first ?? 1), startTimeNanoseconds: 1)
         return ApplicationUsage(
             id: ApplicationIdentity(rawValue: id), displayName: id,
@@ -431,7 +718,7 @@ private extension ApplicationUsage {
             members: [ApplicationMemberUsage(identity: process, name: id,
                                              cpuRawPercent: rawCPU,
                                              physicalFootprintBytes: memory)],
-            cpuRawPercent: rawCPU, cpuNormalizedPercent: rawCPU / 8,
+            cpuRawPercent: rawCPU, cpuNormalizedPercent: rawCPU.map { $0 / 8 },
             physicalFootprintBytes: memory, peakFootprintBytes: memory,
             trend: ApplicationUsageTrend(cpuRaw: [], memoryBytes: []))
     }
@@ -566,5 +853,34 @@ private struct DictionaryMetadataProvider: ApplicationMetadataProviding {
 
     func metadata(forApplicationAt path: String) -> ApplicationMetadata {
         metadataByPath[path] ?? ApplicationMetadata(bundleIdentifier: nil, displayName: nil)
+    }
+}
+
+private final class CountingMetadataProvider: ApplicationMetadataProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private let metadata: ApplicationMetadata
+    private var count = 0
+
+    init(metadata: ApplicationMetadata) {
+        self.metadata = metadata
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+
+    func metadata(forApplicationAt path: String) -> ApplicationMetadata {
+        lock.withLock { count += 1 }
+        return metadata
+    }
+}
+
+private final class CountingApplicationPathResolver: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var invocationCount: Int { lock.withLock { count } }
+
+    func resolve(_ executablePath: String) -> String? {
+        lock.withLock { count += 1 }
+        return ApplicationOwnershipResolver.outermostApplicationPath(in: executablePath)
     }
 }

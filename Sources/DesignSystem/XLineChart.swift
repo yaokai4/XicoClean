@@ -1,5 +1,12 @@
 import SwiftUI
 
+public enum XMonitoringUpdateCadence: Sendable, Equatable {
+    case ambient
+    case realtime
+
+    public var animatesUpdates: Bool { self == .ambient }
+}
+
 /// 可动画的向量：让折线在数据流入时**平滑滑动**（而非每秒硬切一帧）。
 /// 长度变化（历史填充到上限前）时按较短长度插值，达上限后长度恒定即完全平滑。
 struct AnimatableVector: VectorArithmetic {
@@ -27,6 +34,7 @@ public struct XLineChart: View {
     let showDot: Bool
     let showGrid: Bool
     let lineWidth: CGFloat
+    let updateCadence: XMonitoringUpdateCadence
     /// 悬停时把索引映射为读数文字（如 "62% · 12:04"）。为 nil 则不显示悬停读数。
     let hoverLabel: ((Int) -> String)?
     @State private var hoverFraction: CGFloat? = nil
@@ -34,13 +42,16 @@ public struct XLineChart: View {
 
     public init(values: [Double], colors: [Color] = XColor.brandGradientColors,
                 showFill: Bool = true, showDot: Bool = true, showGrid: Bool = false,
-                lineWidth: CGFloat = 2, hoverLabel: ((Int) -> String)? = nil) {
+                lineWidth: CGFloat = 2,
+                updateCadence: XMonitoringUpdateCadence = .ambient,
+                hoverLabel: ((Int) -> String)? = nil) {
         self.values = values
         self.colors = colors.isEmpty ? XColor.brandGradientColors : colors
         self.showFill = showFill
         self.showDot = showDot
         self.showGrid = showGrid
         self.lineWidth = lineWidth
+        self.updateCadence = updateCadence
         self.hoverLabel = hoverLabel
     }
 
@@ -65,13 +76,13 @@ public struct XLineChart: View {
                     Circle().fill(.white).frame(width: lineWidth * 3, height: lineWidth * 3)
                         .shadow(color: (colors.last ?? XColor.brand).opacity(0.9), radius: 4)
                         .position(last)
-                        .animation(reduceMotion ? nil : .linear(duration: 0.95), value: values)
+                        .animation(updateAnimation, value: values)
                 }
 
                 if let hf = hoverFraction { hoverOverlay(geo.size, fraction: hf) }
             }
             // 数据流入时整条线平滑滑动（对标 iStat 的实时流动感），而非每帧硬跳。
-            .animation(reduceMotion ? nil : .linear(duration: 0.95), value: values)
+            .animation(updateAnimation, value: values)
             .contentShape(Rectangle())
             .onContinuousHover { phase in
                 guard hoverLabel != nil, geo.size.width > 0 else { hoverFraction = nil; return }
@@ -81,6 +92,10 @@ public struct XLineChart: View {
                 }
             }
         }
+    }
+
+    private var updateAnimation: Animation? {
+        reduceMotion || !updateCadence.animatesUpdates ? nil : .linear(duration: 0.95)
     }
 
     // MARK: 网格基线（3 条 25/50/75% 参考线 + 底线），让「20% 还是 60%」一眼可判。

@@ -181,6 +181,28 @@ public enum MonitoringCardWindowRelationship {
     }
 }
 
+@MainActor
+public enum MonitoringCardWindowLifecycle {
+    public static func isCardWindow(_ window: NSWindow) -> Bool {
+        window.identifier?.rawValue.hasPrefix("card.") == true
+    }
+
+    public static func closeCardWindows(in windows: [NSWindow]) {
+        var closed: Set<ObjectIdentifier> = []
+        for window in windows where isCardWindow(window) {
+            guard closed.insert(ObjectIdentifier(window)).inserted else { continue }
+            window.delegate = nil
+            // Let Swift ARC own destruction. AppKit's legacy release-on-close can deallocate
+            // a Swift-held NSPanel before ARC releases its reference, causing an over-release.
+            window.isReleasedWhenClosed = false
+            window.orderOut(nil)
+            window.contentViewController = nil
+            window.contentView = nil
+            window.close()
+        }
+    }
+}
+
 public enum MonitoringCardGeometry {
     public static func frame(
         fittingSize: CGSize,
@@ -534,7 +556,7 @@ private struct ApplicationIcon: View {
 }
 
 public struct ApplicationUsageInspector: View {
-    @ObservedObject private var feed: MetricsFeed
+    private let feed: MetricsFeed
     private let identity: ApplicationIdentity
     private let cpuMode: CPUDisplayMode
     private let memoryStyle: MemoryUnitStyle
@@ -549,7 +571,7 @@ public struct ApplicationUsageInspector: View {
         memoryStyle: MemoryUnitStyle,
         lifecycleResolver: ApplicationInspectorLifecycleResolver = .system
     ) {
-        self._feed = ObservedObject(wrappedValue: feed)
+        self.feed = feed
         self.identity = identity
         self.cpuMode = cpuMode
         self.memoryStyle = memoryStyle
@@ -583,7 +605,7 @@ public struct ApplicationUsageInspector: View {
         .frame(minWidth: 520, idealWidth: 560, minHeight: 480, idealHeight: 600)
         .background(.regularMaterial)
         .onAppear(perform: rememberLatest)
-        .onChange(of: feed.applicationUsage.sampledAt) { _, _ in rememberLatest() }
+        .onReceive(feed.snapshotPublisher.compactMap { $0 }) { _ in rememberLatest() }
     }
 
     private func inspectorContent(_ usage: ApplicationUsage) -> some View {
@@ -840,8 +862,10 @@ public struct ApplicationUsageInspector: View {
     }
 
     private func rememberLatest() {
-        guard let usage = feed.applicationUsage.application(id: identity) else { return }
-        lastUsage = usage
-        lastSnapshot = feed.applicationUsage
+        let snapshot = feed.applicationUsage
+        if let usage = snapshot.application(id: identity) {
+            lastUsage = usage
+        }
+        lastSnapshot = snapshot
     }
 }

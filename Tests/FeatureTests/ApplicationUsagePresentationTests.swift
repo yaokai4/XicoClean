@@ -4,6 +4,14 @@ import AppKit
 @testable import Infrastructure
 import Domain
 
+private final class WeakObject<Object: AnyObject> {
+    weak var value: Object?
+
+    init(_ value: Object) {
+        self.value = value
+    }
+}
+
 final class ApplicationUsagePresentationTests: XCTestCase {
     func testCPUColumnOrderIsApplicationCPUMemory() {
         XCTAssertEqual(ApplicationUsageFocus.cpu.columnTitles, ["应用", "CPU", "内存"])
@@ -267,6 +275,39 @@ final class ApplicationUsagePresentationTests: XCTestCase {
 
 @MainActor
 final class MonitoringWindowRelationshipTests: XCTestCase {
+    func testClosingTenHiddenCardsRemovesTheirHostedContentAndWindowRegistrations() {
+        _ = NSApplication.shared
+        var identifiers: Set<NSUserInterfaceItemIdentifier> = []
+        var hostedControllers: [WeakObject<NSViewController>] = []
+        autoreleasepool {
+            var cards: [NSPanel] = []
+            for index in 0..<10 {
+                let card = NSPanel(
+                    contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+                    styleMask: [.borderless],
+                    backing: .buffered,
+                    defer: false)
+                card.identifier = NSUserInterfaceItemIdentifier("card.lifecycle-\(index)")
+                card.isReleasedWhenClosed = false
+                card.contentViewController = NSViewController()
+                identifiers.insert(card.identifier!)
+                hostedControllers.append(WeakObject(card.contentViewController!))
+                XCTAssertTrue(NSApp.windows.contains { $0 === card })
+                XCTAssertFalse(card.isVisible)
+                cards.append(card)
+            }
+            MonitoringCardWindowLifecycle.closeCardWindows(in: cards)
+            cards.removeAll()
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertTrue(hostedControllers.allSatisfy { $0.value == nil })
+        XCTAssertTrue(NSApp.windows.allSatisfy { window in
+            guard let identifier = window.identifier else { return true }
+            return !identifiers.contains(identifier)
+        })
+    }
+
     func testAttachedSheetCountsAsInsideAndSuppressesParentDismissal() {
         _ = NSApplication.shared
         let card = NSPanel(

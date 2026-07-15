@@ -11,6 +11,13 @@ swift build
 echo "▶︎ Default test suite"
 swift test
 
+echo "▶︎ Precision monitoring deterministic suites"
+swift test --filter ProcessSnapshotProviderTests
+swift test --filter ApplicationUsageAggregatorTests
+swift test --filter HelperProcessSamplingTests
+swift test --filter MemoryMetricsTests
+swift test --filter ApplicationUsagePresentationTests
+
 echo "▶︎ Release script checks"
 bash -n scripts/make_app.sh
 bash -n scripts/notarize.sh

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import Domain
 import Infrastructure
 import DesignSystem
@@ -41,6 +42,51 @@ public enum AppAppearance: String, CaseIterable, Identifiable, Sendable {
         case .light: return "浅色"
         case .dark: return "深色"
         }
+    }
+}
+
+public enum MetricsDetailDemand: Sendable, Equatable {
+    case none
+    case cpu
+    case memory
+    case hardware
+    case all
+
+    public var wantsApplicationUsage: Bool {
+        self == .cpu || self == .memory || self == .all
+    }
+
+    var wantsExtendedHardware: Bool {
+        self == .hardware || self == .all
+    }
+
+    var wantsCPUFrequency: Bool {
+        self == .cpu || wantsExtendedHardware
+    }
+}
+
+struct CPUFrequencySamplingGate: Sendable {
+    private let timeToLive: TimeInterval
+    private var isInFlight = false
+    private var lastCompletedAt: Date?
+
+    init(timeToLive: TimeInterval) {
+        self.timeToLive = max(0, timeToLive)
+    }
+
+    mutating func begin(now: Date, isVisible: Bool) -> Bool {
+        guard isVisible, !isInFlight else { return false }
+        if let lastCompletedAt {
+            let age = now.timeIntervalSince(lastCompletedAt)
+            guard age < 0 || age >= timeToLive else { return false }
+        }
+        isInFlight = true
+        return true
+    }
+
+    mutating func finish(now: Date) {
+        isInFlight = false
+        lastCompletedAt = now
     }
 }
 
@@ -134,50 +180,53 @@ struct ApplicationSamplingLifecycle: Sendable {
 /// 兼容既有读写方（如离屏图标渲染），无需改动非本工作流文件。
 @MainActor
 public final class MetricsFeed: ObservableObject {
+    /// 菜单栏专用流：即使主窗口关闭也持续发送；与 SwiftUI 的 objectWillChange 解耦，避免隐藏的
+    /// NSHostingView 因每个采样 tick 重建整棵页面树。
+    public let snapshotPublisher = CurrentValueSubject<SystemSnapshot?, Never>(nil)
     // 滚动历史（用于菜单栏折线图）
-    @Published public var cpuHistory: [Double] = []
+    public var cpuHistory: [Double] = []
     // 用户/系统拆分历史（P8：CPU 面板堆叠条的数据源，与 cpuHistory 同节拍同容量）
-    @Published public var cpuUserHistory: [Double] = []
-    @Published public var cpuSysHistory: [Double] = []
-    @Published public var memHistory: [Double] = []
-    @Published public var memoryPressureHistory: [Double] = []
-    @Published public var gpuHistory: [Double] = []
-    @Published public var netDownHistory: [Double] = []
-    @Published public var netUpHistory: [Double] = []
-    @Published public var diskReadHistory: [Double] = []
-    @Published public var diskWriteHistory: [Double] = []
+    public var cpuUserHistory: [Double] = []
+    public var cpuSysHistory: [Double] = []
+    public var memHistory: [Double] = []
+    public var memoryPressureHistory: [Double] = []
+    public var gpuHistory: [Double] = []
+    public var netDownHistory: [Double] = []
+    public var netUpHistory: [Double] = []
+    public var diskReadHistory: [Double] = []
+    public var diskWriteHistory: [Double] = []
     // 菜单栏详情面板的应用级快照与排行
     public var applicationUsage = ApplicationUsageSnapshot.unavailable()
     public var topByCPU: [ApplicationUsage] { applicationUsage.byCPU }
     public var topByMemory: [ApplicationUsage] { applicationUsage.byMemory }
     // CPU 频率（性能核 / 能效核，MHz）
-    @Published public var cpuFreqP: Double?
-    @Published public var cpuFreqE: Double?
+    public var cpuFreqP: Double?
+    public var cpuFreqE: Double?
     // 本次会话网络统计
-    @Published public var netDownPeak: Double = 0
-    @Published public var netUpPeak: Double = 0
-    @Published public var sessionDownBytes: Int64 = 0
-    @Published public var sessionUpBytes: Int64 = 0
+    public var netDownPeak: Double = 0
+    public var netUpPeak: Double = 0
+    public var sessionDownBytes: Int64 = 0
+    public var sessionUpBytes: Int64 = 0
     // 网络接口清单
-    @Published public var networkInterfaces: [NetworkInterfaceInfo] = []
+    public var networkInterfaces: [NetworkInterfaceInfo] = []
     // 温度传感器 / 风扇
-    @Published public var sensorTemps: [TempReading] = []
-    @Published public var fans: [FanInfo] = []
-    @Published public var gpuInfo: GPUInfo?
+    public var sensorTemps: [TempReading] = []
+    public var fans: [FanInfo] = []
+    public var gpuInfo: GPUInfo?
     // 每 tick 变动的整机快照 / 磁盘容量 / 磁盘卷。归入本对象后，高频采样只触发本 feed 的
     // objectWillChange，AppModel 不再每 2s 全量失效（审计 P2「MetricsFeed 拆分未止住 AppModel 每 tick 重发布」）。
     // 菜单栏图标绘制订阅本对象的 $liveSnapshot；主壳/侧栏只观察 AppModel，故不再随采样重排。
-    @Published public var liveSnapshot: SystemSnapshot?
-    @Published public var capacity: VolumeCapacity?
-    @Published public var storageVolumes: [StorageHealth] = []
+    public private(set) var liveSnapshot: SystemSnapshot?
+    public var capacity: VolumeCapacity?
+    public var storageVolumes: [StorageHealth] = []
     /// 分层历史（实时 / 10s 桶 / 60s 桶）——菜单栏面板折线的三挡时间窗数据源（P3·M4）。
-    @Published public var rings = MetricRings()
+    public var rings = MetricRings()
     /// 换入/换出**速率**（字节/秒，累计值差分；docs/15 P0：累计值自开机参考意义弱）。
     /// nil = 尚无前帧可差分（首帧显示 "—"，绝不显示爆表累计值）。
-    @Published public var pageInRate: Double?
-    @Published public var pageOutRate: Double?
+    public var pageInRate: Double?
+    public var pageOutRate: Double?
     /// 电池剩余时间估算（分钟；nil = 无电池 / 外接电源 / 系统尚在估算）。
-    @Published public var batteryMinutesRemaining: Int?
+    public var batteryMinutesRemaining: Int?
 
     public init() {}
 
@@ -190,6 +239,13 @@ public final class MetricsFeed: ObservableObject {
         memoryPressureHistory.append(index)
         let overflow = memoryPressureHistory.count - max(0, cap)
         if overflow > 0 { memoryPressureHistory.removeFirst(overflow) }
+    }
+
+    /// 发布完整一帧。菜单栏始终收到；只有主窗口/详情面板可见时才让 SwiftUI 页面失效。
+    public func publish(snapshot: SystemSnapshot, notifyUI: Bool) {
+        if notifyUI { objectWillChange.send() }
+        liveSnapshot = snapshot
+        snapshotPublisher.send(snapshot)
     }
 }
 
@@ -223,7 +279,7 @@ public final class AppModel: ObservableObject {
     // 菜单栏图标绘制 MenuBarController），无需改动非本工作流文件。
     // 注意：`$liveSnapshot` 投影发布者现改由 feed 暴露——菜单栏订阅方须改订阅
     // `model.liveMetricsFeed.$liveSnapshot`（见 cross_file_notes）。这里的普通读取转发保持源码兼容。
-    public var liveSnapshot: SystemSnapshot? { get { liveMetricsFeed.liveSnapshot } set { liveMetricsFeed.liveSnapshot = newValue } }
+    public var liveSnapshot: SystemSnapshot? { liveMetricsFeed.liveSnapshot }
     public var capacity: VolumeCapacity? { get { liveMetricsFeed.capacity } set { liveMetricsFeed.capacity = newValue } }
     public var storageVolumes: [StorageHealth] { get { liveMetricsFeed.storageVolumes } set { liveMetricsFeed.storageVolumes = newValue } }
     public var cpuHistory: [Double] { get { liveMetricsFeed.cpuHistory } set { liveMetricsFeed.cpuHistory = newValue } }
@@ -257,15 +313,26 @@ public final class AppModel: ObservableObject {
     /// 单飞门闩：上一帧采样未回主线程前不再排下一帧，避免长睡眠唤醒后堆积。
     private var isSampling = false
     private var applicationSampling = ApplicationSamplingLifecycle()
+    private var cpuFrequencySampling = CPUFrequencySamplingGate(
+        timeToLive: CPUFrequencySamplingPolicy.timeToLive
+    )
+    private var hasScheduledProcessPrewarm = false
     /// 是否有「详情消费者」可见——菜单栏弹窗/详情面板已打开。由 MenuBarController 在 popover
     /// 打开/关闭时置位（见 cross_file_notes）。仅菜单栏图标常驻、无弹窗时为 false，届时跳过
     /// 全进程枚举 + 传感器/风扇/磁盘健康/频率等重采样，只采图标折线所需的 cpu/mem/net/gpu（审计 P2 常驻满载）。
     public var metricsDetailConsumerVisible: Bool = false
+    private var metricsDetailConsumerDemand: MetricsDetailDemand = .none
     /// 综合可见性：详情弹窗打开，或主窗口在前台可见（监视/详情页需要完整采样，不回归体验）。
     private var hasVisibleMetricsConsumer: Bool {
-        Self.detailConsumerVisible(
-            consumerVisible: metricsDetailConsumerVisible,
-            hasVisibleMainWindow: hasVisibleMainWindow)
+        currentDetailDemand != .none
+    }
+    private var hasVisibleApplicationConsumer: Bool {
+        currentDetailDemand.wantsApplicationUsage
+    }
+    private var currentDetailDemand: MetricsDetailDemand {
+        if hasVisibleMainWindow { return .all }
+        guard metricsDetailConsumerVisible else { return .none }
+        return metricsDetailConsumerDemand == .none ? .all : metricsDetailConsumerDemand
     }
     private var hasVisibleMainWindow: Bool {
         NSApp.windows.contains {
@@ -278,6 +345,37 @@ public final class AppModel: ObservableObject {
     /// 回归点（审计 P1）：弹窗打开时即便无可见主窗口也必须为 true，否则温度/风扇/GPU 等详情停采。
     nonisolated static func detailConsumerVisible(consumerVisible: Bool, hasVisibleMainWindow: Bool) -> Bool {
         consumerVisible || hasVisibleMainWindow
+    }
+
+    public nonisolated static func detailDemand(
+        cardID: String?,
+        hasVisibleMainWindow: Bool
+    ) -> MetricsDetailDemand {
+        if hasVisibleMainWindow { return .all }
+        switch cardID {
+        case nil: return .none
+        case "cpu": return .cpu
+        case "memory": return .memory
+        case "combined": return .all
+        default: return .hardware
+        }
+    }
+
+    public nonisolated static func liveMetricsSamplingScope(
+        for detailDemand: MetricsDetailDemand
+    ) -> LiveMetricsSamplingScope {
+        switch detailDemand {
+        case .none: return .steady
+        case .cpu: return .cpuDetail
+        case .memory: return .memoryDetail
+        case .hardware, .all: return .extendedHardware
+        }
+    }
+
+    public nonisolated static func shouldNotifyGlobalMetricsUI(
+        hasVisibleMainWindow: Bool
+    ) -> Bool {
+        hasVisibleMainWindow
     }
 
     public nonisolated static func shouldResetProcessBaseline(wasVisible: Bool, isVisible: Bool) -> Bool {
@@ -299,12 +397,16 @@ public final class AppModel: ObservableObject {
     }
 
     public func setMetricsDetailConsumerVisible(_ isVisible: Bool) {
-        let wasAggregateVisible = hasVisibleMetricsConsumer
-        metricsDetailConsumerVisible = isVisible
-        let isAggregateVisible = hasVisibleMetricsConsumer
+        setMetricsDetailDemand(isVisible ? .all : .none)
+    }
+
+    public func setMetricsDetailDemand(_ demand: MetricsDetailDemand) {
+        let wasApplicationVisible = hasVisibleApplicationConsumer
+        metricsDetailConsumerVisible = demand != .none
+        metricsDetailConsumerDemand = demand
         if Self.shouldResetProcessBaseline(
-            wasVisible: wasAggregateVisible,
-            isVisible: isAggregateVisible
+            wasVisible: wasApplicationVisible,
+            isVisible: hasVisibleApplicationConsumer
         ) {
             prepareApplicationSampling()
         }
@@ -321,7 +423,9 @@ public final class AppModel: ObservableObject {
     public func prepareApplicationSampling() {
         let generation = applicationSampling.prepare()
         liveMetricsFeed.applicationUsage = .warmingUp()
-        liveMetricsFeed.objectWillChange.send()
+        if Self.shouldNotifyGlobalMetricsUI(hasVisibleMainWindow: hasVisibleMainWindow) {
+            liveMetricsFeed.objectWillChange.send()
+        }
         let sampler = processes
         Task { [weak self] in
             let baselineEpoch = await sampler.resetBaseline()
@@ -330,7 +434,7 @@ public final class AppModel: ObservableObject {
                 for: generation,
                 baselineEpoch: baselineEpoch,
                 samplingInFlight: self.isSampling,
-                isVisible: self.hasVisibleMetricsConsumer)
+                isVisible: self.hasVisibleApplicationConsumer)
             if refreshImmediately { self.refreshMetrics() }
         }
     }
@@ -557,26 +661,53 @@ public final class AppModel: ObservableObject {
         detailTick &+= 1
         // 菜单栏图标常驻但无弹窗/主窗口时（steady state）：只采图标折线所需的 cpu/mem/net/gpu 快照，
         // 跳过全进程枚举 + 传感器/风扇/磁盘健康/频率等昂贵详情采样（审计 P2）。有消费者可见时全量采样。
-        let consumer = hasVisibleMetricsConsumer
+        let detailDemand = currentDetailDemand
+        let consumer = detailDemand != .none
+        let notifyGlobalUI = Self.shouldNotifyGlobalMetricsUI(
+            hasVisibleMainWindow: hasVisibleMainWindow
+        )
+        let liveMetricsScope = Self.liveMetricsSamplingScope(for: detailDemand)
         let applicationGeneration = applicationSampling.generation
         let applicationBaselineEpoch = applicationSampling.baselineEpoch
-        let wantsApplicationUsage = consumer && applicationSampling.isReadyToSample
+        let wantsApplicationUsage = detailDemand.wantsApplicationUsage
+            && applicationSampling.isReadyToSample
         // P3·M9：有消费者时详情**每 tick 都采**（此前 %3 → 面板打开后温度/风扇 ~6s 才刷一轮，
         // 实时感明显弱于 iStat）。~90ms 频率阻塞发生在 utility 后台任务，主线程零成本；
         // 无消费者时依旧完全跳过（稳态省电路径不变）。
-        let wantDetail = consumer
         let needMacInfo = (macInfo == nil)
         let env = self.env
         let procSampler = processes
         let netInfo = mbNetwork
         let sensors = sensorReader
         let hw = hardwareProfiler
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        if cpuFrequencySampling.begin(
+            now: Date(),
+            isVisible: detailDemand.wantsCPUFrequency
+        ) {
+            Task.detached(priority: .utility) { [weak self] in
+                let frequency = env.liveMetrics.cpuFrequency()
+                await MainActor.run {
+                    guard let self else { return }
+                    self.cpuFrequencySampling.finish(now: Date())
+                    if let frequency {
+                        if Self.shouldNotifyGlobalMetricsUI(
+                            hasVisibleMainWindow: self.hasVisibleMainWindow
+                        ) {
+                            self.liveMetricsFeed.objectWillChange.send()
+                        }
+                        self.liveMetricsFeed.cpuFreqP = frequency.performance
+                        self.liveMetricsFeed.cpuFreqE = frequency.efficiency
+                    }
+                }
+            }
+        }
         Task.detached(priority: .utility) {
             // steady state（无弹窗/主窗口 → consumer=false）：跳过 GPU/温度/风扇/电池等昂贵详情读取，
             // 只采图标折线所需的 cpu/mem/net。此前漏传该标志导致优化形同虚设、常驻空耗电（审计 P1）。
-            let snap = env.liveMetrics.sample(consumerVisible: consumer)
-            let cap = env.fs.volumeCapacity(for: home)
+            let snap = env.liveMetrics.sample(
+                consumerVisible: consumer,
+                scope: liveMetricsScope
+            )
             let info = needMacInfo ? env.liveMetrics.macInfo() : nil
             // 应用排行仅在有可见消费者时才做全进程 rusage 枚举；否则不触碰进程采样器。
             let applicationUsage: ApplicationUsageSnapshot?
@@ -604,19 +735,32 @@ public final class AppModel: ObservableObject {
             } else {
                 applicationUsage = nil
             }
-            var detail: MetricsDetail?
-            if wantDetail {
+            let detail: MetricsDetail?
+            switch detailDemand {
+            case .none, .memory:
+                detail = nil
+            case .cpu:
+                detail = MetricsDetail(
+                    freq: nil,
+                    interfaces: [],
+                    temps: [],
+                    fans: [],
+                    volumes: [],
+                    gpu: nil)
+            case .hardware, .all:
                 // 温度/风扇/磁盘卷：温度与磁盘专属面板的数据源（首个 storageHealth 会触发一次
                 // system_profiler，之后走缓存，稳定在毫秒级）。
                 detail = MetricsDetail(
-                    freq: env.liveMetrics.cpuFrequency(),
+                    freq: nil,
                     interfaces: netInfo.interfaces(),
                     temps: sensors.temperatures(),
                     fans: sensors.fans(),
                     volumes: hw.storageHealth(),
                     gpu: hw.gpu())
             }
-            let sample = MetricsSample(snapshot: snap, capacity: cap, macInfo: info,
+            // LiveMetrics 已在同一帧读取主卷容量；直接复用，避免每 tick 重复 statfs。
+            let cap = snap.diskTotal > 0 ? VolumeCapacity(total: snap.diskTotal, available: snap.diskFree) : nil
+            let sample = MetricsSample(snapshot: snap, capacity: cap, macInfo: info, notifyUI: notifyGlobalUI,
                                        applicationUsage: applicationUsage,
                                        applicationSamplingGeneration: applicationUsage != nil
                                            ? applicationGeneration
@@ -631,8 +775,8 @@ public final class AppModel: ObservableObject {
         defer { finishMetricsSampling() }
         let s = sample.snapshot
         let feed = liveMetricsFeed
-        feed.liveSnapshot = s
-        feed.capacity = sample.capacity
+        // 省电帧可能不读容量；此时保留最后一帧，而不是把侧栏容量闪回空态。
+        if let capacity = sample.capacity { feed.capacity = capacity }
         if let info = sample.macInfo { macInfo = info }
         push(&feed.cpuHistory, s.cpuUsage)
         push(&feed.cpuUserHistory, s.cpuUser)
@@ -698,11 +842,14 @@ public final class AppModel: ObservableObject {
             case .cpuTemp: return s.cpuTemp
             }
         }
+        // 唯一一次发布放在整帧字段全部落定之后：SwiftUI 每 tick 只失效一次，菜单栏也能读取到
+        // 与新快照同帧的历史/详情。此前二十余个 @Published 连写会让隐藏窗口反复布局。
+        feed.publish(snapshot: s, notifyUI: sample.notifyUI)
     }
 
     private func finishMetricsSampling() {
         isSampling = false
-        if applicationSampling.finishSampling(isVisible: hasVisibleMetricsConsumer) {
+        if applicationSampling.finishSampling(isVisible: hasVisibleApplicationConsumer) {
             refreshMetrics()
         }
     }
@@ -821,6 +968,13 @@ public final class AppModel: ObservableObject {
 
     public func startMetricsTimer() {
         timer?.invalidate()
+        if !hasScheduledProcessPrewarm {
+            hasScheduledProcessPrewarm = true
+            let processSampler = processes
+            Task.detached(priority: .utility) {
+                await processSampler.prewarm()
+            }
+        }
         // 预热 system_profiler（2026-07 卡死修复）：把首次 storageHealth()/gpu() 的 1–3 秒冷启动
         // 阻塞从「用户点开监视/状态栏面板」的关键路径挪到启动空闲期后台跑掉，避免点开瞬间冻结。
         hardwareProfiler.prewarmProfiler()
@@ -919,6 +1073,8 @@ private struct MetricsSample: Sendable {
     let snapshot: SystemSnapshot
     let capacity: VolumeCapacity?
     let macInfo: MacInfo?
+    /// true = 主窗口/菜单详情可见，需要通知 SwiftUI；false = 仅推送菜单栏专用流。
+    let notifyUI: Bool
     /// nil = 本帧无可见消费者，未做全进程枚举。
     let applicationUsage: ApplicationUsageSnapshot?
     let applicationSamplingGeneration: UInt64?

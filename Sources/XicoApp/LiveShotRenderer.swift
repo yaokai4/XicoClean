@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Domain
 import Infrastructure
 import DesignSystem
 import Features
@@ -125,11 +126,41 @@ func renderMonitoringShots() {
     defaults.set(MonitoringPanelDensity.balanced.rawValue, forKey: MonitoringPreferences.densityKey)
 
     let env = XicoEnvironment.live()
+    // AppModel starts an asynchronous steady-state sample during init. The screenshot command
+    // immediately switches to a detail consumer, so that request can be coalesced by the
+    // single-flight guard while the CurrentValueSubject is still nil. Seed one real, warmed
+    // system frame synchronously so every off-screen panel attaches with renderable content;
+    // the normal application sampler continues to populate rankings at 1 Hz below.
+    let seedSampler = LiveMetricsSampler()
+    _ = seedSampler.sample(consumerVisible: true, scope: .extendedHardware)
+    Thread.sleep(forTimeInterval: 0.15)
+    let seedSnapshot = seedSampler.sample(consumerVisible: true, scope: .extendedHardware)
     let liveModel = AppModel(env: env)
+    liveModel.liveMetricsFeed.publish(snapshot: seedSnapshot, notifyUI: true)
     liveModel.setMetricsDetailConsumerVisible(true)
-    liveModel.prepareApplicationSampling()
-    liveModel.refreshMetrics()
     liveModel.startMetricsTimer()
+
+    // Capture the same production application pipeline explicitly for the QA artifact. The
+    // first frame establishes CPU baselines; the second frame, one configured interval later,
+    // contains valid CPU plus current memory rankings.
+    let shotProcessSampler = ProcessSampler.production()
+    var capturedApplicationUsage: ApplicationUsageSnapshot?
+    Task {
+        let epoch = await shotProcessSampler.resetBaseline()
+        _ = await shotProcessSampler.sample(
+            limit: 4,
+            combinesProcesses: MonitoringPreferences.combinesProcesses(),
+            requiringBaselineEpoch: epoch)
+        try? await Task.sleep(nanoseconds: 1_050_000_000)
+        capturedApplicationUsage = await shotProcessSampler.sample(
+            limit: 4,
+            combinesProcesses: MonitoringPreferences.combinesProcesses(),
+            requiringBaselineEpoch: epoch)
+    }
+    let applicationDeadline = Date().addingTimeInterval(4)
+    while capturedApplicationUsage == nil, Date() < applicationDeadline {
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+    }
 
     let liveShots: [(String, MenuMetric, ColorScheme)] = [
         ("cpu-dark", .cpu, .dark),
@@ -138,16 +169,27 @@ func renderMonitoringShots() {
         ("memory-light", .memory, .light),
     ]
     for (name, metric, scheme) in liveShots {
+        if let usage = capturedApplicationUsage {
+            liveModel.liveMetricsFeed.applicationUsage = ApplicationUsageSnapshot(
+                byCPU: usage.byCPU,
+                byMemory: usage.byMemory,
+                status: usage.status,
+                coverage: usage.coverage,
+                sampledAt: Date(),
+                source: usage.source)
+            liveModel.liveMetricsFeed.objectWillChange.send()
+        }
         renderMonitoringPage(
             name: name,
             model: liveModel,
             metric: metric,
             scheme: scheme,
-            settle: 2.4,
+            settle: 0.35,
             directory: dir)
     }
 
     let fixtureModel = AppModel(env: env)
+    fixtureModel.liveMetricsFeed.publish(snapshot: seedSnapshot, notifyUI: true)
     fixtureModel.refreshMetrics()
     let systemDeadline = Date().addingTimeInterval(3)
     while fixtureModel.liveSnapshot == nil, Date() < systemDeadline {

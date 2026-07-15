@@ -276,9 +276,15 @@ public struct XSegmentBar: View {
     }
     let segments: [Segment]
     let height: CGFloat
-    public init(segments: [Segment], height: CGFloat = 10) {
+    let updateCadence: XMonitoringUpdateCadence
+    public init(
+        segments: [Segment],
+        height: CGFloat = 10,
+        updateCadence: XMonitoringUpdateCadence = .ambient
+    ) {
         self.segments = segments
         self.height = height
+        self.updateCadence = updateCadence
     }
     public var body: some View {
         GeometryReader { geo in
@@ -292,7 +298,10 @@ public struct XSegmentBar: View {
                                 .frame(width: max(0, w * min(max(seg.fraction, 0), 1)))
                         }
                     }
-                    .animation(XMotion.settle, value: segments.map(\.fraction))
+                    .animation(
+                        updateCadence.animatesUpdates ? XMotion.settle : nil,
+                        value: segments.map(\.fraction)
+                    )
                 }
                 .clipShape(Capsule())
         }

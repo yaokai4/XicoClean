@@ -53,9 +53,9 @@ final class MenuBarController: NSObject {
         rebuild()
 
         // 指标变化 → 刷新图标
-        model.liveMetricsFeed.$liveSnapshot
+        model.liveMetricsFeed.snapshotPublisher
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.updateImages() }
+            .sink { [weak self] snapshot in self?.updateImages(snapshot: snapshot) }
             .store(in: &cancellables)
 
         // 设置里的开关变化 → 重建菜单栏项（实时增删）。
@@ -159,16 +159,19 @@ final class MenuBarController: NSObject {
         return v > 0 ? v : nil
     }
 
-    private func updateImages(force: Bool = false) {
-        let s = model.liveSnapshot
+    private func updateImages(force: Bool = false, snapshot: SystemSnapshot? = nil) {
+        let s = snapshot ?? model.liveSnapshot
         let now = Date()
         for (id, item) in statusItems {
             if !force, let interval = itemInterval(id), let last = lastImageUpdate[id],
                now.timeIntervalSince(last) < interval - 0.05 {
                 continue
             }
+            guard let image = image(for: id, snapshot: s) else { continue }
+            // 相同签名由 MenuBarGlyph 返回同一 NSImage；不重复赋值，避免 AppKit 无意义地重排/重绘。
+            if !force, item.button?.image === image { continue }
             lastImageUpdate[id] = now
-            item.button?.image = image(for: id, snapshot: s)
+            item.button?.image = image
         }
     }
 
@@ -376,10 +379,19 @@ final class MenuBarController: NSObject {
         }
     }
 
+    private static func detailDemand(forCardID id: String) -> MetricsDetailDemand {
+        switch id {
+        case "cpu": return .cpu
+        case "memory": return .memory
+        case "combined": return .all
+        default: return .hardware
+        }
+    }
+
     private func showCardPanel(id: String, from button: NSStatusBarButton) {
         // 先建立采样生命周期，再构造 SwiftUI 内容：rootView 初始化期间读取到的必须是
         // warming-up/可见态；卡片切换时可见性持续为 true，不制造一次隐藏转换。
-        model.setMetricsDetailConsumerVisible(true)
+        model.setMetricsDetailDemand(Self.detailDemand(forCardID: id))
 
         let host = NSHostingController(rootView: AnyView(MenuCardContainer { self.panelContent(for: id) }))
         let panel = KeyableCardPanel(contentViewController: host)
@@ -391,6 +403,8 @@ final class MenuBarController: NSObject {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
+        // Swift owns the panel through cardPanel. AppKit's legacy release-on-close would
+        // consume that ownership and ARC would release it again when the property is cleared.
         panel.isReleasedWhenClosed = false
         // 关闭体系的第一防线：identifier 供孤儿清扫辨认；delegate 供失焦即关（见
         // windowDidResignKey）——与 NSPopover 同源的机制，不依赖事件监视器。
@@ -426,12 +440,12 @@ final class MenuBarController: NSObject {
         let panel = cardPanel
         cardPanel = nil
         cardPanelID = nil
-        panel?.orderOut(nil)
-        // 孤儿清扫：任何仍在屏上的卡片窗一并收起——即使引用因任何异常丢失
-        //（用户实测过「卡片永远关不掉」，根因就是引用与屏上窗口脱钩后监视器全部失效）。
-        for w in NSApp.windows where (w.identifier?.rawValue.hasPrefix("card.") ?? false) && w.isVisible {
-            w.orderOut(nil)
+        if let panel {
+            MonitoringCardWindowLifecycle.closeCardWindows(in: [panel])
         }
+        // 孤儿清扫：可见或隐藏的残留卡片窗都销毁——即使引用因任何异常丢失
+        //（用户实测过「卡片永远关不掉」，根因就是引用与屏上窗口脱钩后监视器全部失效）。
+        MonitoringCardWindowLifecycle.closeCardWindows(in: NSApp.windows)
         // 卡片关闭即回稳态采样省电（图钉功能已按用户要求移除，卡片是唯一详情消费者）。
         if !keepDetailConsumerVisible {
             model.setMetricsDetailConsumerVisible(false)
@@ -603,6 +617,8 @@ extension MenuBarController: NSWindowDelegate {
               win.identifier?.rawValue.hasPrefix("card.") == true, win === cardPanel else { return }
         // 卡片被 close() 关掉（Esc 兜底路径等）：同步清引用与监视器。
         removeDismissMonitors()
+        win.contentViewController = nil
+        win.contentView = nil
         cardPanel = nil
         cardPanelID = nil
         model.setMetricsDetailConsumerVisible(false)

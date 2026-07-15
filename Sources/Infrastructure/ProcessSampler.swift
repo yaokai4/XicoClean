@@ -27,6 +27,7 @@ public actor ProcessSampler {
     private var previousCPUOrder: [ApplicationIdentity] = []
     private var previousMemoryOrder: [ApplicationIdentity] = []
     private var baselineEpoch: UInt64 = 0
+    private var hasPrewarmed = false
     private var sampleInProgress = false
     private var sampleWaiters: [CheckedContinuation<Void, Never>] = []
     nonisolated private let legacy: LegacyProcessSampler
@@ -60,6 +61,17 @@ public actor ProcessSampler {
         self.resolver = ApplicationOwnershipResolver()
         self.aggregator = ApplicationUsageAggregator(logicalCPUCount: logicalCPUCount)
         self.legacy = LegacyProcessSampler(capture: legacyCapture)
+    }
+
+    /// One-time low-priority warmup for process metadata and application ownership.
+    /// It deliberately does not touch the CPU delta calculator, ranks, or trends.
+    public func prewarm() async {
+        await acquireSamplePermit()
+        defer { releaseSamplePermit() }
+        guard !hasPrewarmed else { return }
+        hasPrewarmed = true
+        let capture = await provider.capture()
+        _ = resolver.resolve(capture.records)
     }
 
     @discardableResult
@@ -104,37 +116,38 @@ public actor ProcessSampler {
             records: capture.records,
             ownership: ownership,
             cpuRawByProcess: cpuRates ?? [:],
-            combinesProcesses: combinesProcesses
+            combinesProcesses: combinesProcesses,
+            sortsByCPU: false
         )
+        let boundedLimit = max(0, limit)
 
         var cpuOrder: [ApplicationUsage]
         if cpuRates == nil {
             cpuOrder = []
         } else {
             cpuOrder = UsageRanker.order(
-                usages.filter { $0.cpuRawPercent != nil },
+                usages,
                 metric: .cpu,
-                previousOrder: previousCPUOrder
+                previousOrder: previousCPUOrder,
+                limit: boundedLimit
             )
         }
         var memoryOrder = UsageRanker.order(
             usages,
             metric: .memory,
-            previousOrder: previousMemoryOrder
+            previousOrder: previousMemoryOrder,
+            limit: boundedLimit
         )
 
         updateTrends(
             cpuOrder: cpuOrder,
             memoryOrder: memoryOrder,
-            allCurrentIDs: Set(usages.map(\.id)),
+            allCurrentIDs: Set(usages.lazy.map(\.id)),
             monotonicNanoseconds: capture.monotonicNanoseconds
         )
         cpuOrder = cpuOrder.map(attachingTrend)
         memoryOrder = memoryOrder.map(attachingTrend)
 
-        let boundedLimit = max(0, limit)
-        cpuOrder = Array(cpuOrder.prefix(boundedLimit))
-        memoryOrder = Array(memoryOrder.prefix(boundedLimit))
         previousCPUOrder = cpuOrder.map(\.id)
         previousMemoryOrder = memoryOrder.map(\.id)
 

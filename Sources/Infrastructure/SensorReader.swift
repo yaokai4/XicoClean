@@ -1,6 +1,36 @@
 import Foundation
 import CSensors
 
+public enum HardwareSensorSamplingPolicy {
+    /// Temperature is a slow-moving hardware reading. Application CPU and
+    /// per-core load still update every tick; only the expensive HID enumeration
+    /// is cached between minute-boundary refreshes.
+    public static let temperatureTimeToLive: TimeInterval = 60
+}
+
+final class TemperatureReadingCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private let timeToLive: TimeInterval
+    private var cachedAt: Date?
+    private var cachedValue: [TempReading]?
+
+    init(timeToLive: TimeInterval) {
+        self.timeToLive = max(0, timeToLive)
+    }
+
+    func value(now: Date, load: () -> [TempReading]) -> [TempReading] {
+        lock.lock(); defer { lock.unlock() }
+        if let cachedAt, let cachedValue {
+            let age = now.timeIntervalSince(cachedAt)
+            if age >= 0, age < timeToLive { return cachedValue }
+        }
+        let loaded = load()
+        cachedAt = now
+        cachedValue = loaded
+        return loaded
+    }
+}
+
 /// 一个温度读数。
 public struct TempReading: Sendable, Identifiable {
     public let id: String          // 传感器名（稳定标识）
@@ -44,17 +74,12 @@ public final class SensorReader: @unchecked Sendable {
 
     /// 一个采样周期内复用同一次全量枚举：HID 热传感器枚举 + 字符串归类不便宜，
     /// 而同一 tick 里 summary() 与 temperatures() 常被相继调用。
-    private let cacheLock = NSLock()
-    private var cachedTemps: [TempReading]?
-    private var cachedAt: Date?
-    /// TTL 跟随菜单栏采样节奏：固定 0.5s 在 2s 常驻节奏下**永不命中**，等于每 tick 都重新枚举 HID
-    /// 热传感器（审计 P3）。改为读 `xico.mb.interval`（默认 1s）并下探 0.1s——既覆盖同一采样周期内
-    /// summary()/temperatures() 的相继调用、也让相邻 tick 复用同一次枚举，下限 0.5s 兜底。
-    private var cacheTTL: TimeInterval {
-        let interval = MonitoringRefreshIntervalStore.read().rawValue
-        return max(0.5, interval - 0.1)
-    }
-
+    private let temperatureCache = TemperatureReadingCache(
+        timeToLive: HardwareSensorSamplingPolicy.temperatureTimeToLive
+    )
+    /// 温度是慢变量，没必要跟 CPU/网络的 1–2s 高频节拍。IOHID 全传感器枚举在部分 Apple Silicon
+    /// 机器上单次会阻塞 50–80ms，因此至少缓存 60 秒；详情和菜单栏仍会在下一采样 tick 立即显示新值。
+    /// 用户设置了更慢的全局频率时则跟随该频率，不额外唤醒。
     public init() {}
 
     /// 全部温度传感器（已归类、按类别聚合的代表值另见 summary()）。
@@ -89,22 +114,13 @@ public final class SensorReader: @unchecked Sendable {
 
     /// 带短 TTL 的全量温度读取：TTL 内复用上次枚举结果，超时即重新枚举并刷新缓存。
     private func cachedTemperatures() -> [TempReading] {
-        cacheLock.lock()
-        if let cached = cachedTemps, let at = cachedAt, Date().timeIntervalSince(at) < cacheTTL {
-            defer { cacheLock.unlock() }
-            return cached
+        temperatureCache.value(now: Date()) {
+            var out = appleSiliconTemperatures()
+            if out.isEmpty {
+                out = intelTemperatures()   // Intel 机型降级
+            }
+            return out
         }
-        cacheLock.unlock()
-
-        var out = appleSiliconTemperatures()
-        if out.isEmpty {
-            out = intelTemperatures()   // Intel 机型降级
-        }
-        cacheLock.lock()
-        cachedTemps = out
-        cachedAt = Date()
-        cacheLock.unlock()
-        return out
     }
 
     public func fans() -> [FanInfo] {

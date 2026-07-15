@@ -81,6 +81,86 @@ public struct MacInfo: Sendable {
     public let uptime: String
 }
 
+typealias CPUFrequencyReading = (performance: Double, efficiency: Double)
+
+public enum CPUFrequencySamplingPolicy {
+    /// CPU frequency is a slow-moving presentation metric. Read immediately when
+    /// the card opens, then at most once per minute to keep 1 Hz monitoring cheap.
+    public static let timeToLive: TimeInterval = 60
+}
+
+public struct LiveMetricsSamplingScope: Sendable, Equatable {
+    public let extendedHardwareVisible: Bool
+    public let cpuDetailVisible: Bool
+    public let memoryDetailVisible: Bool
+
+    public init(
+        extendedHardwareVisible: Bool,
+        cpuDetailVisible: Bool,
+        memoryDetailVisible: Bool
+    ) {
+        self.extendedHardwareVisible = extendedHardwareVisible
+        self.cpuDetailVisible = cpuDetailVisible
+        self.memoryDetailVisible = memoryDetailVisible
+    }
+
+    public static let steady = Self(
+        extendedHardwareVisible: false,
+        cpuDetailVisible: false,
+        memoryDetailVisible: false
+    )
+    public static let cpuDetail = Self(
+        extendedHardwareVisible: false,
+        cpuDetailVisible: true,
+        memoryDetailVisible: false
+    )
+    public static let memoryDetail = Self(
+        extendedHardwareVisible: false,
+        cpuDetailVisible: false,
+        memoryDetailVisible: true
+    )
+    public static let extendedHardware = Self(
+        extendedHardwareVisible: true,
+        cpuDetailVisible: false,
+        memoryDetailVisible: false
+    )
+
+    public var needsPerCore: Bool { extendedHardwareVisible || cpuDetailVisible }
+    public var needsLoad: Bool { extendedHardwareVisible || cpuDetailVisible }
+    public var needsSwap: Bool { extendedHardwareVisible || memoryDetailVisible }
+    public var needsTemperature: Bool { extendedHardwareVisible || cpuDetailVisible }
+    public var needsExtendedHardware: Bool { extendedHardwareVisible }
+}
+
+final class CPUFrequencyCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private let timeToLive: TimeInterval
+    private var cachedAt: Date?
+    private var cachedValue: CPUFrequencyReading?
+    private var hasCachedValue = false
+
+    init(timeToLive: TimeInterval) {
+        self.timeToLive = max(0, timeToLive)
+    }
+
+    func value(
+        now: Date,
+        load: () -> CPUFrequencyReading?
+    ) -> CPUFrequencyReading? {
+        lock.withLock {
+            if hasCachedValue, let cachedAt {
+                let age = now.timeIntervalSince(cachedAt)
+                if age >= 0, age < timeToLive { return cachedValue }
+            }
+            let loaded = load()
+            cachedValue = loaded
+            cachedAt = now
+            hasCachedValue = true
+            return loaded
+        }
+    }
+}
+
 /// 实时系统指标采样（CPU / 每核 / 内存 / 网络 / 磁盘 / 温度 / GPU）。
 /// 差分状态（prevCPU/prevNet/prevPerCore）用锁保护——类型系统层面 Sendable。
 public final class LiveMetricsSampler: @unchecked Sendable {
@@ -96,10 +176,17 @@ public final class LiveMetricsSampler: @unchecked Sendable {
     /// 磁盘累计读写字节的差分状态（与网络同一套路）。
     private var prevDisk: (read: UInt64, write: UInt64)?
     private var prevDiskTime: Date?
+    /// APFS 容量不是高速指标；缓存 30 秒可避免每个 1–2 秒采样 tick 都触发卷属性查询。
+    /// 清理完成后 AppModel 会主动 refresh，最坏也只显示上一帧几十秒，不影响删除安全性。
+    private var cachedCapacity: VolumeCapacity?
+    private var cachedCapacityAt: Date?
     private let fs: FileSystemService
     private let smc = SMCReader()
     private let sensors = SensorReader()
     private let hardware = HardwareProfileService()
+    private let cpuFrequencyCache = CPUFrequencyCache(
+        timeToLive: CPUFrequencySamplingPolicy.timeToLive
+    )
 
     public init(fs: FileSystemService = LocalFileSystemService()) { self.fs = fs }
 
@@ -112,32 +199,54 @@ public final class LiveMetricsSampler: @unchecked Sendable {
     ///   仅当对应菜单栏字形仍启用时才按需读取。字形启用状态直接读 `xico.mb.*` UserDefaults
     ///   以保持自洽（不改 AppModel 公有 API）。风扇 / 电池无专属菜单栏字形，故仅在详情可见时读。
     ///   被跳过的字段返回 nil（各字段本就是 Optional，UI 静默降级）。
-    public func sample(consumerVisible: Bool = true) -> SystemSnapshot {
+    public func sample(
+        consumerVisible: Bool = true,
+        scope explicitScope: LiveMetricsSamplingScope? = nil
+    ) -> SystemSnapshot {
+        // Existing callers retain the old full-detail meaning of consumerVisible=true.
+        // AppModel passes an explicit narrow scope for CPU and memory menu cards.
+        let scope = explicitScope ?? (consumerVisible ? .extendedHardware : .steady)
+        // 稳态只读取当前菜单栏样式真正会消费的字段。此前即使只显示 CPU/内存/网络，仍每 2 秒
+        // 枚举每核心与所有块设备 I/O，白白制造常驻 CPU 唤醒；详情窗口出现时仍保持全量语义。
+        let cpuStyle = UserDefaults.standard.string(forKey: "xico.mb.cpu.style") ?? "rich"
+        let needPerCore = scope.needsPerCore
+            || (Self.menuGlyphEnabled("cpu", default: true) && cpuStyle == "coreGrid")
+        let needDiskIO = scope.needsExtendedHardware
+            || Self.menuGlyphEnabled("diskio", default: false)
+            || Self.combinedGlyphNeeds("diskio")
         let needSwap = Self.shouldSampleSwap(
-            consumerVisible: consumerVisible,
+            consumerVisible: scope.needsSwap,
             memoryGlyphEnabled: Self.menuGlyphEnabled("memory", default: true),
             memoryMetric: UserDefaults.standard.string(forKey: "xico.mb.memory.metric")
         )
+        let needLoad = scope.needsLoad
+            || (Self.menuGlyphEnabled("cpu", default: true) && cpuStyle == "loadAvg")
         let cpu = sampleCPU()
-        let cores = samplePerCore()
+        let cores = needPerCore ? samplePerCore() : []
         let mem = sampleMemory()
         let swap: (used: Int64, total: Int64, isValid: Bool) = needSwap ? sampleSwap() : (0, 0, false)
         let net = sampleNetwork()
-        let disk = sampleDiskIO()
-        let load = loadAverage()
-        let cap = fs.volumeCapacity(for: FileManager.default.homeDirectoryForCurrentUser)
-        let needGPU = consumerVisible || Self.menuGlyphEnabled("gpu", default: false)
-        let needTemp = consumerVisible || Self.menuGlyphEnabled("temp", default: false)
+        let disk: (read: Double, write: Double)
+        if needDiskIO {
+            disk = sampleDiskIO()
+        } else {
+            resetDiskIOBaseline()
+            disk = (0, 0)
+        }
+        let load = needLoad ? loadAverage() : (0, 0, 0)
+        let cap = sampledCapacity()
+        let needGPU = scope.needsExtendedHardware || Self.menuGlyphEnabled("gpu", default: false) || Self.combinedGlyphNeeds("gpu")
+        let needTemp = scope.needsTemperature || Self.menuGlyphEnabled("temp", default: false) || Self.combinedGlyphNeeds("temp")
         // GPU：需要则读并平滑；跳过时以 smoothedGPU(nil) 清空 EMA，避免下次恢复采样时残留陈旧值。
         let gpu = needGPU
             ? smoothedGPU(hardware.acceleratorPerformance().utilization.map { min(1, max(0, $0 / 100)) })
             : smoothedGPU(nil)
         let temp: (cpu: Double?, gpu: Double?, ssd: Double?) = needTemp ? sensors.summary3() : (nil, nil, nil)
         // 电池：详情可见或菜单栏电池字形启用时读取（IOPS 快照成本低，与 gpu/temp 同一门控模式）。
-        let needBattery = consumerVisible || Self.menuGlyphEnabled("battery", default: false)
+        let needBattery = scope.needsExtendedHardware || Self.menuGlyphEnabled("battery", default: false) || Self.combinedGlyphNeeds("battery")
         let battery: (percent: Int?, charging: Bool) = needBattery ? batteryStatus() : (nil, false)
         let batteryMinutes: Int? = needBattery ? batteryTimeRemaining() : nil
-        let fan: Int? = consumerVisible ? smc.fanRPM() : nil
+        let fan: Int? = scope.needsExtendedHardware ? smc.fanRPM() : nil
         let pressureState = memoryPressureLevel()
         let pressureIndex = Self.pressureIndexForSample(
             memoryIsValid: mem.isValid,
@@ -213,6 +322,16 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         return UserDefaults.standard.bool(forKey: key)
     }
 
+    /// 合并项会独立勾选子指标；不能只看专属状态项开关，否则“只开合并项里的 GPU/温度”会停采。
+    private static func combinedGlyphNeeds(_ id: String) -> Bool {
+        guard menuGlyphEnabled("combined", default: false) else { return false }
+        let key = "xico.mb.combined.\(id)"
+        if UserDefaults.standard.object(forKey: key) == nil {
+            return ["cpu", "memory", "network"].contains(id)
+        }
+        return UserDefaults.standard.bool(forKey: key)
+    }
+
     // MARK: 磁盘 I/O（IOBlockStorageDriver Statistics 差分，与 iStat 同源）
 
     private func sampleDiskIO() -> (read: Double, write: Double) {
@@ -227,6 +346,31 @@ public final class LiveMetricsSampler: @unchecked Sendable {
         let dr = cur.read >= prev.read ? Double(cur.read - prev.read) : 0
         let dw = cur.write >= prev.write ? Double(cur.write - prev.write) : 0
         return (dr / dt, dw / dt)
+    }
+
+    private func resetDiskIOBaseline() {
+        stateLock.lock()
+        prevDisk = nil
+        prevDiskTime = nil
+        stateLock.unlock()
+    }
+
+    private func sampledCapacity() -> VolumeCapacity? {
+        let now = Date()
+        stateLock.lock()
+        if let cachedCapacity, let cachedCapacityAt,
+           now.timeIntervalSince(cachedCapacityAt) < 30 {
+            stateLock.unlock()
+            return cachedCapacity
+        }
+        stateLock.unlock()
+
+        let fresh = fs.volumeCapacity(for: FileManager.default.homeDirectoryForCurrentUser)
+        stateLock.lock()
+        cachedCapacity = fresh
+        cachedCapacityAt = now
+        stateLock.unlock()
+        return fresh
     }
 
     /// 汇总所有块存储驱动的累计读写字节。
@@ -383,8 +527,10 @@ public final class LiveMetricsSampler: @unchecked Sendable {
     /// CPU 当前频率（MHz）：性能核 / 能效核。经 IOReport DVFS 驻留率加权。
     /// 不可用（Intel / 接口变更）返回 nil。内部阻塞约 90ms，请在后台调用。
     public func cpuFrequency() -> (performance: Double, efficiency: Double)? {
-        var p: Double = 0, e: Double = 0
-        return xico_cpu_frequency(&p, &e) == 1 ? (p, e) : nil
+        cpuFrequencyCache.value(now: Date()) {
+            var p: Double = 0, e: Double = 0
+            return xico_cpu_frequency(&p, &e) == 1 ? (p, e) : nil
+        }
     }
 
     /// 内存压力等级：1=正常 2=警告 4=危险。
@@ -469,7 +615,8 @@ public final class LiveMetricsSampler: @unchecked Sendable {
     private func includeInterface(index: UInt16) -> Bool {
         var nameBuf = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
         guard if_indextoname(UInt32(index), &nameBuf) != nil else { return false }
-        let name = String(cString: nameBuf)
+        let bytes = nameBuf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        let name = String(decoding: bytes, as: UTF8.self)
         var excludedPrefixes = ["lo", "awdl", "llw", "bridge", "gif", "stf", "ap", "anpi", "XHC"]
         // VPN 隧道（utun）默认排除——流量会在隧道口与物理口各计一遍（双计）。
         // 「计入 VPN 流量」开关（P1）：只看隧道内明文流量的用户可显式打开。

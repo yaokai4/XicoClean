@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <pthread.h>
 
 // MARK: - 私有 API 面（notarization / 长期可用性）
 //
@@ -48,6 +49,14 @@ extern double IOHIDEventGetFloatValue(IOHIDEventRef event, int32_t field) __attr
 #define XICO_HID_USAGE_PAGE 0xff00
 #define XICO_HID_USAGE_TEMP 0x0005
 
+// IOHID 客户端与服务表在同一台机器的进程生命周期内是稳定的。旧实现每 1–2 秒重新创建
+// EventSystemClient、重做匹配并枚举服务，造成菜单栏空闲时明显 CPU/唤醒开销。这里按进程缓存，
+// 仅逐帧复制温度事件；互斥锁同时保护多个 SensorReader/详情面板并发读取。
+static pthread_mutex_t xico_thermal_lock = PTHREAD_MUTEX_INITIALIZER;
+static IOHIDEventSystemClientRef xico_thermal_client = NULL;
+static CFArrayRef xico_thermal_services = NULL;
+static int xico_thermal_initialized = 0;
+
 static CFDictionaryRef xico_temperature_matching(void) {
     CFStringRef keys[2];
     keys[0] = CFSTR("PrimaryUsagePage");
@@ -83,25 +92,28 @@ int xico_copy_thermal_sensors(XicoTempSensor *out, int maxCount) {
         return 0;
     }
 
-    IOHIDEventSystemClientRef client = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
-    if (client == NULL) return 0;
-
-    CFDictionaryRef match = xico_temperature_matching();
-    if (match != NULL) {
-        IOHIDEventSystemClientSetMatching(client, match);
-        CFRelease(match);
+    pthread_mutex_lock(&xico_thermal_lock);
+    if (!xico_thermal_initialized) {
+        xico_thermal_initialized = 1;
+        xico_thermal_client = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+        if (xico_thermal_client != NULL) {
+            CFDictionaryRef match = xico_temperature_matching();
+            if (match != NULL) {
+                IOHIDEventSystemClientSetMatching(xico_thermal_client, match);
+                CFRelease(match);
+            }
+            xico_thermal_services = IOHIDEventSystemClientCopyServices(xico_thermal_client);
+        }
     }
-
-    CFArrayRef services = IOHIDEventSystemClientCopyServices(client);
-    if (services == NULL) {
-        CFRelease(client);
+    if (xico_thermal_services == NULL) {
+        pthread_mutex_unlock(&xico_thermal_lock);
         return 0;
     }
 
     int written = 0;
-    CFIndex serviceCount = CFArrayGetCount(services);
+    CFIndex serviceCount = CFArrayGetCount(xico_thermal_services);
     for (CFIndex i = 0; i < serviceCount && written < maxCount; i++) {
-        IOHIDServiceClientRef service = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(services, i);
+        IOHIDServiceClientRef service = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(xico_thermal_services, i);
         if (service == NULL) continue;
 
         IOHIDEventRef event = IOHIDServiceClientCopyEvent(service, XICO_HID_EVENT_TYPE_TEMPERATURE, 0, 0);
@@ -134,8 +146,7 @@ int xico_copy_thermal_sensors(XicoTempSensor *out, int maxCount) {
         written++;
     }
 
-    CFRelease(services);
-    CFRelease(client);
+    pthread_mutex_unlock(&xico_thermal_lock);
     return written;
 }
 
@@ -270,6 +281,19 @@ static IOReportStateGetCount_t p_IOReportStateGetCount;
 static IOReportStateGetResidency_t p_IOReportStateGetResidency;
 static IOReportIterate_t p_IOReportIterate;
 
+// 频率表、通道集合与 subscription 在同一台机器的进程生命周期内不变。
+// 缓存这些静态对象，避免每次 60 秒刷新都重新遍历设备树、复制通道并建订阅；
+// 每次读取仍创建两份实时样本并计算 90ms 窗口内的驻留增量。
+static pthread_mutex_t xico_frequency_lock = PTHREAD_MUTEX_INITIALIZER;
+static int xico_frequency_initialized = 0; // 0=未试，1=成功，-1=不可用
+static double xico_e_freq[32];
+static double xico_p_freq[32];
+static int xico_e_freq_count = 0;
+static int xico_p_freq_count = 0;
+static CFMutableDictionaryRef xico_frequency_channels = NULL;
+static CFMutableDictionaryRef xico_frequency_subbed = NULL;
+static IOReportSubscriptionRef xico_frequency_subscription = NULL;
+
 // 加载 IOReport 符号（一次）。成功返回 1。
 static int xico_load_ioreport(void) {
     static int loaded = 0;   // 0=未试 1=成功 -1=失败
@@ -313,6 +337,59 @@ static int xico_read_freq_table(CFStringRef key, double *out, int maxN) {
     }
     CFRelease(prop);
     return n;
+}
+
+static int xico_initialize_frequency_reader(void) {
+    if (xico_frequency_initialized != 0) return xico_frequency_initialized == 1;
+
+    xico_e_freq_count = xico_read_freq_table(
+        CFSTR("voltage-states1-sram"), xico_e_freq, 32);
+    if (xico_e_freq_count == 0) {
+        xico_e_freq_count = xico_read_freq_table(
+            CFSTR("voltage-states1"), xico_e_freq, 32);
+    }
+    xico_p_freq_count = xico_read_freq_table(
+        CFSTR("voltage-states5-sram"), xico_p_freq, 32);
+    if (xico_p_freq_count == 0) {
+        xico_p_freq_count = xico_read_freq_table(
+            CFSTR("voltage-states5"), xico_p_freq, 32);
+    }
+    if ((xico_e_freq_count == 0 && xico_p_freq_count == 0)
+        || !xico_load_ioreport()) {
+        xico_frequency_initialized = -1;
+        return 0;
+    }
+
+    xico_frequency_channels = p_IOReportCopyChannelsInGroup(
+        CFSTR("CPU Stats"), CFSTR("CPU Core Performance States"), 0, 0, 0);
+    if (xico_frequency_channels != NULL) {
+        xico_frequency_subscription = p_IOReportCreateSubscription(
+            NULL,
+            xico_frequency_channels,
+            &xico_frequency_subbed,
+            0,
+            NULL);
+    }
+    if (xico_frequency_channels == NULL || xico_frequency_subscription == NULL
+        || xico_frequency_subbed == NULL) {
+        if (xico_frequency_subscription != NULL) {
+            CFRelease(xico_frequency_subscription);
+            xico_frequency_subscription = NULL;
+        }
+        if (xico_frequency_subbed != NULL) {
+            CFRelease(xico_frequency_subbed);
+            xico_frequency_subbed = NULL;
+        }
+        if (xico_frequency_channels != NULL) {
+            CFRelease(xico_frequency_channels);
+            xico_frequency_channels = NULL;
+        }
+        xico_frequency_initialized = -1;
+        return 0;
+    }
+
+    xico_frequency_initialized = 1;
+    return 1;
 }
 
 // 读一次 IOReport 样本，累加 E/P 簇每状态驻留（idx 0 为 idle，跳过）。
@@ -363,32 +440,28 @@ int xico_cpu_frequency(double *pClusterMHz, double *eClusterMHz) {
     if (pClusterMHz) *pClusterMHz = 0;
     if (eClusterMHz) *eClusterMHz = 0;
 
+    pthread_mutex_lock(&xico_frequency_lock);
+    if (!xico_initialize_frequency_reader()) {
+        pthread_mutex_unlock(&xico_frequency_lock);
+        return 0;
+    }
+
     // 1) 频率表：Apple Silicon 设备树约定 E 簇=voltage-states1(-sram)、P 簇=voltage-states5(-sram)。
     //    该约定在 M1/M2/M3 各档（含 Pro/Max）一致；GPU/ANE 用其它 voltage-states 号，不在此列。
     //    P/E 的**归属判定**已改由上面 IOReport 的 ECPU/PCPU 通道名前缀完成（跨代稳），此处仅取频率表。
     //    佐证守卫（见 xico_weighted_freq）：若某簇的 IOReport 残留状态数多于此表条目数，即判定表键
     //    与本簇错配，该簇返回 0（无值）而非外推错值——异形/新代硅片上宁缺勿错。
     //    TODO(硅片验证)：多 P 簇/新代（M3/M4 Ultra 等）若频率表号有别，需在真机复核这两个键仍对应 E/P 簇。
-    double eFreq[32], pFreq[32];
-    int nEFreq = xico_read_freq_table(CFSTR("voltage-states1-sram"), eFreq, 32);
-    if (nEFreq == 0) nEFreq = xico_read_freq_table(CFSTR("voltage-states1"), eFreq, 32);
-    int nPFreq = xico_read_freq_table(CFSTR("voltage-states5-sram"), pFreq, 32);
-    if (nPFreq == 0) nPFreq = xico_read_freq_table(CFSTR("voltage-states5"), pFreq, 32);
-    if (nEFreq == 0 && nPFreq == 0) return 0;
-    if (!xico_load_ioreport()) return 0;
-
-    // 2) IOReport 订阅 CPU Core Performance States，取两次样本增量
-    CFMutableDictionaryRef channels = p_IOReportCopyChannelsInGroup(
-        CFSTR("CPU Stats"), CFSTR("CPU Core Performance States"), 0, 0, 0);
-    if (channels == NULL) return 0;
-    CFMutableDictionaryRef subbed = NULL;
-    IOReportSubscriptionRef sub = p_IOReportCreateSubscription(NULL, channels, &subbed, 0, NULL);
-    if (sub == NULL) { CFRelease(channels); return 0; }
-
-    CFDictionaryRef s1 = p_IOReportCreateSamples(sub, subbed, NULL);
-    if (s1 == NULL) { CFRelease(channels); if (subbed) CFRelease(subbed); CFRelease(sub); return 0; }
+    // 2) 复用进程级 subscription，取两次实时样本增量。
+    CFDictionaryRef s1 = p_IOReportCreateSamples(
+        xico_frequency_subscription, xico_frequency_subbed, NULL);
+    if (s1 == NULL) {
+        pthread_mutex_unlock(&xico_frequency_lock);
+        return 0;
+    }
     usleep(90000);   // ~90ms 采样窗口
-    CFDictionaryRef s2 = p_IOReportCreateSamples(sub, subbed, NULL);
+    CFDictionaryRef s2 = p_IOReportCreateSamples(
+        xico_frequency_subscription, xico_frequency_subbed, NULL);
     CFDictionaryRef delta = (s1 && s2) ? p_IOReportCreateSamplesDelta(s1, s2, NULL) : NULL;
 
     int ok = 0;
@@ -396,8 +469,10 @@ int xico_cpu_frequency(double *pClusterMHz, double *eClusterMHz) {
         int64_t resE[32] = {0}, resP[32] = {0};
         int nE = 0, nP = 0;
         xico_accumulate_residency(delta, resE, resP, &nE, &nP);
-        double pf = xico_weighted_freq(resP, nP, pFreq, nPFreq);
-        double ef = xico_weighted_freq(resE, nE, eFreq, nEFreq);
+        double pf = xico_weighted_freq(
+            resP, nP, xico_p_freq, xico_p_freq_count);
+        double ef = xico_weighted_freq(
+            resE, nE, xico_e_freq, xico_e_freq_count);
         if (pClusterMHz) *pClusterMHz = pf;
         if (eClusterMHz) *eClusterMHz = ef;
         ok = (pf > 0 || ef > 0) ? 1 : 0;
@@ -405,9 +480,7 @@ int xico_cpu_frequency(double *pClusterMHz, double *eClusterMHz) {
     }
     if (s1) CFRelease(s1);
     if (s2) CFRelease(s2);
-    CFRelease(channels);
-    if (subbed) CFRelease(subbed);
-    CFRelease(sub);
+    pthread_mutex_unlock(&xico_frequency_lock);
     return ok;
 }
 

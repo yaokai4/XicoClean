@@ -140,12 +140,23 @@ public enum MenuMetric: Sendable {
     }
 }
 
+@MainActor
+enum MenuMetricPanelTelemetryUpdate {
+    static var transaction: Transaction {
+        var transaction = Transaction()
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+        return transaction
+    }
+}
+
 /// 单指标的菜单栏详情面板（CPU / 内存 / 网络 各一个，独立菜单栏项）
 public struct MenuMetricPanel: View {
     @ObservedObject var model: AppModel
-    /// 高频快照/进程榜/传感器现归 MetricsFeed（AppModel 不再每 tick 重发布，审计 P2）——本面板须观察 feed 才能实时更新。
-    @ObservedObject var feed: MetricsFeed
+    /// 卡片只订阅菜单栏专用流，不加入 MetricsFeed 的全局 ObservableObject 失效域。
+    let feed: MetricsFeed
     let metric: MenuMetric
+    @State private var currentSnapshot: SystemSnapshot?
     /// 快速释放内存的进行/结果状态（本面板内联反馈，不弹窗）。
     @State private var freeingMemory = false
     @State private var freeMemNote: String?
@@ -172,8 +183,9 @@ public struct MenuMetricPanel: View {
 
     public init(model: AppModel, metric: MenuMetric) {
         self.model = model
-        self._feed = ObservedObject(wrappedValue: model.liveMetricsFeed)
+        self.feed = model.liveMetricsFeed
         self.metric = metric
+        self._currentSnapshot = State(initialValue: model.liveMetricsFeed.liveSnapshot)
     }
 
     public var body: some View {
@@ -187,7 +199,7 @@ public struct MenuMetricPanel: View {
                 }
             }
 
-            if let s = model.liveSnapshot {
+            if let s = currentSnapshot {
                 if let hint = insight(s) { insightBar(hint) }
                 content(s)
             } else {
@@ -241,13 +253,11 @@ public struct MenuMetricPanel: View {
         }
         .padding(XSpacing.m)
         .frame(width: panelWidth)
-        .onAppear {
-            guard metric == .memory, let snapshot = feed.liveSnapshot else { return }
-            recordMemoryHistory(snapshot)
-        }
-        .onChange(of: feed.applicationUsage.sampledAt) {
-            guard metric == .memory, let snapshot = feed.liveSnapshot else { return }
-            recordMemoryHistory(snapshot)
+        .onReceive(feed.snapshotPublisher.compactMap { $0 }) { snapshot in
+            withTransaction(MenuMetricPanelTelemetryUpdate.transaction) {
+                currentSnapshot = snapshot
+                if metric == .memory { recordMemoryHistory(snapshot) }
+            }
         }
         .sheet(item: $selectedApplication) { identity in
             ApplicationUsageInspector(
@@ -353,6 +363,7 @@ public struct MenuMetricPanel: View {
     private func historyChart(_ rings: HistoryRings, colors: [Color], height: CGFloat) -> some View {
         let series = window.series(from: rings)
         return XLineChart(values: series, colors: colors, showGrid: true,
+                          updateCadence: .realtime,
                           hoverLabel: { i in
                               guard i >= 0, i < series.count else { return "" }
                               return "\(Int((series[i] * 100).rounded()))%"
@@ -596,7 +607,7 @@ public struct MenuMetricPanel: View {
             .init(id: "app", fraction: Double(s.memoryApp) / total,        color: XColor.memApp),
             .init(id: "wired", fraction: Double(s.memoryWired) / total,    color: XColor.memWired),
             .init(id: "comp", fraction: Double(s.memoryCompressed) / total, color: XColor.memCompressed),
-        ], height: 9)
+        ], height: 9, updateCadence: .realtime)
         .accessibilityHidden(true)
     }
 
@@ -666,6 +677,7 @@ public struct MenuMetricPanel: View {
                         values: selectedMemoryHistory,
                         colors: [XColor.auroraViolet],
                         showGrid: true,
+                        updateCadence: .realtime,
                         hoverLabel: { index in
                             guard selectedMemoryHistory.indices.contains(index) else { return "" }
                             return "\(Int((selectedMemoryHistory[index] * 100).rounded()))%"
@@ -781,12 +793,14 @@ public struct MenuMetricPanel: View {
             windowPicker
             ZStack {
                 XLineChart(values: down, colors: [XColor.netDown, XColor.ring(2)], showDot: false, showGrid: true,
+                           updateCadence: .realtime,
                            hoverLabel: { i in
                                guard i >= 0, i < downRaw.count else { return "" }
                                let u = i < upRaw.count ? upRaw[i] : 0
                                return "↓\(downRaw[i].compactRate) ↑\(u.compactRate)"
                            })
-                XLineChart(values: up, colors: [XColor.netUp, XColor.ring(1)], showFill: false, showDot: false)
+                XLineChart(values: up, colors: [XColor.netUp, XColor.ring(1)], showFill: false, showDot: false,
+                           updateCadence: .realtime)
             }
         }
     }
@@ -1057,8 +1071,10 @@ public struct MenuMetricPanel: View {
         let read = model.diskReadHistory.map { $0 / maxV }
         let write = model.diskWriteHistory.map { $0 / maxV }
         return ZStack {
-            XLineChart(values: read, colors: [XColor.netDown, XColor.ring(2)], showDot: false)
-            XLineChart(values: write, colors: [XColor.netUp, XColor.ring(1)], showFill: false, showDot: false)
+            XLineChart(values: read, colors: [XColor.netDown, XColor.ring(2)], showDot: false,
+                       updateCadence: .realtime)
+            XLineChart(values: write, colors: [XColor.netUp, XColor.ring(1)], showFill: false, showDot: false,
+                       updateCadence: .realtime)
         }
     }
 

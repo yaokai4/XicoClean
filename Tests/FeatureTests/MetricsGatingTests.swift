@@ -1,6 +1,8 @@
 import XCTest
+import Combine
 @testable import Features
 @testable import Infrastructure
+@testable import DesignSystem
 
 /// 菜单栏详情采样门禁的回归测试（审计 P1 回归：`metricsDetailConsumerVisible` 无人置位，
 /// 导致主窗口未在前台时菜单栏弹窗里的温度/风扇/GPU 详情停采）。
@@ -9,6 +11,44 @@ import XCTest
 /// 里 `hasVisibleMetricsConsumer` 的唯一来源；`wantDetail = consumer && …` 又以它为前置，
 /// 因此断言这一判定即等价于断言「详情采样是否会跑」。
 final class MetricsGatingTests: XCTestCase {
+    private static let snapshot = SystemSnapshot(
+        cpuUsage: 0.25,
+        perCore: [0.25],
+        cpuUser: 0.15,
+        cpuSystem: 0.10,
+        load1: 0.5,
+        load5: 0.4,
+        load15: 0.3,
+        memoryUsed: 4_000,
+        memoryTotal: 8_000,
+        memoryAvailable: 4_000,
+        memoryApp: 2_000,
+        memoryWired: 1_000,
+        memoryCompressed: 1_000,
+        memoryCached: 500,
+        swapUsed: 0,
+        swapTotal: 0,
+        memoryPressure: 1,
+        memoryPressureIndex: 0.25,
+        pageIns: 0,
+        pageOuts: 0,
+        diskFree: 1_000,
+        diskTotal: 2_000,
+        netDownBytesPerSec: 0,
+        netUpBytesPerSec: 0,
+        diskReadBytesPerSec: 0,
+        diskWriteBytesPerSec: 0,
+        gpuUsage: nil,
+        cpuTemp: nil,
+        gpuTemp: nil,
+        ssdTemp: nil,
+        batteryPercent: nil,
+        batteryCharging: false,
+        batteryMinutesRemaining: nil,
+        thermal: .nominal,
+        fanRPM: nil
+    )
+
     private func withMonitoringDefaults(_ body: (UserDefaults) -> Void) {
         let suiteName = "MetricsGatingTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -67,6 +107,39 @@ final class MetricsGatingTests: XCTestCase {
 
         feed.recordMemoryPressureIndex(0.75, cap: 2)
         XCTAssertEqual(feed.memoryPressureHistory, [0.50, 0.75])
+    }
+
+    @MainActor
+    func testCardOnlyPublishUsesLocalSnapshotStreamWithoutGlobalInvalidation() {
+        let feed = MetricsFeed()
+        var globalInvalidations = 0
+        var localSnapshots = 0
+        let global = feed.objectWillChange.sink { globalInvalidations += 1 }
+        let local = feed.snapshotPublisher.compactMap { $0 }.sink { _ in localSnapshots += 1 }
+
+        feed.publish(snapshot: Self.snapshot, notifyUI: false)
+        XCTAssertEqual(globalInvalidations, 0)
+        XCTAssertEqual(localSnapshots, 1)
+
+        feed.publish(snapshot: Self.snapshot, notifyUI: true)
+        XCTAssertEqual(globalInvalidations, 1)
+        XCTAssertEqual(localSnapshots, 2)
+        withExtendedLifetime((global, local)) {}
+    }
+
+    func testGlobalMetricsInvalidationRequiresVisibleMainWindow() {
+        XCTAssertFalse(AppModel.shouldNotifyGlobalMetricsUI(hasVisibleMainWindow: false))
+        XCTAssertTrue(AppModel.shouldNotifyGlobalMetricsUI(hasVisibleMainWindow: true))
+    }
+
+    func testRealtimeMonitoringChartsRejectNearContinuousUpdateAnimation() {
+        XCTAssertTrue(XMonitoringUpdateCadence.ambient.animatesUpdates)
+        XCTAssertFalse(XMonitoringUpdateCadence.realtime.animatesUpdates)
+    }
+
+    @MainActor
+    func testMenuTelemetryTickDisablesOnlyItsUpdateTransactionAnimations() {
+        XCTAssertTrue(MenuMetricPanelTelemetryUpdate.transaction.disablesAnimations)
     }
 
     func testOpeningDetailConsumerRequestsFreshProcessBaseline() {
@@ -305,6 +378,61 @@ final class MetricsGatingTests: XCTestCase {
         XCTAssertFalse(
             AppModel.detailConsumerVisible(consumerVisible: false, hasVisibleMainWindow: false),
             "无弹窗、无前台主窗口时应跳过详情采样")
+    }
+
+    func testMetricCardRequestsOnlyItsRequiredDetailScope() {
+        XCTAssertEqual(
+            AppModel.detailDemand(cardID: nil, hasVisibleMainWindow: false),
+            .none
+        )
+        XCTAssertEqual(
+            AppModel.detailDemand(cardID: "cpu", hasVisibleMainWindow: false),
+            .cpu
+        )
+        XCTAssertEqual(
+            AppModel.detailDemand(cardID: "memory", hasVisibleMainWindow: false),
+            .memory
+        )
+        XCTAssertEqual(
+            AppModel.detailDemand(cardID: "network", hasVisibleMainWindow: false),
+            .hardware
+        )
+        XCTAssertEqual(
+            AppModel.detailDemand(cardID: "combined", hasVisibleMainWindow: false),
+            .all
+        )
+        XCTAssertEqual(
+            AppModel.detailDemand(cardID: "cpu", hasVisibleMainWindow: true),
+            .all
+        )
+        XCTAssertTrue(MetricsDetailDemand.cpu.wantsApplicationUsage)
+        XCTAssertTrue(MetricsDetailDemand.memory.wantsApplicationUsage)
+        XCTAssertFalse(MetricsDetailDemand.hardware.wantsApplicationUsage)
+    }
+
+    func testMetricDetailDemandMapsToNarrowLiveMetricsScope() {
+        XCTAssertEqual(AppModel.liveMetricsSamplingScope(for: .none), .steady)
+        XCTAssertEqual(AppModel.liveMetricsSamplingScope(for: .cpu), .cpuDetail)
+        XCTAssertEqual(AppModel.liveMetricsSamplingScope(for: .memory), .memoryDetail)
+        XCTAssertEqual(AppModel.liveMetricsSamplingScope(for: .hardware), .extendedHardware)
+        XCTAssertEqual(AppModel.liveMetricsSamplingScope(for: .all), .extendedHardware)
+    }
+
+    func testCPUFrequencySamplingGateIsVisibleThrottledAndSingleFlight() {
+        var gate = CPUFrequencySamplingGate(timeToLive: 30)
+        let started = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertFalse(gate.begin(now: started, isVisible: false))
+        XCTAssertTrue(gate.begin(now: started, isVisible: true))
+        XCTAssertFalse(gate.begin(now: started.addingTimeInterval(20), isVisible: true))
+        gate.finish(now: started)
+        XCTAssertFalse(gate.begin(now: started.addingTimeInterval(29.9), isVisible: true))
+        XCTAssertTrue(gate.begin(now: started.addingTimeInterval(30.1), isVisible: true))
+    }
+
+    func testSlowCPUHardwareSensorsUseOneMinuteCacheWithoutChangingOneHertzMetrics() {
+        XCTAssertEqual(CPUFrequencySamplingPolicy.timeToLive, 60)
+        XCTAssertEqual(HardwareSensorSamplingPolicy.temperatureTimeToLive, 60)
     }
 }
 

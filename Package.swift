@@ -37,8 +37,10 @@ let package = Package(
         ),
         // 主应用与特权助手共享的 XPC 协议与常量
         .target(
-            name: "Shared"
+            name: "Shared",
+            dependencies: ["CProcessBatch"]
         ),
+        .target(name: "CProcessBatch"),
         // C 互操作垫片：通过 IOHIDEventSystemClient 私有 API 读取 Apple Silicon 温度传感器
         // （只读、无副作用；不可用时静默返回 0，供 Swift 侧降级）
         .target(

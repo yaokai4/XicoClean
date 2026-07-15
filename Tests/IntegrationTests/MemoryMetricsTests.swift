@@ -2,6 +2,70 @@ import XCTest
 @testable import Infrastructure
 
 final class MemoryMetricsTests: XCTestCase {
+    func testCPUAndMemoryScopesRequestOnlyTheirOwnDetailMetrics() {
+        XCTAssertTrue(LiveMetricsSamplingScope.cpuDetail.needsPerCore)
+        XCTAssertTrue(LiveMetricsSamplingScope.cpuDetail.needsLoad)
+        XCTAssertFalse(LiveMetricsSamplingScope.cpuDetail.needsSwap)
+        XCTAssertTrue(LiveMetricsSamplingScope.cpuDetail.needsTemperature)
+        XCTAssertFalse(LiveMetricsSamplingScope.cpuDetail.needsExtendedHardware)
+
+        XCTAssertFalse(LiveMetricsSamplingScope.memoryDetail.needsPerCore)
+        XCTAssertFalse(LiveMetricsSamplingScope.memoryDetail.needsLoad)
+        XCTAssertTrue(LiveMetricsSamplingScope.memoryDetail.needsSwap)
+        XCTAssertFalse(LiveMetricsSamplingScope.memoryDetail.needsTemperature)
+        XCTAssertFalse(LiveMetricsSamplingScope.memoryDetail.needsExtendedHardware)
+
+        XCTAssertTrue(LiveMetricsSamplingScope.extendedHardware.needsPerCore)
+        XCTAssertTrue(LiveMetricsSamplingScope.extendedHardware.needsLoad)
+        XCTAssertTrue(LiveMetricsSamplingScope.extendedHardware.needsSwap)
+        XCTAssertTrue(LiveMetricsSamplingScope.extendedHardware.needsTemperature)
+        XCTAssertTrue(LiveMetricsSamplingScope.extendedHardware.needsExtendedHardware)
+    }
+
+    func testCPUFrequencyCacheReadsImmediatelyHitsBeforeSixtySecondsAndRefreshesAfterExpiry() {
+        XCTAssertEqual(CPUFrequencySamplingPolicy.timeToLive, 60)
+        let cache = CPUFrequencyCache(timeToLive: 60)
+        let started = Date(timeIntervalSince1970: 1_000)
+        var loads = 0
+
+        let first = cache.value(now: started) {
+            loads += 1
+            return (performance: 3_200, efficiency: 2_000)
+        }
+        let cached = cache.value(now: started.addingTimeInterval(59.9)) {
+            loads += 1
+            return (performance: 1, efficiency: 1)
+        }
+        let refreshed = cache.value(now: started.addingTimeInterval(60.1)) {
+            loads += 1
+            return (performance: 3_100, efficiency: 1_900)
+        }
+
+        XCTAssertEqual(first?.performance, 3_200)
+        XCTAssertEqual(cached?.performance, 3_200)
+        XCTAssertEqual(refreshed?.performance, 3_100)
+        XCTAssertEqual(loads, 2)
+    }
+
+    func testTemperatureCacheReadsImmediatelyHitsBeforeSixtySecondsAndRefreshesAfterExpiry() {
+        let cache = TemperatureReadingCache(timeToLive: 60)
+        let started = Date(timeIntervalSince1970: 2_000)
+        var loads = 0
+        func load(_ celsius: Double) -> [TempReading] {
+            loads += 1
+            return [TempReading(id: "cpu", name: "CPU", celsius: celsius, category: .cpu)]
+        }
+
+        let first = cache.value(now: started) { load(50) }
+        let cached = cache.value(now: started.addingTimeInterval(59.9)) { load(99) }
+        let refreshed = cache.value(now: started.addingTimeInterval(60.1)) { load(55) }
+
+        XCTAssertEqual(first.first?.celsius, 50)
+        XCTAssertEqual(cached.first?.celsius, 50)
+        XCTAssertEqual(refreshed.first?.celsius, 55)
+        XCTAssertEqual(loads, 2)
+    }
+
     func testBreakdownKeepsCacheInsideAvailableMemory() {
         let pages = MemoryPageCounts(
             internalPages: 500,
