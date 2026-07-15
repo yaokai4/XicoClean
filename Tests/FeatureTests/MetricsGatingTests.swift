@@ -237,6 +237,17 @@ final class MetricsGatingTests: XCTestCase {
         }
     }
 
+    func testGlobalRefreshMigratesNonfiniteValuesToOneSecond() {
+        withMonitoringDefaults { defaults in
+            for value in [Double.nan, Double.infinity, -Double.infinity] {
+                defaults.set(value, forKey: MonitoringPreferences.refreshIntervalKey)
+
+                XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), .oneSecond)
+                XCTAssertEqual(defaults.double(forKey: MonitoringPreferences.refreshIntervalKey), 1.0)
+            }
+        }
+    }
+
     func testCanonicalMonitoringKeysTakePrecedenceOverLegacyTaskFourKeys() {
         withMonitoringDefaults { defaults in
             defaults.set(false, forKey: "xico.monitoring.combinesProcesses")

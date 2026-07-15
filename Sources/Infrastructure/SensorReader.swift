@@ -48,7 +48,7 @@ public final class SensorReader: @unchecked Sendable {
     private var cachedTemps: [TempReading]?
     private var cachedAt: Date?
     /// TTL 跟随菜单栏采样节奏：固定 0.5s 在 2s 常驻节奏下**永不命中**，等于每 tick 都重新枚举 HID
-    /// 热传感器（审计 P3）。改为读 `xico.mb.interval`（默认 2s）并下探 0.1s——既覆盖同一采样周期内
+    /// 热传感器（审计 P3）。改为读 `xico.mb.interval`（默认 1s）并下探 0.1s——既覆盖同一采样周期内
     /// summary()/temperatures() 的相继调用、也让相邻 tick 复用同一次枚举，下限 0.5s 兜底。
     private var cacheTTL: TimeInterval {
         let interval = MonitoringRefreshIntervalStore.read().rawValue
