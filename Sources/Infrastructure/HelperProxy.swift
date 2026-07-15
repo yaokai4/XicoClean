@@ -4,6 +4,11 @@ import ServiceManagement
 import Domain
 import Shared
 
+public protocol PrivilegedProcessSampling: Sendable {
+    var processSamplingAvailable: Bool { get }
+    func sampleProcesses(pids: [Int32]) async -> ProcessHelperBatchResponse?
+}
+
 /// 特权助手客户端：注册 / 状态查询 / 经 XPC 调用。
 public final class HelperProxy: @unchecked Sendable {
     public enum Status: Sendable, Equatable {
@@ -145,6 +150,43 @@ public final class HelperProxy: @unchecked Sendable {
         }
     }
 
+    public var processSamplingAvailable: Bool {
+        status() == .installed
+    }
+
+    public func sampleProcesses(pids: [Int32]) async -> ProcessHelperBatchResponse? {
+        guard pids.count <= XicoHelperInfo.maximumProcessSampleCount else { return nil }
+        return await withCheckedContinuation { continuation in
+            let connection = NSXPCConnection(
+                machServiceName: XicoHelperMachServiceName,
+                options: .privileged
+            )
+            connection.remoteObjectInterface = NSXPCInterface(with: XicoHelperProtocol.self)
+            Self.pinHelper(connection)
+            connection.resume()
+
+            let resumeOnce = ResumeGuard<ProcessHelperBatchResponse?>(continuation)
+            Self.scheduleTimeout(resumeOnce, connection, value: nil, timeout: 1.5)
+            let proxy = connection.remoteObjectProxyWithErrorHandler { _ in
+                resumeOnce.finish(nil)
+                connection.invalidate()
+            } as? XicoHelperProtocol
+            guard let proxy else {
+                resumeOnce.finish(nil)
+                connection.invalidate()
+                return
+            }
+            proxy.sampleProcesses(pids: pids.map(NSNumber.init(value:))) { data in
+                let response = data.flatMap { try? JSONDecoder().decode(
+                    ProcessHelperBatchResponse.self,
+                    from: $0
+                ) }
+                resumeOnce.finish(response)
+                connection.invalidate()
+            }
+        }
+    }
+
     /// 版本握手：返回助手自报版本（连接失败/超时返回 nil）。
     public func remoteVersion() async -> String? {
         await withCheckedContinuation { continuation in
@@ -188,6 +230,8 @@ public final class HelperProxy: @unchecked Sendable {
         DispatchQueue.global().asyncAfter(deadline: .now() + (timeout ?? callTimeout), execute: work)
     }
 }
+
+extension HelperProxy: PrivilegedProcessSampling {}
 
 extension HelperProxy: PrivilegedCleaningService {
     public func removeProtected(_ urls: [URL]) async -> PrivilegedRemovalReport {

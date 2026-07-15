@@ -58,6 +58,8 @@ public enum MaintenanceTask: String, Sendable, Codable, CaseIterable {
     func runMaintenance(_ rawTask: String, reply: @escaping (Bool, String?) -> Void)
     /// 删除需 root 权限的路径列表（助手端会再次做安全校验）
     func removeProtected(paths: [String], reply: @escaping (Int64, [String]) -> Void)
+    /// 批量读取进程资源记录；响应仅包含固定字段的 Codable 数据。
+    func sampleProcesses(pids: [NSNumber], reply: @escaping (Data?) -> Void)
     /// 助手版本（用于连通性自检）
     func version(reply: @escaping (String) -> Void)
 }

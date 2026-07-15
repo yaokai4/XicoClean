@@ -128,6 +128,31 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
         reply(freed, failures)
     }
 
+    func sampleProcesses(pids: [NSNumber], reply: @escaping (Data?) -> Void) {
+        IdleExit.shared.beginOperation()
+        defer { IdleExit.shared.endOperation() }
+        guard pids.count <= XicoHelperInfo.maximumProcessSampleCount else {
+            reply(nil)
+            return
+        }
+
+        var records: [ProcessResourceRecord] = []
+        records.reserveCapacity(pids.count)
+        for number in pids {
+            let value = number.int64Value
+            guard value > 0, value <= Int64(Int32.max),
+                  case .success(let record) = DarwinProcessResourceReader.read(pid: Int32(value)) else {
+                continue
+            }
+            records.append(record)
+        }
+        let response = ProcessHelperBatchResponse(
+            requestedCount: pids.count,
+            records: records
+        )
+        reply(try? JSONEncoder().encode(response))
+    }
+
     static func allocatedSize(atPath path: String) -> Int64 {
         let url = URL(fileURLWithPath: path)
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey]

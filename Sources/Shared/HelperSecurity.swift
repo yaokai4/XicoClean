@@ -2,7 +2,8 @@ import Foundation
 
 /// 助手版本单一事实源——version() 握手用它比对，protocol 变更后能识别旧助手并自愈。
 public enum XicoHelperInfo {
-    public static let version = "0.3.0"
+    public static let version = "0.4.0"
+    public static let maximumProcessSampleCount = 4_096
 }
 
 /// 特权助手与主应用之间的「互信」配置。
