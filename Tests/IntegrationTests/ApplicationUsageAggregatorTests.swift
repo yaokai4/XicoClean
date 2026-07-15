@@ -86,6 +86,33 @@ final class ApplicationUsageAggregatorTests: XCTestCase {
         XCTAssertEqual(ordered.map(\.id), [b.id, a.id])
     }
 
+    func testStableRankingCycleProducesDeterministicStrictOrder() {
+        let a = ApplicationUsage.fixture(id: "a", rawCPU: 100, memory: 100)
+        let b = ApplicationUsage.fixture(id: "b", rawCPU: 98, memory: 98)
+        let c = ApplicationUsage.fixture(id: "c", rawCPU: 96, memory: 96)
+        let previousOrder = [c.id, b.id, a.id]
+        let expectedOrder = [b.id, a.id, c.id]
+        let permutations = [
+            [a, b, c], [a, c, b], [b, a, c],
+            [b, c, a], [c, a, b], [c, b, a]
+        ]
+
+        for _ in 0..<5 {
+            for input in permutations {
+                let ordered = UsageRanker.order(
+                    input,
+                    metric: .cpu,
+                    previousOrder: previousOrder
+                )
+                XCTAssertEqual(ordered.map(\.id), expectedOrder)
+                XCTAssertLessThan(
+                    ordered.firstIndex(where: { $0.id == a.id })!,
+                    ordered.firstIndex(where: { $0.id == c.id })!
+                )
+            }
+        }
+    }
+
     func testCombineProcessesDisabledKeepsMembersSeparate() {
         let records = [
             record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
@@ -103,6 +130,34 @@ final class ApplicationUsageAggregatorTests: XCTestCase {
 
         XCTAssertEqual(usages.count, 2)
         XCTAssertEqual(Set(usages.map(\.memberCount)), [1])
+    }
+
+    func testRepresentativeRootAndMemberHierarchyOrderAreDeterministic() {
+        let root = record(pid: 30, parent: 1,
+                          path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                          cpu: 3_000_000_000, memory: 300_000_000)
+        let child = record(pid: 20, parent: 30, path: nil,
+                           cpu: 2_000_000_000, memory: 200_000_000)
+        let grandchild = record(pid: 10, parent: 20, path: nil,
+                                cpu: 1_000_000_000, memory: 100_000_000)
+        let permutations = [
+            [root, child, grandchild], [root, grandchild, child],
+            [child, root, grandchild], [child, grandchild, root],
+            [grandchild, root, child], [grandchild, child, root]
+        ]
+
+        for records in permutations {
+            let ownership = ApplicationOwnershipResolver().resolve(records)
+            let usage = ApplicationUsageAggregator(logicalCPUCount: 8).aggregate(
+                records: records,
+                ownership: ownership,
+                cpuRawByProcess: [:],
+                combinesProcesses: true
+            ).first!
+
+            XCTAssertEqual(usage.representativePID, 30)
+            XCTAssertEqual(usage.members.map { $0.identity.pid }, [30, 20, 10])
+        }
     }
 
     func testSamplerWarmsUpWithMemoryRowsThenPublishesLiveCPU() async {
@@ -131,6 +186,96 @@ final class ApplicationUsageAggregatorTests: XCTestCase {
         XCTAssertEqual(live.byCPU.first?.cpuRawPercent ?? -.infinity,
                        100, accuracy: 0.001)
         XCTAssertEqual(live.byMemory.first?.physicalFootprintBytes, 450_000_000)
+    }
+
+    func testSamplerSerializesConcurrentOutOfOrderCaptures() async {
+        let older = record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                           cpu: 1_000_000_000, memory: 400_000_000)
+        let newer = record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
+                           cpu: 2_000_000_000, memory: 450_000_000)
+        let provider = OutOfOrderProcessSnapshotProvider(captures: [
+            .fixture(time: 1_000_000_000, records: [older]),
+            .fixture(time: 2_000_000_000, records: [newer])
+        ])
+        let sampler = ProcessSampler(provider: provider, logicalCPUCount: 8)
+
+        let olderTask = Task { await sampler.sample() }
+        await provider.waitUntilFirstCaptureStarts()
+        let newerTask = Task { await sampler.sample() }
+        let olderSnapshot = await olderTask.value
+        let newerSnapshot = await newerTask.value
+
+        XCTAssertEqual(olderSnapshot.status, .warmingUp)
+        XCTAssertEqual(olderSnapshot.byMemory.first?.trend.memoryBytes, [400_000_000])
+        XCTAssertEqual(newerSnapshot.status, .live)
+        XCTAssertEqual(newerSnapshot.byCPU.first?.cpuRawPercent ?? -.infinity,
+                       100, accuracy: 0.001)
+        XCTAssertEqual(newerSnapshot.byMemory.first?.trend.memoryBytes,
+                       [400_000_000, 450_000_000])
+    }
+
+    func testLegacyCompatibilityOmitsUnknownAndReusedPIDCPU() {
+        let first = record(pid: 42, start: 1, path: "/usr/bin/fixture",
+                           cpu: 1_000_000_000, memory: 10_000_000)
+        let second = record(pid: 42, start: 1, path: "/usr/bin/fixture",
+                            cpu: 2_000_000_000, memory: 11_000_000)
+        let reused = record(pid: 42, start: 2, path: "/usr/bin/fixture",
+                            cpu: 9_000_000_000, memory: 12_000_000)
+        let captures = [
+            ProcessCapture.fixture(time: 1_000_000_000, records: [first]),
+            .fixture(time: 2_000_000_000, records: [second]),
+            .fixture(time: 3_000_000_000, records: [reused])
+        ]
+        let source = LockedProcessCaptureSource(captures: captures)
+        let sampler = ProcessSampler(
+            provider: FixtureProcessSnapshotProvider(captures: [captures[0]]),
+            logicalCPUCount: 8,
+            legacyCapture: { source.next() }
+        )
+
+        let warming = sampler.sample(top: 6)
+        XCTAssertTrue(warming.byCPU.isEmpty)
+        XCTAssertEqual(warming.byMemory.map(\.id), [42])
+
+        let live = sampler.sample(top: 6)
+        XCTAssertEqual(live.byCPU.first?.cpuPercent ?? -.infinity,
+                       100, accuracy: 0.001)
+
+        let afterReuse = sampler.sample(top: 6)
+        XCTAssertTrue(afterReuse.byCPU.isEmpty)
+        XCTAssertEqual(afterReuse.byMemory.map(\.id), [42])
+    }
+
+    func testLegacyCompatibilityWarmsUpAfterLongGapAndUsesNewBaseline() {
+        let records = [
+            record(pid: 42, start: 1, path: "/usr/bin/fixture",
+                   cpu: 1_000_000_000, memory: 10_000_000),
+            record(pid: 42, start: 1, path: "/usr/bin/fixture",
+                   cpu: 2_000_000_000, memory: 10_000_000),
+            record(pid: 42, start: 1, path: "/usr/bin/fixture",
+                   cpu: 3_000_000_000, memory: 10_000_000),
+            record(pid: 42, start: 1, path: "/usr/bin/fixture",
+                   cpu: 4_000_000_000, memory: 10_000_000)
+        ]
+        let captures = [
+            ProcessCapture.fixture(time: 1_000_000_000, records: [records[0]]),
+            .fixture(time: 2_000_000_000, records: [records[1]]),
+            .fixture(time: 30_000_000_000, records: [records[2]]),
+            .fixture(time: 31_000_000_000, records: [records[3]])
+        ]
+        let source = LockedProcessCaptureSource(captures: captures)
+        let sampler = ProcessSampler(
+            provider: FixtureProcessSnapshotProvider(captures: [captures[0]]),
+            logicalCPUCount: 8,
+            legacyCapture: { source.next() }
+        )
+
+        XCTAssertTrue(sampler.sample(top: 6).byCPU.isEmpty)
+        XCTAssertEqual(sampler.sample(top: 6).byCPU.first?.cpuPercent ?? -.infinity,
+                       100, accuracy: 0.001)
+        XCTAssertTrue(sampler.sample(top: 6).byCPU.isEmpty)
+        XCTAssertEqual(sampler.sample(top: 6).byCPU.first?.cpuPercent ?? -.infinity,
+                       100, accuracy: 0.001)
     }
 
     func testSamplerCapsTrendsAtSixtySamples() async {
@@ -230,6 +375,56 @@ private actor FixtureProcessSnapshotProvider: ProcessSnapshotProviding {
     }
 
     func capture() async -> ProcessCapture {
+        defer { index += 1 }
+        return captures[min(index, captures.count - 1)]
+    }
+}
+
+private actor OutOfOrderProcessSnapshotProvider: ProcessSnapshotProviding {
+    private let captures: [ProcessCapture]
+    private var index = 0
+    private var firstCaptureStarted = false
+    private var firstCaptureWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(captures: [ProcessCapture]) {
+        self.captures = captures
+    }
+
+    func waitUntilFirstCaptureStarts() async {
+        if firstCaptureStarted { return }
+        await withCheckedContinuation { continuation in
+            firstCaptureWaiters.append(continuation)
+        }
+    }
+
+    func capture() async -> ProcessCapture {
+        let captureIndex = index
+        index += 1
+        if captureIndex == 0 {
+            firstCaptureStarted = true
+            let waiters = firstCaptureWaiters
+            firstCaptureWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+            try? await Task.sleep(for: .milliseconds(100))
+        } else {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return captures[min(captureIndex, captures.count - 1)]
+    }
+}
+
+private final class LockedProcessCaptureSource: @unchecked Sendable {
+    private let lock = NSLock()
+    private let captures: [ProcessCapture]
+    private var index = 0
+
+    init(captures: [ProcessCapture]) {
+        self.captures = captures
+    }
+
+    func next() -> ProcessCapture {
+        lock.lock()
+        defer { lock.unlock() }
         defer { index += 1 }
         return captures[min(index, captures.count - 1)]
     }

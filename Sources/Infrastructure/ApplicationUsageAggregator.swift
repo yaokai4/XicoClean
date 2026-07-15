@@ -89,10 +89,42 @@ public struct ApplicationUsageAggregator: Sendable {
         }
 
         return groups.values.map { group in
+            func processIdentityPrecedes(
+                _ lhs: ProcessResourceRecord,
+                _ rhs: ProcessResourceRecord
+            ) -> Bool {
+                if lhs.pid != rhs.pid { return lhs.pid < rhs.pid }
+                if lhs.startTimeNanoseconds != rhs.startTimeNanoseconds {
+                    return lhs.startTimeNanoseconds < rhs.startTimeNanoseconds
+                }
+                if lhs.name != rhs.name { return lhs.name < rhs.name }
+                return (lhs.executablePath ?? "") < (rhs.executablePath ?? "")
+            }
+
+            let recordsByPID = Dictionary(
+                uniqueKeysWithValues: group.records.map { ($0.pid, $0) }
+            )
+            let roots = group.records.filter { recordsByPID[$0.parentPID] == nil }
+            let representative = roots.min(by: processIdentityPrecedes)
+                ?? group.records.min(by: processIdentityPrecedes)
+
+            func hierarchyDepth(of record: ProcessResourceRecord) -> Int {
+                var current = record
+                var visited: Set<Int32> = [record.pid]
+                var depth = 0
+                while let parent = recordsByPID[current.parentPID] {
+                    guard visited.insert(parent.pid).inserted else { return Int.max }
+                    current = parent
+                    depth += 1
+                }
+                return depth
+            }
+
             let sortedRecords = group.records.sorted { lhs, rhs in
-                if lhs.parentPID == rhs.pid { return false }
-                if rhs.parentPID == lhs.pid { return true }
-                return lhs.pid < rhs.pid
+                let lhsDepth = hierarchyDepth(of: lhs)
+                let rhsDepth = hierarchyDepth(of: rhs)
+                if lhsDepth != rhsDepth { return lhsDepth < rhsDepth }
+                return processIdentityPrecedes(lhs, rhs)
             }
             let members = sortedRecords.map { record in
                 let identity = ProcessIdentity(
@@ -113,7 +145,7 @@ public struct ApplicationUsageAggregator: Sendable {
                 displayName: group.ownership.displayName,
                 bundleIdentifier: group.ownership.bundleIdentifier,
                 bundlePath: group.ownership.bundlePath,
-                representativePID: sortedRecords.first?.pid ?? 0,
+                representativePID: representative?.pid ?? 0,
                 members: members,
                 cpuRawPercent: rawCPU,
                 cpuNormalizedPercent: rawCPU.map {
@@ -147,9 +179,10 @@ public enum UsageRanker {
         metric: ApplicationUsageMetric,
         previousOrder: [ApplicationIdentity]
     ) -> [ApplicationUsage] {
-        let priorIndex = Dictionary(
-            uniqueKeysWithValues: previousOrder.enumerated().map { ($0.element, $0.offset) }
-        )
+        var priorIndex: [ApplicationIdentity: Int] = [:]
+        for (index, identity) in previousOrder.enumerated() where priorIndex[identity] == nil {
+            priorIndex[identity] = index
+        }
 
         func value(_ usage: ApplicationUsage) -> Double? {
             switch metric {
@@ -158,28 +191,56 @@ public enum UsageRanker {
             }
         }
 
-        return usages.sorted { lhs, rhs in
-            let lhsValue = value(lhs)
-            let rhsValue = value(rhs)
-            switch (lhsValue, rhsValue) {
+        func mustPrecede(_ lhs: ApplicationUsage, _ rhs: ApplicationUsage) -> Bool {
+            switch (value(lhs), value(rhs)) {
             case let (lhsValue?, rhsValue?):
-                let larger = max(lhsValue, rhsValue)
-                if abs(lhsValue - rhsValue) > larger * 0.03 {
-                    return lhsValue > rhsValue
-                }
+                guard lhsValue > rhsValue else { return false }
+                return lhsValue - rhsValue > lhsValue * 0.03
             case (_?, nil):
                 return true
-            case (nil, _?):
+            case (nil, _?), (nil, nil):
                 return false
-            case (nil, nil):
-                break
             }
-
-            if let lhsIndex = priorIndex[lhs.id], let rhsIndex = priorIndex[rhs.id],
-               lhsIndex != rhsIndex {
-                return lhsIndex < rhsIndex
-            }
-            return lhs.id.rawValue < rhs.id.rawValue
         }
+
+        func stablePriority(_ lhs: Int, _ rhs: Int) -> Bool {
+            let lhsPrior = priorIndex[usages[lhs].id] ?? Int.max
+            let rhsPrior = priorIndex[usages[rhs].id] ?? Int.max
+            if lhsPrior != rhsPrior { return lhsPrior < rhsPrior }
+            if usages[lhs].id.rawValue != usages[rhs].id.rawValue {
+                return usages[lhs].id.rawValue < usages[rhs].id.rawValue
+            }
+            return lhs < rhs
+        }
+
+        // Metric differences outside the hysteresis band are mandatory edges in an
+        // acyclic graph. Previous order is only used to choose among currently
+        // unconstrained rows, so it can never create a comparator cycle.
+        var successors = [[Int]](repeating: [], count: usages.count)
+        var indegree = [Int](repeating: 0, count: usages.count)
+        for lhs in usages.indices {
+            for rhs in usages.indices where rhs > lhs {
+                if mustPrecede(usages[lhs], usages[rhs]) {
+                    successors[lhs].append(rhs)
+                    indegree[rhs] += 1
+                } else if mustPrecede(usages[rhs], usages[lhs]) {
+                    successors[rhs].append(lhs)
+                    indegree[lhs] += 1
+                }
+            }
+        }
+
+        var ready = usages.indices.filter { indegree[$0] == 0 }
+        var ordered: [ApplicationUsage] = []
+        ordered.reserveCapacity(usages.count)
+        while let next = ready.min(by: stablePriority) {
+            ready.remove(at: ready.firstIndex(of: next)!)
+            ordered.append(usages[next])
+            for successor in successors[next] {
+                indegree[successor] -= 1
+                if indegree[successor] == 0 { ready.append(successor) }
+            }
+        }
+        return ordered
     }
 }

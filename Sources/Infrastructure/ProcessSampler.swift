@@ -19,7 +19,9 @@ public actor ProcessSampler {
     private var trendLastSeen: [ApplicationIdentity: UInt64] = [:]
     private var previousCPUOrder: [ApplicationIdentity] = []
     private var previousMemoryOrder: [ApplicationIdentity] = []
-    nonisolated private let legacy = LegacyProcessSampler()
+    private var sampleInProgress = false
+    private var sampleWaiters: [CheckedContinuation<Void, Never>] = []
+    nonisolated private let legacy: LegacyProcessSampler
 
     public init(
         provider: any ProcessSnapshotProviding = LocalProcessSnapshotProvider(),
@@ -28,6 +30,18 @@ public actor ProcessSampler {
         self.provider = provider
         self.resolver = ApplicationOwnershipResolver()
         self.aggregator = ApplicationUsageAggregator(logicalCPUCount: logicalCPUCount)
+        self.legacy = LegacyProcessSampler()
+    }
+
+    init(
+        provider: any ProcessSnapshotProviding,
+        logicalCPUCount: Int,
+        legacyCapture: @escaping @Sendable () -> ProcessCapture
+    ) {
+        self.provider = provider
+        self.resolver = ApplicationOwnershipResolver()
+        self.aggregator = ApplicationUsageAggregator(logicalCPUCount: logicalCPUCount)
+        self.legacy = LegacyProcessSampler(capture: legacyCapture)
     }
 
     public func resetBaseline() {
@@ -38,6 +52,9 @@ public actor ProcessSampler {
         limit: Int = 6,
         combinesProcesses: Bool = true
     ) async -> ApplicationUsageSnapshot {
+        await acquireSamplePermit()
+        defer { releaseSamplePermit() }
+
         let capture = await provider.capture()
         let cpuRates = cpu.rates(for: capture)
         let ownership = resolver.resolve(capture.records)
@@ -109,6 +126,24 @@ public actor ProcessSampler {
         )
     }
 
+    private func acquireSamplePermit() async {
+        if !sampleInProgress {
+            sampleInProgress = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            sampleWaiters.append(continuation)
+        }
+    }
+
+    private func releaseSamplePermit() {
+        guard !sampleWaiters.isEmpty else {
+            sampleInProgress = false
+            return
+        }
+        sampleWaiters.removeFirst().resume()
+    }
+
     /// Temporary source compatibility for call sites migrated in the next task.
     public nonisolated func sample(top: Int) -> (
         byCPU: [ProcessUsage],
@@ -173,59 +208,73 @@ public actor ProcessSampler {
 
 private final class LegacyProcessSampler: @unchecked Sendable {
     private let lock = NSLock()
-    private let enumerator = PIDEnumerator()
-    private var previousCPUTime: [Int32: UInt64] = [:]
-    private var previousWall: Date?
+    private let capture: @Sendable () -> ProcessCapture
+    private var cpu = ProcessCPUDeltaCalculator()
+
+    init() {
+        let enumerator = PIDEnumerator()
+        self.capture = {
+            let pids = enumerator.allPIDs()
+            var records: [ProcessResourceRecord] = []
+            var failures: [Int32: ProcessResourceReadFailure] = [:]
+            records.reserveCapacity(pids.count)
+            failures.reserveCapacity(pids.count)
+            for pid in pids {
+                switch DarwinProcessResourceReader.read(pid: pid) {
+                case .success(let record): records.append(record)
+                case .failure(let failure): failures[pid] = failure
+                }
+            }
+            return ProcessCapture(
+                records: records,
+                failures: failures,
+                wallDate: Date(),
+                monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                source: .local,
+                enumeratedCount: pids.count
+            )
+        }
+    }
+
+    init(capture: @escaping @Sendable () -> ProcessCapture) {
+        self.capture = capture
+    }
 
     func sample(top: Int) -> (byCPU: [ProcessUsage], byMemory: [ProcessUsage]) {
-        let records = enumerator.allPIDs().compactMap { pid -> ProcessResourceRecord? in
-            guard case .success(let record) = DarwinProcessResourceReader.read(pid: pid) else {
-                return nil
-            }
-            return record
-        }
-        guard !records.isEmpty else { return ([], []) }
-
-        let now = Date()
         lock.lock()
-        let oldWall = previousWall
-        let oldCPUTime = previousCPUTime
-        lock.unlock()
-        let elapsed = oldWall.map { now.timeIntervalSince($0) } ?? 0
+        defer { lock.unlock() }
+        let capture = capture()
+        let rates = cpu.rates(for: capture)
+        guard !capture.records.isEmpty else { return ([], []) }
 
-        var nextCPUTime: [Int32: UInt64] = [:]
-        var usages: [ProcessUsage] = []
-        nextCPUTime.reserveCapacity(records.count)
-        usages.reserveCapacity(records.count)
-        for record in records {
-            nextCPUTime[record.pid] = record.cpuTimeNanoseconds
-            var cpuPercent = 0.0
-            if elapsed > 0,
-               let previous = oldCPUTime[record.pid],
-               record.cpuTimeNanoseconds >= previous {
-                cpuPercent = Double(record.cpuTimeNanoseconds - previous)
-                    / (elapsed * 1_000_000_000) * 100
-            }
+        var byCPU: [ProcessUsage] = []
+        var byMemory: [ProcessUsage] = []
+        byCPU.reserveCapacity(capture.records.count)
+        byMemory.reserveCapacity(capture.records.count)
+        for record in capture.records {
+            let identity = ProcessIdentity(
+                pid: record.pid,
+                startTimeNanoseconds: record.startTimeNanoseconds
+            )
+            let knownCPU = rates?[identity]
+            let cpuPercent = knownCPU ?? 0
             if cpuPercent < 0.05 && record.physicalFootprintBytes < 2_000_000 { continue }
-            usages.append(ProcessUsage(
+            let usage = ProcessUsage(
                 id: record.pid,
                 name: record.name,
                 cpuPercent: cpuPercent,
                 memoryBytes: record.physicalFootprintBytes
-            ))
+            )
+            byMemory.append(usage)
+            if knownCPU != nil { byCPU.append(usage) }
         }
 
-        lock.lock()
-        previousCPUTime = nextCPUTime
-        previousWall = now
-        lock.unlock()
-
         let boundedTop = max(0, top)
-        let byCPU = usages.sorted {
+        byCPU.sort {
             if $0.cpuPercent != $1.cpuPercent { return $0.cpuPercent > $1.cpuPercent }
             return $0.id < $1.id
         }
-        let byMemory = usages.sorted {
+        byMemory.sort {
             if $0.memoryBytes != $1.memoryBytes { return $0.memoryBytes > $1.memoryBytes }
             return $0.id < $1.id
         }
