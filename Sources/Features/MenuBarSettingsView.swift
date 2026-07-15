@@ -17,6 +17,16 @@ public struct MenuBarSettingsView: View {
     @AppStorage("xico.mb.colored") private var mbColored = false
     @AppStorage("xico.mb.order") private var mbOrderCSV = ""
     @AppStorage("xico.mb.combined.values") private var mbCombinedValues = false
+    @AppStorage(MonitoringPreferences.cpuModeKey)
+    private var monitoringCPUMode = MonitoringPreferences.cpuMode().rawValue
+    @AppStorage(MonitoringPreferences.combinesProcessesKey)
+    private var monitoringCombinesProcesses = MonitoringPreferences.combinesProcesses()
+    @AppStorage(MonitoringPreferences.processLimitKey)
+    private var monitoringProcessLimit = MonitoringPreferences.processLimit()
+    @AppStorage(MonitoringPreferences.densityKey)
+    private var monitoringDensity = MonitoringPreferences.density().rawValue
+    @AppStorage(MonitoringPreferences.memoryUnitKey)
+    private var monitoringMemoryUnit = MonitoringPreferences.memoryUnit().rawValue
     /// 展开逐项详情的条目（同一时间只展开一个——渐进披露，防设置迷宫）。
     @State private var mbExpanded: String?
 
@@ -202,7 +212,7 @@ public struct MenuBarSettingsView: View {
                     Picker("", selection: $mbInterval) {
                         Text(xLoc("快速（1 秒）")).tag(1.0)
                         Text(xLoc("标准（2 秒）")).tag(2.0)
-                        Text(xLoc("省电（3 秒）")).tag(3.0)
+                        Text(xLoc("省电（5 秒）")).tag(5.0)
                     }
                     .labelsHidden().pickerStyle(.menu).frame(width: 150)
                     .accessibilityLabel(xLoc("更新频率"))
@@ -458,6 +468,9 @@ public struct MenuBarSettingsView: View {
                         .font(XFont.caption).foregroundStyle(XColor.textTertiary)
                 }
             }
+            if item.id == "cpu" || item.id == "memory" {
+                monitoringPresentationControls
+            }
             if item.id != "combined" {
                 HStack(spacing: XSpacing.l) {
                     HStack(spacing: XSpacing.xs) {
@@ -484,6 +497,67 @@ public struct MenuBarSettingsView: View {
                     }
                     Spacer()
                 }
+            }
+        }
+    }
+
+    private var monitoringPresentationControls: some View {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
+            Divider()
+            HStack(spacing: XSpacing.xs) {
+                Text(xLoc("CPU · 口径")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                Picker("", selection: $monitoringCPUMode) {
+                    Text(xLoc("归一化 0–100%")).tag(CPUDisplayMode.normalized.rawValue)
+                    Text(xLoc("总核心 0–N×100%")).tag(CPUDisplayMode.totalCore.rawValue)
+                }
+                .labelsHidden().pickerStyle(.menu).fixedSize()
+                .accessibilityLabel(xLoc("CPU · 口径"))
+                Spacer()
+            }
+            HStack {
+                Text(xLoc("合并应用进程")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                Spacer()
+                Toggle("", isOn: $monitoringCombinesProcesses)
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .labelsHidden()
+                    .accessibilityLabel(xLoc("合并应用进程"))
+                    .onChange(of: monitoringCombinesProcesses) {
+                        model.prepareApplicationSampling()
+                    }
+            }
+            HStack(spacing: XSpacing.l) {
+                HStack(spacing: XSpacing.xs) {
+                    Text(xLoc("排行数量")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Picker("", selection: $monitoringProcessLimit) {
+                        ForEach([4, 6, 10, 20], id: \.self) { limit in
+                            Text("\(limit)").tag(limit)
+                        }
+                    }
+                    .labelsHidden().pickerStyle(.menu).fixedSize()
+                    .accessibilityLabel(xLoc("排行数量"))
+                }
+                HStack(spacing: XSpacing.xs) {
+                    Text(xLoc("密度")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    Picker("", selection: $monitoringDensity) {
+                        Text(xLoc("紧凑")).tag(MonitoringPanelDensity.compact.rawValue)
+                        Text(xLoc("均衡")).tag(MonitoringPanelDensity.balanced.rawValue)
+                        Text(xLoc("详细")).tag(MonitoringPanelDensity.detailed.rawValue)
+                    }
+                    .labelsHidden().pickerStyle(.menu).fixedSize()
+                    .accessibilityLabel(xLoc("密度"))
+                }
+                Spacer()
+            }
+            HStack(spacing: XSpacing.xs) {
+                Text(xLoc("内存单位")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                Picker("", selection: $monitoringMemoryUnit) {
+                    Text(xLoc("十进制 GB / MB")).tag(MemoryUnitStyle.decimal.rawValue)
+                    Text(xLoc("二进制 GiB / MiB")).tag(MemoryUnitStyle.binary.rawValue)
+                }
+                .labelsHidden().pickerStyle(.menu).fixedSize()
+                .accessibilityLabel(xLoc("内存单位"))
+                Spacer()
             }
         }
     }

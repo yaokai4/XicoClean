@@ -9,6 +9,13 @@ import XCTest
 /// 里 `hasVisibleMetricsConsumer` 的唯一来源；`wantDetail = consumer && …` 又以它为前置，
 /// 因此断言这一判定即等价于断言「详情采样是否会跑」。
 final class MetricsGatingTests: XCTestCase {
+    private func withMonitoringDefaults(_ body: (UserDefaults) -> Void) {
+        let suiteName = "MetricsGatingTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        body(defaults)
+    }
 
     func testMemoryPressureCopyNamesCompositeIndexHonestly() {
         XCTAssertEqual(MemoryPressureDisplayCopy.indexLabel, "Xico 压力指数")
@@ -172,38 +179,53 @@ final class MetricsGatingTests: XCTestCase {
             .stale)
     }
 
-    func testMonitoringPreferencesUseValidatedDefaults() {
-        let defaults = UserDefaults.standard
-        let processLimitKey = "xico.monitoring.processLimit"
-        let combinesProcessesKey = "xico.monitoring.combinesProcesses"
-        let previousLimit = defaults.object(forKey: processLimitKey)
-        let previousCombining = defaults.object(forKey: combinesProcessesKey)
-        defer {
-            if let previousLimit {
-                defaults.set(previousLimit, forKey: processLimitKey)
-            } else {
-                defaults.removeObject(forKey: processLimitKey)
-            }
-            if let previousCombining {
-                defaults.set(previousCombining, forKey: combinesProcessesKey)
-            } else {
-                defaults.removeObject(forKey: combinesProcessesKey)
-            }
-        }
+    func testMonitoringPreferencesUseTypedValidatedDefaults() {
+        withMonitoringDefaults { defaults in
+            XCTAssertEqual(MonitoringPreferences.cpuMode(defaults), .normalized)
+            XCTAssertTrue(MonitoringPreferences.combinesProcesses(defaults))
+            XCTAssertEqual(MonitoringPreferences.processLimit(defaults), 6)
+            XCTAssertEqual(MonitoringPreferences.density(defaults), .balanced)
+            XCTAssertEqual(MonitoringPreferences.memoryUnit(defaults), .binary)
 
-        defaults.removeObject(forKey: processLimitKey)
-        defaults.removeObject(forKey: combinesProcessesKey)
-        XCTAssertEqual(MonitoringPreferences.processLimit(), 6)
-        XCTAssertTrue(MonitoringPreferences.combinesProcesses())
-
-        for allowedLimit in [4, 6, 10, 20] {
-            defaults.set(allowedLimit, forKey: processLimitKey)
-            XCTAssertEqual(MonitoringPreferences.processLimit(), allowedLimit)
+            for allowedLimit in [4, 6, 10, 20] {
+                defaults.set(allowedLimit, forKey: MonitoringPreferences.processLimitKey)
+                XCTAssertEqual(MonitoringPreferences.processLimit(defaults), allowedLimit)
+            }
+            defaults.set(12, forKey: MonitoringPreferences.processLimitKey)
+            XCTAssertEqual(MonitoringPreferences.processLimit(defaults), 6)
         }
-        defaults.set(12, forKey: processLimitKey)
-        defaults.set(false, forKey: combinesProcessesKey)
-        XCTAssertEqual(MonitoringPreferences.processLimit(), 6)
-        XCTAssertFalse(MonitoringPreferences.combinesProcesses())
+    }
+
+    func testCanonicalMonitoringKeysTakePrecedenceOverLegacyTaskFourKeys() {
+        withMonitoringDefaults { defaults in
+            defaults.set(false, forKey: "xico.monitoring.combinesProcesses")
+            defaults.set(4, forKey: "xico.monitoring.processLimit")
+            defaults.set(true, forKey: MonitoringPreferences.combinesProcessesKey)
+            defaults.set(20, forKey: MonitoringPreferences.processLimitKey)
+
+            XCTAssertTrue(MonitoringPreferences.combinesProcesses(defaults))
+            XCTAssertEqual(MonitoringPreferences.processLimit(defaults), 20)
+        }
+    }
+
+    func testLegacyTaskFourKeysAreReadWhenCanonicalKeysAreAbsent() {
+        withMonitoringDefaults { defaults in
+            defaults.set(false, forKey: "xico.monitoring.combinesProcesses")
+            defaults.set(10, forKey: "xico.monitoring.processLimit")
+
+            XCTAssertFalse(MonitoringPreferences.combinesProcesses(defaults))
+            XCTAssertEqual(MonitoringPreferences.processLimit(defaults), 10)
+            XCTAssertNil(defaults.object(forKey: MonitoringPreferences.combinesProcessesKey))
+            XCTAssertNil(defaults.object(forKey: MonitoringPreferences.processLimitKey))
+        }
+    }
+
+    func testCanonicalMonitoringPreferenceKeysAreStable() {
+        XCTAssertEqual(MonitoringPreferences.cpuModeKey, "xico.monitor.cpuMode")
+        XCTAssertEqual(MonitoringPreferences.combinesProcessesKey, "xico.monitor.combinesProcesses")
+        XCTAssertEqual(MonitoringPreferences.processLimitKey, "xico.monitor.processLimit")
+        XCTAssertEqual(MonitoringPreferences.densityKey, "xico.monitor.density")
+        XCTAssertEqual(MonitoringPreferences.memoryUnitKey, "xico.monitor.memoryUnit")
     }
 
     /// 回归核心：弹窗打开(consumerVisible=true) 时，即便无可见主窗口，也必须触发详情采样。

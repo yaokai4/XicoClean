@@ -300,6 +300,11 @@ public struct VolumeCapacity: Sendable {
 
 // MARK: - 字节格式化
 
+public enum MemoryUnitStyle: String, CaseIterable, Sendable {
+    case decimal
+    case binary
+}
+
 public extension Int64 {
     /// 友好的容量字符串，如 "1.2 GB"（0 显示为 "0 B"，不出现 "Zero bytes"）。
     /// 磁盘/文件用十进制口径（对齐 Finder）。
@@ -320,5 +325,21 @@ public extension Int64 {
         f.allowsNonnumericFormatting = false
         f.allowedUnits = [.useMB, .useGB]
         return f.string(fromByteCount: self)
+    }
+
+    func formattedMemory(style: MemoryUnitStyle) -> String {
+        guard self > 0 else { return "0 B" }
+        let base = style == .decimal ? 1_000.0 : 1_024.0
+        let gigabyte = base * base * base
+        let value: Double
+        let unit: String
+        if Double(self) >= gigabyte {
+            value = Double(self) / gigabyte
+            unit = style == .decimal ? "GB" : "GiB"
+        } else {
+            value = Double(self) / (base * base)
+            unit = style == .decimal ? "MB" : "MiB"
+        }
+        return String(format: "%.2f %@", value, unit)
     }
 }
