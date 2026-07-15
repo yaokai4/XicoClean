@@ -25,6 +25,52 @@ final class MemoryMetricsTests: XCTestCase {
         XCTAssertEqual(value.availableBytes, 250 * 4096)
     }
 
+    func testBreakdownSaturatesAtInt64MaxWithoutOverflowing() {
+        let pages = MemoryPageCounts(
+            internalPages: .max,
+            purgeablePages: .max,
+            externalPages: .max,
+            wiredPages: .max,
+            compressorPages: .max
+        )
+
+        let value = MemoryBreakdown.calculate(
+            totalBytes: .max,
+            pageSize: .max,
+            pages: pages
+        )
+
+        XCTAssertEqual(value.applicationBytes, 0)
+        XCTAssertEqual(value.wiredBytes, .max)
+        XCTAssertEqual(value.compressedBytes, .max)
+        XCTAssertEqual(value.cachedBytes, .max)
+        XCTAssertEqual(value.usedBytes, .max)
+        XCTAssertEqual(value.availableBytes, 0)
+    }
+
+    func testBreakdownTreatsNegativeCountsAndPageSizeAsZero() {
+        let pages = MemoryPageCounts(
+            internalPages: .min,
+            purgeablePages: -1,
+            externalPages: -2,
+            wiredPages: -3,
+            compressorPages: -4
+        )
+
+        let value = MemoryBreakdown.calculate(
+            totalBytes: 1_000,
+            pageSize: .min,
+            pages: pages
+        )
+
+        XCTAssertEqual(value.applicationBytes, 0)
+        XCTAssertEqual(value.wiredBytes, 0)
+        XCTAssertEqual(value.compressedBytes, 0)
+        XCTAssertEqual(value.cachedBytes, 0)
+        XCTAssertEqual(value.usedBytes, 0)
+        XCTAssertEqual(value.availableBytes, 1_000)
+    }
+
     func testPressureIndexUsesKernelPressureAndStateFloor() {
         XCTAssertEqual(
             MemoryPressureIndex.score(

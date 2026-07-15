@@ -10,6 +10,28 @@ import XCTest
 /// 因此断言这一判定即等价于断言「详情采样是否会跑」。
 final class MetricsGatingTests: XCTestCase {
 
+    func testMemoryPressureCopyNamesCompositeIndexHonestly() {
+        XCTAssertEqual(MemoryPressureDisplayCopy.indexLabel, "Xico 压力指数")
+        XCTAssertEqual(MemoryPressureDisplayCopy.stateLabel, "内存压力")
+        XCTAssertEqual(MemoryPressureDisplayCopy.percentage(0.654), "65%")
+        XCTAssertEqual(MemoryPressureDisplayCopy.percentage(nil), "—")
+        XCTAssertTrue(MemoryPressureDisplayCopy.explanation.contains("可用内存"))
+        XCTAssertTrue(MemoryPressureDisplayCopy.explanation.contains("压缩"))
+        XCTAssertTrue(MemoryPressureDisplayCopy.explanation.contains("交换区"))
+        XCTAssertTrue(MemoryPressureDisplayCopy.explanation.contains("不是 macOS 提供的百分比"))
+    }
+
+    @MainActor
+    func testMemoryHistorySelectionMatchesConfiguredMetric() {
+        let feed = MetricsFeed()
+        feed.memHistory = [0.25, 0.50]
+        feed.memoryPressureHistory = [0.65, 0.85]
+
+        XCTAssertEqual(feed.memoryHistory(for: nil), [0.65, 0.85])
+        XCTAssertEqual(feed.memoryHistory(for: "pressure"), [0.65, 0.85])
+        XCTAssertEqual(feed.memoryHistory(for: "used"), [0.25, 0.50])
+    }
+
     func testOpeningDetailConsumerRequestsFreshProcessBaseline() {
         XCTAssertTrue(AppModel.shouldResetProcessBaseline(wasVisible: false, isVisible: true))
         XCTAssertFalse(AppModel.shouldResetProcessBaseline(wasVisible: true, isVisible: true))

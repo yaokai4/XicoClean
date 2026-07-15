@@ -33,13 +33,23 @@ public struct MemoryBreakdown: Sendable, Equatable {
         pageSize: Int64,
         pages: MemoryPageCounts
     ) -> Self {
-        let applicationPages = max(0, pages.internalPages - pages.purgeablePages)
-        let cachedPages = pages.externalPages + pages.purgeablePages
-        let applicationBytes = applicationPages * pageSize
-        let wiredBytes = pages.wiredPages * pageSize
-        let compressedBytes = pages.compressorPages * pageSize
-        let cachedBytes = cachedPages * pageSize
-        let usedBytes = applicationBytes + wiredBytes + compressedBytes
+        // Public callers may supply malformed or synthetic counts. Invalid negatives become zero;
+        // values beyond Int64 capacity saturate instead of trapping the monitoring process.
+        let totalBytes = nonnegative(totalBytes)
+        let pageSize = nonnegative(pageSize)
+        let internalPages = nonnegative(pages.internalPages)
+        let purgeablePages = nonnegative(pages.purgeablePages)
+        let externalPages = nonnegative(pages.externalPages)
+        let wiredPages = nonnegative(pages.wiredPages)
+        let compressorPages = nonnegative(pages.compressorPages)
+
+        let applicationPages = internalPages > purgeablePages ? internalPages - purgeablePages : 0
+        let cachedPages = saturatedAdd(externalPages, purgeablePages)
+        let applicationBytes = saturatedMultiply(applicationPages, pageSize)
+        let wiredBytes = saturatedMultiply(wiredPages, pageSize)
+        let compressedBytes = saturatedMultiply(compressorPages, pageSize)
+        let cachedBytes = saturatedMultiply(cachedPages, pageSize)
+        let usedBytes = saturatedAdd(saturatedAdd(applicationBytes, wiredBytes), compressedBytes)
 
         return Self(
             applicationBytes: applicationBytes,
@@ -47,8 +57,22 @@ public struct MemoryBreakdown: Sendable, Equatable {
             compressedBytes: compressedBytes,
             cachedBytes: cachedBytes,
             usedBytes: usedBytes,
-            availableBytes: max(0, totalBytes - usedBytes)
+            availableBytes: totalBytes > usedBytes ? totalBytes - usedBytes : 0
         )
+    }
+
+    private static func nonnegative(_ value: Int64) -> Int64 {
+        max(0, value)
+    }
+
+    private static func saturatedAdd(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+        let (value, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? .max : value
+    }
+
+    private static func saturatedMultiply(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+        guard lhs > 0, rhs > 0 else { return 0 }
+        return lhs > .max / rhs ? .max : lhs * rhs
     }
 }
 

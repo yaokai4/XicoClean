@@ -140,6 +140,7 @@ public final class MetricsFeed: ObservableObject {
     @Published public var cpuUserHistory: [Double] = []
     @Published public var cpuSysHistory: [Double] = []
     @Published public var memHistory: [Double] = []
+    @Published public var memoryPressureHistory: [Double] = []
     @Published public var gpuHistory: [Double] = []
     @Published public var netDownHistory: [Double] = []
     @Published public var netUpHistory: [Double] = []
@@ -179,6 +180,10 @@ public final class MetricsFeed: ObservableObject {
     @Published public var batteryMinutesRemaining: Int?
 
     public init() {}
+
+    public func memoryHistory(for metric: String?) -> [Double] {
+        metric == "used" ? memHistory : memoryPressureHistory
+    }
 }
 
 /// 应用级状态：环境、当前选中模块、权限、实时指标。
@@ -216,6 +221,7 @@ public final class AppModel: ObservableObject {
     public var storageVolumes: [StorageHealth] { get { liveMetricsFeed.storageVolumes } set { liveMetricsFeed.storageVolumes = newValue } }
     public var cpuHistory: [Double] { get { liveMetricsFeed.cpuHistory } set { liveMetricsFeed.cpuHistory = newValue } }
     public var memHistory: [Double] { get { liveMetricsFeed.memHistory } set { liveMetricsFeed.memHistory = newValue } }
+    public var memoryPressureHistory: [Double] { get { liveMetricsFeed.memoryPressureHistory } set { liveMetricsFeed.memoryPressureHistory = newValue } }
     public var gpuHistory: [Double] { get { liveMetricsFeed.gpuHistory } set { liveMetricsFeed.gpuHistory = newValue } }
     public var netDownHistory: [Double] { get { liveMetricsFeed.netDownHistory } set { liveMetricsFeed.netDownHistory = newValue } }
     public var netUpHistory: [Double] { get { liveMetricsFeed.netUpHistory } set { liveMetricsFeed.netUpHistory = newValue } }
@@ -609,6 +615,7 @@ public final class AppModel: ObservableObject {
         push(&feed.cpuUserHistory, s.cpuUser)
         push(&feed.cpuSysHistory, s.cpuSystem)
         push(&feed.memHistory, s.memoryUsedFraction)
+        push(&feed.memoryPressureHistory, s.memoryPressureIndex ?? s.memoryUsedFraction)
         push(&feed.gpuHistory, s.gpuUsage ?? 0)
         push(&feed.netDownHistory, s.netDownBytesPerSec)
         push(&feed.netUpHistory, s.netUpBytesPerSec)

@@ -1055,7 +1055,6 @@
 
 /* P8 · 用户反馈修正（内存口径/面板细化） */
 "口径" = "Métrica";
-"压力（同 iStat）" = "Pressão (como o iStat)";
 "可用中含 %@ 缓存文件，系统随取随回收" = "Disponível inclui %@ de arquivos em cache — recuperados na hora quando necessário";
 "扫描整个磁盘" = "Escanear o disco inteiro";
 "隐藏空间" = "Espaço oculto";

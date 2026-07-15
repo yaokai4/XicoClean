@@ -211,11 +211,13 @@ final class MenuBarController: NSObject {
         case "memory":
             // 默认显示明确命名的 Xico 压力指数；可在设置切回物理占用。
             // 指数采样不可用时退回占用，避免把三态标签伪装成精确百分比。
-            let usePressure = UserDefaults.standard.string(forKey: "xico.mb.memory.metric") != "used"
+            let metric = UserDefaults.standard.string(forKey: "xico.mb.memory.metric")
+            let usePressure = metric != "used"
             let memFraction = usePressure ? (s?.memoryPressureIndex ?? s?.memoryUsedFraction ?? 0)
                                           : (s?.memoryUsedFraction ?? 0)
             return MenuBarGlyph.memory(fraction: memFraction,
-                                       history: model.memHistory, style: style, colored: colored)
+                                       history: model.liveMetricsFeed.memoryHistory(for: metric),
+                                       style: style, colored: colored)
         case "network":
             let hist = netHistories()
             return MenuBarGlyph.network(down: s?.netDownBytesPerSec ?? 0,

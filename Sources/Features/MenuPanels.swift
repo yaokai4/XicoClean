@@ -5,6 +5,18 @@ import Infrastructure
 import DesignSystem
 import Shared
 
+enum MemoryPressureDisplayCopy {
+    static let indexLabel = "Xico 压力指数"
+    static let stateLabel = "内存压力"
+    static let explanation = "综合内存压力状态、可用内存、压缩和交换区计算，不是 macOS 提供的百分比。"
+
+    static func percentage(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        let bounded = min(1, max(0, value))
+        return "\(Int((bounded * 100).rounded()))%"
+    }
+}
+
 /// 每进程网络流量区块（面板可见期间每 ~3s 后台采样一轮；nettop 不可用时整块消失）。
 private struct NetTopSection: View {
     @State private var usages: [ProcessNetUsage]?
@@ -437,26 +449,29 @@ public struct MenuMetricPanel: View {
     // MARK: - 内存面板（压力环 + 用量环 + 分段条 + 完整图例 + 分页 + 交换 + 进程榜）
 
     @ViewBuilder private func memoryContent(_ s: SystemSnapshot) -> some View {
+        let pressureIndexText = MemoryPressureDisplayCopy.percentage(s.memoryPressureIndex)
         VStack(alignment: .leading, spacing: XSpacing.m) {
-            HStack(spacing: XSpacing.l) {
-                // 压力环：色随等级（正常绿 / 警告橙 / 危险红）。中心状态词随长语言自动缩放不换行。
-                XMiniRing(fraction: s.pressureFractionPreferred, colors: pressureColors(s), size: 62, lineWidth: 7) {
-                    VStack(spacing: 0) {
-                        // 明确命名的 Xico 压力指数；指数不可用时显示内核三态，不伪装百分数。
-                        if let pct = s.memoryPressureIndex {
-                            Text("\(Int((pct * 100).rounded()))%").font(XFont.monoMini)
-                                .foregroundStyle(XColor.textPrimary)
-                        } else {
-                            Text(xLoc(s.memoryPressureLabel)).font(XFont.micro)
-                                .foregroundStyle(XColor.textPrimary)
-                                .lineLimit(1).minimumScaleFactor(0.5)
-                        }
-                        Text(xLoc("压力")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+            HStack(spacing: XSpacing.m) {
+                VStack(spacing: 2) {
+                    XMiniRing(fraction: s.pressureFractionPreferred, colors: pressureColors(s), size: 62, lineWidth: 7) {
+                        Text(pressureIndexText).font(XFont.monoMini)
+                            .foregroundStyle(XColor.textPrimary)
                     }
-                    .frame(maxWidth: 44)
+                    Text(xLoc(MemoryPressureDisplayCopy.indexLabel)).font(XFont.nano)
+                        .foregroundStyle(XColor.textTertiary)
+                        .lineLimit(1).minimumScaleFactor(0.7)
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(xLoc("内存压力"))
+                .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.indexLabel))
+                .accessibilityValue(pressureIndexText)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(xLoc(MemoryPressureDisplayCopy.stateLabel)).font(XFont.nano)
+                        .foregroundStyle(XColor.textTertiary)
+                    Text(xLoc(s.memoryPressureLabel)).font(XFont.captionEmphasis)
+                        .foregroundStyle(XColor.textPrimary)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.stateLabel))
                 .accessibilityValue(xLoc(s.memoryPressureLabel))
                 // 用量环 + 已用 / 总量。
                 ringGauge(s.memoryUsedFraction)
