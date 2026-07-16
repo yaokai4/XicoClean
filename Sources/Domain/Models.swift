@@ -486,11 +486,11 @@ public struct CleaningReport: Sendable {
     public init(removedCount: Int, reclaimedBytes: Int64,
                 failures: [CleaningFailure], restorable: [RestorableItem]) {
         let startedAt = Date()
-        let hasAggregateFacts = removedCount > 0
-            || reclaimedBytes > 0
-            || !failures.isEmpty
-            || !restorable.isEmpty
-        let subjectIDs = hasAggregateFacts ? ["legacy-aggregate"] : []
+        let subjectIDs = Self.legacyAggregateSubjectIDs(
+            removedCount: removedCount,
+            reclaimedBytes: reclaimedBytes,
+            failureCount: failures.count,
+            restorableCount: restorable.count)
         self.operation = OperationOutcomeReducer.internalFailure(
             kind: OperationKind("cleaning.legacyAggregate"),
             requestedSubjectIDs: subjectIDs,
@@ -503,6 +503,19 @@ public struct CleaningReport: Sendable {
             reclaimedBytes: max(0, reclaimedBytes),
             failures: failures,
             restorable: restorable)
+    }
+
+    static func legacyAggregateSubjectIDs(
+        removedCount: Int,
+        reclaimedBytes: Int64,
+        failureCount: Int,
+        restorableCount: Int
+    ) -> [String] {
+        guard removedCount > 0
+                || reclaimedBytes > 0
+                || failureCount > 0
+                || restorableCount > 0 else { return [] }
+        return ["legacy-aggregate"]
     }
 }
 

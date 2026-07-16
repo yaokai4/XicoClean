@@ -2,15 +2,16 @@ import XCTest
 @testable import Domain
 
 final class OperationOutcomeReducerTests: XCTestCase {
-    private enum SourceGate {
-        static let publicCleaningItemResultInitializer = #"(?s)(?:\bpublic\s+(?:nonisolated\s+)?init\s*\(\s*requestID\s*:\s*UUID\b|\bpublic\s+extension\s+CleaningItemResult\b[^\{]*\{.*?\binit\s*\(\s*requestID\s*:\s*UUID\b)"#
-        static let publicFactBackedReportInitializer = #"(?s)(?:\bpublic\s+(?:nonisolated\s+)?init\s*\(\s*operation\s*:\s*OperationOutcome\b|\bpublic\s+extension\s+CleaningReport\b[^\{]*\{.*?\binit\s*\(\s*operation\s*:\s*OperationOutcome\b)"#
-        static let cleaningItemResultInitializer = #"(?s)\binit\s*\(\s*requestID\s*:\s*UUID\b"#
-        static let factBackedReportInitializer = #"(?s)\binit\s*\(\s*operation\s*:\s*OperationOutcome\b"#
-        static let publicLegacyInitializer = #"(?s)\bpublic\s+init\s*\(\s*removedCount\s*:\s*Int\b"#
-        static let fixedLegacySentinelFlow = #"(?s)\blet\s+subjectIDs\s*=\s*hasAggregateFacts\s*\?\s*\[\s*\"legacy-aggregate\"\s*\]\s*:\s*\[\s*\].*?\brequestedSubjectIDs\s*:\s*subjectIDs\b"#
-        static let forbiddenOutcomeDecodingConformance = #"(?s)(?:\bstruct\s+OperationOutcome\s*:[^\{]*\b(?:Codable|Decodable)\b|\bextension\s+OperationOutcome\s*:[^\{]*\b(?:Codable|Decodable)\b)"#
-        static let outcomeEncodableDeclaration = #"(?s)\bstruct\s+OperationOutcome\s*:[^\{]*\bEncodable\b"#
+    private struct ExternalCompileResult {
+        let status: Int32
+        let standardOutput: String
+        let standardError: String
+
+        var diagnostics: String {
+            [standardOutput, standardError]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+        }
     }
 
     private let kind = OperationKind("test.operation")
@@ -274,35 +275,88 @@ final class OperationOutcomeReducerTests: XCTestCase {
                        "nil subject IDs must sort before present-but-empty subject IDs")
     }
 
-    func testCleaningFactConstructorsStayDomainInternal() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let source = try domainSource(repositoryRoot: repositoryRoot)
+    func testExternalClientCanReadFactsAndEncodeOutcome() throws {
+        let result = try compileExternalClient("""
+        import Foundation
+        import Domain
 
-        XCTAssertFalse(try matches(SourceGate.publicCleaningItemResultInitializer, in: source),
-                       "CleaningItemResult construction must remain inside Domain")
-        XCTAssertFalse(try matches(SourceGate.publicFactBackedReportInitializer, in: source),
-                       "Fact-backed CleaningReport construction must remain inside Domain")
-        XCTAssertTrue(try matches(SourceGate.cleaningItemResultInitializer, in: source))
-        XCTAssertTrue(try matches(SourceGate.factBackedReportInitializer, in: source))
-        XCTAssertTrue(try matches(SourceGate.publicLegacyInitializer, in: source),
-                      "The temporary fail-closed legacy boundary remains public until Task 5")
+        func consume(report: CleaningReport,
+                     item: CleaningItemResult,
+                     outcome: OperationOutcome) throws {
+            _ = report.operation.status
+            _ = report.items.count
+            _ = item.requestID
+            _ = item.itemID
+            _ = item.url
+            _ = item.disposition
+            _ = item.reclaimedBytes
+            _ = item.restorable
+            _ = try JSONEncoder().encode(outcome)
+        }
+        """)
+
+        XCTAssertEqual(result.status, 0, result.diagnostics)
+        XCTAssertFalse(result.standardError.localizedCaseInsensitiveContains("no such module"),
+                       result.diagnostics)
     }
 
-    func testLegacyCompatibilityUsesFixedSentinelRatherThanAggregateSizedIDs() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let modelsURL = repositoryRoot.appendingPathComponent("Sources/Domain/Models.swift")
-        let source = try String(contentsOf: modelsURL, encoding: .utf8)
+    func testExternalClientCannotConstructCleaningItemResult() throws {
+        let result = try compileExternalClient("""
+        import Foundation
+        import Domain
+
+        let item = CleaningItemResult(
+            requestID: UUID(),
+            itemID: UUID(),
+            url: URL(fileURLWithPath: "/tmp/external-item"),
+            disposition: .succeeded,
+            reclaimedBytes: 0,
+            restorable: nil)
+        """)
+
+        XCTAssertNotEqual(result.status, 0, "External construction must fail")
+        XCTAssertTrue(result.standardError.contains("CleaningItemResult"), result.diagnostics)
+        XCTAssertTrue(result.standardError.localizedCaseInsensitiveContains("inaccessible"),
+                      result.diagnostics)
+        assertNoModuleLoadFailure(result)
+    }
+
+    func testExternalClientCannotConstructFactBackedCleaningReport() throws {
+        let result = try compileExternalClient("""
+        import Domain
+
+        func build(operation: OperationOutcome,
+                   items: [CleaningItemResult]) -> CleaningReport {
+            CleaningReport(operation: operation, items: items)
+        }
+        """)
+
+        XCTAssertNotEqual(result.status, 0, "External construction must fail")
+        XCTAssertTrue(result.standardError.contains("CleaningReport"), result.diagnostics)
+        XCTAssertTrue(
+            result.standardError.localizedCaseInsensitiveContains("inaccessible")
+                || result.standardError.contains("extra arguments at positions #1, #2"),
+            result.diagnostics)
+        assertNoModuleLoadFailure(result)
+    }
+
+    func testExternalClientCannotRequireOperationOutcomeDecodable() throws {
+        let result = try compileExternalClient("""
+        import Domain
+
+        func requireDecodable<T: Decodable>(_ type: T.Type) {}
+        requireDecodable(OperationOutcome.self)
+        """)
+
+        XCTAssertNotEqual(result.status, 0, "OperationOutcome must not be externally Decodable")
+        XCTAssertTrue(result.standardError.contains("OperationOutcome"), result.diagnostics)
+        XCTAssertTrue(result.standardError.contains("Decodable"), result.diagnostics)
+        assertNoModuleLoadFailure(result)
+    }
+
+    func testLegacyCompatibilityUsesFixedSentinelRatherThanAggregateSizedIDs() {
         let failure = CleaningFailure(url: URL(fileURLWithPath: "/tmp/legacy-failure"),
                                       reason: "legacy")
-
-        XCTAssertTrue(try matches(SourceGate.fixedLegacySentinelFlow, in: source),
-                      "Legacy facts must flow through exactly one fixed sentinel subject")
 
         let report = CleaningReport(removedCount: 4_097,
                                     reclaimedBytes: 4_097,
@@ -317,51 +371,33 @@ final class OperationOutcomeReducerTests: XCTestCase {
         XCTAssertTrue(report.items.isEmpty)
     }
 
-    func testOperationOutcomeCannotRegainADecodableConstructionBoundary() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let source = try domainSource(repositoryRoot: repositoryRoot)
+    func testLegacyAggregateSubjectIDsStayBoundedAtExtremeCounts() {
+        let extreme = CleaningReport.legacyAggregateSubjectIDs(
+            removedCount: Int.max,
+            reclaimedBytes: Int64.max,
+            failureCount: Int.max,
+            restorableCount: Int.max)
+        XCTAssertEqual(extreme, ["legacy-aggregate"])
+        XCTAssertEqual(extreme.count, 1)
 
-        XCTAssertFalse(try matches(SourceGate.forbiddenOutcomeDecodingConformance, in: source))
-        XCTAssertTrue(try matches(SourceGate.outcomeEncodableDeclaration, in: source),
-                      "Persistence must encode through the trusted fact and decode through a DTO")
-    }
+        XCTAssertTrue(CleaningReport.legacyAggregateSubjectIDs(
+            removedCount: 0,
+            reclaimedBytes: 0,
+            failureCount: 0,
+            restorableCount: 0).isEmpty)
 
-    func testSourceGateRegexesRejectMultilineAndExtensionEvasions() throws {
-        XCTAssertTrue(try matches(SourceGate.publicCleaningItemResultInitializer, in: """
-        public
-        init(
-            requestID: UUID, itemID: UUID
-        ) {}
-        """))
-        XCTAssertTrue(try matches(SourceGate.publicCleaningItemResultInitializer, in: """
-        public extension CleaningItemResult {
-            init(
-                requestID: UUID, itemID: UUID
-            ) {}
-        }
-        """))
-        XCTAssertTrue(try matches(SourceGate.publicFactBackedReportInitializer, in: """
-        public extension CleaningReport {
-            init(
-                operation: OperationOutcome, items: [CleaningItemResult]
-            ) {}
-        }
-        """))
-        XCTAssertTrue(try matches(SourceGate.forbiddenOutcomeDecodingConformance, in: """
-        public struct OperationOutcome:
-            Encodable,
-            Decodable,
-            Sendable {
-        }
-        """))
-        XCTAssertTrue(try matches(SourceGate.forbiddenOutcomeDecodingConformance, in: """
-        extension OperationOutcome:
-            Decodable {
-        }
-        """))
+        XCTAssertEqual(CleaningReport.legacyAggregateSubjectIDs(
+            removedCount: 1, reclaimedBytes: 0, failureCount: 0, restorableCount: 0),
+                       ["legacy-aggregate"])
+        XCTAssertEqual(CleaningReport.legacyAggregateSubjectIDs(
+            removedCount: 0, reclaimedBytes: 1, failureCount: 0, restorableCount: 0),
+                       ["legacy-aggregate"])
+        XCTAssertEqual(CleaningReport.legacyAggregateSubjectIDs(
+            removedCount: 0, reclaimedBytes: 0, failureCount: 1, restorableCount: 0),
+                       ["legacy-aggregate"])
+        XCTAssertEqual(CleaningReport.legacyAggregateSubjectIDs(
+            removedCount: 0, reclaimedBytes: 0, failureCount: 0, restorableCount: 1),
+                       ["legacy-aggregate"])
     }
 
     private func issueComesBefore(_ lhs: OperationIssue, _ rhs: OperationIssue) -> Bool {
@@ -382,21 +418,123 @@ final class OperationOutcomeReducerTests: XCTestCase {
         return !lhs.retryable && rhs.retryable
     }
 
-    private func matches(_ pattern: String, in source: String) throws -> Bool {
-        let expression = try NSRegularExpression(pattern: pattern)
-        let range = NSRange(source.startIndex..<source.endIndex, in: source)
-        return expression.firstMatch(in: source, range: range) != nil
+    private func compileExternalClient(_ source: String) throws -> ExternalCompileResult {
+        let fileManager = FileManager.default
+        let temporaryURL = fileManager.temporaryDirectory
+            .appendingPathComponent("XicoDomainClient-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: temporaryURL,
+                                        withIntermediateDirectories: false)
+        defer { try? fileManager.removeItem(at: temporaryURL) }
+
+        let sourceURL = temporaryURL.appendingPathComponent("client.swift")
+        let moduleCacheURL = temporaryURL.appendingPathComponent("module-cache", isDirectory: true)
+        try fileManager.createDirectory(at: moduleCacheURL,
+                                        withIntermediateDirectories: false)
+        try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        let modulesURL = try debugDomainModulesDirectory()
+        let cProcessBatchModuleMap = modulesURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("CProcessBatch.build/module.modulemap")
+        guard fileManager.fileExists(atPath: cProcessBatchModuleMap.path) else {
+            XCTFail("Expected the debug CProcessBatch module map")
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let standardOutputURL = temporaryURL.appendingPathComponent("stdout.txt")
+        let standardErrorURL = temporaryURL.appendingPathComponent("stderr.txt")
+        _ = fileManager.createFile(atPath: standardOutputURL.path, contents: nil)
+        _ = fileManager.createFile(atPath: standardErrorURL.path, contents: nil)
+        let standardOutput = try FileHandle(forWritingTo: standardOutputURL)
+        let standardError = try FileHandle(forWritingTo: standardErrorURL)
+        defer {
+            try? standardOutput.close()
+            try? standardError.close()
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.arguments = [
+            "swiftc",
+            "-typecheck",
+            "-module-cache-path", moduleCacheURL.path,
+            "-I", modulesURL.path,
+            "-Xcc", "-fmodule-map-file=\(cProcessBatchModuleMap.path)",
+            sourceURL.path
+        ]
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+        defer {
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+            }
+        }
+
+        try process.run()
+        process.waitUntilExit()
+        try standardOutput.synchronize()
+        try standardError.synchronize()
+        try standardOutput.close()
+        try standardError.close()
+        let outputData = try Data(contentsOf: standardOutputURL)
+        let errorData = try Data(contentsOf: standardErrorURL)
+
+        return ExternalCompileResult(
+            status: process.terminationStatus,
+            standardOutput: String(decoding: outputData, as: UTF8.self),
+            standardError: String(decoding: errorData, as: UTF8.self))
     }
 
-    private func domainSource(repositoryRoot: URL) throws -> String {
-        let domainURL = repositoryRoot.appendingPathComponent("Sources/Domain")
-        let sourceURLs = try FileManager.default
-            .contentsOfDirectory(at: domainURL,
-                                 includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "swift" }
-            .sorted { $0.path < $1.path }
-        return try sourceURLs
-            .map { try String(contentsOf: $0, encoding: .utf8) }
-            .joined(separator: "\n")
+    private func assertNoModuleLoadFailure(
+        _ result: ExternalCompileResult,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertFalse(result.standardError.localizedCaseInsensitiveContains("no such module"),
+                       result.diagnostics,
+                       file: file,
+                       line: line)
+        XCTAssertFalse(result.standardError.localizedCaseInsensitiveContains(
+            "missing required module"),
+            result.diagnostics,
+            file: file,
+            line: line)
+    }
+
+    private func debugDomainModulesDirectory() throws -> URL {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let buildURL = repositoryRoot.appendingPathComponent(".build", isDirectory: true)
+        let enumerator = FileManager.default.enumerator(
+            at: buildURL,
+            includingPropertiesForKeys: nil)
+        var candidates: [URL] = []
+        while let candidate = enumerator?.nextObject() as? URL {
+            guard candidate.lastPathComponent == "Domain.swiftmodule" else { continue }
+            let modulesURL = candidate.deletingLastPathComponent()
+            let targetTriple = modulesURL
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .lastPathComponent
+            guard modulesURL.lastPathComponent == "Modules",
+                  modulesURL.deletingLastPathComponent().lastPathComponent == "debug",
+                  targetTriple.hasPrefix(currentArchitecturePrefix) else {
+                continue
+            }
+            candidates.append(modulesURL)
+        }
+        return try XCTUnwrap(candidates.sorted { $0.path < $1.path }.first,
+                             "Expected a recursively discoverable debug Domain.swiftmodule")
+    }
+
+    private var currentArchitecturePrefix: String {
+        #if arch(arm64)
+        "arm64-"
+        #elseif arch(x86_64)
+        "x86_64-"
+        #else
+        ""
+        #endif
     }
 }
