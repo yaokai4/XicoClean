@@ -44,10 +44,11 @@ public actor CleaningEngine {
         var inFlightRequestIDs: Set<UUID> = []
         var reservedPaths: Set<String> = []
         for request in requests {
+            if duplicateRequestIDs.contains(request.requestID) { continue }
             let path = request.item.url.standardizedFileURL.path
             if activeNormalizedPaths.contains(path) {
                 inFlightRequestIDs.insert(request.requestID)
-            } else if !duplicateRequestIDs.contains(request.requestID) {
+            } else {
                 reservedPaths.insert(path)
             }
         }
@@ -68,7 +69,16 @@ public actor CleaningEngine {
 
             let result: CleaningItemResult
             let suppressProgress: Bool
-            if inFlightRequestIDs.contains(request.requestID) {
+            if duplicateRequestIDs.contains(request.requestID) {
+                let issue = Self.issue(
+                    code: "cleaning.request.duplicateTarget",
+                    category: .internalInvariant,
+                    requestID: request.requestID,
+                    recovery: .chooseAnotherTarget,
+                    retryable: false)
+                result = Self.result(for: request, disposition: .failed(issue))
+                suppressProgress = true
+            } else if inFlightRequestIDs.contains(request.requestID) {
                 let issue = Self.issue(
                     code: "cleaning.request.inFlight",
                     category: .internalInvariant,
@@ -77,15 +87,6 @@ public actor CleaningEngine {
                     retryable: true)
                 result = Self.result(for: request, disposition: .failed(issue))
                 suppressProgress = true
-            } else if duplicateRequestIDs.contains(request.requestID) {
-                let issue = Self.issue(
-                    code: "cleaning.request.duplicateTarget",
-                    category: .internalInvariant,
-                    requestID: request.requestID,
-                    recovery: .chooseAnotherTarget,
-                    retryable: false)
-                result = Self.result(for: request, disposition: .failed(issue))
-                suppressProgress = false
             } else {
                 result = await executeItem(request, intent: plan.intent)
                 suppressProgress = false

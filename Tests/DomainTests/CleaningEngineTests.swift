@@ -241,6 +241,67 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(firstReport.operation.counts.succeeded, 1)
     }
 
+    func testLocalDuplicatePrecedesCrossExecutionInFlightWithoutDependencies() async {
+        let direct = URL(fileURLWithPath: "/Library/Caches/XicoDuplicateInFlight")
+        let equivalent = URL(
+            fileURLWithPath: "/Library/Caches/xico-parent/../XicoDuplicateInFlight")
+        XCTAssertEqual(direct.standardizedFileURL.path,
+                       equivalent.standardizedFileURL.path)
+        let fs = RecordingFS(existing: [direct.path])
+        let safety = RecordingSafety(verdict: .allow)
+        let helper = SuspendingPrivileged(
+            fs: fs,
+            report: PrivilegedRemovalReport(freedBytes: 10, failures: []))
+        let engine = CleaningEngine(safety: safety, fs: fs, privileged: helper)
+        let firstTask = Task { await engine.execute(CleaningPlan(items: [
+            CleanableItem(url: direct, displayName: "active", size: 10, requiresHelper: true)
+        ], intent: .permanent)) }
+
+        await helper.waitUntilFirstCall()
+        let attemptedBeforeDuplicates = fs.attemptedPaths
+        let mutatedBeforeDuplicates = fs.mutatedPaths
+        let safetyCallsBeforeDuplicates = safety.callCount
+        let helperCallsBeforeDuplicates = await helper.callCount
+        let duplicateProgress = ProgressRecorder()
+
+        let duplicateReport = await engine.execute(CleaningPlan(items: [
+            CleanableItem(url: direct,
+                          displayName: "duplicate-direct",
+                          size: 10,
+                          requiresHelper: true),
+            CleanableItem(url: equivalent,
+                          displayName: "duplicate-equivalent",
+                          size: 10,
+                          requiresHelper: true)
+        ], intent: .permanent)) {
+            duplicateProgress.record($0)
+        }
+
+        XCTAssertEqual(duplicateReport.operation.status, .failure)
+        XCTAssertEqual(duplicateReport.operation.counts.requested, 2)
+        XCTAssertEqual(duplicateReport.operation.counts.failed, 2)
+        XCTAssertEqual(duplicateReport.items.count, 2)
+        for result in duplicateReport.items {
+            assertIssue(result,
+                        disposition: .failed,
+                        code: "cleaning.request.duplicateTarget",
+                        category: .internalInvariant,
+                        recovery: .chooseAnotherTarget,
+                        retryable: false)
+        }
+        XCTAssertEqual(fs.attemptedPaths, attemptedBeforeDuplicates)
+        XCTAssertEqual(fs.mutatedPaths, mutatedBeforeDuplicates)
+        XCTAssertEqual(safety.callCount, safetyCallsBeforeDuplicates)
+        let helperCallsAfterDuplicates = await helper.callCount
+        XCTAssertEqual(helperCallsAfterDuplicates, helperCallsBeforeDuplicates)
+        XCTAssertEqual(duplicateProgress.callCount, 0)
+
+        await helper.resumeFirstCall()
+        let firstReport = await firstTask.value
+        XCTAssertEqual(firstReport.operation.status, .success)
+        XCTAssertEqual(firstReport.operation.counts.succeeded, 1)
+    }
+
     func testDuplicateTargetFailsClosedWithoutFilesystemMutation() async {
         let firstURL = URL(fileURLWithPath: "/tmp/duplicate-a")
         let secondURL = URL(fileURLWithPath: "/tmp/duplicate-b")
