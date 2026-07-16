@@ -4,7 +4,7 @@
 
 **Goal:** 实现 OUT-01…10 的统一操作事实层，把 CleaningEngine、CleaningReport、清理历史和成功副作用迁移到 reducer 生成的 success/partial/failure/cancelled 事实，消除“按循环次数或回调次数算成功”。
 
-**Architecture:** Domain 新增不可由 feature 任意构造的 `OperationOutcome` 与纯 reducer；每个执行器返回逐项 `OperationItemOutcome`，强类型业务报告只携带 payload；Infrastructure 只持久化 reducer 事实；Features 通过 `OutcomeSideEffectPolicy` 决定历史、通知和庆祝。迁移期间保留只读计算属性兼容现有展示，但旧聚合初始化器在本计划结束前删除。
+**Architecture:** Domain 新增不可由 feature 任意构造的 `OperationOutcome` 与纯 reducer；每个执行器返回逐项 `OperationItemOutcome`，强类型业务报告只携带 payload；Infrastructure 只持久化 reducer 事实；Features 通过 `OutcomeSideEffectPolicy` 决定历史、通知和庆祝。迁移期间保留只读计算属性兼容现有展示；旧聚合初始化器由 `2026-07-16-xico-phase0-outcome-workflows.md` Task 4 在全部生产构造器迁移后删除，并由其 Task 14 静态门证明零残留。
 
 **Tech Stack:** Swift 6、SwiftPM、Foundation、Swift Concurrency、SwiftUI、XCTest。
 
@@ -872,7 +872,7 @@ git commit -m "fix: make cleaning outcomes item-complete"
 - Modify: `Tests/DomainTests/CleaningEngineTests.swift`
 - Create: `Tests/FeatureTests/OutcomeSideEffectPolicyTests.swift`
 
-- [ ] **Step 1: Write reducer-owned mutation facts as failing tests**
+- [x] **Step 1: Write reducer-owned mutation facts as failing tests**
 
 Add Domain RED tests before production edits:
 
@@ -883,12 +883,12 @@ func testPossiblyChangedDominatesChangedAndCannotBeLostByFailure() throws
 func testCancelledOutcomePreservesCompletedAndPossiblyChangedFacts() throws
 func testCleaningThrownMutationAndAmbiguousHelperFailureArePossiblyChanged() async
 func testCleaningItemResultCarriesExactDeleteIntentWithoutDefault() throws
-func testOnlySucceededTrashFactCanCarryReceipt() async
+func testOnlySucceededTrashFactCanCarryReceipt()
 ```
 
 `OperationItemOutcome` and `CleaningItemResult` must carry an explicit mutation fact; do not add a default that silently treats an unmigrated producer as safe. In the same RED/GREEN migration, add `public let intent: DeleteIntent` to `CleaningItemResult` and require `intent` in its Domain-internal initializer with **no default**. `CleaningEngine` passes the originating `CleaningPlan.intent` into every succeeded/unchanged/skipped/failed/cancelled fact from the same request occurrence. Map pre-dependency validation/skips/unchanged/unattempted cancellation to `.none`, verified successful trash/remove/helper deletion to `.changed`, and an error after a destructive dependency was invoked when post-state is not proven to `.possiblyChanged`. A receipt is accepted only for `intent == .trash && disposition == .succeeded`; every other intent/disposition combination must have `restorable == nil`.
 
-- [ ] **Step 2: Write the complete policy and gate matrix as failing tests**
+- [x] **Step 2: Write the complete policy and gate matrix as failing tests**
 
 Create every `OperationOutcome` through `OperationOutcomeReducer`; never add a test-only business initializer. In `OutcomeSideEffectPolicyTests`, define one typed `evaluate(status:mutation:profile:recordsHistory:allowsSuccessNotification:hasInvariant:)` helper so every matrix row uses the same reducer setup. Add these exact policy tests:
 
@@ -927,7 +927,7 @@ func testHistoricalOutcomeCannotRegisterOrConsumeLiveEffects() async
 
 In async tests, bind every awaited value before passing it to an XCTest autoclosure; never write `XCTAssertTrue(await ...)`, which is rejected under Swift 6. Race the same-channel calls with a task group and assert the bound result contains exactly one `true`.
 
-- [ ] **Step 3: Confirm RED**
+- [x] **Step 3: Confirm RED**
 
 Run:
 
@@ -939,7 +939,7 @@ swift test --filter OutcomeSideEffectPolicyTests --disable-automatic-resolution 
 
 Expected: FAIL for the missing mutation fact, split policy fields and terminal-registration gate APIs—not for malformed test builders or Swift concurrency/autoclosure errors. Capture the failing symbols/assertions in the Task report.
 
-- [ ] **Step 4: Add the reducer-owned mutation fact**
+- [x] **Step 4: Add the reducer-owned mutation fact**
 
 In Domain add:
 
@@ -953,7 +953,7 @@ public enum OperationMutationFact: String, Encodable, Hashable, Sendable {
 
 `OperationItemOutcome` requires `mutation: OperationMutationFact`. Add the same public read-only `mutation` property and the Step 1 `intent: DeleteIntent` property to `CleaningItemResult`; its Domain-internal initializer requires both arguments and gives neither a default. `OperationOutcome` stores the reducer result as `public let mutation`; aggregation precedence is `possiblyChanged > changed > none`. `hasChanges` remains a compatibility read and returns `mutation != .none`; new policy code reads `mutation` directly. The reducer must preserve `.possiblyChanged` through partial/failure/cancelled and invariant fallback. Update `CleaningEngine.result(for:intent:disposition:mutation:reclaimedBytes:restorable:)` so intent and mutation come from the same request execution, validate the receipt rule before construction, and pass the same mutation from `CleaningItemResult` into `OperationItemOutcome`—never derive intent/mutation later from bytes, receipt presence or disposition.
 
-- [ ] **Step 5: Implement the pure split-channel policy**
+- [x] **Step 5: Implement the pure split-channel policy**
 
 Create `Sources/Features/OutcomeSideEffectPolicy.swift`:
 
@@ -1006,7 +1006,7 @@ enum OutcomeSideEffectPolicy: Sendable {
 
 All policy enums/structs are `Sendable`; `OutcomeSideEffectDecision` construction stays `fileprivate` so consumers cannot bypass evaluation. A history-capable `.possiblyChanged` outcome records and every `.possiblyChanged` invalidates, but none is notification/celebration safe. History-ineligible kinds never acquire a cleaning-history write from mutation alone.
 
-- [ ] **Step 6: Implement a bounded view-model-owned per-channel gate**
+- [x] **Step 6: Implement a bounded view-model-owned per-channel gate**
 
 Add to the same file:
 
@@ -1038,7 +1038,7 @@ actor OutcomeFeedbackGate {
 
 Each live view model owns one long-lived gate. It calls `registerTerminal` exactly when a newly executed operation transitions into terminal state—not in `onAppear`, not while rendering, not when loading historical records. Re-registering the same ID preserves consumed channels; registering a new ID drops the old ID and its bounded channel set, so storage remains one UUID plus the finite channel enum. History display/appearance never registers; a historical outcome never receives the live gate. Consumer execution may consume history/internal-invalidation channels, while TaskOutcomeView consumes celebration and successSoundHaptic before starting effects. No channel may register or reset the gate itself.
 
-- [ ] **Step 7: Run focused and full tests, then commit**
+- [x] **Step 7: Run focused and full tests, then commit**
 
 Run:
 
@@ -1055,6 +1055,8 @@ Expected: all pass with zero failures and zero new warnings. The complete policy
 git add Sources/Domain/OperationOutcome.swift Sources/Domain/Models.swift Sources/Domain/CleaningEngine.swift Sources/Features/OutcomeSideEffectPolicy.swift Tests/DomainTests/OperationOutcomeReducerTests.swift Tests/DomainTests/CleaningEngineTests.swift Tests/FeatureTests/OutcomeSideEffectPolicyTests.swift
 git commit -m "feat: centralize operation side effects"
 ```
+
+Accepted evidence on commit `456bb23`: Reducer 32/32 including 6 normal-import compiler clients, CleaningEngine 31/31, policy/gate 21/21, full suite 453 executed with 15 explicit environment skips and 0 failures, root post-commit full rerun 453/15/0, static/privacy gates clean, and frozen independent review CLEAN with 0 Critical/Important. Review-strengthened tests directly inject one non-nil receipt across all 10 intent/disposition rows and prove celebratory feedback remains independent from notification permission.
 
 ---
 
@@ -1080,11 +1082,17 @@ func testLoadingLegacyArchiveDoesNotEagerlyRewriteBytes() throws
 func testV1PartialRecordMissingRequiredKeysIsCorrupt() throws
 func testV1MalformedUUIDCountsNegativeFactsAndInconsistentStatusAreCorrupt() throws
 func testDuplicateOperationIDsOnDiskNeverDoubleSuccessOrBytes() throws
+func testExistingArchiveReadFailureIsDegradedNotMissingOrWritable() throws
+func testV1UnknownKeyIsReadOnlyAndPreserved() throws
+func testSchema0UnknownKeyIsReadOnlyAndPreserved() throws
+func testOversizedArchiveOrRecordFactsAreRejectedWithoutOverwrite() throws
 ```
 
-The legacy fixture omits `schemaVersion` and all operation keys, so it is schema 0; it retains current `id/date/module/reclaimedBytes/removedCount/restorable` fields. Schema 0 remains displayable as `.legacyUnknown`, its nonnegative factual bytes remain readable, and it never counts as success. A missing archive is empty and writable. Any malformed top level, corrupt element, partially migrated element, unsupported future per-record schema, unknown future outcome status or duplicate operation ID makes the loaded store explicitly degraded read-only; preserve the original archive bytes, keep every independently valid/displayable record, reject mutations, and never rewrite on init.
+The legacy fixture omits `schemaVersion` and all operation keys, so it is schema 0; it retains current `id/date/module/reclaimedBytes/removedCount/restorable` fields. Schema 0 remains displayable as `.legacyUnknown`, its nonnegative factual bytes remain readable, and it never counts as success. A positively observed missing archive is empty and writable. Permission/I/O/read failure for an existing or indeterminate archive is never equivalent to missing: expose no fabricated empty writable state, preserve the prior read model when one exists, enter degraded read-only with a stable code, and reject every mutation. Any malformed top level, corrupt element, partially migrated element, unsupported future per-record schema, unknown future outcome status, unknown schema-0/schema-1 or nested receipt key, or duplicate operation ID makes the loaded store explicitly degraded read-only; preserve the original archive bytes, keep every independently valid/displayable record, reject mutations, and never rewrite on init.
 
 Schema 1 is per record, not a single unvalidated top-level flag. `schemaVersion == 1` requires all v1 operation/item fields. Absent means legacy schema 0; greater than 1 is unsupported. Unknown future outcome values display as `.legacyUnknown` but are not trusted for success/bytes and put the archive in degraded read-only mode so a current binary cannot destroy future data.
+
+Decode is explicitly bounded before allocating untrusted collections: the live implementation defines named maximum archive bytes, top-level records, item facts per record, issues per operation and UTF-8 lengths for module/kind/code/subject fields. Exceeding any bound is a stable degraded read-only condition, preserves the source archive, and cannot be bypassed by a scalar compatibility write. The bounds are production constants visible to `@testable` tests; tests exercise the boundary and one-over cases without allocating pathological real-world payloads.
 
 - [ ] **Step 2: Add failing transaction, idempotency, aggregate and privacy tests**
 
@@ -1100,6 +1108,8 @@ func testConflictingDuplicateOperationIDIsRejectedWithoutOverwrite() throws
 func testConcurrentDuplicateOperationIDCommitsExactlyOnce() async throws
 func testConcurrentSingleStoreMutationsPersistEveryCommittedRecord() async throws
 func testTwoStoresForSameURLCannotLoseCommittedRecords() async throws
+func testSymlinkAliasStoresForSameArchiveCannotLoseCommittedRecords() async throws
+func testConflictRetryBudgetIsEightTotalCommitAttempts() throws
 func testSucceededZeroByteChangeIsRecordedAndCountsAsSuccessfulCleanup() throws
 func testCancelledWithoutChangesIsNotRecorded() throws
 func testDecodedAllUnchangedSuccessCannotInflateSuccessfulCount() throws
@@ -1109,12 +1119,18 @@ func testTotalSuccessfulCleanupsExcludesLegacyPartialFailureAndCancelled() throw
 func testUpdateRestorablePreservesOperationFactsAcrossReload() throws
 func testUpdateRestorableRejectsForgedChangedOrExpandedReceiptSet() throws
 func testFirstUndoablePruningPreservesOperationFactsAcrossReload() throws
-func testHistoryArchiveAndRecoveryFilesUsePrivatePermissions() throws
+func testHistoryArchiveLockAndStagingFilesUsePrivatePermissions() throws
+func testExistingLegacyArchivePermissionsAreCorrectedWithoutRewritingBytes() throws
+func testIndeterminateCommitLeavesNoPromotableRecoveryArtifact() throws
+func testArchiveLockAndStagingRejectSymlinkOrNonRegularTargets() throws
 func testReceiptPathsAppearOnlyInProtectedReceiptFields() throws
 func testPermanentAndOrdinaryMetadataPersistNoPaths() throws
+func testReloadRecoversDurabilityUnknownOnlyAfterValidatedLoad() throws
+func testFirstUndoablePruningFailureReturnsNoTransientCandidate() throws
+func testDuplicateOrConflictingReceiptsAndUnboundIssueSubjectsAreRejected() throws
 ```
 
-Use injected persistence doubles for deterministic failed-write, compare-and-swap conflict and migration-failure tests. Tests must inspect both the current instance and a freshly loaded store. Never depend on timing sleeps or the real Application Support history.
+Use injected persistence doubles for deterministic load failure, failed-write, indeterminate parent-fsync, compare-and-swap conflict and migration-failure tests. The scripted conflict-budget double returns a verified conflict for every attempt and asserts exactly 8 total `commit` calls including the initial call, `history.persistence.conflictExhausted`, and no candidate publication in memory or a fresh store. Tests must inspect both the current instance and a freshly loaded store. The symlink-alias test creates only a disposable temporary parent plus alias and proves canonical coordination rather than merely passing the same URL spelling twice. Never depend on timing sleeps or the real Application Support history.
 
 - [ ] **Step 3: Confirm RED**
 
@@ -1158,11 +1174,24 @@ private struct CleaningRecordDTO: Codable {
 }
 ```
 
-`HistoryOperationDTO` and `HistoryItemFactDTO` are Infrastructure-only `Codable` transport values. `HistoryItemFactDTO` persists request ID, delete intent, disposition/issue DTO, mutation fact, nonnegative affected bytes and one optional receipt; it does not persist a path for non-restorable permanent deletion. `CleaningRecordDTO.restorable` is decoded only for schema-0 compatibility and is always encoded as `nil` for schema 1; the public schema-1 `CleaningRecord.restorable` view is derived from validated item receipts, so the same URL pair is never duplicated into a second JSON path. The dedicated history archive is private storage (`0700` directory, archive/recovery/staging/lock files `0600`). Exact `originalURL`/`trashedURL` values are allowed only inside that canonical validated receipt field needed for undo (or the preserved schema-0 legacy `restorable` field while degraded/read-only); they are forbidden in ordinary metadata, issue text, logs, notifications and invalidation events. Do not add encryption or a new dependency in this phase; record encrypted receipt storage as a future hardening option only. `HistoryOperationDTO` persists ID/parent/kind/status/mutation/counts/issues/timestamps. Decode DTO strings manually so unknown enum values do not make `JSONDecoder` discard the entire array. Parse the top-level JSON array into raw elements first, then decode/validate each element independently; one corrupt element must not cause an all-or-nothing `[CleaningRecordDTO]` decode that erases valid siblings.
+`HistoryOperationDTO` and `HistoryItemFactDTO` are Infrastructure-only `Codable` transport values. `HistoryItemFactDTO` persists request ID, delete intent, disposition/issue DTO, mutation fact, nonnegative affected bytes and one optional receipt; it does not persist a path for non-restorable permanent deletion. `CleaningRecordDTO.restorable` is decoded only for schema-0 compatibility and is always encoded as `nil` for schema 1; the public schema-1 `CleaningRecord.restorable` view is derived from validated item receipts, so the same URL pair is never duplicated into a second JSON path. The dedicated history archive is private storage (`0700` directory; archive, staging and lock files `0600`). Exact `originalURL`/`trashedURL` values are allowed only inside that canonical validated receipt field needed for undo (or the preserved schema-0 legacy `restorable` field while degraded/read-only); they are forbidden in ordinary metadata, issue text, logs, notifications and invalidation events. Do not add encryption or a new dependency in this phase; record encrypted receipt storage as a future hardening option only. `HistoryOperationDTO` persists ID/parent/kind/status/mutation/counts/issues/timestamps. Decode DTO strings manually so unknown enum values do not make `JSONDecoder` discard the entire array. Before typed decoding, validate the exact allowed key set for every schema-0 and schema-1 record and every nested legacy receipt/operation/item/disposition/issue/receipt DTO; an unknown key is future data, not something current Codable may silently drop on the next write. Parse the top-level JSON array into bounded raw elements first, then decode/validate each element independently; one corrupt element must not cause an all-or-nothing `[CleaningRecordDTO]` decode that erases valid siblings.
 
-For schema 1, rebuild the operation with `OperationOutcomeReducer` using the decoded item DTOs and persisted IDs/timestamps, then require exact equality with DTO status/mutation/counts/issues. Reject malformed UUIDs, negative counts/bytes, count sums that differ from requested, duplicate/missing/unexpected request IDs, status/count inconsistencies, `removedCount != counts.succeeded`, bytes on any non-succeeded item, aggregate bytes that differ from the checked/saturating succeeded-item sum, and receipts not attached to the corresponding succeeded trash fact. `OperationOutcome` itself remains non-`Decodable`.
+For schema 1, rebuild the operation with `OperationOutcomeReducer` using the decoded item DTOs and persisted IDs/timestamps, then require exact equality with DTO status/mutation/counts/issues. Reject malformed UUIDs, negative counts/bytes, count sums that differ from requested, duplicate/missing/unexpected request IDs, status/count inconsistencies, `removedCount != counts.succeeded`, bytes on any non-succeeded item, aggregate bytes that differ from the checked/saturating succeeded-item sum, duplicate receipt pairs, conflicting receipt original paths, non-nil issue subjects that do not bind to a persisted request ID, and receipts not attached to the corresponding succeeded trash+changed fact. `OperationOutcome` itself remains non-`Decodable`.
 
-Extend the public read model `CleaningRecord` with schema version, operation ID/parent/kind, outcome status, mutation, counts and the validated item facts needed for audit/receipt cross-checking. Its full initializer, DTO-to-domain status mapping and generic insert path remain internal. Preserve raw input bytes and every valid record when load is degraded; no mutating API may silently replace corrupt/unsupported input with `[]`.
+Extend the public read model `CleaningRecord` with these read-only facts; schema 0 must represent facts it never possessed as nil rather than fabricate `.none`, zero counts or a kind:
+
+```swift
+public let schemaVersion: Int
+public let operationID: UUID?
+public let parentOperationID: UUID?
+public let operationKind: OperationKind?
+public let outcomeStatus: HistoryOutcomeStatus
+public let mutation: OperationMutationFact?
+public let counts: OperationCounts?
+public let itemFacts: [HistoryItemFact]
+```
+
+Schema 0 uses `schemaVersion == 0`, `.legacyUnknown`, and nil operation/mutation/count facts. `CleaningRecord` conforms only to `Identifiable, Sendable, Equatable`: remove its public `Codable` conformance, public full initializer and `init(from:)`; its full initializer, DTO-to-domain status mapping and generic insert path remain internal. Preserve raw input bytes and every valid record when load is degraded; no mutating API may silently replace corrupt/unsupported input with `[]`.
 
 Define a public read-only `HistoryItemFact: Sendable, Equatable` for the validated per-item request ID, delete intent, disposition, mutation, affected bytes and optional receipt. Its initializer remains internal; `CleaningRecord.itemFacts` exposes `[HistoryItemFact]`, never the private DTO type.
 
@@ -1171,33 +1200,42 @@ Define a public read-only `HistoryItemFact: Sendable, Equatable` for the validat
 Create `Sources/Infrastructure/HistoryPersistence.swift` with an injected protocol and a live same-directory atomic implementation:
 
 ```swift
-struct HistoryRevision: Equatable, Sendable {
-    let sha256: Data?       // nil means the archive did not exist
+enum HistoryRevision: Equatable, Sendable {
+    case missing
+    case sha256(Data)
 }
 
 struct HistoryPersistenceSnapshot: Sendable {
-    let data: Data?
+    let data: Data
     let revision: HistoryRevision
 }
 
+enum HistoryLoadResult: Sendable {
+    case missing
+    case loaded(HistoryPersistenceSnapshot)
+    case failed(code: String)
+}
+
 protocol HistoryPersistence: Sendable {
-    func load() -> HistoryPersistenceSnapshot
+    func load() -> HistoryLoadResult
     func commit(_ data: Data, expectedRevision: HistoryRevision) -> HistoryCommitResult
 }
 
 enum HistoryCommitResult: Sendable {
     case committed(newRevision: HistoryRevision)
-    case conflict(latest: HistoryPersistenceSnapshot)
-    case indeterminate(latest: HistoryPersistenceSnapshot?, code: String)
+    case conflict(latest: HistoryLoadResult)
+    case indeterminate(latest: HistoryLoadResult?, code: String)
     case failed(code: String)
 }
 ```
 
-The live writer creates/corrects the history directory to POSIX `0700`; creates archive, lock, staging and recovery files as `0600`; writes a complete candidate to a uniquely named staging file in the same directory; loops until all bytes are written; `fsync`s the staging fd; atomically replaces/renames the archive; and `fsync`s the parent directory before returning committed. Encode/write/staging-fsync/replace failures that occur **before** the rename commit point return `.failed` and leave the original archive byte-for-byte unchanged. A parent-directory `fsync` failure occurs after the namespace may already expose the new archive and therefore must never claim the original is unchanged: reload under the same lock and return `.indeterminate(latest:code:)`, with the observed snapshot when readable. Remove or preserve any recovery artifact with mode `0600`. Log only stable code/count values; never log a path or `localizedDescription` as public.
+`missing` means the persistence boundary positively observed `ENOENT` for the canonical archive while holding the coordination lock and corresponds only to expected revision `.missing`; every loaded snapshot carries `.sha256(actual 32-byte digest)` computed from its exact data. `failed` covers permission, short/inconsistent read, I/O and every other inability to prove the bytes. A store may become empty+writable only from `.missing`; `.failed` always produces/retains degraded read-only state and never supplies the missing revision used to create a new archive.
 
-Coordinate by canonical archive URL, not by `HistoryStore` object identity. Use the lock file/advisory lock plus revision compare-and-swap so concurrent calls in one store and two separately constructed stores for the same URL reload/reapply instead of last-writer-wins data loss. Do not hold the in-memory record lock while blocking on disk I/O.
+The live writer creates/corrects the history directory to POSIX `0700`; creates archive, lock and staging files as `0600`; writes a complete candidate to a uniquely named staging file in the same directory; loops until all bytes are written; `fsync`s the staging fd; atomically renames over the archive with the same-filesystem POSIX primitive; and `fsync`s the parent directory before returning committed. All archive/lock opens use no-follow semantics and verify a regular file; staging uses unique `O_CREAT|O_EXCL|O_NOFOLLOW` creation and verifies identity before write/rename. After safely opening an existing regular legacy archive/lock, correct its mode with `fchmod(0600)` before exposing receipt-bearing data; this metadata-only privacy migration must leave archive bytes exactly unchanged, and verification/chmod failure degrades read-only. A symlink, directory, device or changed inode is a stable failed/degraded condition, never followed or overwritten. The writer does not create a backup/recovery artifact or use a replacement API that requires later promotion. Encode/write/staging-fsync/rename failures that occur **before** the rename commit point return `.failed` and leave the original archive byte-for-byte unchanged; staging is removed. A parent-directory `fsync` failure occurs after the namespace may already expose the new archive and therefore must never claim the original is unchanged: reload under the same lock and return `.indeterminate(latest:code:)`, with the observed load result when available. No promotable recovery file may remain in the dedicated history directory. Log only stable code/count values; never log a path or `localizedDescription` as public.
 
-Every mutation follows one transaction: derive candidate from the latest revision → validate/encode → persist/fsync candidate → publish candidate to in-memory state. Never publish the candidate or return a committed ID before `.committed`. On revision conflict, reload, reapply the operation-ID-aware mutation and retry at most 8 times; exhaustion returns `history.persistence.conflictExhausted` without changing memory. On `.indeterminate`, never retry or report success: if the returned snapshot validates, replace the read model with that exact observed disk snapshot (not the unverified candidate); otherwise retain the prior read model. In both cases transition the store to `degradedReadOnly(code: "history.persistence.durabilityUnknown")`, reject the mutation without a committed ID, and block later writes until an explicit successful reload/recovery. This makes current reads honest without pretending crash durability or rollback that POSIX cannot guarantee.
+Coordinate by canonical archive URL, not by `HistoryStore` object identity or caller spelling. Resolve/standardize the existing parent directory (including symlink aliases) and append the fixed archive filename to obtain one coordination identity; failure to establish that identity is degraded read-only, never a second independent lock domain. Acquire a process-local mutex from a weak/pruned canonical-URL registry and then an exclusive POSIX `flock` on the `0600` lock file; hold both across load/revision-check/write/rename/fsync so separate stores in this process and other processes share one commit point. Revision compare-and-swap then makes conflicts explicit and reload/reapply prevents last-writer-wins loss. Do not hold the in-memory record lock while blocking on file locking or disk I/O.
+
+Every mutation follows one transaction: derive candidate from the latest revision → validate/encode → persist/fsync candidate → publish candidate to in-memory state. Never publish the candidate or return a committed ID before `.committed`. `HistoryCommitResult.failed` is legal only after the expected CAS revision was positively matched and a pre-rename encode/open/write/fsync/rename preparation step failed; inability to read/verify current CAS state is `.conflict(latest: .failed(...))` and immediately degrades. On a verified revision conflict, reload, reapply the operation-ID-aware mutation and perform at most **8 total commit attempts including the initial attempt**; exhaustion returns `history.persistence.conflictExhausted` without changing memory. On `.indeterminate`, never retry or report success: if the returned `.loaded` snapshot validates, replace the read model with that exact observed disk snapshot (not the unverified candidate); if it is positively `.missing`, use the observed empty read model; otherwise retain the prior read model. In every case transition the store to `degradedReadOnly(code: "history.persistence.durabilityUnknown")`, reject the mutation without a committed ID, and block later writes until the explicit validated reload API below succeeds. This makes current reads honest without pretending crash durability or rollback that POSIX cannot guarantee.
 
 - [ ] **Step 6: Add explicit mutation results and operation-ID idempotency**
 
@@ -1216,7 +1254,14 @@ public enum HistoryUpdateResult: Equatable, Sendable {
     case notFound
     case rejected(code: String)
 }
+
+public enum HistoryReloadResult: Equatable, Sendable {
+    case writable
+    case degraded(code: String)
+}
 ```
+
+`public func reload() -> HistoryReloadResult` is the only recovery from degraded/durability-unknown state. It holds the same store-level transaction mutex used by every mutation for the entire load → validate → read-model publish transition, while still performing I/O without the separate read-model lock; therefore it cannot overwrite a concurrently committed in-memory snapshot or clear degradation during a mutation. It validates the complete observed archive using the same bounded per-element rules, atomically replaces the read model only with that observation, and returns `.writable` only for a positively missing archive or a fully writable validated load. A read failure or corrupt/future/oversized load remains `.degraded(code:)`; reload never writes, migrates, creates an archive, or treats failure as missing.
 
 All typed adapters feed this Infrastructure-internal candidate; its initializer and transaction entry point are never public:
 
@@ -1235,7 +1280,7 @@ private func recordValidated(
 ) -> HistoryRecordResult
 ```
 
-`recordValidated` reruns the Task 4 count/status/mutation/bytes/receipt cross-check before the candidate→persist→publish transaction. At the Task 4 checkpoint, the only public record adapter is:
+`recordValidated` reruns the Task 4 count/status/mutation/bytes/receipt cross-check before the candidate→persist→publish transaction. At the Task 4 checkpoint, the only **new typed** public record adapter is:
 
 ```swift
 public func record(module: String, report: CleaningReport,
@@ -1244,9 +1289,20 @@ public func record(module: String, report: CleaningReport,
 
 Every typed adapter converts into one Infrastructure-internal `ValidatedHistoryRecordCandidate` and calls the same private candidate→persist→publish transaction; no public generic candidate/insert initializer exists. Outcome-workflows Task 2 may add the reviewed public `OperationResult<ShredderPayload>` adapter after defining that payload, but it must be a typed protocol witness that feeds this exact internal transaction rather than a second persistence path.
 
-It returns `.notRecordedNoChanges` only for reducer mutation `.none`; zero-byte `.changed` is still a real record. Define idempotent equality over module plus every operation/item/receipt fact, excluding only the history record UUID and insertion `date`, so retrying the same report with a new default date is still identical. An existing identical operation ID returns its existing record ID as `.alreadyRecorded` without writing. The same operation ID with different immutable facts is `.rejected(code: "history.operation.conflict")`. Concurrent duplicates commit exactly once. Duplicate IDs loaded from disk make the archive degraded; identical duplicates contribute at most one canonical record to aggregates, while conflicting duplicates are untrusted `.legacyUnknown` and contribute no success/bytes.
+The existing scalar compatibility overload remains public with its exact source-compatible signature and return type so current `ModuleSessionViewModel`/`SmartScanHub` assignments continue to compile at this non-release checkpoint:
 
-`remove(id:)`, `updateRestorable(id:to:)`, `clearRestorable(id:)` and `clear()` return `HistoryUpdateResult` and use the same durable transaction. `updateRestorable` is remove-only: every supplied receipt must exactly equal one receipt already attached to that record's validated succeeded-trash item fact, duplicates/additions/changed URL pairs are rejected, and the method may only retain a subset or clear it. Keep any temporary scalar record overload only until outcome-workflows Tasks 4, 6 and 7 migrate all direct consumers; it always writes schema 0/`.legacyUnknown`, is not deprecated while compile compatibility is needed, and outcome-workflows Task 14 owns removal of the overload declaration after the last caller is gone. No public full-record initializer or generic `insert` is allowed.
+```swift
+@discardableResult
+public func record(module: String, reclaimedBytes: Int64, removedCount: Int,
+                   restorable: [RestorableItem] = [],
+                   date: Date = Date()) -> UUID?
+```
+
+It creates only schema-0/`.legacyUnknown` data, uses the same candidate→persist→publish transaction, returns the UUID only after `.committed`, and returns nil for no-op, rejected, failed, conflict-exhausted or indeterminate mutations. It never maps legacy aggregates to trusted operation facts. Outcome-workflows Tasks 4, 6 and 7 migrate its callers; Task 14 removes the declaration and `totalCleanups` compatibility property after the zero-caller source gate passes.
+
+It returns `.notRecordedNoChanges` only for reducer mutation `.none`; zero-byte `.changed` is still a real record. Define idempotent equality over module plus every operation/item/receipt fact, excluding only the history record UUID and insertion `date`, so retrying the same report with a new default date is still identical. An existing identical operation ID returns its existing record ID as `.alreadyRecorded` without writing. The same operation ID with different immutable facts is `.rejected(code: "history.operation.conflict")`. Concurrent duplicates commit exactly once. Duplicate IDs loaded from disk make the archive degraded; identical duplicates contribute at most one canonical record to aggregates, while conflicting duplicates are untrusted `.legacyUnknown` and contribute no success/bytes. This Task's idempotency guarantee is explicitly bounded to operation IDs retained in the canonical archive; record eviction does not claim an unpersisted tombstone guarantee, and later consumer retries must retain/check their live terminal operation before the 500-record retention window can evict it.
+
+`remove(id:)`, `updateRestorable(id:to:)`, `clearRestorable(id:)` and `clear()` return `HistoryUpdateResult` and use the same durable transaction. `updateRestorable` is remove-only: every supplied receipt must exactly equal one receipt already attached to that record's validated succeeded-trash+changed item fact, duplicates/additions/changed URL pairs are rejected, and the method may only retain a subset or clear it. No public full-record initializer or generic `insert` is allowed.
 
 - [ ] **Step 7: Split aggregates and preserve immutable facts during receipt updates**
 
@@ -1258,7 +1314,7 @@ Expose distinct APIs:
 
 An all-unchanged decoded “success” cannot increment successful cleanup count. A succeeded zero-byte mutation is recorded and counts as one successful cleanup. Cancelled-without-change is not recorded; cancelled-after-change is recorded as cancelled but never counts as success.
 
-Implement one internal `CleaningRecord.updatingRestorable(_:)` copy method that copies every schema/operation/status/mutation/count/item field and changes only the exact remove-only validated receipt subset described above. Both explicit update and `firstUndoable` pruning must call it; reconstructing records through a shorter initializer is forbidden because it drops newly added facts. Pruning persists synchronously through the same transaction before returning the updated undoable record.
+Implement one internal `CleaningRecord.updatingRestorable(_:)` copy method that copies every schema/operation/status/mutation/count/item field and changes only the exact remove-only validated receipt subset described above. Both explicit update and `firstUndoable` pruning must call it; reconstructing records through a shorter initializer is forbidden because it drops newly added facts. `firstUndoable` evaluates filesystem existence outside the read-model lock, revalidates the source revision before commit, and publishes/returns the pruned record only after the same synchronous transaction returns `.committed`. On failed/conflict-exhausted/indeterminate persistence it returns no transient pruned candidate, preserves or reloads the honest read model according to the transaction result, and never promises an undo state that was not committed.
 
 - [ ] **Step 8: Run focused, full and build gates**
 
@@ -1268,11 +1324,12 @@ Run:
 swift test --filter HistoryStoreTests --disable-automatic-resolution --skip-update
 swift test --disable-automatic-resolution --skip-update
 swift build -c debug --disable-automatic-resolution --skip-update
+swift build -c release --disable-automatic-resolution --skip-update
 rg -n 'localizedDescription.*privacy: \.public|history.*\.path.*privacy: \.public' Sources/Infrastructure/HistoryStore.swift Sources/Infrastructure/HistoryPersistence.swift
 git diff --check
 ```
 
-Expected: focused, full and debug build pass with zero failures and zero new warnings; privacy `rg` has no output; every schema/preservation/transaction/idempotency/two-store/permission test above is GREEN. Inspect temporary-directory modes and original bytes in the tests rather than trusting `.atomic` by name.
+Expected: focused, full, debug and release builds pass with zero failures and zero new source/compiler warnings; the full suite executes more than the accepted Task 3 baseline of 453 tests, retains no more than its 15 explicit environment skips, and has 0 failures. Privacy `rg` has no output; every schema/preservation/transaction/idempotency/two-store/symlink-alias/reload/permission/bounds test above is GREEN. Inspect temporary-directory modes and original bytes in the tests rather than trusting `.atomic` by name.
 
 Task 4 remains a non-releasable persistence checkpoint. Do not package/install/deploy/notarize/publish, and do not call a partial Task 4 GREEN a completed Phase while scalar consumers or direct outcome UI remain.
 
@@ -1654,7 +1711,7 @@ swift build -c release --disable-automatic-resolution --skip-update
 scripts/quality_gate.sh
 ```
 
-Expected: 0 failures; test count must be greater than the latest `.superpowers/sdd/xico-opfacts-task-2-report.md` full-suite baseline (423 tests on HEAD `2dbfe87` at plan revision time, or any higher count recorded later). A lower test count is a regression even if it still exceeds the historical 373-test audit snapshot. Every skip is listed with its explicit environment reason and the current 15-skip environment baseline may not silently grow.
+Expected: 0 failures; test count must be greater than the latest accepted Operation Facts baseline (453 tests on HEAD `456bb23` at plan revision time, or any higher count recorded later). A lower test count is a regression even if it still exceeds the historical 373/423-test snapshots. Every skip is listed with its explicit environment reason and the current 15-skip environment baseline may not silently grow.
 
 - [ ] **Step 4: Self-review requirement coverage**
 
