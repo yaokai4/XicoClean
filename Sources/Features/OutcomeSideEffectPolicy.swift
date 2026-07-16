@@ -1,11 +1,6 @@
 import Foundation
 import Domain
 
-enum OutcomeWorkflowProfile: Equatable, Sendable {
-    case celebratory
-    case neutral
-}
-
 enum OutcomeEffectPermission: Equatable, Sendable {
     case allowed
     case suppressed
@@ -36,11 +31,20 @@ struct OutcomeSideEffectDecision: Equatable, Sendable {
 }
 
 enum OutcomeSideEffectPolicy: Sendable {
-    static func evaluate(
+    static func evaluate(_ outcome: OperationOutcome) -> OutcomeSideEffectDecision {
+        guard let semantics = OutcomeOperationRegistry.semantics(for: outcome.kind) else {
+            return OutcomeSideEffectDecision(
+                history: .none,
+                successNotification: .suppressed,
+                celebration: .suppressed,
+                broadcastsInternalInvalidation: false)
+        }
+        return evaluateRegistered(outcome, semantics: semantics)
+    }
+
+    private static func evaluateRegistered(
         _ outcome: OperationOutcome,
-        profile: OutcomeWorkflowProfile,
-        recordsHistory: Bool,
-        allowsSuccessNotification: Bool
+        semantics: OutcomeOperationSemantics
     ) -> OutcomeSideEffectDecision {
         let mutated = outcome.mutation != .none
         let invariant = outcome.issues.contains { $0.category == .internalInvariant }
@@ -48,16 +52,18 @@ enum OutcomeSideEffectPolicy: Sendable {
             && outcome.mutation == .changed
             && !invariant
         return OutcomeSideEffectDecision(
-            history: mutated && recordsHistory
+            history: mutated && semantics.recordsHistory
                 ? .record(status: invariant ? .partial : outcome.status)
                 : .none,
-            successNotification: feedbackSafe && allowsSuccessNotification
+            successNotification: feedbackSafe
+                && semantics.allowsCleaningSuccessNotification
                 ? .allowed
                 : .suppressed,
-            celebration: feedbackSafe && profile == .celebratory
+            celebration: feedbackSafe && semantics.profile == .celebratory
                 ? .allowed
                 : .suppressed,
-            broadcastsInternalInvalidation: mutated)
+            broadcastsInternalInvalidation: mutated
+                && !semantics.invalidationDomains.isEmpty)
     }
 }
 

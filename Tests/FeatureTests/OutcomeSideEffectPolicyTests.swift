@@ -4,114 +4,76 @@ import Domain
 @testable import Features
 
 final class OutcomeSideEffectPolicyTests: XCTestCase {
-    private let kind = OperationKind("test.side-effects")
     private let start = Date(timeIntervalSince1970: 100)
     private let finish = Date(timeIntervalSince1970: 101)
 
-    func testSuccessChangedCelebratoryRecordsNotifiesCelebratesAndInvalidates() throws {
-        let decision = try evaluate(
+    func testSuccessChangedCleaningUsesEveryRegisteredSuccessChannel() throws {
+        let decision = OutcomeSideEffectPolicy.evaluate(try outcome(
+            kind: .cleaningExecute,
             status: .success,
-            mutation: .changed,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: false)
+            mutation: .changed))
 
         XCTAssertEqual(decision.history, .record(status: .success))
         XCTAssertEqual(decision.successNotification, .allowed)
         XCTAssertEqual(decision.celebration, .allowed)
         XCTAssertTrue(decision.broadcastsInternalInvalidation)
-
-        let notificationIneligible = try evaluate(
-            status: .success,
-            mutation: .changed,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: false,
-            hasInvariant: false)
-        XCTAssertEqual(notificationIneligible.history, .record(status: .success))
-        XCTAssertEqual(notificationIneligible.successNotification, .suppressed)
-        XCTAssertEqual(notificationIneligible.celebration, .allowed)
-        XCTAssertTrue(notificationIneligible.broadcastsInternalInvalidation)
     }
 
-    func testSuccessChangedNotificationEligibleNeutralRecordsAndNotifiesWithoutCelebration() throws {
-        let decision = try evaluate(
-            status: .success,
-            mutation: .changed,
-            profile: .neutral,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: false)
+    func testOnlyCleaningExecuteIsCleaningNotificationEligible() throws {
+        let kinds: [OperationKind] = [
+            .cleaningExecute, .spaceTrash, .uninstall, .shred, .maintenance,
+            .sftpDelete, .appUpdateCheck
+        ]
 
-        XCTAssertEqual(decision.history, .record(status: .success))
-        XCTAssertEqual(decision.successNotification, .allowed)
-        XCTAssertEqual(decision.celebration, .suppressed)
-        XCTAssertTrue(decision.broadcastsInternalInvalidation)
-
-        let fullyIneligible = try evaluate(
-            status: .success,
-            mutation: .changed,
-            profile: .neutral,
-            recordsHistory: false,
-            allowsSuccessNotification: false,
-            hasInvariant: false)
-        XCTAssertEqual(fullyIneligible.history, .none)
-        XCTAssertEqual(fullyIneligible.successNotification, .suppressed)
-        XCTAssertEqual(fullyIneligible.celebration, .suppressed)
-        XCTAssertTrue(fullyIneligible.broadcastsInternalInvalidation)
+        for kind in kinds {
+            let decision = OutcomeSideEffectPolicy.evaluate(try outcome(
+                kind: kind,
+                status: .success,
+                mutation: .changed))
+            XCTAssertEqual(
+                decision.successNotification,
+                kind == .cleaningExecute ? .allowed : .suppressed,
+                kind.rawValue)
+        }
     }
 
-    func testSuccessChangedNotificationIneligibleNeutralNeverNotifiesOrCelebrates() throws {
-        let decision = try evaluate(
-            status: .success,
-            mutation: .changed,
-            profile: .neutral,
-            recordsHistory: true,
-            allowsSuccessNotification: false,
-            hasInvariant: false)
+    func testNeutralIrreversibleKindSuppressesEveryCelebratoryChannel() throws {
+        let kinds: [OperationKind] = [
+            .snapshotDelete, .shred, .sftpDelete, .hostDelete, .tunnelDelete,
+            .remoteDisconnect, .snippetDelete
+        ]
 
-        XCTAssertEqual(decision.history, .record(status: .success))
-        XCTAssertEqual(decision.successNotification, .suppressed)
-        XCTAssertEqual(decision.celebration, .suppressed)
-        XCTAssertTrue(decision.broadcastsInternalInvalidation)
+        for kind in kinds {
+            XCTAssertEqual(OutcomeOperationRegistry.semantics(for: kind)?.profile, .neutral)
+            let decision = OutcomeSideEffectPolicy.evaluate(try outcome(
+                kind: kind,
+                status: .success,
+                mutation: .changed))
+            XCTAssertEqual(decision.successNotification, .suppressed, kind.rawValue)
+            XCTAssertEqual(decision.celebration, .suppressed, kind.rawValue)
+        }
     }
 
-    func testChangedHistoryIneligibleWorkflowDoesNotRecord() throws {
-        let decision = try evaluate(
+    func testCallerCannotUpgradeNeutralOrUnknownKindToCelebratory() throws {
+        let neutral = OutcomeSideEffectPolicy.evaluate(try outcome(
+            kind: .shred,
             status: .success,
-            mutation: .changed,
-            profile: .neutral,
-            recordsHistory: false,
-            allowsSuccessNotification: true,
-            hasInvariant: false)
+            mutation: .changed))
+        let unknown = OutcomeSideEffectPolicy.evaluate(try outcome(
+            kind: OperationKind("unregistered.claimed-celebratory"),
+            status: .success,
+            mutation: .changed))
 
-        XCTAssertEqual(decision.history, .none)
-        XCTAssertEqual(decision.successNotification, .allowed)
-        XCTAssertEqual(decision.celebration, .suppressed)
-        XCTAssertTrue(decision.broadcastsInternalInvalidation)
+        XCTAssertEqual(neutral.celebration, .suppressed)
+        XCTAssertEqual(unknown.celebration, .suppressed)
+        XCTAssertEqual(unknown.successNotification, .suppressed)
     }
 
-    func testSuccessUnchangedProducesNoSideEffects() throws {
-        let decision = try evaluate(
-            status: .success,
-            mutation: .none,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: false)
-
-        assertNoSideEffects(decision)
-    }
-
-    func testPartialChangedRecordsPartialWithoutFeedbackAndInvalidates() throws {
-        let decision = try evaluate(
+    func testPartialChangedAllowsHistoryAndInvalidationButNoSuccessFeedback() throws {
+        let decision = OutcomeSideEffectPolicy.evaluate(try outcome(
+            kind: .cleaningExecute,
             status: .partial,
-            mutation: .changed,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: false)
+            mutation: .changed))
 
         XCTAssertEqual(decision.history, .record(status: .partial))
         XCTAssertEqual(decision.successNotification, .suppressed)
@@ -119,38 +81,11 @@ final class OutcomeSideEffectPolicyTests: XCTestCase {
         XCTAssertTrue(decision.broadcastsInternalInvalidation)
     }
 
-    func testPartialWithoutChangeProducesNoSideEffects() throws {
-        let decision = try evaluate(
-            status: .partial,
-            mutation: .none,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: false)
-
-        assertNoSideEffects(decision)
-    }
-
-    func testFailureWithoutChangeProducesNoSideEffects() throws {
-        let decision = try evaluate(
-            status: .failure,
-            mutation: .none,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: false)
-
-        assertNoSideEffects(decision)
-    }
-
-    func testCancelledChangedRecordsCancelledWithoutFeedbackAndInvalidates() throws {
-        let decision = try evaluate(
+    func testCancelledChangedPreservesHistoryAndInvalidationButNoSuccessFeedback() throws {
+        let decision = OutcomeSideEffectPolicy.evaluate(try outcome(
+            kind: .cleaningExecute,
             status: .cancelled,
-            mutation: .changed,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: false)
+            mutation: .changed))
 
         XCTAssertEqual(decision.history, .record(status: .cancelled))
         XCTAssertEqual(decision.successNotification, .suppressed)
@@ -158,26 +93,65 @@ final class OutcomeSideEffectPolicyTests: XCTestCase {
         XCTAssertTrue(decision.broadcastsInternalInvalidation)
     }
 
-    func testCancelledWithoutChangeProducesNoSideEffects() throws {
-        let decision = try evaluate(
-            status: .cancelled,
-            mutation: .none,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: false)
+    func testSuccessUnchangedSuppressesAllChangedChannels() throws {
+        let decision = OutcomeSideEffectPolicy.evaluate(try outcome(
+            kind: .cleaningExecute,
+            status: .success,
+            mutation: .none))
 
         assertNoSideEffects(decision)
     }
 
-    func testInvariantChangedRecordsPartialWithoutFeedbackAndInvalidates() throws {
-        let decision = try evaluate(
-            status: .failure,
+    func testShredAndRemoteDeleteNeverAllowNotificationOrCelebrationEvenWhenSuccessful() throws {
+        for kind in [OperationKind.shred, .sftpDelete, .hostDelete, .tunnelDelete] {
+            let decision = OutcomeSideEffectPolicy.evaluate(try outcome(
+                kind: kind,
+                status: .success,
+                mutation: .changed))
+            XCTAssertEqual(decision.successNotification, .suppressed, kind.rawValue)
+            XCTAssertEqual(decision.celebration, .suppressed, kind.rawValue)
+            XCTAssertTrue(decision.broadcastsInternalInvalidation, kind.rawValue)
+        }
+    }
+
+    func testPossiblyChangedNeverNotifiesOrCelebrates() throws {
+        for status in [OperationTerminalStatus.success, .failure, .cancelled] {
+            let decision = OutcomeSideEffectPolicy.evaluate(try outcome(
+                kind: .cleaningExecute,
+                status: status,
+                mutation: .possiblyChanged))
+            XCTAssertEqual(decision.successNotification, .suppressed, status.rawValue)
+            XCTAssertEqual(decision.celebration, .suppressed, status.rawValue)
+            XCTAssertNotEqual(decision.history, .none, status.rawValue)
+            XCTAssertTrue(decision.broadcastsInternalInvalidation, status.rawValue)
+        }
+    }
+
+    func testUnknownKindSuppressesHistoryNotificationCelebrationAndInvalidation() throws {
+        let decision = OutcomeSideEffectPolicy.evaluate(try outcome(
+            kind: OperationKind("unknown.operation"),
+            status: .success,
+            mutation: .changed))
+
+        assertNoSideEffects(decision)
+        XCTAssertNil(OutcomeOperationRegistry.semantics(for: OperationKind("unknown.operation")))
+    }
+
+    func testRegisteredKindWithNoDomainsDoesNotBroadcastInvalidation() throws {
+        let decision = OutcomeSideEffectPolicy.evaluate(try outcome(
+            kind: .helperInstall,
+            status: .success,
+            mutation: .changed))
+
+        assertNoSideEffects(decision)
+    }
+
+    func testInternalInvariantDowngradesHistoryAndSuppressesSuccessFeedback() throws {
+        let decision = OutcomeSideEffectPolicy.evaluate(try outcome(
+            kind: .cleaningExecute,
+            status: .success,
             mutation: .changed,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: true)
+            hasInvariant: true))
 
         XCTAssertEqual(decision.history, .record(status: .partial))
         XCTAssertEqual(decision.successNotification, .suppressed)
@@ -185,43 +159,39 @@ final class OutcomeSideEffectPolicyTests: XCTestCase {
         XCTAssertTrue(decision.broadcastsInternalInvalidation)
     }
 
-    func testInvariantWithoutChangeProducesNoSideEffects() throws {
-        let decision = try evaluate(
+    func testFailureWithoutMutationProducesNoSideEffects() throws {
+        assertNoSideEffects(OutcomeSideEffectPolicy.evaluate(try outcome(
+            kind: .cleaningExecute,
             status: .failure,
-            mutation: .none,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: true)
-
-        assertNoSideEffects(decision)
+            mutation: .none)))
     }
 
-    func testPossiblyChangedNeverCelebratesOrSendsSuccessNotification() throws {
-        let decision = try evaluate(
-            status: .success,
-            mutation: .possiblyChanged,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: false)
+    func testHistoryConsumptionDoesNotConsumeNotificationOrCelebrationChannel() async {
+        let gate = OutcomeFeedbackGate()
+        let operationID = UUID()
+        await gate.registerTerminal(operationID)
 
-        XCTAssertEqual(decision.history, .record(status: .success))
-        XCTAssertEqual(decision.successNotification, .suppressed)
-        XCTAssertEqual(decision.celebration, .suppressed)
-        XCTAssertTrue(decision.broadcastsInternalInvalidation)
+        let historyFirst = await gate.consume(.history, for: operationID)
+        let notificationFirst = await gate.consume(.successNotification, for: operationID)
+        let celebrationFirst = await gate.consume(.celebration, for: operationID)
+        let soundHapticFirst = await gate.consume(.successSoundHaptic, for: operationID)
+        let invalidationFirst = await gate.consume(.internalInvalidation, for: operationID)
+        let historySecond = await gate.consume(.history, for: operationID)
+        let notificationSecond = await gate.consume(.successNotification, for: operationID)
+        let celebrationSecond = await gate.consume(.celebration, for: operationID)
+        let soundHapticSecond = await gate.consume(.successSoundHaptic, for: operationID)
+        let invalidationSecond = await gate.consume(.internalInvalidation, for: operationID)
 
-        let failed = try evaluate(
-            status: .failure,
-            mutation: .possiblyChanged,
-            profile: .celebratory,
-            recordsHistory: true,
-            allowsSuccessNotification: true,
-            hasInvariant: false)
-        XCTAssertEqual(failed.history, .record(status: .failure))
-        XCTAssertEqual(failed.successNotification, .suppressed)
-        XCTAssertEqual(failed.celebration, .suppressed)
-        XCTAssertTrue(failed.broadcastsInternalInvalidation)
+        XCTAssertTrue(historyFirst)
+        XCTAssertTrue(notificationFirst)
+        XCTAssertTrue(celebrationFirst)
+        XCTAssertTrue(soundHapticFirst)
+        XCTAssertTrue(invalidationFirst)
+        XCTAssertFalse(historySecond)
+        XCTAssertFalse(notificationSecond)
+        XCTAssertFalse(celebrationSecond)
+        XCTAssertFalse(soundHapticSecond)
+        XCTAssertFalse(invalidationSecond)
     }
 
     func testConcurrentConsumptionOfSameChannelSucceedsExactlyOnce() async {
@@ -231,9 +201,7 @@ final class OutcomeSideEffectPolicyTests: XCTestCase {
 
         let consumed = await withTaskGroup(of: Bool.self, returning: [Bool].self) { group in
             for _ in 0..<64 {
-                group.addTask {
-                    await gate.consume(.history, for: operationID)
-                }
+                group.addTask { await gate.consume(.history, for: operationID) }
             }
             var values: [Bool] = []
             for await value in group { values.append(value) }
@@ -244,50 +212,19 @@ final class OutcomeSideEffectPolicyTests: XCTestCase {
         XCTAssertEqual(consumed.filter { !$0 }.count, 63)
     }
 
-    func testNotificationAndCelebrationChannelsEachConsumeOnce() async {
-        let gate = OutcomeFeedbackGate()
-        let operationID = UUID()
-        await gate.registerTerminal(operationID)
-
-        let notificationFirst = await gate.consume(.successNotification, for: operationID)
-        let notificationSecond = await gate.consume(.successNotification, for: operationID)
-        let celebrationFirst = await gate.consume(.celebration, for: operationID)
-        let celebrationSecond = await gate.consume(.celebration, for: operationID)
-
-        XCTAssertTrue(notificationFirst)
-        XCTAssertFalse(notificationSecond)
-        XCTAssertTrue(celebrationFirst)
-        XCTAssertFalse(celebrationSecond)
-    }
-
-    func testHistoryCelebrationSoundAndInvalidationChannelsRemainIndependent() async {
-        let gate = OutcomeFeedbackGate()
-        let operationID = UUID()
-        await gate.registerTerminal(operationID)
-
-        let history = await gate.consume(.history, for: operationID)
-        let celebration = await gate.consume(.celebration, for: operationID)
-        let sound = await gate.consume(.successSoundHaptic, for: operationID)
-        let invalidation = await gate.consume(.internalInvalidation, for: operationID)
-        let historyAgain = await gate.consume(.history, for: operationID)
-
-        XCTAssertTrue(history)
-        XCTAssertTrue(celebration)
-        XCTAssertTrue(sound)
-        XCTAssertTrue(invalidation)
-        XCTAssertFalse(historyAgain)
-    }
-
     func testReregisteringSameOperationIDDoesNotResetConsumedChannels() async {
         let gate = OutcomeFeedbackGate()
         let operationID = UUID()
         await gate.registerTerminal(operationID)
         let first = await gate.consume(.history, for: operationID)
-        await gate.registerTerminal(operationID)
-        let second = await gate.consume(.history, for: operationID)
 
+        await gate.registerTerminal(operationID)
+
+        let historyAfterRegistration = await gate.consume(.history, for: operationID)
+        let celebrationAfterRegistration = await gate.consume(.celebration, for: operationID)
         XCTAssertTrue(first)
-        XCTAssertFalse(second)
+        XCTAssertFalse(historyAfterRegistration)
+        XCTAssertTrue(celebrationAfterRegistration)
     }
 
     func testRegisteringNewOperationRejectsOldOperationID() async {
@@ -296,10 +233,11 @@ final class OutcomeSideEffectPolicyTests: XCTestCase {
         let newID = UUID()
         await gate.registerTerminal(oldID)
         let oldBeforeReplacement = await gate.consume(.history, for: oldID)
+
         await gate.registerTerminal(newID)
+
         let oldAfterReplacement = await gate.consume(.celebration, for: oldID)
         let newAfterReplacement = await gate.consume(.history, for: newID)
-
         XCTAssertTrue(oldBeforeReplacement)
         XCTAssertFalse(oldAfterReplacement)
         XCTAssertTrue(newAfterReplacement)
@@ -323,17 +261,25 @@ final class OutcomeSideEffectPolicyTests: XCTestCase {
         XCTAssertFalse(stale)
         XCTAssertFalse(currentHistory)
         XCTAssertTrue(currentCelebration)
+
+        let storage = Mirror(reflecting: gate)
+        let fields = Dictionary(uniqueKeysWithValues: storage.children.compactMap { child in
+            child.label.map { ($0, child.value) }
+        })
+        XCTAssertEqual(
+            Set(fields.keys),
+            ["$defaultActor", "currentOperationID", "consumedChannels"])
+        XCTAssertTrue(fields["consumedChannels"] is Set<OutcomeEffectChannel>)
     }
 
     func testAppearanceCannotRegisterAnOperationOrReplayEffects() async {
         let gate = OutcomeFeedbackGate()
         let operationID = UUID()
 
-        let firstAppearance = await gate.consume(.celebration, for: operationID)
-        let repeatedAppearance = await gate.consume(.celebration, for: operationID)
-
-        XCTAssertFalse(firstAppearance)
-        XCTAssertFalse(repeatedAppearance)
+        let first = await gate.consume(.celebration, for: operationID)
+        let second = await gate.consume(.celebration, for: operationID)
+        XCTAssertFalse(first)
+        XCTAssertFalse(second)
     }
 
     func testHistoricalOutcomeCannotRegisterOrConsumeLiveEffects() async {
@@ -345,25 +291,23 @@ final class OutcomeSideEffectPolicyTests: XCTestCase {
         let historical = await gate.consume(.history, for: historicalID)
         let live = await gate.consume(.history, for: liveID)
         let historicalAgain = await gate.consume(.history, for: historicalID)
-
         XCTAssertFalse(historical)
         XCTAssertTrue(live)
         XCTAssertFalse(historicalAgain)
     }
 
-    private func evaluate(
+    private func outcome(
+        kind: OperationKind,
         status: OperationTerminalStatus,
         mutation: OperationMutationFact,
-        profile: OutcomeWorkflowProfile,
-        recordsHistory: Bool,
-        allowsSuccessNotification: Bool,
-        hasInvariant: Bool
-    ) throws -> OutcomeSideEffectDecision {
-        let issue = OperationIssue(code: "test.failure",
-                                   category: .io,
-                                   subjectID: "failed",
-                                   recovery: .retry,
-                                   retryable: true)
+        hasInvariant: Bool = false
+    ) throws -> OperationOutcome {
+        let failure = OperationIssue(
+            code: "test.failure",
+            category: .io,
+            subjectID: "failed",
+            recovery: .retry,
+            retryable: true)
         let requested: [String]
         var itemOutcomes: [OperationItemOutcome]
         let cancellationAccepted: Bool
@@ -377,16 +321,18 @@ final class OutcomeSideEffectPolicyTests: XCTestCase {
             requested = ["primary", "failed"]
             itemOutcomes = [
                 item("primary", .succeeded, mutation: mutation),
-                item("failed", .failed(issue), mutation: .none)
+                item("failed", .failed(failure), mutation: .none)
             ]
             cancellationAccepted = false
         case .failure:
             requested = ["failed"]
-            itemOutcomes = [item("failed", .failed(issue), mutation: mutation)]
+            itemOutcomes = [item("failed", .failed(failure), mutation: mutation)]
             cancellationAccepted = false
         case .cancelled:
             requested = ["primary", "pending"]
-            itemOutcomes = [item("primary", .succeeded, mutation: mutation)]
+            itemOutcomes = mutation == .none
+                ? []
+                : [item("primary", .succeeded, mutation: mutation)]
             cancellationAccepted = true
         }
 
@@ -394,18 +340,13 @@ final class OutcomeSideEffectPolicyTests: XCTestCase {
             itemOutcomes.append(item("unexpected", .unchanged, mutation: .none))
         }
 
-        let outcome = try OperationOutcomeReducer.reduce(
+        return try OperationOutcomeReducer.reduce(
             kind: kind,
             requestedSubjectIDs: requested,
             itemOutcomes: itemOutcomes,
             cancellationAccepted: cancellationAccepted,
             startedAt: start,
             finishedAt: finish)
-        return OutcomeSideEffectPolicy.evaluate(
-            outcome,
-            profile: profile,
-            recordsHistory: recordsHistory,
-            allowsSuccessNotification: allowsSuccessNotification)
     }
 
     private func item(
@@ -413,9 +354,10 @@ final class OutcomeSideEffectPolicyTests: XCTestCase {
         _ disposition: OperationDisposition,
         mutation: OperationMutationFact
     ) -> OperationItemOutcome {
-        OperationItemOutcome(subjectID: subjectID,
-                             disposition: disposition,
-                             mutation: mutation)
+        OperationItemOutcome(
+            subjectID: subjectID,
+            disposition: disposition,
+            mutation: mutation)
     }
 
     private func assertNoSideEffects(

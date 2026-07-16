@@ -26,12 +26,14 @@ public actor CleaningEngine {
 
     public func execute(
         _ plan: CleaningPlan,
+        purpose: CleaningOperationPurpose = .standard,
         progress: @escaping ProgressHandler = { _ in }
     ) async -> CleaningReport {
         let startedAt = Date()
+        let operationKind = purpose.operationKind
         guard !plan.items.isEmpty else {
             let operation = OperationOutcomeReducer.internalFailure(
-                kind: OperationKind("cleaning.execute"),
+                kind: operationKind,
                 requestedSubjectIDs: [],
                 code: "cleaning.request.empty",
                 startedAt: startedAt,
@@ -129,7 +131,7 @@ public actor CleaningEngine {
         let operation: OperationOutcome
         do {
             operation = try OperationOutcomeReducer.reduce(
-                kind: OperationKind("cleaning.execute"),
+                kind: operationKind,
                 requestedSubjectIDs: requestIDs,
                 itemOutcomes: operationItems,
                 cancellationAccepted: cancellationAccepted,
@@ -137,7 +139,7 @@ public actor CleaningEngine {
                 finishedAt: finishedAt)
         } catch {
             operation = OperationOutcomeReducer.internalFailure(
-                kind: OperationKind("cleaning.execute"),
+                kind: operationKind,
                 requestedSubjectIDs: requestIDs,
                 itemOutcomes: operationItems,
                 cancellationAccepted: cancellationAccepted,

@@ -3,6 +3,16 @@ import XCTest
 @testable import Domain
 
 final class CleaningEngineTests: XCTestCase {
+    private struct ExternalCompileResult {
+        let status: Int32
+        let standardOutput: String
+        let standardError: String
+
+        var diagnostics: String {
+            "stdout:\n\(standardOutput)\nstderr:\n\(standardError)"
+        }
+    }
+
     private struct AllowAllSafety: SafetyEngine {
         func verify(_ url: URL, intent: DeleteIntent) -> SafetyVerdict { .allow }
     }
@@ -49,6 +59,110 @@ final class CleaningEngineTests: XCTestCase {
                            retryable: retryable),
             file: file,
             line: line)
+    }
+
+    func testCleaningPurposesProduceOnlyTheirCanonicalReportKinds() async {
+        let cases: [(purpose: CleaningOperationPurpose, kind: OperationKind, name: String)] = [
+            (.standard, .cleaningExecute, "standard"),
+            (.spaceTrash, .spaceTrash, "space-trash"),
+            (.uninstall, .uninstall, "uninstall")
+        ]
+
+        for testCase in cases {
+            let url = URL(fileURLWithPath: "/tmp/cleaning-purpose-\(testCase.name)")
+            let engine = CleaningEngine(
+                safety: AllowAllSafety(),
+                fs: MemoryFS(existing: [url.path]))
+            let ordinary = await engine.execute(
+                CleaningPlan(items: [
+                    CleanableItem(url: url,
+                                  displayName: testCase.name,
+                                  size: 10)
+                ], intent: .permanent),
+                purpose: testCase.purpose)
+
+            XCTAssertEqual(ordinary.operation.kind, testCase.kind, testCase.name)
+            XCTAssertEqual(ordinary.operation.status, .success, testCase.name)
+
+            let emptyInternalFailure = await engine.execute(
+                CleaningPlan(items: [], intent: .permanent),
+                purpose: testCase.purpose)
+
+            XCTAssertEqual(emptyInternalFailure.operation.kind,
+                           testCase.kind,
+                           testCase.name)
+            XCTAssertEqual(emptyInternalFailure.operation.status,
+                           .failure,
+                           testCase.name)
+            XCTAssertTrue(
+                emptyInternalFailure.operation.issues.contains {
+                    $0.code == "cleaning.request.empty"
+                        && $0.category == .internalInvariant
+                },
+                testCase.name)
+        }
+    }
+
+    func testExternalClientCannotPassRawOperationKindAsCleaningPurposeOrMergePurpose() throws {
+        let valid = try compileExternalClient("""
+        import Domain
+
+        func execute(engine: CleaningEngine, plan: CleaningPlan) async {
+            let purpose: CleaningOperationPurpose = .standard
+            _ = await engine.execute(plan, purpose: purpose)
+            let mergePurposes: [CleaningOperationPurpose] = [.spaceTrash, .uninstall]
+            _ = mergePurposes
+        }
+        """)
+
+        XCTAssertEqual(valid.status, 0, valid.diagnostics)
+        assertNoModuleLoadFailure(valid)
+
+        let rawExecution = try compileExternalClient("""
+        import Domain
+
+        func execute(engine: CleaningEngine, plan: CleaningPlan) async {
+            _ = await engine.execute(
+                plan,
+                purpose: OperationKind("forged.cleaning-purpose"))
+        }
+        """)
+
+        assertRawKindPurposeMismatch(rawExecution)
+
+        let rawMergePurpose = try compileExternalClient("""
+        import Domain
+
+        let raw = OperationKind("forged.merge-purpose")
+        let mergePurpose: CleaningOperationPurpose = raw
+        _ = mergePurpose
+        """)
+
+        assertRawKindPurposeMismatch(rawMergePurpose)
+    }
+
+    func testExternalClientCannotForgeOutcomeOperationSemantics() throws {
+        let forgedSemantics = try compileExternalClient("""
+        import Domain
+
+        let forged = OutcomeOperationSemantics(
+            profile: .celebratory,
+            recordsHistory: true,
+            allowsCleaningSuccessNotification: true,
+            invalidationDomains: [.diskCapacity])
+        _ = forged
+        """)
+
+        XCTAssertNotEqual(forgedSemantics.status, 0, forgedSemantics.diagnostics)
+        XCTAssertTrue(
+            forgedSemantics.standardError.contains("OutcomeOperationSemantics"),
+            forgedSemantics.diagnostics)
+        XCTAssertTrue(
+            forgedSemantics.standardError.localizedCaseInsensitiveContains("inaccessible")
+                || forgedSemantics.standardError.localizedCaseInsensitiveContains(
+                    "protection level"),
+            forgedSemantics.diagnostics)
+        assertNoModuleLoadFailure(forgedSemantics)
     }
 
     func testMissingPathIsUnchangedRatherThanSilentlyDropped() async {
@@ -945,6 +1059,149 @@ final class CleaningEngineTests: XCTestCase {
         } else {
             XCTAssertTrue(report.restorable.isEmpty, file: file, line: line)
         }
+    }
+
+    private func assertRawKindPurposeMismatch(
+        _ result: ExternalCompileResult,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertNotEqual(result.status, 0, result.diagnostics, file: file, line: line)
+        XCTAssertTrue(result.standardError.contains("OperationKind"),
+                      result.diagnostics,
+                      file: file,
+                      line: line)
+        XCTAssertTrue(result.standardError.contains("CleaningOperationPurpose"),
+                      result.diagnostics,
+                      file: file,
+                      line: line)
+        XCTAssertTrue(result.standardError.localizedCaseInsensitiveContains("cannot convert"),
+                      result.diagnostics,
+                      file: file,
+                      line: line)
+        assertNoModuleLoadFailure(result, file: file, line: line)
+    }
+
+    private func compileExternalClient(_ source: String) throws -> ExternalCompileResult {
+        let fileManager = FileManager.default
+        let temporaryURL = fileManager.temporaryDirectory
+            .appendingPathComponent("XicoCleaningPurposeClient-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try fileManager.createDirectory(at: temporaryURL,
+                                        withIntermediateDirectories: false)
+        defer { try? fileManager.removeItem(at: temporaryURL) }
+
+        let sourceURL = temporaryURL.appendingPathComponent("client.swift")
+        let moduleCacheURL = temporaryURL.appendingPathComponent("module-cache",
+                                                                  isDirectory: true)
+        try fileManager.createDirectory(at: moduleCacheURL,
+                                        withIntermediateDirectories: false)
+        try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        let modulesURL = try debugDomainModulesDirectory()
+        let cProcessBatchModuleMap = modulesURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("CProcessBatch.build/module.modulemap")
+        guard fileManager.fileExists(atPath: cProcessBatchModuleMap.path) else {
+            XCTFail("Expected the debug CProcessBatch module map")
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let standardOutputURL = temporaryURL.appendingPathComponent("stdout.txt")
+        let standardErrorURL = temporaryURL.appendingPathComponent("stderr.txt")
+        _ = fileManager.createFile(atPath: standardOutputURL.path, contents: nil)
+        _ = fileManager.createFile(atPath: standardErrorURL.path, contents: nil)
+        let standardOutput = try FileHandle(forWritingTo: standardOutputURL)
+        let standardError = try FileHandle(forWritingTo: standardErrorURL)
+        defer {
+            try? standardOutput.close()
+            try? standardError.close()
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.arguments = [
+            "swiftc",
+            "-typecheck",
+            "-module-cache-path", moduleCacheURL.path,
+            "-I", modulesURL.path,
+            "-Xcc", "-fmodule-map-file=\(cProcessBatchModuleMap.path)",
+            sourceURL.path
+        ]
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+        defer {
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+            }
+        }
+
+        try process.run()
+        process.waitUntilExit()
+        try standardOutput.synchronize()
+        try standardError.synchronize()
+        try standardOutput.close()
+        try standardError.close()
+        let outputData = try Data(contentsOf: standardOutputURL)
+        let errorData = try Data(contentsOf: standardErrorURL)
+
+        return ExternalCompileResult(
+            status: process.terminationStatus,
+            standardOutput: String(decoding: outputData, as: UTF8.self),
+            standardError: String(decoding: errorData, as: UTF8.self))
+    }
+
+    private func assertNoModuleLoadFailure(
+        _ result: ExternalCompileResult,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertFalse(result.standardError.localizedCaseInsensitiveContains("no such module"),
+                       result.diagnostics,
+                       file: file,
+                       line: line)
+        XCTAssertFalse(result.standardError.localizedCaseInsensitiveContains(
+            "missing required module"),
+            result.diagnostics,
+            file: file,
+            line: line)
+    }
+
+    private func debugDomainModulesDirectory() throws -> URL {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let buildURL = repositoryRoot.appendingPathComponent(".build", isDirectory: true)
+        let enumerator = FileManager.default.enumerator(
+            at: buildURL,
+            includingPropertiesForKeys: nil)
+        var candidates: [URL] = []
+        while let candidate = enumerator?.nextObject() as? URL {
+            guard candidate.lastPathComponent == "Domain.swiftmodule" else { continue }
+            let modulesURL = candidate.deletingLastPathComponent()
+            let targetTriple = modulesURL
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .lastPathComponent
+            guard modulesURL.lastPathComponent == "Modules",
+                  modulesURL.deletingLastPathComponent().lastPathComponent == "debug",
+                  targetTriple.hasPrefix(currentArchitecturePrefix) else {
+                continue
+            }
+            candidates.append(modulesURL)
+        }
+        return try XCTUnwrap(candidates.sorted { $0.path < $1.path }.first,
+                             "Expected a recursively discoverable debug Domain.swiftmodule")
+    }
+
+    private var currentArchitecturePrefix: String {
+        #if arch(arm64)
+        "arm64-"
+        #elseif arch(x86_64)
+        "x86_64-"
+        #else
+        ""
+        #endif
     }
 }
 

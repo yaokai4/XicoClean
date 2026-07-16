@@ -6,6 +6,36 @@ public struct OperationKind: RawRepresentable, Hashable, Codable, Sendable {
     public init(_ rawValue: String) { self.rawValue = rawValue }
 }
 
+public extension OperationKind {
+    static let cleaningExecute = OperationKind("cleaning.execute")
+    static let cleaningUndo = OperationKind("cleaning.undo")
+    static let threatRemediation = OperationKind("threat.remediate")
+    static let spaceTrash = OperationKind("space.trash")
+    static let snapshotDelete = OperationKind("snapshot.delete")
+    static let shred = OperationKind("shred.execute")
+    static let uninstall = OperationKind("uninstall.execute")
+    static let maintenance = OperationKind("maintenance.execute")
+    static let helperInstall = OperationKind("helper.install")
+    static let iCloudEvict = OperationKind("icloud.evict")
+    static let appTerminate = OperationKind("optimization.terminate")
+    static let launchAgentToggle = OperationKind("optimization.launchAgent")
+    static let memoryPurge = OperationKind("optimization.memoryPurge")
+    static let appUpdateCheck = OperationKind("update.thirdParty.check")
+    static let xicoUpdateCheck = OperationKind("update.xico.check")
+    static let sftpDelete = OperationKind("remote.sftp.delete")
+    static let hostDelete = OperationKind("remote.host.delete")
+    static let tunnelDelete = OperationKind("remote.tunnel.delete")
+    static let remoteDisconnect = OperationKind("remote.disconnect")
+    static let snippetDelete = OperationKind("server.snippet.delete")
+    static let downloadJob = OperationKind("download.job")
+    static let componentInstall = OperationKind("download.component.install")
+    static let historyClear = OperationKind("history.clear")
+    static let benchmarkHistoryClear = OperationKind("benchmark.history.clear")
+    static let ignoreRemove = OperationKind("ignore.remove")
+    static let onboardingReset = OperationKind("settings.onboarding.reset")
+    static let licenseDeactivate = OperationKind("license.deactivate")
+}
+
 public enum OperationTerminalStatus: String, Codable, Hashable, Sendable {
     case success, partial, failure, cancelled
 }
