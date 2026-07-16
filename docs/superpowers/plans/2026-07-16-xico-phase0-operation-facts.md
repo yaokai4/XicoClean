@@ -21,6 +21,8 @@
 - 日志只记录 issue code 和数量；路径、URL、host 和 `localizedDescription` 默认 private。
 - 每个 commit 只暂存该 Task 的精确文件。
 
+**Migration release boundary:** Tasks 2–4 are compile/test checkpoints, not releasable product states: the still-unmigrated feature consumers can only use their compatibility surface to keep the package buildable. Do not package, install, deploy, notarize, publish or score this Phase until Task 5 has migrated all consumers and Task 7's full gates pass. This boundary does not permit any new/modified execution path to fabricate success or lose item facts.
+
 ## File Structure
 
 ### Domain facts
@@ -64,7 +66,7 @@
 - Produces: `OperationKind`, `OperationTerminalStatus`, `OperationIssueCategory`, `OperationRecoveryHint`, `OperationIssue`, `OperationDisposition`, `OperationItemOutcome`, `OperationCounts`, `OperationOutcome`, `OperationResult`, `OperationProgress`, `OperationLifecycle`, `OperationReductionError`, `OperationOutcomeReducer`.
 - Consumes: no Infrastructure, SwiftUI, localized strings, OSLog, filesystem or network APIs.
 
-- [ ] **Step 1: Write reducer tests that cover every OUT invariant**
+- [x] **Step 1: Write reducer tests that cover every OUT invariant**
 
 Create `Tests/DomainTests/OperationOutcomeReducerTests.swift` with these test cases and a shared `reduce` helper:
 
@@ -186,13 +188,13 @@ final class OperationOutcomeReducerTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Run the focused test and confirm the types do not exist**
+- [x] **Step 2: Run the focused test and confirm the types do not exist**
 
 Run: `swift test --filter OperationOutcomeReducerTests`
 
 Expected: FAIL with compiler errors for `OperationKind`, `OperationDisposition`, and `OperationOutcomeReducer`.
 
-- [ ] **Step 3: Implement the exact Domain contract and reducer**
+- [x] **Step 3: Implement the exact Domain contract and reducer**
 
 Create `Sources/Domain/OperationOutcome.swift`. Use public value initializers only for inputs; keep the `OperationOutcome` initializer `fileprivate` so the reducer remains the only constructor in this file.
 
@@ -422,13 +424,13 @@ public enum OperationOutcomeReducer {
 }
 ```
 
-- [ ] **Step 4: Run focused reducer tests**
+- [x] **Step 4: Run focused reducer tests**
 
 Run: `swift test --filter OperationOutcomeReducerTests`
 
 Expected: PASS, 13 tests, 0 failures.
 
-- [ ] **Step 5: Run Domain regression and commit**
+- [x] **Step 5: Run Domain regression and commit**
 
 Run: `swift test --filter DomainTests`
 
@@ -446,12 +448,14 @@ git commit -m "feat: add operation outcome reducer"
 ### Task 2: Migrate CleaningReport to Item Facts
 
 **Files:**
+- Modify: `Sources/Domain/OperationOutcome.swift`
 - Modify: `Sources/Domain/Models.swift`
 - Modify: `Sources/Domain/CleaningEngine.swift`
+- Modify: `Tests/DomainTests/OperationOutcomeReducerTests.swift`
 - Modify: `Tests/DomainTests/CleaningEngineTests.swift`
 - Modify: `Tests/IntegrationTests/CleaningRoundTripTests.swift`
 
-- [ ] **Step 1: Add failing assertions for success, unchanged, skip, failure and cancellation**
+- [ ] **Step 1: Add failing assertions for every item disposition, malformed plans and privileged postconditions**
 
 Extend `Tests/DomainTests/CleaningEngineTests.swift` with injectable filesystem behavior and these exact behavioral assertions:
 
@@ -499,18 +503,69 @@ func testCancellationProducesDispositionForEveryRequestedItem() async {
     let report = await task.value
     XCTAssertEqual(report.operation.status, .cancelled)
     XCTAssertEqual(report.operation.counts.requested, 3)
+    XCTAssertEqual(report.operation.counts.succeeded, 1)
+    XCTAssertEqual(report.operation.counts.cancelled, 2)
     XCTAssertEqual(report.items.count, 3)
-    XCTAssertGreaterThan(report.operation.counts.cancelled, 0)
+    XCTAssertEqual(report.items.map(\.disposition), [.succeeded, .cancelled(nil), .cancelled(nil)])
+}
+
+func testDuplicateTargetFailsClosedWithoutFilesystemMutation() async {
+    let firstURL = URL(fileURLWithPath: "/tmp/duplicate-a")
+    let secondURL = URL(fileURLWithPath: "/tmp/duplicate-b")
+    let duplicateID = UUID()
+    let fs = RecordingFS(existing: [firstURL.path, secondURL.path])
+    let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs)
+    let report = await engine.execute(CleaningPlan(items: [
+        CleanableItem(id: duplicateID, url: firstURL, displayName: "first", size: 10),
+        CleanableItem(id: duplicateID, url: secondURL, displayName: "second", size: 10)
+    ], intent: .trash))
+    XCTAssertEqual(report.operation.status, .failure)
+    XCTAssertEqual(report.operation.counts.requested, 2)
+    XCTAssertEqual(report.operation.counts.failed, 2)
+    XCTAssertEqual(report.items.count, 2)
+    XCTAssertTrue(fs.mutatedPaths.isEmpty)
+}
+
+func testSameNormalizedPathWithDistinctItemIDsFailsClosed() async {
+    let direct = URL(fileURLWithPath: "/tmp/duplicate-path")
+    let equivalent = URL(fileURLWithPath: "/tmp/xico-parent/../duplicate-path")
+    XCTAssertNotEqual(direct.path, equivalent.path)
+    XCTAssertEqual(direct.standardizedFileURL.path, equivalent.standardizedFileURL.path)
+    let fs = RecordingFS(existing: [direct.standardizedFileURL.path])
+    let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs)
+    let report = await engine.execute(CleaningPlan(items: [
+        CleanableItem(url: direct, displayName: "first", size: 10),
+        CleanableItem(url: equivalent, displayName: "second", size: 10)
+    ], intent: .trash))
+    XCTAssertEqual(report.operation.status, .failure)
+    XCTAssertEqual(report.operation.counts.failed, 2)
+    XCTAssertTrue(fs.mutatedPaths.isEmpty)
 }
 ```
 
-Add a private `Array.single` test helper that returns the only element or nil. The fake filesystems must record attempted paths and never access the real user Trash.
+Add these RED cases in the same file; each must assert the exact disposition, stable issue code, item count and absence/presence of mutation rather than only legacy aggregate fields:
+
+- `testInformationalItemIsSkippedWithoutFilesystemMutation` → `cleaning.item.informational`.
+- `testEmptyPlanFailsClosedWithoutFilesystemMutation` → failure, requested/failed/items all zero, issue `cleaning.request.empty`.
+- `testMissingHelperFailsRequestedItem` → `cleaning.helper.unavailable`; helper and filesystem mutation counts stay zero.
+- `testHelperIntentMismatchFailsWithoutCallingHelper` → `cleaning.helper.intentMismatch`.
+- `testHelperReportedTargetFailureIsFailed` → `cleaning.helper.removalFailed`.
+- `testHelperUnexpectedFailurePathFailsClosed` → `cleaning.helper.unexpectedFailurePath`.
+- `testHelperTargetAndUnexpectedFailuresPreferInvariantFailure` → `cleaning.helper.unexpectedFailurePath`, with no reclaimed bytes or receipt.
+- `testHelperClaimedSuccessWhileTargetExistsIsFailed` → `cleaning.helper.targetStillExists`.
+- `testHelperVerifiedSuccessUsesExactZeroMeasuredBytes` → success, succeeded 1, reclaimed bytes exactly zero even when the scan estimate is nonzero.
+- `testHelperVerifiedSuccessClampsNegativeMeasuredBytesToZero` → success with zero reclaimed bytes, never a negative aggregate.
+- `testOverlappingDuplicateGroupsFailOnlyDuplicateMembersBeforeAnyDependencyCall` → three transitive duplicate members fail without `exists`/mutation/helper calls, one independent item executes once, and all four results remain in input order.
+
+Migrate the three existing privileged tests to assert `operation` plus `items` and make their fakes model the real postcondition: a successful helper removes the requested target from the shared in-memory filesystem before returning. Add a two-item ordinary trash/permanent success assertion that proves results preserve input order, each carries its original `itemID`, request IDs are unique and distinct from the caller item IDs, and receipts attach only to the corresponding successful trash item. Add two separate executions reusing the same caller `itemID` and assert their per-occurrence request IDs differ. For failed/skipped results, assert each issue `subjectID` equals that result's request ID; code review must verify the same request ID is passed to `OperationItemOutcome` without adding a test-only production accessor.
+
+Add a private `Array.single` test helper that returns the only element or nil. All filesystem fakes must be stateful, synchronized `Sendable` test doubles that record attempted paths and never access the real user Trash. Because `FileSystemService` mutation methods are synchronous, deterministic cancellation may use a private locked `@unchecked Sendable` test double with an `NSCondition`/checked-continuation handshake; document the lock invariant, handle waiter-first and mutation-first ordering, resume continuations outside the lock, and keep `NSCondition.lock()` calls in synchronous helpers to satisfy Swift 6 `noasync` checking. Make the test-facing `resume()` genuinely async so the required `await` is not redundant. Do not use sleeps, timing races, or test-only production APIs.
 
 - [ ] **Step 2: Run focused tests and confirm the new report API is absent**
 
 Run: `swift test --filter CleaningEngineTests`
 
-Expected: FAIL because `CleaningReport.operation`, `CleaningReport.items`, `DenyAllSafety`, and deterministic cancellation fakes do not exist.
+Expected: FAIL for the intended missing report/item-fact APIs and behavior, not for malformed test helpers. Capture the relevant failing compiler/assertion output in the Task report before production edits.
 
 - [ ] **Step 3: Replace CleaningReport storage with operation plus items**
 
@@ -518,13 +573,15 @@ In `Sources/Domain/Models.swift`, replace stored aggregates with:
 
 ```swift
 public struct CleaningItemResult: Sendable {
+    public let requestID: UUID
     public let itemID: UUID
     public let url: URL
     public let disposition: OperationDisposition
     public let reclaimedBytes: Int64
     public let restorable: RestorableItem?
-    public init(itemID: UUID, url: URL, disposition: OperationDisposition,
+    public init(requestID: UUID, itemID: UUID, url: URL, disposition: OperationDisposition,
                 reclaimedBytes: Int64, restorable: RestorableItem?) {
+        self.requestID = requestID
         self.itemID = itemID
         self.url = url
         self.disposition = disposition
@@ -536,16 +593,22 @@ public struct CleaningItemResult: Sendable {
 public struct CleaningReport: Sendable {
     public let operation: OperationOutcome
     public let items: [CleaningItemResult]
+    private let legacy: LegacyCleaningCompatibility?
+
     public init(operation: OperationOutcome, items: [CleaningItemResult]) {
         self.operation = operation
         self.items = items
+        self.legacy = nil
     }
-    public var removedCount: Int { operation.counts.succeeded }
+
+    public var removedCount: Int { legacy?.removedCount ?? operation.counts.succeeded }
     public var reclaimedBytes: Int64 {
-        items.reduce(0) { $0 + ($1.disposition == .succeeded ? $1.reclaimedBytes : 0) }
+        if let legacy { return legacy.reclaimedBytes }
+        return items.reduce(0) { $0 + ($1.disposition == .succeeded ? $1.reclaimedBytes : 0) }
     }
     public var failures: [CleaningFailure] {
-        items.compactMap { item in
+        if let legacy { return legacy.failures }
+        return items.compactMap { item in
             switch item.disposition {
             case let .failed(issue), let .skipped(issue):
                 return CleaningFailure(url: item.url, reason: issue.code)
@@ -554,16 +617,58 @@ public struct CleaningReport: Sendable {
         }
     }
     public var restorable: [RestorableItem] {
-        items.compactMap { $0.disposition == .succeeded ? $0.restorable : nil }
+        if let legacy { return legacy.restorable }
+        return items.compactMap { $0.disposition == .succeeded ? $0.restorable : nil }
     }
+
+    // Transitional only; remove in Task 5 after every production constructor is migrated.
+    public init(removedCount: Int, reclaimedBytes: Int64,
+                failures: [CleaningFailure], restorable: [RestorableItem]) {
+        let startedAt = Date()
+        let countFromFacts = max(max(0, removedCount) + failures.count, restorable.count)
+        let requested = max(countFromFacts, reclaimedBytes > 0 ? 1 : 0)
+        let subjectIDs = (0..<requested).map { "legacy-\($0)" }
+        self.operation = OperationOutcomeReducer.internalFailure(
+            kind: OperationKind("cleaning.legacyAggregate"),
+            requestedSubjectIDs: subjectIDs,
+            code: "operation.legacy.unknown",
+            startedAt: startedAt,
+            finishedAt: startedAt)
+        self.items = []
+        self.legacy = LegacyCleaningCompatibility(
+            removedCount: max(0, removedCount),
+            reclaimedBytes: max(0, reclaimedBytes),
+            failures: failures,
+            restorable: restorable)
+    }
+}
+
+private struct LegacyCleaningCompatibility: Sendable {
+    let removedCount: Int
+    let reclaimedBytes: Int64
+    let failures: [CleaningFailure]
+    let restorable: [RestorableItem]
 }
 ```
 
-Do not retain the old `CleaningReport(removedCount:reclaimedBytes:failures:restorable:)` initializer after all compile errors in Tasks 3–5 are migrated.
+Because SwiftPM builds downstream targets even for a focused test, keep a **temporary compatibility initializer** for the still-unmigrated constructors in `ModuleSessionViewModel`, `SmartScanHub`, `ScanViews` and `SettingsView`. It must create an `operation.status == .failure` with issue code `operation.legacy.unknown`; it must never infer success. Preserve the four legacy display aggregates in a private compatibility payload so unchanged screens continue to compile until Tasks 3–5 migrate them. Add a source comment naming Task 5 as the removal point. Do not annotate it with `@available(*, deprecated)` during the temporary migration because every unchanged Swift call site would emit a build warning; Task 7's source architecture gate enforces its removal instead. Do not let new engine code or new tests call this initializer. Remove the compatibility payload and initializer in Task 5 after `rg -n 'CleaningReport\(removedCount:' Sources Tests` is empty.
+
+Add an internal fail-closed constructor to `OperationOutcomeReducer` in `OperationOutcome.swift`; it remains inaccessible outside Domain and is the only fallback when Domain itself violates an invariant. Its exact parameters are `id: UUID = UUID()`, `parentID: UUID? = nil`, `kind: OperationKind`, `requestedSubjectIDs: [String]`, `itemOutcomes: [OperationItemOutcome] = []`, `cancellationAccepted: Bool = false`, `code: String`, `startedAt: Date`, and `finishedAt: Date`; it returns `OperationOutcome`.
+
+Use the same private normalization/count/issue helpers as `reduce`. Preserve every uniquely matched disposition; missing/duplicate results fail closed. Add `code` as an `internalInvariant` issue and clamp `finishedAt` to `startedAt`. Accepted cancellation wins; otherwise any succeeded/unchanged fact yields partial, and zero completed facts yields failure. This factory can never return success.
+
+Refactor the existing reducer's normalization, counting and issue collection into private same-file helpers so `reduce` and `internalFailure` do not duplicate the business logic. Add focused reducer tests proving:
+
+- a zero-request internal failure is `.failure`, has `requested == 0`, carries the supplied issue code and never becomes success;
+- a nonempty invariant fallback preserves succeeded/unchanged/failed counts and the original disposition issues, adds `cleaning.reducer.invariant`, and returns `.partial` rather than erasing completed facts;
+- accepted cancellation still wins in the fallback while preserving pre-cancellation succeeded/cancelled counts;
+- `finishedAt` is clamped to `startedAt` rather than trapping or throwing.
+
+Receipts stay in `CleaningItemResult`; the engine fallback must return those unchanged alongside the preserved outcome counts. This is the non-crashing fallback for an accidentally empty or internally inconsistent plan; callers still keep empty UI state idle/empty as required by OUT-03.
 
 - [ ] **Step 4: Make CleaningEngine append exactly one item result per requested item**
 
-Refactor `CleaningEngine.execute` around a private `executeItem` method. Use `item.id.uuidString` as the reducer subject ID. Map outcomes exactly:
+Refactor `CleaningEngine.execute` around a private `executeItem` method. At invocation start, wrap every plan occurrence in a private request value with a fresh `requestID`; retain `itemID` separately for UI correlation. Use `requestID.uuidString` as the reducer subject ID. Map outcomes exactly:
 
 - informational or SafetyEngine denial → `.skipped` with stable nonlocalized code;
 - target absent immediately before execution → `.unchanged`;
@@ -572,25 +677,64 @@ Refactor `CleaningEngine.execute` around a private `executeItem` method. Use `it
 - thrown filesystem error → `.failed`;
 - after accepted `Task.isCancelled`, every not-yet-started requested item → `.cancelled(nil)`.
 
+Use this exact issue contract; every non-nil `subjectID` is the private per-occurrence `requestID.uuidString`, never a path or display name:
+
+| Condition | Code | Category | Recovery | Retryable |
+|---|---|---|---|---:|
+| informational item | `cleaning.item.informational` | `safetyPolicy` | `manualAction` | false |
+| initial safety denial | `cleaning.safety.denied` | `safetyPolicy` | `chooseAnotherTarget` | false |
+| safety recheck or permanent symlink identity change | `cleaning.safety.identityChanged` | `identityChanged` | `retry` | true |
+| duplicate caller ID or normalized path | `cleaning.request.duplicateTarget` | `internalInvariant` | `chooseAnotherTarget` | false |
+| helper not installed | `cleaning.helper.unavailable` | `unavailable` | `installHelper` | true |
+| helper used with non-permanent intent | `cleaning.helper.intentMismatch` | `validation` | `chooseAnotherTarget` | false |
+| helper reports the requested target failed | `cleaning.helper.removalFailed` | `io` | `retry` | true |
+| helper reports any unrequested path | `cleaning.helper.unexpectedFailurePath` | `internalInvariant` | `retry` | true |
+| helper reports success but target still exists | `cleaning.helper.targetStillExists` | `io` | `retry` | true |
+| local trash/remove throws | `cleaning.filesystem.operationFailed` | `io` | `retry` | true |
+
+Before mutation, group requests by both `item.id` and `url.standardizedFileURL.path`. Any request participating in either duplicate group receives `.failed(OperationIssue(code: "cleaning.request.duplicateTarget", category: .internalInvariant, subjectID: request.requestID.uuidString, recovery: .chooseAnotherTarget, retryable: false))`; none of those targets reaches `FileSystemService`. This avoids both double deletion and a crash from caller-constructible duplicate UUIDs/paths.
+
+For privileged deletion, first reject any failure URL whose standardized path is not the one requested, then reject a reported failure of the requested target, then require the target to be absent immediately after the helper returns. Only an empty failure list plus an absent target is success. Use `report.freedBytes` exactly after nonnegative normalization, including zero; never replace a zero measurement with the scan estimate.
+
+Keep `results` in the same order and cardinality as `plan.items`. Precompute duplicate membership before the first filesystem/helper mutation. A duplicated occurrence is failed without reaching `exists`, `trash`, `remove`, or the helper; non-duplicated occurrences continue normally and still receive exactly one result.
+
+Generate request IDs into a local set before any dependency call, regenerating on collision until every per-occurrence ID is unique; never assume caller item IDs are unique and never trap on a collision. Before generating requests, handle `plan.items.isEmpty` with an explicit early `CleaningReport(operation:items:)` whose `internalFailure` code is `cleaning.request.empty`; it must not call safety, filesystem, helper or progress dependencies.
+
 At method entry capture `startedAt`; at exit call exactly:
 
 ```swift
 let operationItems = results.map {
-    OperationItemOutcome(subjectID: $0.itemID.uuidString,
+    OperationItemOutcome(subjectID: $0.requestID.uuidString,
                          disposition: $0.disposition,
                          affectedBytes: $0.reclaimedBytes)
 }
-let operation = try! OperationOutcomeReducer.reduce(
-    kind: OperationKind("cleaning.execute"),
-    requestedSubjectIDs: plan.items.map { $0.id.uuidString },
-    itemOutcomes: operationItems,
-    cancellationAccepted: cancellationAccepted,
-    startedAt: startedAt,
-    finishedAt: Date())
+let requestIDs = requests.map { $0.requestID.uuidString }
+let finishedAt = Date()
+let operation: OperationOutcome
+do {
+    operation = try OperationOutcomeReducer.reduce(
+        kind: OperationKind("cleaning.execute"),
+        requestedSubjectIDs: requestIDs,
+        itemOutcomes: operationItems,
+        cancellationAccepted: cancellationAccepted,
+        startedAt: startedAt,
+        finishedAt: finishedAt)
+} catch {
+    operation = OperationOutcomeReducer.internalFailure(
+        kind: OperationKind("cleaning.execute"),
+        requestedSubjectIDs: requestIDs,
+        itemOutcomes: operationItems,
+        cancellationAccepted: cancellationAccepted,
+        code: "cleaning.reducer.invariant",
+        startedAt: startedAt,
+        finishedAt: finishedAt)
+}
 return CleaningReport(operation: operation, items: results)
 ```
 
-The `try!` is permitted only because `CleaningPlan` construction and one-result-per-item are internal invariants enforced in the same function; add `precondition(Set(ids).count == ids.count)` before the loop. If `CleanableItem.id` can collide through copying, replace this with a nonthrowing internal invariant factory that returns failure rather than trapping.
+No `try!`, `precondition`, `fatalError` or force unwrap is allowed in this path. An empty plan returns `internalFailure` with zero requested items, issue code `cleaning.request.empty`, and no side effects; feature callers continue to guard empty selections and must not present that internal result as a user-visible terminal state.
+
+Replace the current public-path and public-`localizedDescription` OSLog statements in `CleaningEngine` with stable issue-code/count logging. Do not log paths, URLs, display names, denial reasons or localized error text from execute/undo; this Task touches the file and must satisfy the plan's privacy constraint rather than carrying the existing violation forward.
 
 - [ ] **Step 5: Run focused and round-trip tests**
 
@@ -602,10 +746,22 @@ Run: `swift test --filter CleaningRoundTripTests`
 
 Expected: PASS, 0 failures; real user Trash is never used by the new deterministic cancellation tests.
 
+Run: `swift test --filter OperationOutcomeReducerTests`
+
+Expected: PASS, including the zero-request internal-failure regression.
+
+Run once before commit: `swift test`
+
+Expected: the complete suite passes with no new warning; every skip retains an explicit environment reason.
+
+Run: `rg -n 'Self\.log.*(\.path|displayName|localizedDescription|reason|privacy: \.public)' Sources/Domain/CleaningEngine.swift`
+
+Expected: no output. Review every remaining `Self.log` call and confirm it contains only a stable issue code and aggregate count.
+
 - [ ] **Step 6: Commit the report and engine facts**
 
 ```bash
-git add Sources/Domain/Models.swift Sources/Domain/CleaningEngine.swift Tests/DomainTests/CleaningEngineTests.swift Tests/IntegrationTests/CleaningRoundTripTests.swift
+git add Sources/Domain/OperationOutcome.swift Sources/Domain/Models.swift Sources/Domain/CleaningEngine.swift Tests/DomainTests/OperationOutcomeReducerTests.swift Tests/DomainTests/CleaningEngineTests.swift Tests/IntegrationTests/CleaningRoundTripTests.swift
 git commit -m "fix: make cleaning outcomes item-complete"
 ```
 
@@ -765,7 +921,7 @@ public func record(module: String, report: CleaningReport, date: Date = Date()) 
 }
 ```
 
-Keep the old scalar `record` overload only for unrelated historical fixtures in this Task; mark it `@available(*, deprecated, message: "Use record(module:report:date:)")` and make it write `.legacyUnknown`. Remove production call sites in Task 5.
+Keep the old scalar `record` overload only for unrelated historical fixtures in this Task and make it write `.legacyUnknown`. Do not annotate it with `@available(*, deprecated)` while existing production and fixture calls remain, because that would make the required SwiftPM verification noisy. Remove every production call site in Task 5, and let Task 7's source architecture gate prevent regression.
 
 Change successful cleanup counting to `outcomeStatus == .success`; keep `totalReclaimedAllTime` as factual bytes changed across success/partial/cancelled.
 
@@ -816,7 +972,7 @@ Expected: FAIL because consumers merge stored aggregates, remove all non-failure
 
 - [ ] **Step 3: Add a reducer-backed report merge**
 
-Add `CleaningReport.merging(_ reports: [CleaningReport], kind: OperationKind, parentID: UUID? = nil) throws`. It must concatenate `items`, reduce using all item IDs, set requested to the sum of child requested counts, and reject duplicate item IDs. `ModuleSessionViewModel` and `SmartScanHub` must call this API rather than summing `removedCount` and `failures`.
+Add `CleaningReport.merging(_ reports: [CleaningReport], kind: OperationKind, parentID: UUID? = nil) throws`. It must concatenate `items` in child/report order, reduce using every per-occurrence `requestID`, set requested to the sum of child requested counts, and reject duplicate request IDs, caller item IDs, or standardized paths before constructing the merged outcome. It must never use `itemID` as the reducer subject ID. `ModuleSessionViewModel` and `SmartScanHub` must call this API rather than summing `removedCount` and `failures`.
 
 - [ ] **Step 4: Apply the side-effect decision at both consumers**
 
@@ -938,7 +1094,7 @@ The test scans production Swift sources and fails when:
 - `CleaningReport(removedCount:` exists;
 - a business page calls `TaskCompletionView` without a reducer-backed adapter;
 - cleaning consumers call `Notifier.notifyCleaningDone` without `OutcomeSideEffectPolicy` in the same function;
-- production history calls the deprecated scalar `record(module:reclaimedBytes:removedCount:)`.
+- production history calls the legacy scalar `record(module:reclaimedBytes:removedCount:)`.
 
 - [ ] **Step 2: Run and fix every violation**
 

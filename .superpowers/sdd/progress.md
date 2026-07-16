@@ -24,6 +24,6 @@ Plan: docs/superpowers/plans/2026-07-16-xico-95-program.md
 Active subsystem: docs/superpowers/plans/2026-07-16-xico-phase0-operation-facts.md
 Baseline: 373 tests executed, 15 environment-gated skips, 0 failures
 
-Operation Facts Task 1: implemented (commit 9bee440; 13/13 focused and 115/115 Domain tests pass; task review pending)
-Paused: 2026-07-16 18:00 Asia/Tokyo at user request
-Resume first action: generate review package for 38071f3..9bee440 and run independent Task 1 spec/code-quality review
+Operation Facts Task 1: complete (commit 9bee440; 13/13 focused, 115/115 Domain; spec compliant and quality approved)
+Task 1 review Minors for final triage: issue sort tie-break omits category/recovery/retryable; invariant tests assert code but not category
+Operation Facts Task 2: plan hardened after independent business/Swift 6 preflight; empty-plan path, fact-preserving reducer fallback, duplicate/helper edge cases, privacy gate, requestID merge and warning-free migration corrected; implementation pending
