@@ -434,17 +434,22 @@ public struct CleaningItemResult: Sendable {
     public let requestID: UUID
     public let itemID: UUID
     public let url: URL
+    public let intent: DeleteIntent
     public let disposition: OperationDisposition
+    public let mutation: OperationMutationFact
     public let reclaimedBytes: Int64
     public let restorable: RestorableItem?
-    init(requestID: UUID, itemID: UUID, url: URL, disposition: OperationDisposition,
+    init(requestID: UUID, itemID: UUID, url: URL, intent: DeleteIntent,
+         disposition: OperationDisposition, mutation: OperationMutationFact,
          reclaimedBytes: Int64, restorable: RestorableItem?) {
         self.requestID = requestID
         self.itemID = itemID
         self.url = url
+        self.intent = intent
         self.disposition = disposition
+        self.mutation = mutation
         self.reclaimedBytes = max(0, reclaimedBytes)
-        self.restorable = restorable
+        self.restorable = intent == .trash && disposition == .succeeded ? restorable : nil
     }
 }
 
@@ -482,7 +487,7 @@ public struct CleaningReport: Sendable {
         return items.compactMap { $0.disposition == .succeeded ? $0.restorable : nil }
     }
 
-    // Transitional only; remove in Task 5 after every production constructor is migrated.
+    // Transitional only; remove in outcome-workflows Task 4 after every production constructor is migrated.
     public init(removedCount: Int, reclaimedBytes: Int64,
                 failures: [CleaningFailure], restorable: [RestorableItem]) {
         let startedAt = Date()

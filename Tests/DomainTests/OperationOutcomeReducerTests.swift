@@ -19,8 +19,12 @@ final class OperationOutcomeReducerTests: XCTestCase {
     private let finish = Date(timeIntervalSince1970: 101)
 
     private func item(_ id: String, _ disposition: OperationDisposition,
+                      mutation: OperationMutationFact = .none,
                       bytes: Int64 = 0) -> OperationItemOutcome {
-        OperationItemOutcome(subjectID: id, disposition: disposition, affectedBytes: bytes)
+        OperationItemOutcome(subjectID: id,
+                             disposition: disposition,
+                             mutation: mutation,
+                             affectedBytes: bytes)
     }
 
     private func reduce(_ requested: [String], _ items: [OperationItemOutcome],
@@ -45,7 +49,9 @@ final class OperationOutcomeReducerTests: XCTestCase {
     }
 
     func testSucceededAndUnchangedIsSuccessButTracksChangedCount() throws {
-        let outcome = try reduce(["a", "b"], [item("a", .succeeded), item("b", .unchanged)])
+        let outcome = try reduce(
+            ["a", "b"],
+            [item("a", .succeeded, mutation: .changed), item("b", .unchanged)])
         XCTAssertEqual(outcome.status, .success)
         XCTAssertEqual(outcome.counts.succeeded, 1)
         XCTAssertEqual(outcome.counts.unchanged, 1)
@@ -56,6 +62,106 @@ final class OperationOutcomeReducerTests: XCTestCase {
         let outcome = try reduce(["a"], [item("a", .unchanged)])
         XCTAssertEqual(outcome.status, .success)
         XCTAssertFalse(outcome.hasChanges)
+    }
+
+    func testReducerAggregatesNoMutationAsNone() throws {
+        let outcome = try reduce(
+            ["a", "b"],
+            [item("a", .succeeded, mutation: .none),
+             item("b", .unchanged, mutation: .none)])
+
+        XCTAssertEqual(outcome.mutation, .none)
+        XCTAssertFalse(outcome.hasChanges)
+    }
+
+    func testReducerAggregatesConfirmedMutationAsChanged() throws {
+        let outcome = try reduce(
+            ["a", "b"],
+            [item("a", .succeeded, mutation: .changed),
+             item("b", .unchanged, mutation: .none)])
+
+        XCTAssertEqual(outcome.mutation, .changed)
+        XCTAssertTrue(outcome.hasChanges)
+    }
+
+    func testPossiblyChangedDominatesChangedAndCannotBeLostByFailure() throws {
+        let issue = OperationIssue(code: "io.ambiguous",
+                                   category: .io,
+                                   subjectID: "ambiguous",
+                                   recovery: .retry,
+                                   retryable: true)
+        let failed = try reduce(
+            ["changed", "ambiguous"],
+            [item("changed", .succeeded, mutation: .changed),
+             item("ambiguous", .failed(issue), mutation: .possiblyChanged)])
+        XCTAssertEqual(failed.status, .partial)
+        XCTAssertEqual(failed.mutation, .possiblyChanged)
+
+        let duplicate = try reduce(
+            ["duplicate"],
+            [item("duplicate", .succeeded, mutation: .changed),
+             item("duplicate", .failed(issue), mutation: .possiblyChanged)])
+        XCTAssertEqual(duplicate.status, .failure)
+        XCTAssertEqual(duplicate.counts.failed, 1)
+        XCTAssertEqual(duplicate.mutation, .possiblyChanged)
+
+        let unexpected = try reduce(
+            ["expected"],
+            [item("expected", .unchanged),
+             item("unexpected", .succeeded, mutation: .possiblyChanged)])
+        XCTAssertEqual(unexpected.status, .partial)
+        XCTAssertEqual(unexpected.mutation, .possiblyChanged)
+
+        let missing = try reduce(
+            ["reported", "missing"],
+            [item("reported", .failed(issue), mutation: .possiblyChanged)])
+        XCTAssertEqual(missing.status, .failure)
+        XCTAssertEqual(missing.counts.failed, 2)
+        XCTAssertEqual(missing.mutation, .possiblyChanged)
+
+        let internalFailure = OperationOutcomeReducer.internalFailure(
+            kind: kind,
+            requestedSubjectIDs: ["changed", "ambiguous"],
+            itemOutcomes: [
+                item("changed", .succeeded, mutation: .changed),
+                item("ambiguous", .failed(issue), mutation: .possiblyChanged)
+            ],
+            code: "operation.reducer.invariant",
+            startedAt: start,
+            finishedAt: finish)
+        XCTAssertEqual(internalFailure.status, .partial)
+        XCTAssertEqual(internalFailure.mutation, .possiblyChanged)
+
+        let internalDuplicate = OperationOutcomeReducer.internalFailure(
+            kind: kind,
+            requestedSubjectIDs: ["duplicate", "duplicate"],
+            itemOutcomes: [item("duplicate", .succeeded, mutation: .possiblyChanged)],
+            code: "operation.reducer.invariant",
+            startedAt: start,
+            finishedAt: finish)
+        XCTAssertEqual(internalDuplicate.status, .failure)
+        XCTAssertEqual(internalDuplicate.counts.failed, 2)
+        XCTAssertEqual(internalDuplicate.mutation, .possiblyChanged)
+    }
+
+    func testCancelledOutcomePreservesCompletedAndPossiblyChangedFacts() throws {
+        let issue = OperationIssue(code: "io.ambiguous",
+                                   category: .io,
+                                   subjectID: "ambiguous",
+                                   recovery: .retry,
+                                   retryable: true)
+        let outcome = try reduce(
+            ["completed", "ambiguous", "pending"],
+            [item("completed", .succeeded, mutation: .changed),
+             item("ambiguous", .failed(issue), mutation: .possiblyChanged)],
+            cancelled: true)
+
+        XCTAssertEqual(outcome.status, .cancelled)
+        XCTAssertEqual(outcome.counts.succeeded, 1)
+        XCTAssertEqual(outcome.counts.failed, 1)
+        XCTAssertEqual(outcome.counts.cancelled, 1)
+        XCTAssertEqual(outcome.mutation, .possiblyChanged)
+        XCTAssertTrue(outcome.hasChanges)
     }
 
     func testSuccessAndFailureIsPartial() throws {
@@ -283,12 +389,20 @@ final class OperationOutcomeReducerTests: XCTestCase {
         func consume(report: CleaningReport,
                      item: CleaningItemResult,
                      outcome: OperationOutcome) throws {
+            let explicitItemOutcome = OperationItemOutcome(
+                subjectID: "external-item",
+                disposition: .unchanged,
+                mutation: .none)
             _ = report.operation.status
             _ = report.items.count
+            _ = outcome.mutation
+            _ = explicitItemOutcome.mutation
             _ = item.requestID
             _ = item.itemID
             _ = item.url
+            _ = item.intent
             _ = item.disposition
+            _ = item.mutation
             _ = item.reclaimedBytes
             _ = item.restorable
             _ = try JSONEncoder().encode(outcome)
@@ -296,8 +410,44 @@ final class OperationOutcomeReducerTests: XCTestCase {
         """)
 
         XCTAssertEqual(result.status, 0, result.diagnostics)
-        XCTAssertFalse(result.standardError.localizedCaseInsensitiveContains("no such module"),
-                       result.diagnostics)
+        assertNoModuleLoadFailure(result)
+    }
+
+    func testExternalClientCannotOmitOperationItemMutation() throws {
+        let result = try compileExternalClient("""
+        import Domain
+
+        _ = OperationItemOutcome(
+            subjectID: "external-item",
+            disposition: .succeeded,
+            affectedBytes: 0)
+        """)
+
+        XCTAssertNotEqual(result.status, 0, "Mutation must be an explicit item fact")
+        XCTAssertTrue(result.standardError.contains("OperationItemOutcome"), result.diagnostics)
+        XCTAssertTrue(result.standardError.contains("mutation"), result.diagnostics)
+        assertNoModuleLoadFailure(result)
+    }
+
+    func testExternalClientCannotOmitCleaningIntentOrMutation() throws {
+        let result = try compileExternalClient("""
+        import Foundation
+        import Domain
+
+        _ = CleaningItemResult(
+            requestID: UUID(),
+            itemID: UUID(),
+            url: URL(fileURLWithPath: "/tmp/external-item"),
+            disposition: .succeeded,
+            reclaimedBytes: 0,
+            restorable: nil)
+        """)
+
+        XCTAssertNotEqual(result.status, 0, "Cleaning facts cannot omit intent or mutation")
+        XCTAssertTrue(result.standardError.contains("CleaningItemResult"), result.diagnostics)
+        XCTAssertTrue(result.standardError.localizedCaseInsensitiveContains("inaccessible"),
+                      result.diagnostics)
+        assertNoModuleLoadFailure(result)
     }
 
     func testExternalClientCannotConstructCleaningItemResult() throws {
@@ -309,7 +459,9 @@ final class OperationOutcomeReducerTests: XCTestCase {
             requestID: UUID(),
             itemID: UUID(),
             url: URL(fileURLWithPath: "/tmp/external-item"),
+            intent: .trash,
             disposition: .succeeded,
+            mutation: .changed,
             reclaimedBytes: 0,
             restorable: nil)
         """)

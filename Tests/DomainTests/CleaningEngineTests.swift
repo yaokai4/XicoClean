@@ -59,6 +59,10 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(report.operation.status, .success)
         XCTAssertEqual(report.operation.counts.unchanged, 1)
         XCTAssertEqual(report.items.single?.disposition, .unchanged)
+        XCTAssertEqual(report.items.single?.intent, .trash)
+        XCTAssertEqual(report.items.single?.mutation, OperationMutationFact.none)
+        XCTAssertNil(report.items.single?.restorable)
+        XCTAssertEqual(report.operation.mutation, .none)
     }
 
     func testSafetyDenialIsSkippedAndFailsSingleItemOperation() async {
@@ -68,6 +72,10 @@ final class CleaningEngineTests: XCTestCase {
             items: [CleanableItem(url: url, displayName: "denied", size: 10)], intent: .trash))
         XCTAssertEqual(report.operation.status, .failure)
         XCTAssertEqual(report.operation.counts.skipped, 1)
+        XCTAssertEqual(report.items.single?.intent, .trash)
+        XCTAssertEqual(report.items.single?.mutation, OperationMutationFact.none)
+        XCTAssertNil(report.items.single?.restorable)
+        XCTAssertEqual(report.operation.mutation, .none)
         assertIssue(report.items.single,
                     disposition: .skipped,
                     code: "cleaning.safety.denied",
@@ -103,12 +111,112 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(report.operation.status, .failure)
         XCTAssertEqual(report.operation.counts.failed, 1)
         XCTAssertEqual(report.items.single?.url, url)
+        XCTAssertEqual(report.items.single?.intent, .trash)
+        XCTAssertEqual(report.items.single?.mutation, .possiblyChanged)
+        XCTAssertEqual(report.operation.mutation, .possiblyChanged)
         assertIssue(report.items.single,
                     disposition: .failed,
                     code: "cleaning.filesystem.operationFailed",
                     category: .io,
                     recovery: .retry,
                     retryable: true)
+    }
+
+    func testCleaningThrownMutationAndAmbiguousHelperFailureArePossiblyChanged() async {
+        let ordinaryURL = URL(fileURLWithPath: "/tmp/ambiguous-ordinary")
+        let ordinaryEngine = CleaningEngine(
+            safety: AllowAllSafety(),
+            fs: ThrowingFS(existing: [ordinaryURL.path], failing: [ordinaryURL.path]))
+        let ordinary = await ordinaryEngine.execute(CleaningPlan(items: [
+            CleanableItem(url: ordinaryURL, displayName: "ordinary", size: 10)
+        ], intent: .trash))
+
+        XCTAssertEqual(ordinary.items.single?.intent, .trash)
+        XCTAssertEqual(ordinary.items.single?.mutation, .possiblyChanged)
+        XCTAssertEqual(ordinary.operation.mutation, .possiblyChanged)
+        XCTAssertNil(ordinary.items.single?.restorable)
+
+        let helperURL = URL(fileURLWithPath: "/Library/Caches/XicoAmbiguousHelper")
+        let helperFS = MemoryFS(existing: [helperURL.path])
+        let helper = FakePrivileged(
+            fs: helperFS,
+            report: PrivilegedRemovalReport(freedBytes: 0, failures: [helperURL]),
+            removesTargets: false)
+        let helperEngine = CleaningEngine(
+            safety: AllowAllSafety(), fs: helperFS, privileged: helper)
+        let privileged = await helperEngine.execute(CleaningPlan(items: [
+            CleanableItem(url: helperURL,
+                          displayName: "helper",
+                          size: 10,
+                          requiresHelper: true)
+        ], intent: .permanent))
+
+        XCTAssertEqual(privileged.items.single?.intent, .permanent)
+        XCTAssertEqual(privileged.items.single?.mutation, .possiblyChanged)
+        XCTAssertEqual(privileged.operation.mutation, .possiblyChanged)
+        XCTAssertNil(privileged.items.single?.restorable)
+    }
+
+    func testCleaningItemResultCarriesExactDeleteIntentWithoutDefault() throws {
+        let result = CleaningItemResult(
+            requestID: UUID(),
+            itemID: UUID(),
+            url: URL(fileURLWithPath: "/tmp/exact-intent"),
+            intent: .permanent,
+            disposition: .unchanged,
+            mutation: .none,
+            reclaimedBytes: 0,
+            restorable: nil)
+
+        XCTAssertEqual(result.intent, .permanent)
+        XCTAssertEqual(result.mutation, .none)
+    }
+
+    func testOnlySucceededTrashFactCanCarryReceipt() {
+        let receipt = RestorableItem(
+            originalURL: URL(fileURLWithPath: "/tmp/receipt-original"),
+            trashedURL: URL(fileURLWithPath: "/tmp/receipt-trashed"))
+        let issue = OperationIssue(
+            code: "test.receipt.disposition",
+            category: .io,
+            subjectID: nil,
+            recovery: .retry,
+            retryable: true)
+        let rows: [(
+            label: String,
+            intent: DeleteIntent,
+            disposition: OperationDisposition,
+            mutation: OperationMutationFact,
+            expectedReceipt: RestorableItem?
+        )] = [
+            ("trash succeeded", .trash, .succeeded, .changed, receipt),
+            ("permanent succeeded", .permanent, .succeeded, .changed, nil),
+            ("trash unchanged", .trash, .unchanged, .none, nil),
+            ("permanent unchanged", .permanent, .unchanged, .none, nil),
+            ("trash skipped", .trash, .skipped(issue), .none, nil),
+            ("permanent skipped", .permanent, .skipped(issue), .none, nil),
+            ("trash failed", .trash, .failed(issue), .possiblyChanged, nil),
+            ("permanent failed", .permanent, .failed(issue), .possiblyChanged, nil),
+            ("trash cancelled", .trash, .cancelled(issue), .none, nil),
+            ("permanent cancelled", .permanent, .cancelled(issue), .none, nil)
+        ]
+
+        for row in rows {
+            let result = CleaningItemResult(
+                requestID: UUID(),
+                itemID: UUID(),
+                url: receipt.originalURL,
+                intent: row.intent,
+                disposition: row.disposition,
+                mutation: row.mutation,
+                reclaimedBytes: 0,
+                restorable: receipt)
+
+            XCTAssertEqual(result.intent, row.intent, row.label)
+            XCTAssertEqual(result.disposition, row.disposition, row.label)
+            XCTAssertEqual(result.mutation, row.mutation, row.label)
+            XCTAssertEqual(result.restorable, row.expectedReceipt, row.label)
+        }
     }
 
     func testCancellationProducesDispositionForEveryRequestedItem() async {
@@ -128,6 +236,11 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(report.operation.counts.cancelled, 2)
         XCTAssertEqual(report.items.count, 3)
         XCTAssertEqual(report.items.map(\.disposition), [.succeeded, .cancelled(nil), .cancelled(nil)])
+        XCTAssertEqual(report.items.map(\.intent), [.trash, .trash, .trash])
+        XCTAssertEqual(report.items.map(\.mutation), [.changed, .none, .none])
+        XCTAssertNil(report.items[1].restorable)
+        XCTAssertNil(report.items[2].restorable)
+        XCTAssertEqual(report.operation.mutation, .changed)
     }
 
     func testCancellationDuringLastPrivilegedItemWinsAfterHelperReturns() async {
@@ -155,6 +268,9 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(report.operation.counts.cancelled, 0)
         XCTAssertEqual(report.items.single?.disposition, .succeeded)
         XCTAssertEqual(report.items.single?.reclaimedBytes, 42)
+        XCTAssertEqual(report.items.single?.intent, .permanent)
+        XCTAssertEqual(report.items.single?.mutation, .changed)
+        XCTAssertEqual(report.operation.mutation, .changed)
     }
 
     func testCancellationDuringLastOrdinaryMutationWinsAfterMutationReturns() async {
@@ -175,6 +291,9 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(report.operation.counts.succeeded, 1)
         XCTAssertEqual(report.operation.counts.cancelled, 0)
         XCTAssertEqual(report.items.single?.disposition, .succeeded)
+        XCTAssertEqual(report.items.single?.intent, .permanent)
+        XCTAssertEqual(report.items.single?.mutation, .changed)
+        XCTAssertEqual(report.operation.mutation, .changed)
     }
 
     func testCancellationFromLastProgressCallbackWinsBeforeReduction() async {
@@ -193,6 +312,9 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(report.operation.counts.succeeded, 1)
         XCTAssertEqual(report.operation.counts.cancelled, 0)
         XCTAssertEqual(report.items.single?.disposition, .succeeded)
+        XCTAssertEqual(report.items.single?.intent, .permanent)
+        XCTAssertEqual(report.items.single?.mutation, .changed)
+        XCTAssertEqual(report.operation.mutation, .changed)
     }
 
     func testConcurrentExecutionsOfSameTargetFailSecondBeforeAnyDependencyCall() async {
@@ -228,6 +350,9 @@ final class CleaningEngineTests: XCTestCase {
                     category: .internalInvariant,
                     recovery: .retry,
                     retryable: true)
+        XCTAssertEqual(secondReport.items.single?.intent, .permanent)
+        XCTAssertEqual(secondReport.items.single?.mutation, OperationMutationFact.none)
+        XCTAssertEqual(secondReport.operation.mutation, .none)
         XCTAssertEqual(fs.attemptedPaths, attemptedBeforeSecond)
         XCTAssertEqual(fs.mutatedPaths, mutatedBeforeSecond)
         XCTAssertEqual(safety.callCount, safetyCallsBeforeSecond)
@@ -239,6 +364,8 @@ final class CleaningEngineTests: XCTestCase {
         let firstReport = await firstTask.value
         XCTAssertEqual(firstReport.operation.status, .success)
         XCTAssertEqual(firstReport.operation.counts.succeeded, 1)
+        XCTAssertEqual(firstReport.items.single?.intent, .permanent)
+        XCTAssertEqual(firstReport.items.single?.mutation, .changed)
 
         let helperCallsAfterFirst = await helper.callCount
         let afterReleaseReport = await engine.execute(CleaningPlan(items: [
@@ -250,6 +377,8 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(afterReleaseReport.operation.status, .success)
         XCTAssertEqual(afterReleaseReport.operation.counts.unchanged, 1)
         XCTAssertEqual(afterReleaseReport.items.single?.disposition, .unchanged)
+        XCTAssertEqual(afterReleaseReport.items.single?.intent, .permanent)
+        XCTAssertEqual(afterReleaseReport.items.single?.mutation, OperationMutationFact.none)
         let helperCallsAfterRelease = await helper.callCount
         XCTAssertEqual(helperCallsAfterRelease, helperCallsAfterFirst)
     }
@@ -301,7 +430,10 @@ final class CleaningEngineTests: XCTestCase {
                         category: .internalInvariant,
                         recovery: .chooseAnotherTarget,
                         retryable: false)
+            XCTAssertEqual(result.intent, .permanent)
+            XCTAssertEqual(result.mutation, .none)
         }
+        XCTAssertEqual(duplicateReport.operation.mutation, .none)
         XCTAssertEqual(fs.attemptedPaths, attemptedBeforeDuplicates)
         XCTAssertEqual(fs.mutatedPaths, mutatedBeforeDuplicates)
         XCTAssertEqual(safety.callCount, safetyCallsBeforeDuplicates)
@@ -336,7 +468,10 @@ final class CleaningEngineTests: XCTestCase {
                         category: .internalInvariant,
                         recovery: .chooseAnotherTarget,
                         retryable: false)
+            XCTAssertEqual(result.intent, .trash)
+            XCTAssertEqual(result.mutation, .none)
         }
+        XCTAssertEqual(report.operation.mutation, .none)
         XCTAssertTrue(fs.attemptedPaths.isEmpty)
         XCTAssertTrue(fs.mutatedPaths.isEmpty)
     }
@@ -386,6 +521,9 @@ final class CleaningEngineTests: XCTestCase {
                     category: .safetyPolicy,
                     recovery: .manualAction,
                     retryable: false)
+        XCTAssertEqual(report.items.single?.intent, .trash)
+        XCTAssertEqual(report.items.single?.mutation, OperationMutationFact.none)
+        XCTAssertNil(report.items.single?.restorable)
         XCTAssertTrue(fs.attemptedPaths.isEmpty)
         XCTAssertTrue(fs.mutatedPaths.isEmpty)
     }
@@ -438,6 +576,9 @@ final class CleaningEngineTests: XCTestCase {
                     category: .unavailable,
                     recovery: .installHelper,
                     retryable: true)
+        XCTAssertEqual(report.items.single?.intent, .permanent)
+        XCTAssertEqual(report.items.single?.mutation, OperationMutationFact.none)
+        XCTAssertNil(report.items.single?.restorable)
         XCTAssertTrue(fs.mutatedPaths.isEmpty)
     }
 
@@ -464,6 +605,9 @@ final class CleaningEngineTests: XCTestCase {
                     category: .validation,
                     recovery: .chooseAnotherTarget,
                     retryable: false)
+        XCTAssertEqual(report.items.single?.intent, .trash)
+        XCTAssertEqual(report.items.single?.mutation, OperationMutationFact.none)
+        XCTAssertNil(report.items.single?.restorable)
         let helperCalls = await helper.snapshot()
         XCTAssertEqual(helperCalls.count, 0)
         XCTAssertTrue(fs.mutatedPaths.isEmpty)
@@ -489,6 +633,9 @@ final class CleaningEngineTests: XCTestCase {
                     category: .io,
                     recovery: .retry,
                     retryable: true)
+        XCTAssertEqual(report.items.single?.intent, .permanent)
+        XCTAssertEqual(report.items.single?.mutation, .possiblyChanged)
+        XCTAssertEqual(report.operation.mutation, .possiblyChanged)
         let helperCalls = await helper.snapshot()
         XCTAssertEqual(helperCalls.count, 1)
         XCTAssertTrue(fs.mutatedPaths.isEmpty)
@@ -516,6 +663,9 @@ final class CleaningEngineTests: XCTestCase {
                     category: .internalInvariant,
                     recovery: .retry,
                     retryable: true)
+        XCTAssertEqual(report.items.single?.intent, .permanent)
+        XCTAssertEqual(report.items.single?.mutation, .possiblyChanged)
+        XCTAssertEqual(report.operation.mutation, .possiblyChanged)
         XCTAssertTrue(fs.mutatedPaths.isEmpty)
     }
 
@@ -543,6 +693,9 @@ final class CleaningEngineTests: XCTestCase {
                     category: .internalInvariant,
                     recovery: .retry,
                     retryable: true)
+        XCTAssertEqual(report.items.single?.intent, .permanent)
+        XCTAssertEqual(report.items.single?.mutation, .possiblyChanged)
+        XCTAssertEqual(report.operation.mutation, .possiblyChanged)
     }
 
     func testHelperClaimedSuccessWhileTargetExistsIsFailed() async {
@@ -565,6 +718,9 @@ final class CleaningEngineTests: XCTestCase {
                     category: .io,
                     recovery: .retry,
                     retryable: true)
+        XCTAssertEqual(report.items.single?.intent, .permanent)
+        XCTAssertEqual(report.items.single?.mutation, .possiblyChanged)
+        XCTAssertEqual(report.operation.mutation, .possiblyChanged)
     }
 
     func testHelperVerifiedSuccessUsesExactZeroMeasuredBytes() async {
@@ -623,6 +779,9 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(report.items.single?.disposition, .succeeded)
         XCTAssertEqual(report.items.single?.reclaimedBytes, 123)
         XCTAssertNil(report.items.single?.restorable)
+        XCTAssertEqual(report.items.single?.intent, .permanent)
+        XCTAssertEqual(report.items.single?.mutation, .changed)
+        XCTAssertEqual(report.operation.mutation, .changed)
         let helperCalls = await helper.snapshot()
         XCTAssertEqual(helperCalls, [[url]])
         XCTAssertFalse(fs.contains(url))
@@ -771,6 +930,8 @@ final class CleaningEngineTests: XCTestCase {
 
         for (result, item) in zip(report.items, items) {
             XCTAssertEqual(result.disposition, .succeeded, file: file, line: line)
+            XCTAssertEqual(result.intent, intent, file: file, line: line)
+            XCTAssertEqual(result.mutation, .changed, file: file, line: line)
             XCTAssertNotEqual(result.requestID, item.id, file: file, line: line)
             if intent == .trash {
                 XCTAssertEqual(result.restorable?.originalURL, item.url, file: file, line: line)
@@ -778,6 +939,7 @@ final class CleaningEngineTests: XCTestCase {
                 XCTAssertNil(result.restorable, file: file, line: line)
             }
         }
+        XCTAssertEqual(report.operation.mutation, .changed, file: file, line: line)
         if intent == .trash {
             XCTAssertEqual(report.restorable.map(\.originalURL), urls, file: file, line: line)
         } else {

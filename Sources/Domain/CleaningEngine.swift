@@ -63,7 +63,10 @@ public actor CleaningEngine {
         for (index, request) in requests.enumerated() {
             if cancellationAccepted || Task.isCancelled {
                 cancellationAccepted = true
-                results.append(Self.result(for: request, disposition: .cancelled(nil)))
+                results.append(Self.result(for: request,
+                                           intent: plan.intent,
+                                           disposition: .cancelled(nil),
+                                           mutation: .none))
                 continue
             }
 
@@ -76,7 +79,10 @@ public actor CleaningEngine {
                     requestID: request.requestID,
                     recovery: .chooseAnotherTarget,
                     retryable: false)
-                result = Self.result(for: request, disposition: .failed(issue))
+                result = Self.result(for: request,
+                                     intent: plan.intent,
+                                     disposition: .failed(issue),
+                                     mutation: .none)
                 suppressProgress = true
             } else if inFlightRequestIDs.contains(request.requestID) {
                 let issue = Self.issue(
@@ -85,7 +91,10 @@ public actor CleaningEngine {
                     requestID: request.requestID,
                     recovery: .retry,
                     retryable: true)
-                result = Self.result(for: request, disposition: .failed(issue))
+                result = Self.result(for: request,
+                                     intent: plan.intent,
+                                     disposition: .failed(issue),
+                                     mutation: .none)
                 suppressProgress = true
             } else {
                 result = await executeItem(request, intent: plan.intent)
@@ -111,6 +120,7 @@ public actor CleaningEngine {
         let operationItems = results.map {
             OperationItemOutcome(subjectID: $0.requestID.uuidString,
                                  disposition: $0.disposition,
+                                 mutation: $0.mutation,
                                  affectedBytes: $0.reclaimedBytes)
         }
         let requestIDs = requests.map { $0.requestID.uuidString }
@@ -152,7 +162,10 @@ public actor CleaningEngine {
                 requestID: request.requestID,
                 recovery: .manualAction,
                 retryable: false)
-            return Self.result(for: request, disposition: .skipped(issue))
+            return Self.result(for: request,
+                               intent: intent,
+                               disposition: .skipped(issue),
+                               mutation: .none)
         }
 
         // 废纸篓内叶子软链的永久删除只删除链接本身，不解析或跟随目标。
@@ -160,7 +173,9 @@ public actor CleaningEngine {
             do {
                 try fs.remove(item.url)
                 return Self.result(for: request,
+                                   intent: intent,
                                    disposition: .succeeded,
+                                   mutation: .changed,
                                    reclaimedBytes: item.estimatedReclaimableBytes)
             } catch {
                 Self.log.error("cleaning.filesystem.operationFailed count=1")
@@ -170,7 +185,10 @@ public actor CleaningEngine {
                     requestID: request.requestID,
                     recovery: .retry,
                     retryable: true)
-                return Self.result(for: request, disposition: .failed(issue))
+                return Self.result(for: request,
+                                   intent: intent,
+                                   disposition: .failed(issue),
+                                   mutation: .possiblyChanged)
             }
         }
 
@@ -181,11 +199,17 @@ public actor CleaningEngine {
                 requestID: request.requestID,
                 recovery: .chooseAnotherTarget,
                 retryable: false)
-            return Self.result(for: request, disposition: .skipped(issue))
+            return Self.result(for: request,
+                               intent: intent,
+                               disposition: .skipped(issue),
+                               mutation: .none)
         }
 
         guard fs.exists(item.url) else {
-            return Self.result(for: request, disposition: .unchanged)
+            return Self.result(for: request,
+                               intent: intent,
+                               disposition: .unchanged,
+                               mutation: .none)
         }
 
         if item.requiresHelper {
@@ -202,7 +226,10 @@ public actor CleaningEngine {
                 requestID: request.requestID,
                 recovery: .retry,
                 retryable: true)
-            return Self.result(for: request, disposition: .failed(issue))
+            return Self.result(for: request,
+                               intent: intent,
+                               disposition: .failed(issue),
+                               mutation: .none)
         }
 
         if intent == .permanent, Self.isSymlink(item.url) {
@@ -213,7 +240,10 @@ public actor CleaningEngine {
                 requestID: request.requestID,
                 recovery: .retry,
                 retryable: true)
-            return Self.result(for: request, disposition: .failed(issue))
+            return Self.result(for: request,
+                               intent: intent,
+                               disposition: .failed(issue),
+                               mutation: .none)
         }
 
         do {
@@ -222,13 +252,17 @@ public actor CleaningEngine {
                 let trashedURL = try fs.trash(item.url)
                 let receipt = RestorableItem(originalURL: item.url, trashedURL: trashedURL)
                 return Self.result(for: request,
+                                   intent: intent,
                                    disposition: .succeeded,
+                                   mutation: .changed,
                                    reclaimedBytes: item.estimatedReclaimableBytes,
                                    restorable: receipt)
             case .permanent:
                 try fs.remove(item.url)
                 return Self.result(for: request,
+                                   intent: intent,
                                    disposition: .succeeded,
+                                   mutation: .changed,
                                    reclaimedBytes: item.estimatedReclaimableBytes)
             }
         } catch {
@@ -239,7 +273,10 @@ public actor CleaningEngine {
                 requestID: request.requestID,
                 recovery: .retry,
                 retryable: true)
-            return Self.result(for: request, disposition: .failed(issue))
+            return Self.result(for: request,
+                               intent: intent,
+                               disposition: .failed(issue),
+                               mutation: .possiblyChanged)
         }
     }
 
@@ -254,7 +291,10 @@ public actor CleaningEngine {
                 requestID: request.requestID,
                 recovery: .installHelper,
                 retryable: true)
-            return Self.result(for: request, disposition: .failed(issue))
+            return Self.result(for: request,
+                               intent: intent,
+                               disposition: .failed(issue),
+                               mutation: .none)
         }
         guard intent == .permanent else {
             let issue = Self.issue(
@@ -263,7 +303,10 @@ public actor CleaningEngine {
                 requestID: request.requestID,
                 recovery: .chooseAnotherTarget,
                 retryable: false)
-            return Self.result(for: request, disposition: .failed(issue))
+            return Self.result(for: request,
+                               intent: intent,
+                               disposition: .failed(issue),
+                               mutation: .none)
         }
 
         let report = await privileged.removeProtected([request.item.url])
@@ -278,7 +321,10 @@ public actor CleaningEngine {
                 requestID: request.requestID,
                 recovery: .retry,
                 retryable: true)
-            return Self.result(for: request, disposition: .failed(issue))
+            return Self.result(for: request,
+                               intent: intent,
+                               disposition: .failed(issue),
+                               mutation: .possiblyChanged)
         }
         if failedPaths.contains(requestedPath) {
             Self.log.error("cleaning.helper.removalFailed count=1")
@@ -288,7 +334,10 @@ public actor CleaningEngine {
                 requestID: request.requestID,
                 recovery: .retry,
                 retryable: true)
-            return Self.result(for: request, disposition: .failed(issue))
+            return Self.result(for: request,
+                               intent: intent,
+                               disposition: .failed(issue),
+                               mutation: .possiblyChanged)
         }
         if fs.exists(request.item.url) {
             Self.log.error("cleaning.helper.targetStillExists count=1")
@@ -298,11 +347,16 @@ public actor CleaningEngine {
                 requestID: request.requestID,
                 recovery: .retry,
                 retryable: true)
-            return Self.result(for: request, disposition: .failed(issue))
+            return Self.result(for: request,
+                               intent: intent,
+                               disposition: .failed(issue),
+                               mutation: .possiblyChanged)
         }
 
         return Self.result(for: request,
+                           intent: intent,
                            disposition: .succeeded,
+                           mutation: .changed,
                            reclaimedBytes: report.freedBytes)
     }
 
@@ -350,16 +404,23 @@ public actor CleaningEngine {
 
     private static func result(
         for request: CleaningRequest,
+        intent: DeleteIntent,
         disposition: OperationDisposition,
+        mutation: OperationMutationFact,
         reclaimedBytes: Int64 = 0,
         restorable: RestorableItem? = nil
     ) -> CleaningItemResult {
-        CleaningItemResult(requestID: request.requestID,
-                           itemID: request.item.id,
-                           url: request.item.url,
-                           disposition: disposition,
-                           reclaimedBytes: reclaimedBytes,
-                           restorable: restorable)
+        let validatedReceipt = intent == .trash && disposition == .succeeded
+            ? restorable
+            : nil
+        return CleaningItemResult(requestID: request.requestID,
+                                  itemID: request.item.id,
+                                  url: request.item.url,
+                                  intent: intent,
+                                  disposition: disposition,
+                                  mutation: mutation,
+                                  reclaimedBytes: reclaimedBytes,
+                                  restorable: validatedReceipt)
     }
 
     private static func issue(

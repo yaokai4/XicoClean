@@ -44,13 +44,22 @@ public enum OperationDisposition: Sendable, Equatable {
     case cancelled(OperationIssue?)
 }
 
+public enum OperationMutationFact: String, Encodable, Hashable, Sendable {
+    case none
+    case changed
+    case possiblyChanged
+}
+
 public struct OperationItemOutcome: Sendable, Equatable {
     public let subjectID: String
     public let disposition: OperationDisposition
+    public let mutation: OperationMutationFact
     public let affectedBytes: Int64
-    public init(subjectID: String, disposition: OperationDisposition, affectedBytes: Int64 = 0) {
+    public init(subjectID: String, disposition: OperationDisposition,
+                mutation: OperationMutationFact, affectedBytes: Int64 = 0) {
         self.subjectID = subjectID
         self.disposition = disposition
+        self.mutation = mutation
         self.affectedBytes = max(0, affectedBytes)
     }
 }
@@ -82,11 +91,13 @@ public struct OperationOutcome: Encodable, Identifiable, Sendable {
     public let startedAt: Date
     public let finishedAt: Date
     public let issues: [OperationIssue]
-    public var hasChanges: Bool { counts.succeeded > 0 }
+    public let mutation: OperationMutationFact
+    public var hasChanges: Bool { mutation != .none }
 
     fileprivate init(id: UUID, parentID: UUID?, kind: OperationKind,
                      status: OperationTerminalStatus, counts: OperationCounts,
-                     startedAt: Date, finishedAt: Date, issues: [OperationIssue]) {
+                     startedAt: Date, finishedAt: Date, issues: [OperationIssue],
+                     mutation: OperationMutationFact) {
         self.id = id
         self.parentID = parentID
         self.kind = kind
@@ -95,6 +106,7 @@ public struct OperationOutcome: Encodable, Identifiable, Sendable {
         self.startedAt = startedAt
         self.finishedAt = finishedAt
         self.issues = issues
+        self.mutation = mutation
     }
 }
 
@@ -162,13 +174,14 @@ public enum OperationOutcomeReducer {
                             dispositions: normalization.dispositions)
         let issues = collectIssues(dispositions: normalization.dispositions,
                                    additional: normalization.invariantIssues)
+        let mutation = reducedMutation(itemOutcomes)
         let status = reducedStatus(counts: counts,
                                    cancellationAccepted: cancellationAccepted,
                                    hasInvariantViolation: normalization.hasInvariantViolation)
 
         return OperationOutcome(id: id, parentID: parentID, kind: kind, status: status,
                                 counts: counts, startedAt: startedAt, finishedAt: finishedAt,
-                                issues: issues)
+                                issues: issues, mutation: mutation)
     }
 
     static func internalFailure(
@@ -193,6 +206,7 @@ public enum OperationOutcomeReducer {
         let issues = collectIssues(
             dispositions: normalization.dispositions,
             additional: normalization.invariantIssues + [invariantIssue])
+        let mutation = reducedMutation(itemOutcomes)
         let status: OperationTerminalStatus
         if cancellationAccepted {
             status = .cancelled
@@ -205,7 +219,8 @@ public enum OperationOutcomeReducer {
 
         return OperationOutcome(id: id, parentID: parentID, kind: kind, status: status,
                                 counts: counts, startedAt: startedAt,
-                                finishedAt: clampedFinishedAt, issues: issues)
+                                finishedAt: clampedFinishedAt, issues: issues,
+                                mutation: mutation)
     }
 
     private static func normalize(
@@ -284,6 +299,18 @@ public enum OperationOutcomeReducer {
         return OperationCounts(requested: requested,
                                succeeded: succeeded, unchanged: unchanged,
                                skipped: skipped, failed: failed, cancelled: cancelled)
+    }
+
+    private static func reducedMutation(
+        _ itemOutcomes: [OperationItemOutcome]
+    ) -> OperationMutationFact {
+        if itemOutcomes.contains(where: { $0.mutation == .possiblyChanged }) {
+            return .possiblyChanged
+        }
+        if itemOutcomes.contains(where: { $0.mutation == .changed }) {
+            return .changed
+        }
+        return .none
     }
 
     private static func collectIssues(
