@@ -485,106 +485,468 @@ private struct ScanAmbience: View {
     }
 }
 
-// MARK: - 完成页（庆祝动画）
+// MARK: - 诚实结果页
 
-/// 全应用统一的「任务完成」庆祝页：喷发彩带 + 打勾弹入 + 主数字从 0 数到目标（ease-out）。
-/// 清理 / 粉碎 / 卸载 / 更新检查等所有批量任务流共用同一套庆祝语言与动效，达成一致的「完成」体验。
-/// `metricText` 把当前动画值格式化为主标题（字节量或计数由调用方决定）；按钮均可选。
-struct TaskCompletionView: View {
-    let animateTo: Int64
-    let metricText: (Int64) -> String
-    let detail: String
-    var undoTitle: String? = nil
-    var onUndo: (() -> Void)? = nil
-    var doneTitle: String? = nil
-    var onDone: (() -> Void)? = nil
-    /// 招牌 S-A「空间湮灭」三幕 + 声/触反馈（docs/16）。危险操作（粉碎）传 false——
-    /// 铁律：危险操作永不配「愉悦」的声/触强化，走朴素庆祝。
-    var signature: Bool = true
+@MainActor
+struct TaskOutcomeView: View {
+    let context: TaskOutcomeContext
+    let actions: TaskOutcomeActions
+    let authorization: OutcomePresentationEffectAuthorization?
 
-    @State private var pop = false
-    @State private var shown: Int64 = 0   // 从 0 数到目标的动画值
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    var body: some View {
-        ZStack {
-            // S-A 三幕（docs/16）：汇聚→闪光→释放。幕2 闪光帧齐发 声(cleanDone)+触(levelChange)——
-            // 声/触/光对齐同一窗口，大脑绑成一个事件（CMM 只有视觉）。
-            if signature {
-                XAnnihilationBurst(onFlash: {
-                    XSound.play(.cleanDone)
-                    XHaptic.perform(.levelChange)
-                })
-                .frame(width: 360, height: 360)
-            } else {
-                XCelebrationBurst().frame(width: 360, height: 360)
-            }
-            VStack(spacing: XSpacing.l) {
-                ZStack {
-                    Circle().fill(XColor.success.opacity(0.15)).frame(width: 124, height: 124)
-                    Image(systemName: "checkmark")
-                        .font(XFont.hero)
-                        .foregroundStyle(XColor.successGradient)
-                }
-                .scaleEffect(pop ? 1 : 0.3)
-                .opacity(pop ? 1 : 0)
+    init(
+        context: TaskOutcomeContext,
+        actions: TaskOutcomeActions,
+        authorization: OutcomePresentationEffectAuthorization? = nil
+    ) {
+        self.context = context
+        self.actions = actions
+        self.authorization = authorization
+    }
 
-                Text(metricText(shown))
-                    .xLargeTitle().foregroundStyle(XColor.textPrimary)
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                Text(detail)
-                    .font(XFont.body).foregroundStyle(XColor.textSecondary)
-                    .multilineTextAlignment(.center)
-                if (undoTitle != nil && onUndo != nil) || (doneTitle != nil && onDone != nil) {
-                    HStack(spacing: XSpacing.m) {
-                        if let undoTitle, let onUndo {
-                            Button(undoTitle) { onUndo() }.buttonStyle(XSecondaryButtonStyle())
-                        }
-                        if let doneTitle, let onDone {
-                            Button(doneTitle) { onDone() }.buttonStyle(XPrimaryButtonStyle())
+    var body: some View {
+        TaskOutcomeSessionView(
+            context: context,
+            actions: actions,
+            authorization: authorization,
+            initialReduceMotion: reduceMotion)
+            .id(context.operation.id)
+    }
+}
+
+/// Operation-keyed child ownership ensures a new terminal ID receives a new
+/// frozen effect session, while focus/body recomputation for the same ID cannot
+/// flip its motion plan after the one-shot authorization is taken.
+@MainActor
+private struct TaskOutcomeSessionView: View {
+    let context: TaskOutcomeContext
+    let actions: TaskOutcomeActions
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var focusedAction: TaskOutcomeActionKind?
+    @StateObject private var effectSession: OutcomePresentationEffectSession
+    @State private var motionSession: OutcomeMotionSessionState
+
+    init(
+        context: TaskOutcomeContext,
+        actions: TaskOutcomeActions,
+        authorization: OutcomePresentationEffectAuthorization?,
+        initialReduceMotion: Bool
+    ) {
+        self.context = context
+        self.actions = actions
+        _effectSession = StateObject(wrappedValue: OutcomePresentationEffectSession(
+            authorization: authorization,
+            expectedOperationID: context.operation.id))
+        _motionSession = State(initialValue: OutcomeMotionSessionState(
+            initialReduceMotion: initialReduceMotion))
+    }
+
+    var body: some View {
+        let presentation = TaskOutcomePresentation.make(context: context)
+            .resolvingAvailableActions(actions.availableKinds)
+        let motionPlan = OutcomeMotionPlan.make(
+            context: context,
+            presentation: presentation,
+            visualEffectGranted: effectSession.grant?.celebration == true,
+            reduceMotion: motionSession.shouldSuppress(
+                currentReduceMotion: reduceMotion))
+
+        ZStack {
+            OutcomeResultBackdrop(role: presentation.semanticRole)
+
+            if let grant = effectSession.grant {
+                OutcomePresentationEffects(
+                    context: context,
+                    presentation: presentation,
+                    motionPlan: motionPlan,
+                    grant: grant)
+                    .frame(width: 380, height: 380)
+            }
+
+            ScrollView {
+                VStack(spacing: XSpacing.xl) {
+                    OutcomeStatusHeader(
+                        presentation: presentation,
+                        motionPlan: motionPlan)
+
+                    XCard(padding: XSpacing.l, elevated: true) {
+                        OutcomeCountGrid(summary: presentation.countSummary)
+                    }
+                    .frame(maxWidth: 620)
+
+                    VStack(spacing: XSpacing.s) {
+                        Text(xLoc(presentation.detailKey))
+                            .font(XFont.bodyEmphasis)
+                            .foregroundStyle(XColor.textSecondary)
+                            .multilineTextAlignment(.center)
+                        if let note = presentation.note,
+                           !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text(note)
+                                .font(XFont.caption)
+                                .foregroundStyle(XColor.textTertiary)
+                                .multilineTextAlignment(.center)
                         }
                     }
-                    .padding(.top, XSpacing.s)
-                    .opacity(pop ? 1 : 0)
+                    .frame(maxWidth: 560)
+
+                    OutcomeActionBar(
+                        presentation: presentation,
+                        actions: actions,
+                        focusedAction: $focusedAction)
+                        .onAppear {
+                            focusedAction = motionPlan.initialFocus
+                        }
                 }
+                .padding(.horizontal, XSpacing.xxl)
+                .padding(.vertical, XSpacing.xxl)
+                .frame(maxWidth: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear {
-            // 幕3（0.75s 起）：对勾 celebrateSoft 弹出（两次可感余荡）+ 数字 count-up——
-            // 招牌模式下等幕1汇聚/幕2闪光走完再登场；朴素模式/Reduce Motion 立即到位。
-            if signature && !reduceMotion {
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 750_000_000)
-                    withAnimation(XMotion.celebrateSoft) { pop = true }
-                    countUp()
-                }
+        .onChange(of: reduceMotion) { _, enabled in
+            motionSession.observe(reduceMotion: enabled)
+        }
+    }
+}
+
+private struct OutcomeResultBackdrop: View {
+    let role: TaskOutcomeSemanticRole
+
+    var body: some View {
+        ZStack {
+            XColor.surface(at: .resting)
+            Circle()
+                .fill(RadialGradient(
+                    colors: [role.tint.opacity(0.16), .clear],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: 320))
+                .frame(width: 640, height: 640)
+                .offset(y: -180)
+                .blur(radius: 12)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct OutcomeStatusHeader: View {
+    let presentation: TaskOutcomePresentation
+    let motionPlan: OutcomeMotionPlan
+
+    var body: some View {
+        VStack(spacing: XSpacing.m) {
+            if motionPlan.createsDelayedRevealTask {
+                AnimatedOutcomeStatusOrb(
+                    systemImage: presentation.systemImage,
+                    role: presentation.semanticRole)
             } else {
-                withAnimation(XMotion.celebrate) { pop = true }
-                countUp()
+                OutcomeStatusOrb(
+                    systemImage: presentation.systemImage,
+                    role: presentation.semanticRole)
             }
-            // 盲用户也「听到」结果（docs/16 §5）：完成播报，不只视觉粒子。
-            AccessibilityNotification.Announcement(metricText(animateTo)).post()
+
+            Text(xLoc(presentation.titleKey))
+                .xLargeTitle()
+                .foregroundStyle(XColor.textPrimary)
+                .multilineTextAlignment(.center)
+
+            if presentation.affectedBytes != nil || motionPlan.finalNumericValue > 0 {
+                if motionPlan.createsCountUpTask {
+                    AnimatedOutcomeMetric(
+                        plan: motionPlan,
+                        formatsBytes: presentation.affectedBytes != nil)
+                } else {
+                    OutcomeMetricText(
+                        value: motionPlan.finalNumericValue,
+                        formatsBytes: presentation.affectedBytes != nil)
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(presentation.accessibilityLabel)
+    }
+}
+
+private struct OutcomeStatusOrb: View {
+    let systemImage: String
+    let role: TaskOutcomeSemanticRole
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(role.tint.opacity(0.12))
+            Circle()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: role.gradientColors.map { $0.opacity(0.72) },
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing),
+                    lineWidth: 1.5)
+                .padding(1)
+            Image(systemName: systemImage)
+                .font(XFont.heroCompact)
+                .foregroundStyle(LinearGradient(
+                    colors: role.gradientColors,
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing))
+        }
+        .frame(width: 116, height: 116)
+        .shadow(color: role.tint.opacity(0.22), radius: 22, y: 8)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct AnimatedOutcomeStatusOrb: View {
+    let systemImage: String
+    let role: TaskOutcomeSemanticRole
+    @State private var revealed = false
+
+    var body: some View {
+        OutcomeStatusOrb(systemImage: systemImage, role: role)
+            .scaleEffect(revealed ? 1 : 0.72)
+            .opacity(revealed ? 1 : 0)
+            .task {
+                try? await Task.sleep(nanoseconds: 620_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation(XMotion.celebrateSoft) {
+                    revealed = true
+                }
+            }
+    }
+}
+
+private struct OutcomeMetricText: View {
+    let value: Int64
+    let formatsBytes: Bool
+
+    var body: some View {
+        Text(formatsBytes ? value.formattedBytes : xLocF("完成 %d 项", Int(clamping: value)))
+            .font(XFont.monoHero)
+            .foregroundStyle(XColor.textPrimary)
+            .monospacedDigit()
+            .contentTransition(.numericText())
+    }
+}
+
+private struct AnimatedOutcomeMetric: View {
+    let plan: OutcomeMotionPlan
+    let formatsBytes: Bool
+    @State private var shown: Int64
+
+    init(plan: OutcomeMotionPlan, formatsBytes: Bool) {
+        self.plan = plan
+        self.formatsBytes = formatsBytes
+        _shown = State(initialValue: plan.initialNumericValue)
+    }
+
+    var body: some View {
+        OutcomeMetricText(value: shown, formatsBytes: formatsBytes)
+            .task {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                guard !Task.isCancelled else { return }
+                let target = plan.finalNumericValue
+                for step in 1...36 {
+                    guard !Task.isCancelled else { return }
+                    let progress = Double(step) / 36
+                    let eased = 1 - pow(1 - progress, 3)
+                    shown = plan.interpolatedNumericValue(at: eased)
+                    try? await Task.sleep(nanoseconds: 24_000_000)
+                }
+                shown = target
+            }
+    }
+}
+
+private struct OutcomeCountGrid: View {
+    let summary: TaskOutcomeCountSummary
+
+    private var facts: [(String, Int)] {
+        [
+            ("请求 %d 项", summary.requested),
+            ("完成 %d 项", summary.succeeded),
+            ("无需更改 %d 项", summary.unchanged),
+            ("跳过 %d 项", summary.skipped),
+            ("失败 %d 项", summary.failed),
+            ("取消 %d 项", summary.cancelled),
+        ]
+    }
+
+    var body: some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: XSpacing.s),
+                GridItem(.flexible(), spacing: XSpacing.s),
+            ],
+            spacing: XSpacing.s
+        ) {
+            ForEach(Array(facts.enumerated()), id: \.offset) { _, fact in
+                Text(xLocF(fact.0, fact.1))
+                    .font(XFont.captionEmphasis)
+                    .foregroundStyle(fact.1 > 0 ? XColor.textPrimary : XColor.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, XSpacing.m)
+                    .padding(.vertical, XSpacing.s)
+                    .background(XColor.surfaceAlt.opacity(0.72), in: RoundedRectangle(
+                        cornerRadius: XRadius.button,
+                        style: .continuous))
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+@MainActor
+private struct OutcomeActionBar: View {
+    let presentation: TaskOutcomePresentation
+    let actions: TaskOutcomeActions
+    let focusedAction: FocusState<TaskOutcomeActionKind?>.Binding
+
+    private var available: [(TaskOutcomeActionKind, String, () -> Void)] {
+        presentation.actionOrder.compactMap { kind in
+            guard let action = action(for: kind) else { return nil }
+            return (kind, presentation.actionTitle(for: kind), action)
         }
     }
 
-    /// 主数字从 0 数到目标（ease-out cubic），命中 CleanMyMac 式满足感的关键动效。Reduce Motion 直接到位。
-    private func countUp() {
-        let target = animateTo
-        guard target > 0, !reduceMotion else { shown = target; return }
-        Task { @MainActor in
-            let start = Date()
-            let duration = 0.9
-            while true {
-                let t = min(1, Date().timeIntervalSince(start) / duration)
-                let eased = 1 - pow(1 - t, 3)   // ease-out cubic
-                shown = Int64(Double(target) * eased)
-                if t >= 1 { break }
-                try? await Task.sleep(nanoseconds: 16_000_000)   // ~60fps
+    var body: some View {
+        let buttons = available
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: XSpacing.m) {
+                ForEach(Array(buttons.enumerated()), id: \.offset) { index, item in
+                    actionButton(item, isPrimary: index == 0)
+                }
             }
-            shown = target
+            VStack(spacing: XSpacing.s) {
+                ForEach(Array(buttons.enumerated()), id: \.offset) { index, item in
+                    actionButton(item, isPrimary: index == 0)
+                }
+            }
         }
+        .frame(maxWidth: 620)
+    }
+
+    @ViewBuilder
+    private func actionButton(
+        _ item: (TaskOutcomeActionKind, String, () -> Void),
+        isPrimary: Bool
+    ) -> some View {
+        if isPrimary {
+            Button(item.1, action: item.2)
+                .focused(focusedAction, equals: item.0)
+                .buttonStyle(XPrimaryButtonStyle())
+        } else {
+            Button(item.1, action: item.2)
+                .focused(focusedAction, equals: item.0)
+                .buttonStyle(XSecondaryButtonStyle())
+        }
+    }
+
+    private func action(for kind: TaskOutcomeActionKind) -> (() -> Void)? {
+        switch kind {
+        case .retryFailed, .retryRemaining: actions.retry
+        case .details: actions.details
+        case .undoChanged: actions.undo
+        case .recovery: actions.recovery
+        case .done: actions.done
+        }
+    }
+}
+
+private extension TaskOutcomeSemanticRole {
+    var tint: Color {
+        switch self {
+        case .success: XColor.success
+        case .neutral: XColor.brand
+        case .warning: XColor.warning
+        case .error: XColor.danger
+        case .cancelled: XColor.textSecondary
+        case .irreversible: XColor.accentTeal
+        }
+    }
+
+    var gradientColors: [Color] {
+        switch self {
+        case .success: [XColor.success, XColor.accentTeal]
+        case .neutral: [XColor.brand, XColor.ring(2)]
+        case .warning: [XColor.warning, XColor.accentPink]
+        case .error: [XColor.danger, XColor.accentPink]
+        case .cancelled: [XColor.textSecondary, XColor.brand]
+        case .irreversible: [XColor.accentTeal, XColor.brand]
+        }
+    }
+}
+
+/// 仅用于尚未迁移的调用点。它故意不解释旧的聚合数字，也不播放任何成功反馈；
+/// Tasks 4–13 会逐个用 reducer-backed `TaskOutcomeView` 替换这些调用。
+struct TaskCompletionView: View {
+    private let onDone: (() -> Void)?
+
+    init(
+        animateTo: Int64,
+        metricText: @escaping (Int64) -> String,
+        detail: String,
+        undoTitle: String? = nil,
+        onUndo: (() -> Void)? = nil,
+        doneTitle: String? = nil,
+        onDone: (() -> Void)? = nil,
+        signature: Bool = true
+    ) {
+        _ = animateTo
+        _ = metricText
+        _ = detail
+        _ = undoTitle
+        _ = onUndo
+        _ = doneTitle
+        _ = signature
+        self.onDone = onDone
+    }
+
+    var body: some View {
+        LegacyTaskOutcomeCompatibilityView(onDone: onDone)
+    }
+}
+
+private struct LegacyTaskOutcomeCompatibilityView: View {
+    let onDone: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: XSpacing.l) {
+            ZStack {
+                Circle()
+                    .fill(XColor.brand.opacity(0.10))
+                    .frame(width: 112, height: 112)
+                Circle()
+                    .strokeBorder(XColor.brand.opacity(0.24), lineWidth: 1)
+                    .frame(width: 112, height: 112)
+                Image(systemName: "circle.dotted")
+                    .font(XFont.heroCompact)
+                    .foregroundStyle(XColor.brandGradient)
+            }
+
+            VStack(spacing: XSpacing.s) {
+                Text(xLoc("结果展示正在升级"))
+                    .xTitle()
+                    .foregroundStyle(XColor.textPrimary)
+                Text(xLoc("请返回并重新执行此操作以查看完整结果。"))
+                    .font(XFont.body)
+                    .foregroundStyle(XColor.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+
+            if let onDone {
+                Button(xLoc("完成"), action: onDone)
+                    .buttonStyle(XPrimaryButtonStyle())
+                    .padding(.top, XSpacing.s)
+            }
+        }
+        .padding(XSpacing.xxl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 

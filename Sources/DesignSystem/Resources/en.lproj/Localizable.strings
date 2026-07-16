@@ -1670,3 +1670,26 @@
 "十进制 GB" = "Decimal GB";
 "二进制 GiB" = "Binary GiB";
 "合并子进程" = "Group subprocesses";
+
+/* Task Outcome */
+"操作已完成" = "Operation complete";
+"目标已经满足" = "Target already satisfied";
+"部分完成" = "Partially complete";
+"操作失败" = "Operation failed";
+"操作已取消" = "Operation cancelled";
+"不可逆操作已完成" = "Irreversible operation complete";
+"结果需要确认" = "Review required";
+"请求 %d 项" = "%d requested";
+"完成 %d 项" = "%d completed";
+"无需更改 %d 项" = "%d already satisfied";
+"跳过 %d 项" = "%d skipped";
+"失败 %d 项" = "%d failed";
+"取消 %d 项" = "%d cancelled";
+"重试 %d 个失败项目" = "Retry failed items: %d";
+"继续处理 %d 个剩余项目" = "Continue remaining items: %d";
+"查看详情" = "View details";
+"撤销已更改项目" = "Undo changed items";
+"按建议恢复" = "Follow recommended recovery";
+"%@。%@。下一步：%@" = "%@. %@. Next: %@";
+"结果展示正在升级" = "The result view is being upgraded";
+"请返回并重新执行此操作以查看完整结果。" = "Go back and run this operation again to see the complete result.";

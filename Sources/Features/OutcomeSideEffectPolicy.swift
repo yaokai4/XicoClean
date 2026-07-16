@@ -72,6 +72,7 @@ enum OutcomeEffectChannel: Hashable, Sendable {
     case successNotification
     case celebration
     case successSoundHaptic
+    case accessibilityAnnouncement
     case internalInvalidation
 }
 
@@ -86,7 +87,23 @@ actor OutcomeFeedbackGate {
     }
 
     func consume(_ channel: OutcomeEffectChannel, for operationID: UUID) -> Bool {
-        guard currentOperationID == operationID else { return false }
-        return consumedChannels.insert(channel).inserted
+        consume([channel], for: operationID).contains(channel)
+    }
+
+    /// Atomically consumes a finite set of independent channels for one live
+    /// terminal operation. Registration cannot interleave between channels,
+    /// so a stale operation receives either its complete remaining grant or
+    /// nothing—never a split grant assembled across operation generations.
+    func consume(
+        _ channels: Set<OutcomeEffectChannel>,
+        for operationID: UUID
+    ) -> Set<OutcomeEffectChannel> {
+        guard currentOperationID == operationID,
+              !channels.isEmpty else {
+            return []
+        }
+        let granted = channels.subtracting(consumedChannels)
+        consumedChannels.formUnion(granted)
+        return granted
     }
 }

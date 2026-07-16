@@ -1670,3 +1670,26 @@
 "十进制 GB" = "Dezimal GB";
 "二进制 GiB" = "Binär GiB";
 "合并子进程" = "Unterprozesse gruppieren";
+
+/* Task Outcome */
+"操作已完成" = "Vorgang abgeschlossen";
+"目标已经满足" = "Ziel bereits erreicht";
+"部分完成" = "Teilweise abgeschlossen";
+"操作失败" = "Vorgang fehlgeschlagen";
+"操作已取消" = "Vorgang abgebrochen";
+"不可逆操作已完成" = "Nicht umkehrbarer Vorgang abgeschlossen";
+"结果需要确认" = "Ergebnis muss geprüft werden";
+"请求 %d 项" = "%d angefordert";
+"完成 %d 项" = "%d abgeschlossen";
+"无需更改 %d 项" = "%d bereits erfüllt";
+"跳过 %d 项" = "%d übersprungen";
+"失败 %d 项" = "%d fehlgeschlagen";
+"取消 %d 项" = "%d abgebrochen";
+"重试 %d 个失败项目" = "Fehlgeschlagene Elemente erneut versuchen: %d";
+"继续处理 %d 个剩余项目" = "Verbleibende Elemente weiterverarbeiten: %d";
+"查看详情" = "Details anzeigen";
+"撤销已更改项目" = "Geänderte Elemente rückgängig machen";
+"按建议恢复" = "Empfohlene Wiederherstellung ausführen";
+"%@。%@。下一步：%@" = "%@. %@. Nächster Schritt: %@";
+"结果展示正在升级" = "Die Ergebnisansicht wird aktualisiert";
+"请返回并重新执行此操作以查看完整结果。" = "Kehren Sie zurück und führen Sie diesen Vorgang erneut aus, um das vollständige Ergebnis anzuzeigen.";
