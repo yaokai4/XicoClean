@@ -148,7 +148,7 @@ Irreversible kinds (`shred`, SFTP delete, remote host/tunnel destructive removal
 - Modify: `Tests/DomainTests/CleaningEngineTests.swift`
 - Modify: `Tests/FeatureTests/OutcomeSideEffectPolicyTests.swift`
 
-- [ ] **Step 1: Write RED tests for canonical kinds and exact retry selection**
+- [x] **Step 1: Write RED tests for canonical kinds and exact retry selection**
 
 Create reducer-built fixtures only. Tests must cover:
 
@@ -166,7 +166,7 @@ func testExternalClientCannotPassRawOperationKindAsCleaningPurposeOrMergePurpose
 
 `OperationConsumerFacts.retryableSubjectIDs(from:)` accepts the exact `[OperationItemOutcome]` stored by a strong payload; it does not infer subjects from aggregate counts and does not mutate the old outcome.
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run:
 
@@ -177,7 +177,7 @@ swift test --filter CleaningEngineTests --disable-automatic-resolution --skip-up
 
 Expected: FAIL because canonical operation kinds, semantics, retry selector and the closed cleaning-purpose API do not exist.
 
-- [ ] **Step 3: Add canonical kinds and pure subject helpers**
+- [x] **Step 3: Add canonical kinds and pure subject helpers**
 
 Add typed constants rather than new string literals in consumers:
 
@@ -380,7 +380,7 @@ The switch above is the executable source of truth; the table below is its revie
 
 Move the Task 3-local `OutcomeWorkflowProfile` declaration to this Domain file rather than defining a second same-named type. Unknown kinds have no row and therefore no history, notification, celebration or invalidation permission.
 
-- [ ] **Step 4: Write RED tests for bounded channel independence and policy matrix**
+- [x] **Step 4: Write RED tests for bounded channel independence and policy matrix**
 
 ```swift
 func testHistoryConsumptionDoesNotConsumeNotificationOrCelebrationChannel() async
@@ -398,7 +398,7 @@ func testPossiblyChangedNeverNotifiesOrCelebrates() throws
 func testUnknownKindSuppressesHistoryNotificationCelebrationAndInvalidation() throws
 ```
 
-- [ ] **Step 5: Consume the approved bounded gate and make policy registry-only**
+- [x] **Step 5: Consume the approved bounded gate and make policy registry-only**
 
 Do **not** redefine or edit `OutcomeEffectChannel` or `OutcomeFeedbackGate`; operation-facts Task 3 is their sole code owner. This task's tests import and exercise that exact actor. Keep its storage invariant at one `currentOperationID` plus one finite `Set<OutcomeEffectChannel>`; never introduce `OutcomeChannel`, `OutcomeChannelGate`, a dictionary or an unbounded `Set<(UUID, Channel)>`.
 
@@ -438,7 +438,7 @@ Remove every caller-accessible policy overload that accepts a raw profile or not
 
 One long-lived live ViewModel owns the existing gate and calls `registerTerminal` exactly once at a new live terminal transition. Re-registering the same ID preserves consumed channels; a new ID evicts the previous ID/channels. Rendering, `onAppear`, history loading and historical outcome presentation never register. Historical records never receive a live gate.
 
-- [ ] **Step 6: Run focused tests**
+- [x] **Step 6: Run focused tests**
 
 ```bash
 swift test --filter OperationConsumerFactsTests --disable-automatic-resolution --skip-update
@@ -448,7 +448,7 @@ swift test --filter OutcomeSideEffectPolicyTests --disable-automatic-resolution 
 
 Expected: PASS, including independent one-time consumption for every channel.
 
-- [ ] **Step 7: Commit the consumer contract when executing this plan**
+- [x] **Step 7: Commit the consumer contract when executing this plan**
 
 ```bash
 git add Sources/Domain/OperationOutcome.swift Sources/Domain/OperationConsumerFacts.swift Sources/Domain/CleaningEngine.swift Sources/Features/OutcomeSideEffectPolicy.swift Tests/DomainTests/OperationConsumerFactsTests.swift Tests/DomainTests/CleaningEngineTests.swift Tests/FeatureTests/OutcomeSideEffectPolicyTests.swift
