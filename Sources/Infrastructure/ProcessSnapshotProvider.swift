@@ -113,6 +113,10 @@ private final class HelperEnhancementState: @unchecked Sendable {
             }
         }
     }
+
+    func isRequestInFlight() -> Bool {
+        lock.withLock { requestInFlight }
+    }
 }
 
 public struct LocalProcessSnapshotProvider: ProcessSnapshotProviding {
@@ -163,6 +167,10 @@ public struct HybridProcessSnapshotProvider: ProcessSnapshotProviding {
             retryDelay: helperRetryDelay,
             resultFreshness: helperResultFreshness
         )
+    }
+
+    var helperRequestInFlightForTesting: Bool {
+        helperState.isRequestInFlight()
     }
 
     public func capture() async -> ProcessCapture {

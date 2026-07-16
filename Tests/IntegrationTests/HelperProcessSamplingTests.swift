@@ -11,7 +11,7 @@ final class HelperProcessSamplingTests: XCTestCase {
         let provider = HybridProcessSnapshotProvider(local: local, helper: helper)
 
         let initial = await provider.capture()
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        await waitForHelperCompletion(provider)
         let capture = await provider.capture()
 
         XCTAssertEqual(initial.source, .local)
@@ -35,7 +35,7 @@ final class HelperProcessSamplingTests: XCTestCase {
         XCTAssertEqual(initial.failures[2], .permissionDenied)
         XCTAssertLessThan(elapsedMilliseconds, 150)
 
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        await waitForHelperCompletion(provider)
         let enhanced = await provider.capture()
         XCTAssertEqual(enhanced.source, .helperEnhanced)
         XCTAssertEqual(Set(enhanced.records.map(\.pid)), [1, 2])
@@ -47,7 +47,7 @@ final class HelperProcessSamplingTests: XCTestCase {
         let helper = FakePrivilegedSampler(response: nil)
         let provider = HybridProcessSnapshotProvider(local: local, helper: helper)
         let capture = await provider.capture()
-        try? await Task.sleep(nanoseconds: 10_000_000)
+        await waitForHelperCompletion(provider)
         let duringBackoff = await provider.capture()
         XCTAssertEqual(capture.records.map(\.pid), [1])
         XCTAssertEqual(capture.failures[2], .permissionDenied)
@@ -67,8 +67,7 @@ final class HelperProcessSamplingTests: XCTestCase {
             logicalCPUCount: 8)
 
         let initial = await sampler.sample()
-        try? await Task.sleep(nanoseconds: 50_000_000)
-        let snapshot = await sampler.sample()
+        let snapshot = await waitForHelperEnhancedSnapshot(sampler)
 
         XCTAssertEqual(initial.source, .local)
         XCTAssertEqual(snapshot.source, .helperEnhanced)
@@ -89,11 +88,11 @@ final class HelperProcessSamplingTests: XCTestCase {
         )
 
         let first = await provider.capture()
-        try? await Task.sleep(nanoseconds: 10_000_000)
+        await waitForHelperCompletion(provider)
         let duringBackoff = await provider.capture()
         clock.advance(by: 10.1)
         let afterBackoff = await provider.capture()
-        try? await Task.sleep(nanoseconds: 10_000_000)
+        await waitForHelperCompletion(provider)
 
         XCTAssertEqual(helper.invocationCount, 2)
         XCTAssertEqual(first.source, .local)
@@ -117,13 +116,13 @@ final class HelperProcessSamplingTests: XCTestCase {
         )
 
         _ = await provider.capture()
-        try? await Task.sleep(nanoseconds: 10_000_000)
+        await waitForHelperCompletion(provider)
         _ = await provider.capture()
         XCTAssertEqual(helper.invocationCount, 1)
 
         clock.advance(by: 10.1)
         _ = await provider.capture()
-        try? await Task.sleep(nanoseconds: 10_000_000)
+        await waitForHelperCompletion(provider)
         XCTAssertEqual(helper.invocationCount, 2)
     }
 
@@ -158,7 +157,7 @@ final class HelperProcessSamplingTests: XCTestCase {
         )
 
         _ = await provider.capture()
-        try? await Task.sleep(nanoseconds: 10_000_000)
+        await waitForHelperCompletion(provider)
         clock.advance(by: ProcessHelperEnhancementPolicy.resultTimeToLive(refreshInterval: 1) + 0.1)
         let afterLongGap = await provider.capture()
 
@@ -190,7 +189,7 @@ final class HelperProcessSamplingTests: XCTestCase {
         )
 
         _ = await provider.capture()
-        try? await Task.sleep(nanoseconds: 10_000_000)
+        await waitForHelperCompletion(provider)
         clock.advance(by: MonitoringRefreshInterval.fiveSeconds.rawValue + 0.5)
         let nextConfiguredTick = await provider.capture()
 
@@ -198,12 +197,49 @@ final class HelperProcessSamplingTests: XCTestCase {
         XCTAssertEqual(Set(nextConfiguredTick.records.map(\.pid)), [1, 2])
         XCTAssertNil(nextConfiguredTick.failures[2])
 
-        try? await Task.sleep(nanoseconds: 10_000_000)
+        await waitForHelperCompletion(provider)
         configuredRefresh.value = 1
         clock.advance(by: 2.1)
         let afterChangingToOneSecond = await provider.capture()
         XCTAssertEqual(afterChangingToOneSecond.source, .local)
         XCTAssertEqual(afterChangingToOneSecond.failures[2], .permissionDenied)
+    }
+
+    private func waitForHelperCompletion(
+        _ provider: HybridProcessSnapshotProvider,
+        timeout: Duration = .seconds(2),
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while provider.helperRequestInFlightForTesting, clock.now < deadline {
+            await Task.yield()
+        }
+        XCTAssertFalse(provider.helperRequestInFlightForTesting,
+                       "Helper request did not complete before the bounded test deadline",
+                       file: file,
+                       line: line)
+    }
+
+    private func waitForHelperEnhancedSnapshot(
+        _ sampler: ProcessSampler,
+        timeout: Duration = .seconds(2),
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async -> ApplicationUsageSnapshot {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        var snapshot = await sampler.sample()
+        while snapshot.source != .helperEnhanced, clock.now < deadline {
+            await Task.yield()
+            snapshot = await sampler.sample()
+        }
+        XCTAssertEqual(snapshot.source, .helperEnhanced,
+                       "Production sampler did not publish the completed helper result",
+                       file: file,
+                       line: line)
+        return snapshot
     }
 }
 
