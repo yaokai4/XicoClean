@@ -22,8 +22,10 @@ Branch: codex/precision-monitoring
 Start: 38071f3
 Plan: docs/superpowers/plans/2026-07-16-xico-95-program.md
 Active subsystem: docs/superpowers/plans/2026-07-16-xico-phase0-operation-facts.md
-Baseline: 373 tests executed, 15 environment-gated skips, 0 failures
+Baseline at program start: 373 tests executed, 15 environment-gated skips, 0 failures
+Current verified baseline: 423 tests executed, 15 explicit environment-gated skips, 0 failures (HEAD 2dbfe87)
 
 Operation Facts Task 1: complete (commit 9bee440; 13/13 focused, 115/115 Domain; spec compliant and quality approved)
-Task 1 review Minors for final triage: issue sort tie-break omits category/recovery/retryable; invariant tests assert code but not category
-Operation Facts Task 2: plan hardened after independent business/Swift 6 preflight; empty-plan path, fact-preserving reducer fallback, duplicate/helper edge cases, privacy gate, requestID merge and warning-free migration corrected; implementation pending
+Task 1 review Minor resolution: the issue order now uses the full Optional subject/code/category/recovery/retryable tuple; nil and empty subjects are distinct and regression-tested. Task 2 exact issue-contract tests cover category/recovery/retryability.
+Operation Facts Task 2: complete and final-review CLEAN (commits 0b4b278, 99412ab, 89dcccf, 77d3a7d, 2dbfe87). Final evidence: OperationOutcomeReducerTests 26/26; CleaningEngineTests 28/28; CleaningRoundTripTests 7 executed with 1 explicit local-smoke skip; external normal-import Domain clients 4/4; full suite 423 executed, 15 explicit environment skips, 0 failures, 0 compiler warnings; privacy and diff gates clean. Default integration tests use only a unique temporary sandbox trash. Known non-blocking test concern: deterministic continuation barriers intentionally have no timing timeout under the no-sleep/no-race test contract.
+Operation Facts Task 3: active after plan cross-review amendments; next RED covers reducer-owned none/changed/possiblyChanged mutation facts, split notification/celebration policy, bounded per-channel feedback gate, and full focused/full verification.
