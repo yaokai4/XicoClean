@@ -13,3 +13,17 @@ Task 6: complete (commits 835aaad..2fcccbc, review clean after refresh validatio
 Task 7: complete (commits 2fcccbc..f62d4bd, review clean after sheet lifecycle/accuracy/performance fixes)
 Task 8: complete (commits f62d4bd..c13bb9c, review clean; localization/accessibility/six-shot evidence verified)
 Task 9: complete (commits 4f7127f, 989b90d; review clean after helper freshness fixes)
+
+---
+
+# Xico 95+ Program SDD Progress
+
+Branch: codex/precision-monitoring
+Start: 38071f3
+Plan: docs/superpowers/plans/2026-07-16-xico-95-program.md
+Active subsystem: docs/superpowers/plans/2026-07-16-xico-phase0-operation-facts.md
+Baseline: 373 tests executed, 15 environment-gated skips, 0 failures
+
+Operation Facts Task 1: implemented (commit 9bee440; 13/13 focused and 115/115 Domain tests pass; task review pending)
+Paused: 2026-07-16 18:00 Asia/Tokyo at user request
+Resume first action: generate review package for 38071f3..9bee440 and run independent Task 1 spec/code-quality review
