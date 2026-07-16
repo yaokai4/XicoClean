@@ -437,8 +437,8 @@ public struct CleaningItemResult: Sendable {
     public let disposition: OperationDisposition
     public let reclaimedBytes: Int64
     public let restorable: RestorableItem?
-    public init(requestID: UUID, itemID: UUID, url: URL, disposition: OperationDisposition,
-                reclaimedBytes: Int64, restorable: RestorableItem?) {
+    init(requestID: UUID, itemID: UUID, url: URL, disposition: OperationDisposition,
+         reclaimedBytes: Int64, restorable: RestorableItem?) {
         self.requestID = requestID
         self.itemID = itemID
         self.url = url
@@ -453,7 +453,7 @@ public struct CleaningReport: Sendable {
     public let items: [CleaningItemResult]
     private let legacy: LegacyCleaningCompatibility?
 
-    public init(operation: OperationOutcome, items: [CleaningItemResult]) {
+    init(operation: OperationOutcome, items: [CleaningItemResult]) {
         self.operation = operation
         self.items = items
         self.legacy = nil
@@ -462,7 +462,10 @@ public struct CleaningReport: Sendable {
     public var removedCount: Int { legacy?.removedCount ?? operation.counts.succeeded }
     public var reclaimedBytes: Int64 {
         if let legacy { return legacy.reclaimedBytes }
-        return items.reduce(0) { $0 + ($1.disposition == .succeeded ? $1.reclaimedBytes : 0) }
+        return items.reduce(0) { total, item in
+            guard item.disposition == .succeeded else { return total }
+            return saturatedNonnegativeSum(total, item.reclaimedBytes)
+        }
     }
     public var failures: [CleaningFailure] {
         if let legacy { return legacy.failures }
@@ -483,9 +486,11 @@ public struct CleaningReport: Sendable {
     public init(removedCount: Int, reclaimedBytes: Int64,
                 failures: [CleaningFailure], restorable: [RestorableItem]) {
         let startedAt = Date()
-        let countFromFacts = max(max(0, removedCount) + failures.count, restorable.count)
-        let requested = max(countFromFacts, reclaimedBytes > 0 ? 1 : 0)
-        let subjectIDs = (0..<requested).map { "legacy-\($0)" }
+        let hasAggregateFacts = removedCount > 0
+            || reclaimedBytes > 0
+            || !failures.isEmpty
+            || !restorable.isEmpty
+        let subjectIDs = hasAggregateFacts ? ["legacy-aggregate"] : []
         self.operation = OperationOutcomeReducer.internalFailure(
             kind: OperationKind("cleaning.legacyAggregate"),
             requestedSubjectIDs: subjectIDs,
@@ -499,6 +504,11 @@ public struct CleaningReport: Sendable {
             failures: failures,
             restorable: restorable)
     }
+}
+
+func saturatedNonnegativeSum(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+    let (sum, overflow) = max(0, lhs).addingReportingOverflow(max(0, rhs))
+    return overflow ? .max : sum
 }
 
 private struct LegacyCleaningCompatibility: Sendable {

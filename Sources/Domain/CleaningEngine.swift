@@ -14,6 +14,7 @@ public actor CleaningEngine {
     private let safety: SafetyEngine
     private let fs: FileSystemService
     private let privileged: PrivilegedCleaningService?
+    private var activeNormalizedPaths: Set<String> = []
 
     public init(safety: SafetyEngine,
                 fs: FileSystemService,
@@ -40,6 +41,19 @@ public actor CleaningEngine {
 
         let requests = Self.makeRequests(for: plan.items)
         let duplicateRequestIDs = Self.duplicateRequestIDs(in: requests)
+        var inFlightRequestIDs: Set<UUID> = []
+        var reservedPaths: Set<String> = []
+        for request in requests {
+            let path = request.item.url.standardizedFileURL.path
+            if activeNormalizedPaths.contains(path) {
+                inFlightRequestIDs.insert(request.requestID)
+            } else if !duplicateRequestIDs.contains(request.requestID) {
+                reservedPaths.insert(path)
+            }
+        }
+        activeNormalizedPaths.formUnion(reservedPaths)
+        defer { activeNormalizedPaths.subtract(reservedPaths) }
+
         var results: [CleaningItemResult] = []
         results.reserveCapacity(requests.count)
         var cancellationAccepted = false
@@ -53,7 +67,17 @@ public actor CleaningEngine {
             }
 
             let result: CleaningItemResult
-            if duplicateRequestIDs.contains(request.requestID) {
+            let suppressProgress: Bool
+            if inFlightRequestIDs.contains(request.requestID) {
+                let issue = Self.issue(
+                    code: "cleaning.request.inFlight",
+                    category: .internalInvariant,
+                    requestID: request.requestID,
+                    recovery: .retry,
+                    retryable: true)
+                result = Self.result(for: request, disposition: .failed(issue))
+                suppressProgress = true
+            } else if duplicateRequestIDs.contains(request.requestID) {
                 let issue = Self.issue(
                     code: "cleaning.request.duplicateTarget",
                     category: .internalInvariant,
@@ -61,18 +85,26 @@ public actor CleaningEngine {
                     recovery: .chooseAnotherTarget,
                     retryable: false)
                 result = Self.result(for: request, disposition: .failed(issue))
+                suppressProgress = false
             } else {
                 result = await executeItem(request, intent: plan.intent)
+                suppressProgress = false
             }
             results.append(result)
+            if Task.isCancelled { cancellationAccepted = true }
 
             if result.disposition == .succeeded {
-                reclaimedForProgress += result.reclaimedBytes
+                reclaimedForProgress = saturatedNonnegativeSum(
+                    reclaimedForProgress,
+                    result.reclaimedBytes)
             }
-            progress(ScanProgress(
-                fraction: Double(index + 1) / Double(requests.count),
-                message: request.item.displayName,
-                bytesFound: reclaimedForProgress))
+            if !suppressProgress {
+                progress(ScanProgress(
+                    fraction: Double(index + 1) / Double(requests.count),
+                    message: request.item.displayName,
+                    bytesFound: reclaimedForProgress))
+                if Task.isCancelled { cancellationAccepted = true }
+            }
         }
 
         let operationItems = results.map {
@@ -82,6 +114,7 @@ public actor CleaningEngine {
         }
         let requestIDs = requests.map { $0.requestID.uuidString }
         let finishedAt = Date()
+        if Task.isCancelled { cancellationAccepted = true }
         let operation: OperationOutcome
         do {
             operation = try OperationOutcomeReducer.reduce(

@@ -185,4 +185,129 @@ final class OperationOutcomeReducerTests: XCTestCase {
         XCTAssertEqual(outcome.startedAt, finish)
         XCTAssertEqual(outcome.finishedAt, finish)
     }
+
+    func testInternalFailureDuplicateRequestedSubjectsCannotDoubleCountSingleOutcome() {
+        let outcome = OperationOutcomeReducer.internalFailure(
+            kind: kind,
+            requestedSubjectIDs: ["a", "a"],
+            itemOutcomes: [item("a", .succeeded, bytes: 10)],
+            code: "cleaning.reducer.invariant",
+            startedAt: start,
+            finishedAt: finish)
+
+        XCTAssertEqual(outcome.status, .failure)
+        XCTAssertEqual(outcome.counts, OperationCounts(requested: 2, succeeded: 0,
+                                                       unchanged: 0, skipped: 0,
+                                                       failed: 2, cancelled: 0))
+        XCTAssertTrue(outcome.issues.contains {
+            $0 == OperationIssue(code: "operation.request.duplicate",
+                                 category: .internalInvariant,
+                                 subjectID: "a",
+                                 recovery: .retry,
+                                 retryable: true)
+        })
+    }
+
+    func testIssueOrderingUsesFullStableTuple() throws {
+        let categories: [OperationIssueCategory] = [
+            .permission, .safetyPolicy, .notFound, .identityChanged, .io, .network,
+            .authentication, .validation, .timeout, .unavailable, .internalInvariant
+        ]
+        let recoveries: [OperationRecoveryHint] = [
+            .retry, .grantPermission, .installHelper, .reauthenticate,
+            .chooseAnotherTarget, .revealInFinder, .openSettings, .manualAction, .none
+        ]
+        let issues = categories.flatMap { category in
+            recoveries.flatMap { recovery in
+                [false, true].map { retryable in
+                    OperationIssue(code: "same.code",
+                                   category: category,
+                                   subjectID: "same-subject",
+                                   recovery: recovery,
+                                   retryable: retryable)
+                }
+            }
+        }
+        let requested = issues.indices.map { "requested-\($0)" }
+        let outcomes = zip(requested, issues).map {
+            item($0.0, .failed($0.1))
+        }
+
+        let outcome = try reduce(requested, outcomes)
+        let expected = issues.sorted(by: issueComesBefore)
+
+        XCTAssertEqual(outcome.issues, expected)
+    }
+
+    func testCleaningFactConstructorsStayDomainInternal() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let modelsURL = repositoryRoot.appendingPathComponent("Sources/Domain/Models.swift")
+        let source = try String(contentsOf: modelsURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("public init(requestID: UUID"),
+                       "CleaningItemResult construction must remain inside Domain")
+        XCTAssertFalse(source.contains("public init(operation: OperationOutcome"),
+                       "Fact-backed CleaningReport construction must remain inside Domain")
+        XCTAssertTrue(source.contains("public init(removedCount: Int"),
+                      "The temporary fail-closed legacy boundary remains public until Task 5")
+    }
+
+    func testLegacyCompatibilityUsesFixedSentinelRatherThanAggregateSizedIDs() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let modelsURL = repositoryRoot.appendingPathComponent("Sources/Domain/Models.swift")
+        let source = try String(contentsOf: modelsURL, encoding: .utf8)
+        let failure = CleaningFailure(url: URL(fileURLWithPath: "/tmp/legacy-failure"),
+                                      reason: "legacy")
+
+        XCTAssertFalse(source.contains("let countFromFacts"))
+        XCTAssertFalse(source.contains("(0..<requested).map"),
+                       "Legacy aggregates must never synthesize one ID per aggregate count")
+
+        let report = CleaningReport(removedCount: 3,
+                                    reclaimedBytes: 7,
+                                    failures: [failure],
+                                    restorable: [])
+
+        XCTAssertEqual(report.operation.status, .failure)
+        XCTAssertEqual(report.operation.counts.requested, 1)
+        XCTAssertEqual(report.removedCount, 3)
+        XCTAssertEqual(report.reclaimedBytes, 7)
+        XCTAssertEqual(report.failures.count, 1)
+        XCTAssertTrue(report.items.isEmpty)
+    }
+
+    func testOperationOutcomeCannotRegainADecodableConstructionBoundary() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let outcomeURL = repositoryRoot
+            .appendingPathComponent("Sources/Domain/OperationOutcome.swift")
+        let source = try String(contentsOf: outcomeURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("struct OperationOutcome: Codable"))
+        XCTAssertFalse(source.contains("struct OperationOutcome: Decodable"))
+        XCTAssertTrue(source.contains("struct OperationOutcome: Encodable"),
+                      "Persistence must encode through the trusted fact and decode through a DTO")
+    }
+
+    private func issueComesBefore(_ lhs: OperationIssue, _ rhs: OperationIssue) -> Bool {
+        let lhsSubject = lhs.subjectID ?? ""
+        let rhsSubject = rhs.subjectID ?? ""
+        if lhsSubject != rhsSubject { return lhsSubject < rhsSubject }
+        if lhs.code != rhs.code { return lhs.code < rhs.code }
+        if lhs.category.rawValue != rhs.category.rawValue {
+            return lhs.category.rawValue < rhs.category.rawValue
+        }
+        if lhs.recovery.rawValue != rhs.recovery.rawValue {
+            return lhs.recovery.rawValue < rhs.recovery.rawValue
+        }
+        return !lhs.retryable && rhs.retryable
+    }
 }

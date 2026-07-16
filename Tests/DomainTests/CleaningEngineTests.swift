@@ -130,6 +130,117 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(report.items.map(\.disposition), [.succeeded, .cancelled(nil), .cancelled(nil)])
     }
 
+    func testCancellationDuringLastPrivilegedItemWinsAfterHelperReturns() async {
+        let url = URL(fileURLWithPath: "/Library/Caches/XicoCancelledHelper")
+        let fs = RecordingFS(existing: [url.path])
+        let helper = SuspendingPrivileged(
+            fs: fs,
+            report: PrivilegedRemovalReport(freedBytes: 42, failures: []))
+        let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs, privileged: helper)
+        let task = Task { await engine.execute(CleaningPlan(items: [
+            CleanableItem(url: url,
+                          displayName: "cancelled-helper",
+                          size: 42,
+                          requiresHelper: true)
+        ], intent: .permanent)) }
+
+        await helper.waitUntilFirstCall()
+        task.cancel()
+        await helper.resumeFirstCall()
+        let report = await task.value
+
+        XCTAssertEqual(report.operation.status, .cancelled)
+        XCTAssertEqual(report.operation.counts.requested, 1)
+        XCTAssertEqual(report.operation.counts.succeeded, 1)
+        XCTAssertEqual(report.operation.counts.cancelled, 0)
+        XCTAssertEqual(report.items.single?.disposition, .succeeded)
+        XCTAssertEqual(report.items.single?.reclaimedBytes, 42)
+    }
+
+    func testCancellationDuringLastOrdinaryMutationWinsAfterMutationReturns() async {
+        let url = URL(fileURLWithPath: "/tmp/cancel-last-ordinary")
+        let fs = SuspendingFS(existing: [url.path])
+        let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs)
+        let task = Task { await engine.execute(CleaningPlan(items: [
+            CleanableItem(url: url, displayName: "cancel-last", size: 10)
+        ], intent: .permanent)) }
+
+        await fs.waitUntilFirstMutation()
+        task.cancel()
+        await fs.resume()
+        let report = await task.value
+
+        XCTAssertEqual(report.operation.status, .cancelled)
+        XCTAssertEqual(report.operation.counts.requested, 1)
+        XCTAssertEqual(report.operation.counts.succeeded, 1)
+        XCTAssertEqual(report.operation.counts.cancelled, 0)
+        XCTAssertEqual(report.items.single?.disposition, .succeeded)
+    }
+
+    func testCancellationFromLastProgressCallbackWinsBeforeReduction() async {
+        let url = URL(fileURLWithPath: "/tmp/cancel-last-progress")
+        let fs = RecordingFS(existing: [url.path])
+        let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs)
+
+        let report = await engine.execute(CleaningPlan(items: [
+            CleanableItem(url: url, displayName: "cancel-progress", size: 10)
+        ], intent: .permanent)) { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+
+        XCTAssertEqual(report.operation.status, .cancelled)
+        XCTAssertEqual(report.operation.counts.requested, 1)
+        XCTAssertEqual(report.operation.counts.succeeded, 1)
+        XCTAssertEqual(report.operation.counts.cancelled, 0)
+        XCTAssertEqual(report.items.single?.disposition, .succeeded)
+    }
+
+    func testConcurrentExecutionsOfSameTargetFailSecondBeforeAnyDependencyCall() async {
+        let url = URL(fileURLWithPath: "/Library/Caches/XicoInFlight")
+        let fs = RecordingFS(existing: [url.path])
+        let safety = RecordingSafety(verdict: .allow)
+        let helper = SuspendingPrivileged(
+            fs: fs,
+            report: PrivilegedRemovalReport(freedBytes: 10, failures: []))
+        let engine = CleaningEngine(safety: safety, fs: fs, privileged: helper)
+        let firstTask = Task { await engine.execute(CleaningPlan(items: [
+            CleanableItem(url: url, displayName: "first", size: 10, requiresHelper: true)
+        ], intent: .permanent)) }
+
+        await helper.waitUntilFirstCall()
+        let attemptedBeforeSecond = fs.attemptedPaths
+        let mutatedBeforeSecond = fs.mutatedPaths
+        let safetyCallsBeforeSecond = safety.callCount
+        let helperCallsBeforeSecond = await helper.callCount
+        let secondProgress = ProgressRecorder()
+
+        let secondReport = await engine.execute(CleaningPlan(items: [
+            CleanableItem(url: url, displayName: "second", size: 10, requiresHelper: true)
+        ], intent: .permanent)) {
+            secondProgress.record($0)
+        }
+
+        XCTAssertEqual(secondReport.operation.status, .failure)
+        XCTAssertEqual(secondReport.operation.counts.failed, 1)
+        assertIssue(secondReport.items.single,
+                    disposition: .failed,
+                    code: "cleaning.request.inFlight",
+                    category: .internalInvariant,
+                    recovery: .retry,
+                    retryable: true)
+        XCTAssertEqual(fs.attemptedPaths, attemptedBeforeSecond)
+        XCTAssertEqual(fs.mutatedPaths, mutatedBeforeSecond)
+        XCTAssertEqual(safety.callCount, safetyCallsBeforeSecond)
+        let helperCallsAfterSecond = await helper.callCount
+        XCTAssertEqual(helperCallsAfterSecond, helperCallsBeforeSecond)
+        XCTAssertEqual(secondProgress.callCount, 0)
+
+        await helper.resumeFirstCall()
+        let firstReport = await firstTask.value
+        XCTAssertEqual(firstReport.operation.status, .success)
+        XCTAssertEqual(firstReport.operation.counts.succeeded, 1)
+    }
+
     func testDuplicateTargetFailsClosedWithoutFilesystemMutation() async {
         let firstURL = URL(fileURLWithPath: "/tmp/duplicate-a")
         let secondURL = URL(fileURLWithPath: "/tmp/duplicate-b")
@@ -489,6 +600,28 @@ final class CleaningEngineTests: XCTestCase {
     func testOrdinaryTrashAndPermanentSuccessPreserveItemFacts() async {
         await assertTwoItemOrdinarySuccess(intent: .trash)
         await assertTwoItemOrdinarySuccess(intent: .permanent)
+    }
+
+    func testReclaimedByteTotalsSaturateAfterEverySuccessfulMutation() async {
+        let urls = [
+            URL(fileURLWithPath: "/tmp/saturating-first"),
+            URL(fileURLWithPath: "/tmp/saturating-second")
+        ]
+        let fs = RecordingFS(existing: Set(urls.map(\.path)))
+        let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs)
+        let items = urls.map {
+            CleanableItem(url: $0,
+                          displayName: $0.lastPathComponent,
+                          size: Int64.max)
+        }
+
+        let report = await engine.execute(CleaningPlan(items: items, intent: .permanent))
+
+        XCTAssertEqual(report.operation.status, .success)
+        XCTAssertEqual(report.operation.counts.succeeded, 2)
+        XCTAssertEqual(report.items.count, 2)
+        XCTAssertEqual(report.reclaimedBytes, Int64.max)
+        XCTAssertEqual(fs.mutatedPaths, urls.map { $0.standardizedFileURL.path })
     }
 
     func testRepeatedCallerItemIDGetsFreshRequestIDPerExecution() async {
@@ -903,4 +1036,69 @@ private actor FakePrivileged: PrivilegedCleaningService {
     }
 
     func snapshot() -> [[URL]] { calls }
+}
+
+private actor SuspendingPrivileged: PrivilegedCleaningService {
+    private let fs: MemoryFS
+    private let report: PrivilegedRemovalReport
+    private var calls = 0
+    private var firstStarted = false
+    private var firstReleaseRequested = false
+    private var firstFinished = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var firstReleaseContinuation: CheckedContinuation<Void, Never>?
+    private var finishWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(fs: MemoryFS, report: PrivilegedRemovalReport) {
+        self.fs = fs
+        self.report = report
+    }
+
+    var callCount: Int { calls }
+
+    func waitUntilFirstCall() async {
+        if firstStarted { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func resumeFirstCall() async {
+        firstReleaseRequested = true
+        let release = firstReleaseContinuation
+        firstReleaseContinuation = nil
+        release?.resume()
+        if firstFinished { return }
+        await withCheckedContinuation { continuation in
+            finishWaiters.append(continuation)
+        }
+    }
+
+    func removeProtected(_ urls: [URL]) async -> PrivilegedRemovalReport {
+        calls += 1
+        let currentCall = calls
+        if currentCall == 1 {
+            firstStarted = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+            await withCheckedContinuation { continuation in
+                if firstReleaseRequested {
+                    continuation.resume()
+                } else {
+                    firstReleaseContinuation = continuation
+                }
+            }
+        }
+
+        for url in urls { fs.markRemovedByHelper(url) }
+
+        if currentCall == 1 {
+            firstFinished = true
+            let waiters = finishWaiters
+            finishWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
+        return report
+    }
 }

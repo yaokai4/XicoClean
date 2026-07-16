@@ -73,7 +73,7 @@ public struct OperationCounts: Codable, Equatable, Sendable {
     }
 }
 
-public struct OperationOutcome: Codable, Identifiable, Sendable {
+public struct OperationOutcome: Encodable, Identifiable, Sendable {
     public let id: UUID
     public let parentID: UUID?
     public let kind: OperationKind
@@ -215,13 +215,22 @@ public enum OperationOutcomeReducer {
         cancellationAccepted: Bool
     ) -> Normalization {
         let grouped = Dictionary(grouping: itemOutcomes, by: \.subjectID)
+        let requestedCounts = Dictionary(grouping: requestedSubjectIDs, by: { $0 })
+            .mapValues(\.count)
         var normalized: [OperationDisposition] = []
         var invariantIssues: [OperationIssue] = []
         var hasInvariantViolation = false
 
         for subjectID in requestedSubjectIDs {
             let values = grouped[subjectID] ?? []
-            if values.isEmpty {
+            if requestedCounts[subjectID, default: 0] > 1 {
+                let issue = OperationIssue(code: "operation.request.duplicate",
+                                           category: .internalInvariant,
+                                           subjectID: subjectID,
+                                           recovery: .retry, retryable: true)
+                normalized.append(.failed(issue))
+                hasInvariantViolation = true
+            } else if values.isEmpty {
                 if cancellationAccepted {
                     normalized.append(.cancelled(nil))
                 } else {
@@ -292,9 +301,24 @@ public enum OperationOutcomeReducer {
                 break
             }
         }
-        return Array(Set(issues)).sorted {
-            ($0.subjectID ?? "", $0.code) < ($1.subjectID ?? "", $1.code)
+        return Array(Set(issues)).sorted(by: issueComesBefore)
+    }
+
+    private static func issueComesBefore(
+        _ lhs: OperationIssue,
+        _ rhs: OperationIssue
+    ) -> Bool {
+        let lhsSubject = lhs.subjectID ?? ""
+        let rhsSubject = rhs.subjectID ?? ""
+        if lhsSubject != rhsSubject { return lhsSubject < rhsSubject }
+        if lhs.code != rhs.code { return lhs.code < rhs.code }
+        if lhs.category.rawValue != rhs.category.rawValue {
+            return lhs.category.rawValue < rhs.category.rawValue
         }
+        if lhs.recovery.rawValue != rhs.recovery.rawValue {
+            return lhs.recovery.rawValue < rhs.recovery.rawValue
+        }
+        return !lhs.retryable && rhs.retryable
     }
 
     private static func reducedStatus(
