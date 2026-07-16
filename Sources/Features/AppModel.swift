@@ -631,7 +631,23 @@ public final class AppModel: ObservableObject {
             setTrashSentinel(enabled: Self.trashSentinelEnabled)
         }
         refreshMetrics()
-        NotificationCenter.default.addObserver(forName: .xicoDidClean, object: nil, queue: .main) { [weak self] _ in
+        NotificationCenter.default.addObserver(
+            forName: .xicoOutcomeInvalidated,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let event = notification.object as? OutcomeInvalidationEvent,
+                  event.domains.contains(.diskCapacity) else { return }
+            Task { @MainActor in self?.refreshMetrics() }
+        }
+        // Task 4 migrates the remaining live producers to typed invalidation.
+        // Keep this bridge until then so the intermediate checkpoint does not
+        // stop refreshing capacity for legacy cleaning completions.
+        NotificationCenter.default.addObserver(
+            forName: .xicoDidClean,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
             Task { @MainActor in self?.refreshMetrics() }
         }
         // 用户去系统设置授予「完全磁盘访问」/ 批准助手 / 导入许可证后回到 App，

@@ -245,6 +245,21 @@ public enum HistoryUpdateResult: Equatable, Sendable {
     case rejected(code: String)
 }
 
+public protocol OutcomeHistoryWriting: Sendable {
+    func record(
+        module: String,
+        report: CleaningReport,
+        date: Date
+    ) -> HistoryRecordResult
+    func record(
+        module: String,
+        result: OperationResult<ShredderPayload>,
+        date: Date
+    ) -> HistoryRecordResult
+    func remove(id: UUID) -> HistoryUpdateResult
+    func updateRestorable(id: UUID, to: [RestorableItem]) -> HistoryUpdateResult
+}
+
 public enum HistoryReloadResult: Equatable, Sendable {
     case writable
     case degraded(code: String)
@@ -1314,7 +1329,7 @@ private struct ValidatedHistoryRecordCandidate: Sendable {
     let record: CleaningRecord
 }
 
-public final class HistoryStore: @unchecked Sendable {
+public final class HistoryStore: OutcomeHistoryWriting, @unchecked Sendable {
     private let readLock = NSLock()
     private let transactionLock = NSLock()
     private let persistence: any HistoryPersistence
@@ -1371,6 +1386,26 @@ public final class HistoryStore: @unchecked Sendable {
         case let .success(value): candidate = value
         case let .failure(code): return .rejected(code: code)
         }
+        return record(candidate)
+    }
+
+    @discardableResult
+    public func record(
+        module: String,
+        result: OperationResult<ShredderPayload>,
+        date: Date = Date()
+    ) -> HistoryRecordResult {
+        let candidate: ValidatedHistoryRecordCandidate
+        switch Self.makeTypedCandidate(module: module, result: result, date: date) {
+        case let .success(value): candidate = value
+        case let .failure(code): return .rejected(code: code)
+        }
+        return record(candidate)
+    }
+
+    private func record(
+        _ candidate: ValidatedHistoryRecordCandidate
+    ) -> HistoryRecordResult {
         let operationID = candidate.record.operationID
         let execution = executeMutation(kind: .record) { records in
             if let operationID,
@@ -1759,17 +1794,8 @@ public final class HistoryStore: @unchecked Sendable {
         report: CleaningReport,
         date: Date
     ) -> HistoryCodeResult<ValidatedHistoryRecordCandidate> {
-        guard module.utf8.count <= HistoryArchiveLimits.maximumModuleUTF8Bytes,
-              report.operation.kind.rawValue.utf8.count
-                <= HistoryArchiveLimits.maximumKindUTF8Bytes,
-              report.items.count <= HistoryArchiveLimits.maximumItemFactsPerRecord,
-              report.operation.issues.count <= HistoryArchiveLimits.maximumIssuesPerOperation else {
+        guard report.items.count <= HistoryArchiveLimits.maximumItemFactsPerRecord else {
             return .failure("history.archive.limitExceeded")
-        }
-        if containsPathMetadata(module)
-            || containsPathMetadata(report.operation.kind.rawValue)
-            || report.operation.issues.contains(where: issueContainsPathMetadata) {
-            return .failure("history.privacy.pathMetadata")
         }
         let facts = report.items.map {
             HistoryItemFact(
@@ -1780,13 +1806,71 @@ public final class HistoryStore: @unchecked Sendable {
                 affectedBytes: $0.reclaimedBytes,
                 receipt: $0.restorable)
         }
+        return makeTypedCandidate(
+            module: module,
+            operation: report.operation,
+            facts: facts,
+            reportedReclaimedBytes: report.reclaimedBytes,
+            reportedRemovedCount: report.removedCount,
+            date: date)
+    }
+
+    private static func makeTypedCandidate(
+        module: String,
+        result: OperationResult<ShredderPayload>,
+        date: Date
+    ) -> HistoryCodeResult<ValidatedHistoryRecordCandidate> {
+        guard result.outcome.kind == .shred else {
+            return .failure("history.operation.invalidFacts")
+        }
+        guard result.payload.items.count <= HistoryArchiveLimits.maximumItemFactsPerRecord else {
+            return .failure("history.archive.limitExceeded")
+        }
+        let facts = result.payload.items.map {
+            HistoryItemFact(
+                requestID: $0.requestID,
+                intent: .permanent,
+                disposition: $0.disposition,
+                mutation: $0.mutation,
+                affectedBytes: $0.freedBytes,
+                receipt: nil)
+        }
+        return makeTypedCandidate(
+            module: module,
+            operation: result.outcome,
+            facts: facts,
+            reportedReclaimedBytes: result.payload.freedBytes,
+            reportedRemovedCount: result.outcome.counts.succeeded,
+            date: date)
+    }
+
+    private static func makeTypedCandidate(
+        module: String,
+        operation: OperationOutcome,
+        facts: [HistoryItemFact],
+        reportedReclaimedBytes: Int64,
+        reportedRemovedCount: Int,
+        date: Date
+    ) -> HistoryCodeResult<ValidatedHistoryRecordCandidate> {
+        guard module.utf8.count <= HistoryArchiveLimits.maximumModuleUTF8Bytes,
+              operation.kind.rawValue.utf8.count
+                <= HistoryArchiveLimits.maximumKindUTF8Bytes,
+              facts.count <= HistoryArchiveLimits.maximumItemFactsPerRecord,
+              operation.issues.count <= HistoryArchiveLimits.maximumIssuesPerOperation else {
+            return .failure("history.archive.limitExceeded")
+        }
+        if containsPathMetadata(module)
+            || containsPathMetadata(operation.kind.rawValue)
+            || operation.issues.contains(where: issueContainsPathMetadata) {
+            return .failure("history.privacy.pathMetadata")
+        }
         let requestIDs = facts.map { $0.requestID.uuidString }
         guard Set(requestIDs).count == requestIDs.count,
               !requestIDs.isEmpty else {
             return .failure("history.operation.invalidFacts")
         }
         let requestSet = Set(requestIDs)
-        let allIssues = report.operation.issues + facts.compactMap {
+        let allIssues = operation.issues + facts.compactMap {
             switch $0.disposition {
             case let .skipped(issue), let .failed(issue): issue
             case let .cancelled(issue): issue
@@ -1829,9 +1913,9 @@ public final class HistoryStore: @unchecked Sendable {
         let reduced: OperationOutcome
         do {
             reduced = try OperationOutcomeReducer.reduce(
-                id: report.operation.id,
-                parentID: report.operation.parentID,
-                kind: report.operation.kind,
+                id: operation.id,
+                parentID: operation.parentID,
+                kind: operation.kind,
                 requestedSubjectIDs: requestIDs,
                 itemOutcomes: facts.map {
                     OperationItemOutcome(
@@ -1840,29 +1924,29 @@ public final class HistoryStore: @unchecked Sendable {
                         mutation: $0.mutation,
                         affectedBytes: $0.affectedBytes)
                 },
-                cancellationAccepted: report.operation.status == .cancelled,
-                startedAt: report.operation.startedAt,
-                finishedAt: report.operation.finishedAt)
+                cancellationAccepted: operation.status == .cancelled,
+                startedAt: operation.startedAt,
+                finishedAt: operation.finishedAt)
         } catch {
             return .failure("history.operation.invalidFacts")
         }
-        guard reduced.id == report.operation.id,
-              reduced.parentID == report.operation.parentID,
-              reduced.kind == report.operation.kind,
-              reduced.status == report.operation.status,
-              reduced.counts == report.operation.counts,
-              reduced.startedAt == report.operation.startedAt,
-              reduced.finishedAt == report.operation.finishedAt,
-              reduced.issues == report.operation.issues,
-              reduced.mutation == report.operation.mutation,
-              report.removedCount == report.operation.counts.succeeded else {
+        guard reduced.id == operation.id,
+              reduced.parentID == operation.parentID,
+              reduced.kind == operation.kind,
+              reduced.status == operation.status,
+              reduced.counts == operation.counts,
+              reduced.startedAt == operation.startedAt,
+              reduced.finishedAt == operation.finishedAt,
+              reduced.issues == operation.issues,
+              reduced.mutation == operation.mutation,
+              reportedRemovedCount == operation.counts.succeeded else {
             return .failure("history.operation.invalidFacts")
         }
         let reclaimed = facts.reduce(Int64(0)) { total, fact in
             guard fact.disposition == .succeeded else { return total }
             return saturatingAdd(total, fact.affectedBytes)
         }
-        guard reclaimed == report.reclaimedBytes else {
+        guard reclaimed == reportedReclaimedBytes else {
             return .failure("history.operation.invalidFacts")
         }
         let record = CleaningRecord(
@@ -1870,19 +1954,19 @@ public final class HistoryStore: @unchecked Sendable {
             date: date,
             module: module,
             reclaimedBytes: reclaimed,
-            removedCount: report.operation.counts.succeeded,
+            removedCount: operation.counts.succeeded,
             restorable: receipts,
             schemaVersion: 1,
-            operationID: report.operation.id,
-            parentOperationID: report.operation.parentID,
-            operationKind: report.operation.kind,
-            outcomeStatus: HistoryOutcomeStatus(report.operation.status),
-            mutation: report.operation.mutation,
-            counts: report.operation.counts,
+            operationID: operation.id,
+            parentOperationID: operation.parentID,
+            operationKind: operation.kind,
+            outcomeStatus: HistoryOutcomeStatus(operation.status),
+            mutation: operation.mutation,
+            counts: operation.counts,
             itemFacts: facts,
-            startedAt: report.operation.startedAt,
-            finishedAt: report.operation.finishedAt,
-            issues: report.operation.issues,
+            startedAt: operation.startedAt,
+            finishedAt: operation.finishedAt,
+            issues: operation.issues,
             isTrustedForAggregates: true)
         return .success(ValidatedHistoryRecordCandidate(record: record))
     }

@@ -2001,6 +2001,230 @@ final class HistoryStoreTests: XCTestCase {
             .recent(1).first?.outcomeStatus, .cancelled)
     }
 
+    func testShredderPayloadHistoryPersistsPermanentFactsWithoutURLsOrReceipts() throws {
+        let succeededID = UUID()
+        let failedID = UUID()
+        let failure = OperationIssue(
+            code: "shred.test.failed",
+            category: .io,
+            subjectID: failedID.uuidString,
+            recovery: .retry,
+            retryable: true)
+        let items = [
+            ShredderItemResult(
+                requestID: succeededID,
+                url: URL(fileURLWithPath: "/Users/private/Documents/secret.txt"),
+                disposition: .succeeded,
+                mutation: .changed,
+                freedBytes: 17),
+            ShredderItemResult(
+                requestID: failedID,
+                url: URL(fileURLWithPath: "/Users/private/Documents/failed.txt"),
+                disposition: .failed(failure),
+                mutation: .possiblyChanged,
+                freedBytes: 0)
+        ]
+        let payload = ShredderPayload(items: items)
+        let operation = try OperationOutcomeReducer.reduce(
+            id: fixedOperationID,
+            kind: .shred,
+            requestedSubjectIDs: items.map { $0.requestID.uuidString },
+            itemOutcomes: items.map {
+                OperationItemOutcome(
+                    subjectID: $0.requestID.uuidString,
+                    disposition: $0.disposition,
+                    mutation: $0.mutation,
+                    affectedBytes: $0.freedBytes)
+            },
+            cancellationAccepted: false,
+            startedAt: Date(timeIntervalSince1970: 100),
+            finishedAt: Date(timeIntervalSince1970: 101))
+        let result = OperationResult(outcome: operation, payload: payload)
+        let persistence = ScriptedHistoryPersistence()
+        let store = HistoryStore(directory: tmpDir, persistence: persistence)
+
+        let first = store.record(module: "shred", result: result, date: fixedRecordDate)
+        let insertedID = try insertedRecordID(first)
+        let second = store.record(module: "shred", result: result, date: fixedRecordDate)
+
+        XCTAssertEqual(second, .alreadyRecorded(recordID: insertedID))
+        XCTAssertEqual(payload.freedBytes, 17)
+        let record = try XCTUnwrap(store.recent(1).first)
+        XCTAssertEqual(record.operationKind, .shred)
+        XCTAssertEqual(record.outcomeStatus, .partial)
+        XCTAssertEqual(record.mutation, .possiblyChanged)
+        XCTAssertEqual(record.reclaimedBytes, 17)
+        XCTAssertEqual(record.removedCount, 1)
+        XCTAssertEqual(record.itemFacts.map(\.intent), [.permanent, .permanent])
+        XCTAssertTrue(record.restorable.isEmpty)
+        XCTAssertTrue(record.itemFacts.allSatisfy { $0.receipt == nil })
+        XCTAssertEqual(persistence.commitCount, 1)
+        let archive = String(
+            decoding: try XCTUnwrap(persistence.committedPayloads.last),
+            as: UTF8.self)
+        XCTAssertFalse(archive.contains("/Users/private"))
+        XCTAssertFalse(archive.contains("secret.txt"))
+        XCTAssertFalse(archive.contains("failed.txt"))
+    }
+
+    func testShredderPayloadWithoutMutationIsNotRecorded() throws {
+        let item = ShredderItemResult(
+            requestID: UUID(),
+            url: URL(fileURLWithPath: "/Users/private/Documents/already-gone.txt"),
+            disposition: .unchanged,
+            mutation: .none,
+            freedBytes: 0)
+        let payload = ShredderPayload(items: [item])
+        let operation = try OperationOutcomeReducer.reduce(
+            kind: .shred,
+            requestedSubjectIDs: [item.requestID.uuidString],
+            itemOutcomes: [OperationItemOutcome(
+                subjectID: item.requestID.uuidString,
+                disposition: item.disposition,
+                mutation: item.mutation,
+                affectedBytes: item.freedBytes)],
+            cancellationAccepted: false,
+            startedAt: Date(timeIntervalSince1970: 100),
+            finishedAt: Date(timeIntervalSince1970: 101))
+        let persistence = ScriptedHistoryPersistence()
+        let store = HistoryStore(directory: tmpDir, persistence: persistence)
+
+        let result = store.record(
+            module: "shred-none",
+            result: OperationResult(outcome: operation, payload: payload),
+            date: fixedRecordDate)
+
+        XCTAssertEqual(result, .notRecordedNoChanges)
+        XCTAssertEqual(store.totalHistoryRecords, 0)
+        XCTAssertEqual(persistence.commitCount, 0)
+    }
+
+    func testShredderPayloadRejectsNonShredKindAndMismatchedOutcomeFacts() throws {
+        let requestID = UUID()
+        let item = ShredderItemResult(
+            requestID: requestID,
+            url: URL(fileURLWithPath: "/Users/private/Documents/rejected.txt"),
+            disposition: .succeeded,
+            mutation: .changed,
+            freedBytes: 17)
+        let payload = ShredderPayload(items: [item])
+
+        for (kind, disposition, mutation, outcomeBytes, label) in [
+            (OperationKind.cleaningExecute, OperationDisposition.succeeded,
+             OperationMutationFact.changed, Int64(17), "kind"),
+            (OperationKind.shred, OperationDisposition.unchanged,
+             OperationMutationFact.none, Int64(0), "facts")
+        ] {
+            let operation = try OperationOutcomeReducer.reduce(
+                kind: kind,
+                requestedSubjectIDs: [requestID.uuidString],
+                itemOutcomes: [OperationItemOutcome(
+                    subjectID: requestID.uuidString,
+                    disposition: disposition,
+                    mutation: mutation,
+                    affectedBytes: outcomeBytes)],
+                cancellationAccepted: false,
+                startedAt: Date(timeIntervalSince1970: 100),
+                finishedAt: Date(timeIntervalSince1970: 101))
+            let persistence = ScriptedHistoryPersistence()
+            let store = HistoryStore(directory: tmpDir, persistence: persistence)
+
+            XCTAssertEqual(
+                store.record(
+                    module: "shred-rejected-\(label)",
+                    result: OperationResult(outcome: operation, payload: payload),
+                    date: fixedRecordDate),
+                .rejected(code: "history.operation.invalidFacts"),
+                label)
+            XCTAssertEqual(persistence.commitCount, 0, label)
+        }
+    }
+
+    func testShredderPayloadSameOperationIDDifferentFactsConflicts() throws {
+        let requestID = UUID()
+        func result(bytes: Int64) throws -> OperationResult<ShredderPayload> {
+            let item = ShredderItemResult(
+                requestID: requestID,
+                url: URL(fileURLWithPath: "/Users/private/Documents/conflict.txt"),
+                disposition: .succeeded,
+                mutation: .changed,
+                freedBytes: bytes)
+            let payload = ShredderPayload(items: [item])
+            let operation = try OperationOutcomeReducer.reduce(
+                id: fixedOperationID,
+                kind: .shred,
+                requestedSubjectIDs: [requestID.uuidString],
+                itemOutcomes: [OperationItemOutcome(
+                    subjectID: requestID.uuidString,
+                    disposition: item.disposition,
+                    mutation: item.mutation,
+                    affectedBytes: item.freedBytes)],
+                cancellationAccepted: false,
+                startedAt: Date(timeIntervalSince1970: 100),
+                finishedAt: Date(timeIntervalSince1970: 101))
+            return OperationResult(outcome: operation, payload: payload)
+        }
+        let persistence = ScriptedHistoryPersistence()
+        let store = HistoryStore(directory: tmpDir, persistence: persistence)
+
+        _ = try insertedRecordID(store.record(
+            module: "shred-conflict", result: result(bytes: 17), date: fixedRecordDate))
+        let conflict = store.record(
+            module: "shred-conflict", result: try result(bytes: 18), date: fixedRecordDate)
+
+        XCTAssertEqual(conflict, .rejected(code: "history.operation.conflict"))
+        XCTAssertEqual(persistence.commitCount, 1)
+        XCTAssertEqual(store.recent(1).first?.reclaimedBytes, 17)
+    }
+
+    func testCancelledShredderPayloadPersistsCompletedFacts() throws {
+        let completedID = UUID()
+        let cancelledID = UUID()
+        let items = [
+            ShredderItemResult(
+                requestID: completedID,
+                url: URL(fileURLWithPath: "/Users/private/Documents/completed.txt"),
+                disposition: .succeeded,
+                mutation: .changed,
+                freedBytes: 9),
+            ShredderItemResult(
+                requestID: cancelledID,
+                url: URL(fileURLWithPath: "/Users/private/Documents/cancelled.txt"),
+                disposition: .cancelled(nil),
+                mutation: .none,
+                freedBytes: 0)
+        ]
+        let payload = ShredderPayload(items: items)
+        let operation = try OperationOutcomeReducer.reduce(
+            kind: .shred,
+            requestedSubjectIDs: items.map { $0.requestID.uuidString },
+            itemOutcomes: items.map {
+                OperationItemOutcome(
+                    subjectID: $0.requestID.uuidString,
+                    disposition: $0.disposition,
+                    mutation: $0.mutation,
+                    affectedBytes: $0.freedBytes)
+            },
+            cancellationAccepted: true,
+            startedAt: Date(timeIntervalSince1970: 100),
+            finishedAt: Date(timeIntervalSince1970: 101))
+        let store = HistoryStore(directory: tmpDir)
+
+        _ = try insertedRecordID(store.record(
+            module: "shred-cancelled",
+            result: OperationResult(outcome: operation, payload: payload),
+            date: fixedRecordDate))
+
+        let record = try XCTUnwrap(store.recent(1).first)
+        XCTAssertEqual(record.outcomeStatus, .cancelled)
+        XCTAssertEqual(record.mutation, .changed)
+        XCTAssertEqual(record.counts?.succeeded, 1)
+        XCTAssertEqual(record.counts?.cancelled, 1)
+        XCTAssertEqual(record.reclaimedBytes, 9)
+        XCTAssertEqual(record.removedCount, 1)
+        XCTAssertTrue(record.restorable.isEmpty)
+    }
+
     func testSkippedAndCancelledIssuesRoundTripFromTypedAndRawRecords() throws {
         for (label, specialDisposition, cancellationAccepted, expectedStatus) in [
             ("skipped",
@@ -3925,6 +4149,7 @@ final class HistoryStoreTests: XCTestCase {
 
         func consume(store: HistoryStore,
                      report: CleaningReport,
+                     shredder: OperationResult<ShredderPayload>,
                      record: CleaningRecord,
                      fact: HistoryItemFact,
                      receipt: RestorableItem) {
@@ -3934,6 +4159,12 @@ final class HistoryStoreTests: XCTestCase {
                 removedCount: 1)
             let typedResult: HistoryRecordResult = store.record(
                 module: "external-typed", report: report)
+            let writer: any OutcomeHistoryWriting = store
+            let shredResult: HistoryRecordResult = writer.record(
+                module: "external-shred", result: shredder, date: Date())
+            let writerRemoveResult: HistoryUpdateResult = writer.remove(id: UUID())
+            let writerUpdateResult: HistoryUpdateResult = writer.updateRestorable(
+                id: UUID(), to: [receipt])
             let removeResult: HistoryUpdateResult = store.remove(id: UUID())
             let updateResult: HistoryUpdateResult = store.updateRestorable(
                 id: UUID(), to: [receipt])
@@ -3942,6 +4173,9 @@ final class HistoryStoreTests: XCTestCase {
             let reloadResult: HistoryReloadResult = store.reload()
             _ = scalarID
             _ = typedResult
+            _ = shredResult
+            _ = writerRemoveResult
+            _ = writerUpdateResult
             _ = removeResult
             _ = updateResult
             _ = clearReceiptResult
@@ -3974,6 +4208,13 @@ final class HistoryStoreTests: XCTestCase {
             _ = fact.mutation
             _ = fact.affectedBytes
             _ = fact.receipt
+            _ = shredder.payload.items
+            _ = shredder.payload.freedBytes
+            _ = shredder.payload.items.first?.requestID
+            _ = shredder.payload.items.first?.url
+            _ = shredder.payload.items.first?.disposition
+            _ = shredder.payload.items.first?.mutation
+            _ = shredder.payload.items.first?.freedBytes
         }
         """, warningsAsErrors: true)
 
@@ -4040,6 +4281,20 @@ final class HistoryStoreTests: XCTestCase {
              _ = HistoryItemFact(requestID: UUID(), intent: .trash,
                                  disposition: .succeeded, mutation: .changed,
                                  affectedBytes: 1, receipt: nil)
+             """),
+            ("shred-item-init", "ShredderItemResult", inaccessibleOrUnavailable, """
+             import Foundation
+             import Domain
+             import Infrastructure
+             _ = ShredderItemResult(requestID: UUID(),
+                                     url: URL(fileURLWithPath: "/tmp/forged"),
+                                     disposition: .succeeded,
+                                     mutation: .changed,
+                                     freedBytes: 1)
+             """),
+            ("shred-payload-init", "ShredderPayload", inaccessibleOrUnavailable, """
+             import Infrastructure
+             _ = ShredderPayload(items: [])
              """),
             ("operation-dto", "HistoryOperationDTO", notFound, """
              import Infrastructure

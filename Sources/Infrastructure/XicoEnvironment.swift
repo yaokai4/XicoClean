@@ -21,6 +21,9 @@ public final class XicoEnvironment: @unchecked Sendable {
     public let liveMetrics: LiveMetricsSampler
     public let helper: HelperProxy
     public let history: HistoryStore
+    public let historySink: any OutcomeHistoryWriting
+    public let cleaningNotifier: any CleaningNotificationSending
+    public let invalidationSink: any OutcomeInvalidationPublishing
     public let license: LicenseService
     public let ignoreList: IgnoreListStore
     public let hardware: HardwareProfileService
@@ -50,7 +53,11 @@ public final class XicoEnvironment: @unchecked Sendable {
         safety: SafetyEngine,
         definitions: DefinitionsLibrary,
         definitionsUpdater: DefinitionsUpdateService? = nil,
-        license: LicenseService? = nil
+        license: LicenseService? = nil,
+        history: HistoryStore? = nil,
+        historySink: (any OutcomeHistoryWriting)? = nil,
+        cleaningNotifier: (any CleaningNotificationSending)? = nil,
+        invalidationSink: (any OutcomeInvalidationPublishing)? = nil
     ) {
         self.fs = fs
         self.safety = safety
@@ -72,7 +79,11 @@ public final class XicoEnvironment: @unchecked Sendable {
         self.optimization = OptimizationService()
         self.maintenanceRunner = MaintenanceRunner()
         self.liveMetrics = LiveMetricsSampler(fs: fs)
-        self.history = HistoryStore()
+        let resolvedHistory = history ?? HistoryStore()
+        self.history = resolvedHistory
+        self.historySink = historySink ?? resolvedHistory
+        self.cleaningNotifier = cleaningNotifier ?? Notifier()
+        self.invalidationSink = invalidationSink ?? OutcomeInvalidationCenter()
         self.license = license ?? LicenseService.live()
         self.ignoreList = IgnoreListStore()
         self.hardware = HardwareProfileService()
