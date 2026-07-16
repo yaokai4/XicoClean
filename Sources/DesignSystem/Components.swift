@@ -131,45 +131,50 @@ public struct XPrimaryButtonStyle: ButtonStyle {
         let compact: Bool
         @State private var hover = false
         @Environment(\.isFocused) private var focused
+        @Environment(\.isEnabled) private var environmentEnabled
+        @Environment(\.colorScheme) private var scheme
 
         var body: some View {
+            let active = enabled && environmentEnabled
             configuration.label
                 .font(large ? XFont.title : (compact ? XFont.bodyEmphasis : XFont.headline))
                 // 禁用态背景是浅色 surfaceAlt，白字会消失——改用次要文字色保证浅色模式可读。
                 // 用 textSecondary（而非更淡的 textTertiary）：禁用标签仍是「载重文字」，
                 // 需在 surfaceAlt 上稳过 WCAG AA（≥4.5:1）；textTertiary 贴近下限，留给纯装饰性说明。
-                .foregroundStyle(enabled ? AnyShapeStyle(XColor.onAccent) : AnyShapeStyle(XColor.textSecondary))
+                .foregroundStyle(active ? AnyShapeStyle(XColor.onAccent) : AnyShapeStyle(XColor.textSecondary))
                 .padding(.horizontal, large ? XSpacing.xxl : (compact ? XSpacing.m : XSpacing.xl))
                 .padding(.vertical, large ? XSpacing.l : (compact ? XSpacing.s : XSpacing.m))
-                .background(
-                    enabled ? AnyShapeStyle(XColor.brandGradient) : AnyShapeStyle(XColor.surfaceAlt),
-                    in: Capsule()
-                )
+                .background {
+                    Capsule().fill(active ? AnyShapeStyle(XColor.brandGradient) : AnyShapeStyle(XColor.surfaceAlt))
+                    // 各主题在暗色模式会主动提亮渐变；叠一层统一深色釉面，保证白色按钮文字跨主题可读，
+                    // 同时让主操作从“荧光糖果”收成更稳的宝石质感。
+                    if active { Capsule().fill(Color.black.opacity(scheme == .dark ? 0.56 : 0.38)) }
+                }
                 // 渐变胶囊叠 grain（docs/16 P0-3 收尾）：主按钮常是一屏的渐变主角，微粒把
                 // 「渲染图平滑」压成哑光实物感，顺手消灭暗色 banding。裁进胶囊，角外不漏。
                 .overlay {
-                    if enabled {
+                    if active {
                         XGrain().opacity(0.25).clipShape(Capsule())
                     }
                 }
                 .overlay(
                     // 顶部高光收敛：更哑光、少「塑料光泽」，像原生 macOS 按钮而非糖果
                     Capsule()
-                        .fill(LinearGradient(colors: [.white.opacity(enabled ? 0.13 : 0), .clear],
+                        .fill(LinearGradient(colors: [.white.opacity(active ? 0.13 : 0), .clear],
                                              startPoint: .top, endPoint: .center))
                         .allowsHitTesting(false)
                 )
-                .overlay(Capsule().strokeBorder(.white.opacity(enabled ? 0.14 : 0), lineWidth: 1))
+                .overlay(Capsule().strokeBorder(active ? .white.opacity(0.14) : XColor.border, lineWidth: 1))
                 // 键盘焦点环：2px 品牌描边（与侧栏焦点环同语言）。
                 .overlay(Capsule().strokeBorder(focused ? XColor.brand : .clear, lineWidth: 2).padding(-3))
-                .brightness(hover && enabled && !configuration.isPressed ? 0.05 : 0)
-                .opacity(configuration.isPressed ? 0.85 : 1)
-                .scaleEffect(configuration.isPressed ? 0.97 : 1)
-                .shadow(color: enabled ? XColor.brand.opacity(hover ? 0.24 : 0.16) : .clear,
+                .brightness(hover && active && !configuration.isPressed ? 0.05 : 0)
+                .opacity(active ? (configuration.isPressed ? 0.85 : 1) : 0.72)
+                .scaleEffect(active && configuration.isPressed ? 0.97 : 1)
+                .shadow(color: active ? XColor.brand.opacity(hover ? 0.24 : 0.16) : .clear,
                         radius: configuration.isPressed ? 4 : (hover ? 10 : 8), y: 4)
                 .animation(XMotion.snappy, value: configuration.isPressed)
                 .animation(XMotion.hover, value: hover)
-                .onHover { hover = $0 }
+                .onHover { hover = active && $0 }
         }
     }
 }
@@ -186,21 +191,22 @@ public struct XSecondaryButtonStyle: ButtonStyle {
         let compact: Bool
         @State private var hover = false
         @Environment(\.isFocused) private var focused
+        @Environment(\.isEnabled) private var enabled
 
         var body: some View {
             configuration.label
                 .font(compact ? XFont.bodyEmphasis : XFont.headline)
-                .foregroundStyle(XColor.textPrimary)
+                .foregroundStyle(enabled ? XColor.textPrimary : XColor.textTertiary)
                 .padding(.horizontal, compact ? XSpacing.m : XSpacing.xl)
                 .padding(.vertical, compact ? XSpacing.s : XSpacing.m)
-                .background(hover ? XColor.surfaceHover : XColor.surfaceAlt, in: Capsule())
+                .background(hover && enabled ? XColor.surfaceHover : XColor.surfaceAlt, in: Capsule())
                 .overlay(Capsule().strokeBorder(XColor.border, lineWidth: 1))
                 .overlay(Capsule().strokeBorder(focused ? XColor.brand : .clear, lineWidth: 2).padding(-3))
-                .opacity(configuration.isPressed ? 0.8 : 1)
-                .scaleEffect(configuration.isPressed ? 0.97 : 1)
+                .opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.62)
+                .scaleEffect(enabled && configuration.isPressed ? 0.97 : 1)
                 .animation(XMotion.snappy, value: configuration.isPressed)
                 .animation(XMotion.hover, value: hover)
-                .onHover { hover = $0 }
+                .onHover { hover = enabled && $0 }
         }
     }
 }
@@ -219,26 +225,100 @@ public struct XDestructiveButtonStyle: ButtonStyle {
         let compact: Bool
         @State private var hover = false
         @Environment(\.isFocused) private var focused
+        @Environment(\.isEnabled) private var enabled
+        @Environment(\.colorScheme) private var scheme
 
         var body: some View {
             configuration.label
                 .font(compact ? XFont.bodyEmphasis : XFont.headline)
-                .foregroundStyle(XColor.onAccent)
+                .foregroundStyle(enabled ? XColor.onAccent : XColor.textSecondary)
                 .padding(.horizontal, compact ? XSpacing.m : XSpacing.xl)
                 .padding(.vertical, compact ? XSpacing.s : XSpacing.m)
-                .background(
-                    LinearGradient(colors: [XColor.danger, XColor.accentPink],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing),
-                    in: Capsule()
-                )
+                .background {
+                    Capsule().fill(
+                        enabled
+                            ? AnyShapeStyle(LinearGradient(colors: [XColor.danger, XColor.accentPink],
+                                                           startPoint: .topLeading, endPoint: .bottomTrailing))
+                            : AnyShapeStyle(XColor.surfaceAlt))
+                    if enabled { Capsule().fill(Color.black.opacity(scheme == .dark ? 0.32 : 0.18)) }
+                }
                 .overlay(Capsule().strokeBorder(focused ? XColor.danger : .clear, lineWidth: 2).padding(-3))
-                .brightness(hover && !configuration.isPressed ? 0.05 : 0)
-                .opacity(configuration.isPressed ? 0.85 : 1)
-                .scaleEffect(configuration.isPressed ? 0.97 : 1)
-                .shadow(color: XColor.danger.opacity(hover ? 0.28 : 0.20), radius: configuration.isPressed ? 4 : 8, y: 4)
+                .brightness(hover && enabled && !configuration.isPressed ? 0.05 : 0)
+                .opacity(enabled ? (configuration.isPressed ? 0.85 : 1) : 0.72)
+                .scaleEffect(enabled && configuration.isPressed ? 0.97 : 1)
+                .shadow(color: enabled ? XColor.danger.opacity(hover ? 0.28 : 0.20) : .clear,
+                        radius: configuration.isPressed ? 4 : 8, y: 4)
                 .animation(XMotion.snappy, value: configuration.isPressed)
                 .animation(XMotion.hover, value: hover)
-                .onHover { hover = $0 }
+                .onHover { hover = enabled && $0 }
+        }
+    }
+}
+
+// MARK: - 开关
+
+/// 与主题色同步的 macOS 开关。
+///
+/// 系统 `.switch` 在离屏渲染和部分 macOS 强调色设置下会把开启态也画成中性灰，
+/// 对状态栏这种高密度设置页不够可辨。这里保留 Toggle 的原生绑定/键盘行为，
+/// 只统一轨道、焦点和悬停视觉：开启 = 当前主题品牌色，关闭 = 中性表面色。
+public struct XThemeSwitchStyle: ToggleStyle {
+    private let compact: Bool
+
+    public init(compact: Bool = false) {
+        self.compact = compact
+    }
+
+    public func makeBody(configuration: Configuration) -> some View {
+        SwitchBody(configuration: configuration, compact: compact)
+    }
+
+    private struct SwitchBody: View {
+        let configuration: ToggleStyleConfiguration
+        let compact: Bool
+        @State private var hover = false
+        @Environment(\.isEnabled) private var enabled
+        @Environment(\.isFocused) private var focused
+
+        private var width: CGFloat { compact ? 34 : 40 }
+        private var height: CGFloat { compact ? 19 : 22 }
+        private var knob: CGFloat { height - 4 }
+
+        var body: some View {
+            Button {
+                guard enabled else { return }
+                withAnimation(XMotion.snappy) {
+                    configuration.isOn.toggle()
+                }
+            } label: {
+                ZStack(alignment: configuration.isOn ? .trailing : .leading) {
+                    Capsule(style: .continuous)
+                        .fill(configuration.isOn ? XColor.brand : XColor.surfaceAlt)
+                    Capsule(style: .continuous)
+                        .strokeBorder(configuration.isOn
+                                      ? Color.white.opacity(0.18)
+                                      : XColor.border.opacity(0.95), lineWidth: 1)
+                    Circle()
+                        .fill(configuration.isOn ? Color.white : XColor.textTertiary.opacity(0.82))
+                        .frame(width: knob, height: knob)
+                        .padding(2)
+                        .shadow(color: .black.opacity(configuration.isOn ? 0.24 : 0.12),
+                                radius: 2, y: 1)
+                }
+                .frame(width: width, height: height)
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(focused ? XColor.brand : .clear, lineWidth: 2)
+                        .padding(-3)
+                )
+                .brightness(hover && enabled ? 0.055 : 0)
+                .opacity(enabled ? 1 : 0.52)
+                .contentShape(Capsule(style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .onHover { hover = enabled && $0 }
+            .animation(XMotion.hover, value: hover)
+            .animation(XMotion.snappy, value: configuration.isOn)
         }
     }
 }
@@ -402,6 +482,50 @@ public struct XDiskBar: View {
             }
         }
     }
+}
+
+/// 任务进度条（下载器等用）——与 `XDiskBar` 区分：`XDiskBar` 按占用率走「绿→琥珀→红」磁盘语义，
+/// 会把「下载进度」误染成红色像报错；本组件用**品牌渐变**（或指定色），完成时可切绿，probing 走不定态流光。
+public struct XProgressBar: View {
+    let progress: Double
+    var height: CGFloat
+    var colors: [Color]
+    var indeterminate: Bool
+
+    public init(progress: Double, height: CGFloat = 6,
+                colors: [Color] = XColor.brandGradientColors, indeterminate: Bool = false) {
+        self.progress = progress
+        self.height = height
+        self.colors = colors.isEmpty ? XColor.brandGradientColors : colors
+        self.indeterminate = indeterminate
+    }
+
+    public var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(XColor.surfaceAlt)
+                if indeterminate {
+                    // 不定态：一段流光在轨道上来回扫，用于「解析中」。
+                    Capsule()
+                        .fill(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(height, w * 0.32))
+                        .offset(x: indeterminatePhase ? w * 0.72 : -w * 0.04)
+                        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: indeterminatePhase)
+                        .onAppear { indeterminatePhase = true }
+                } else {
+                    Capsule()
+                        .fill(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(0, w * min(max(progress, 0), 1)))
+                        .animation(XMotion.gauge, value: progress)
+                }
+            }
+        }
+        .frame(height: height)
+        .clipShape(Capsule())
+    }
+
+    @State private var indeterminatePhase = false
 }
 
 // MARK: - 底部操作条

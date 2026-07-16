@@ -136,7 +136,8 @@ private enum ScanResultDeduper {
     private static func elevate(_ item: CleanableItem, to level: SafetyLevel) -> CleanableItem {
         CleanableItem(id: item.id, url: item.url, displayName: item.displayName,
                       detail: item.detail, size: item.size, safety: level,
-                      isSelected: false, requiresHelper: item.requiresHelper, note: item.note)
+                      isSelected: false, requiresHelper: item.requiresHelper, note: item.note,
+                      isInformational: item.isInformational, assessment: item.assessment)
     }
 
     private static func level(forRank rank: Int) -> SafetyLevel {

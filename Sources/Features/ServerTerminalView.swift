@@ -5,8 +5,9 @@ import Infrastructure
 import DesignSystem
 import SwiftTerm
 
-/// 终端标签：macOS 15+ 用真正的交互式 SwiftTerm PTY（vim/htop/top 都能跑）；macOS 14 回退到命令控制台。
-/// 打开终端会另起一条独立 SSH 连接——需授权（门禁）。
+/// 终端标签：真正的交互式终端（vim / htop / top 都能跑）。用 SwiftTerm 的 `LocalProcessTerminalView`
+/// 直接托管本地 `/usr/bin/ssh -tt` 进程——原生 rsa-sha2、任意 `.pem` 私钥、任意现代密钥交换，
+/// 且不再需要 macOS 15（旧实现依赖 Citadel `withPTY`）。打开终端会另起一条独立 SSH 会话——需授权（门禁）。
 struct ServerTerminalTab: View {
     @ObservedObject var vm: ServersViewModel
     let host: ServerHost
@@ -16,17 +17,12 @@ struct ServerTerminalTab: View {
     @State private var opened = false
 
     var body: some View {
-        if #available(macOS 15.0, *) {
-            if opened {
-                InteractiveTerminalView(host: host, credential: vm.credential(for: host))
-                    .id(host.id)
-                    .background(Color.black.opacity(0.92))
-            } else {
-                terminalStart
-            }
+        if opened {
+            InteractiveTerminalView(host: host, credential: vm.credential(for: host))
+                .id(host.id)
+                .background(Color.black.opacity(0.92))
         } else {
-            // macOS 14：无 withPTY，回退命令控制台（需监控连接在线）。
-            ServerConsoleView(vm: vm, host: host, engine: engine, broadcast: $broadcast, gate: gate)
+            terminalStart
         }
     }
 
@@ -46,86 +42,66 @@ struct ServerTerminalTab: View {
     }
 }
 
-/// 把非 Sendable 的 TerminalView 弱引用装进盒子，供 @Sendable 输出回调在主线程 feed（只在主线程访问 view）。
-private final class TerminalFeedBox: @unchecked Sendable {
-    weak var view: TerminalView?
-}
-
-@available(macOS 15.0, *)
 struct InteractiveTerminalView: NSViewRepresentable {
     let host: ServerHost
     let credential: SSHCredential?
 
-    func makeCoordinator() -> Coordinator { Coordinator(host: host, credential: credential) }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> TerminalView {
-        let tv = TerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 460), font: nil)
-        tv.terminalDelegate = context.coordinator
-        context.coordinator.attach(tv)
+    func makeNSView(context: Context) -> LocalProcessTerminalView {
+        let tv = LocalProcessTerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 460))
+        tv.processDelegate = context.coordinator
+        context.coordinator.start(on: tv, host: host, credential: credential)
         return tv
     }
 
-    func updateNSView(_ nsView: TerminalView, context: Context) {}
+    func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {}
 
-    static func dismantleNSView(_ nsView: TerminalView, coordinator: Coordinator) {
+    static func dismantleNSView(_ nsView: LocalProcessTerminalView, coordinator: Coordinator) {
         coordinator.stop()
     }
 
-    final class Coordinator: NSObject, TerminalViewDelegate {
-        private let host: ServerHost
-        private let credential: SSHCredential?
-        private let feedBox = TerminalFeedBox()
-        private var session: TerminalSession?
+    @MainActor
+    final class Coordinator: NSObject, @preconcurrency LocalProcessTerminalViewDelegate {
+        private var ctx: SSHContext?
         private var started = false
 
-        init(host: ServerHost, credential: SSHCredential?) {
-            self.host = host
-            self.credential = credential
-        }
-
-        func attach(_ tv: TerminalView) {
-            feedBox.view = tv
+        func start(on tv: LocalProcessTerminalView, host: ServerHost, credential: SSHCredential?) {
             guard !started else { return }
             started = true
-            guard let cred = credential else {
+            guard let credential else {
                 tv.feed(text: "\r\n\u{001b}[33m\(xLoc("缺少凭据：请先在主机设置中填写密码或私钥"))\u{001b}[0m\r\n")
                 return
             }
-            let box = feedBox
-            let session = TerminalSession(
-                host: host,
-                onOutput: { data in
-                    let slice = ArraySlice(data)
-                    DispatchQueue.main.async { box.view?.feed(byteArray: slice) }
-                },
-                onClosed: { reason in
-                    DispatchQueue.main.async {
-                        let msg = reason ?? "连接已关闭"
-                        box.view?.feed(text: "\r\n\u{001b}[31m[\(msg)]\u{001b}[0m\r\n")
-                    }
-                })
-            self.session = session
-            // 初始尺寸用 80×24；布局后 SwiftTerm 会立即回调 sizeChanged 校正到真实列/行。
-            session.start(credential: cred, cols: 80, rows: 24)
-        }
-
-        func stop() { session?.stop(); session = nil }
-
-        // MARK: TerminalViewDelegate
-        func send(source: TerminalView, data: ArraySlice<UInt8>) { session?.send(Data(data)) }
-        func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) { session?.resize(cols: newCols, rows: newRows) }
-        func setTerminalTitle(source: TerminalView, title: String) {}
-        func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-        func scrolled(source: TerminalView, position: Double) {}
-        func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
-        func bell(source: TerminalView) {}
-        func clipboardCopy(source: TerminalView, content: Data) {
-            if let s = String(data: content, encoding: .utf8) {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(s, forType: .string)
+            do {
+                // 专用连接（终端独占，不走 ControlMaster 复用）。
+                let context = try SSHContext(host: host, credential: credential, multiplexed: false)
+                self.ctx = context
+                let inv = context.terminalInvocation()
+                tv.feed(text: "\u{001b}[2m\(xLocF("正在连接 %@…", host.endpointLabel))\u{001b}[0m\r\n")
+                tv.startProcess(executable: inv.executable, args: inv.args, environment: inv.env)
+            } catch {
+                let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                tv.feed(text: "\r\n\u{001b}[31m[\(msg)]\u{001b}[0m\r\n")
             }
         }
-        func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
-        func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
+
+        func stop() {
+            ctx?.close()
+            ctx = nil
+        }
+
+        // MARK: LocalProcessTerminalViewDelegate
+        func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
+        func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
+        func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+        func processTerminated(source: TerminalView, exitCode: Int32?) {
+            if let tv = source as? LocalProcessTerminalView {
+                let code = exitCode ?? 0
+                let note = code == 0 ? xLoc("连接已关闭") : xLocF("连接已关闭（退出码 %d）", Int(code))
+                tv.feed(text: "\r\n\u{001b}[2m[\(note)]\u{001b}[0m\r\n")
+            }
+            stop()
+        }
     }
 }

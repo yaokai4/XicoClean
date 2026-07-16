@@ -144,6 +144,7 @@ func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
                 guard safety.verify(url, intent: .trash).isAllowed else { continue }
                 let size = fs.allocatedSize(of: url)
                 guard size > 0 else { continue }
+                guard let constraintEvidence = evaluate(def.constraints, for: url, size: size) else { continue }
                 let running = runningIDs.contains(url.lastPathComponent)
                 let oversizeLog = conservativeLog && size >= logAnomalyThreshold
                 let note: String?
@@ -165,11 +166,33 @@ func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
                 } else {
                     selected = nil
                 }
+                let confidence = def.constraints?.recommendationConfidence
+                    ?? (def.safety == .safe ? 0.99 : 0.82)
+                let evidence: [ScanEvidence] = [
+                    ScanEvidence(code: "definition-\(def.id)", kind: .signedRule,
+                                 title: "命中 Xico 清理规则 \(def.id)",
+                                 detail: def.resolvedExplanation, strength: 1),
+                    ScanEvidence(code: "path-verified", kind: .pathOwnership,
+                                 title: "路径归属与删除红线校验通过", strength: 0.98)
+                ] + constraintEvidence
                 items.append(CleanableItem(url: url, displayName: FriendlyName.resolve(url.lastPathComponent),
                                            detail: url.path, size: size, safety: def.safety,
                                            isSelected: selected,
                                            requiresHelper: def.requiresHelper,
-                                           note: note))
+                                           note: note,
+                                           assessment: FindingAssessment(
+                                            ruleID: def.id,
+                                            confidence: confidence,
+                                            evidence: evidence,
+                                            ownerBundleID: inferredBundleID(from: url),
+                                            reclaimableBytes: size,
+                                            recovery: def.constraints?.recovery
+                                                ?? (def.safety == .safe ? .regenerate : .trash),
+                                            regenerationCost: def.constraints?.regenerationCost
+                                                ?? (def.safety == .safe ? .low : .medium),
+                                            impact: def.resolvedExplanation,
+                                            provenance: "definition-library"
+                                           )))
                 runningTotal += size
                 progress(ScanProgress(message: url.lastPathComponent, bytesFound: runningTotal))
             }
@@ -194,6 +217,54 @@ func scanDefinitions(_ definitions: [CleanupDefinition], moduleID: ModuleID,
     return ScanResult(moduleID: moduleID, groups: groups)
 }
 
+/// Rule DSL 2.0 谓词求值。返回 nil 表示至少一项无法证明，必须从严跳过。
+private func evaluate(_ constraints: CleanupConstraints?, for url: URL,
+                      size: Int64, now: Date = Date()) -> [ScanEvidence]? {
+    guard let constraints else { return [] }
+    let osMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    if let minimum = constraints.minimumOSMajor, osMajor < minimum { return nil }
+    if let maximum = constraints.maximumOSMajor, osMajor > maximum { return nil }
+    if let minimum = constraints.minimumSizeBytes, size < minimum { return nil }
+    if let maximum = constraints.maximumSizeBytes, size > maximum { return nil }
+    if !constraints.fileExtensions.isEmpty {
+        let allowed = Set(constraints.fileExtensions.map { $0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) })
+        guard allowed.contains(url.pathExtension.lowercased()) else { return nil }
+    }
+
+    var evidence: [ScanEvidence] = []
+    if let minimum = constraints.minimumSizeBytes {
+        evidence.append(ScanEvidence(code: "min-size-\(minimum)", kind: .size,
+                                     title: "达到规则体积阈值",
+                                     detail: "至少 \(minimum.formattedBytes)", strength: 0.9))
+    }
+    if let days = constraints.minimumAgeDays {
+        let values = try? url.resourceValues(forKeys: [.contentAccessDateKey,
+                                                       .contentModificationDateKey])
+        guard let last = values?.contentModificationDate ?? values?.contentAccessDate,
+              now.timeIntervalSince(last) >= Double(days) * 86_400 else { return nil }
+        evidence.append(ScanEvidence(code: "min-age-\(days)", kind: .age,
+                                     title: "超过 \(days) 天未使用", strength: 0.9))
+    }
+    if !constraints.fileExtensions.isEmpty {
+        evidence.append(ScanEvidence(code: "file-extension", kind: .pathOwnership,
+                                     title: "文件类型符合规则范围", strength: 0.85))
+    }
+    return evidence
+}
+
+/// 缓存/容器目录常以 bundle id 命名；只在格式足够明确时标注归属，宁可 nil 不乱猜。
+private func inferredBundleID(from url: URL) -> String? {
+    for component in url.pathComponents.reversed() {
+        let lower = component.lowercased()
+        if lower.contains("."), !component.hasPrefix("."),
+           component.split(separator: ".").count >= 3,
+           component.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_" }) {
+            return component
+        }
+    }
+    return nil
+}
+
 /// 按「父目录」分桶后各自保留最新一份——DeviceSupport 的 iOS/watchOS/tvOS 三平台在同一条
 /// 定义里，父目录（"iOS DeviceSupport" 等）即平台边界；每个平台的最新版本都可能正在使用。
 private func markNewestKeepPerParent(_ items: inout [CleanableItem], fs: FileSystemService, note: String) {
@@ -211,7 +282,7 @@ private func markNewestKeepPerParent(_ items: inout [CleanableItem], fs: FileSys
         items[newestIdx] = CleanableItem(id: old.id, url: old.url, displayName: old.displayName,
                                          detail: old.detail, size: old.size, safety: old.safety,
                                          isSelected: false, requiresHelper: old.requiresHelper,
-                                         note: note)
+                                         note: note, assessment: old.assessment)
     }
 }
 
@@ -228,7 +299,7 @@ private func markNewestKeep(_ items: inout [CleanableItem], fs: FileSystemServic
     items[newestIdx] = CleanableItem(id: old.id, url: old.url, displayName: old.displayName,
                                      detail: old.detail, size: old.size, safety: old.safety,
                                      isSelected: false, requiresHelper: old.requiresHelper,
-                                     note: note)
+                                     note: note, assessment: old.assessment)
 }
 
 // MARK: - 系统垃圾扫描器（系统/开发者/iOS 类别）
@@ -554,6 +625,7 @@ public struct LargeFilesScanner: ScannerModule {
     private let home: URL
     private let threshold: Int64
     private let maxItems: Int
+    private let snapshotStore: ScanSnapshotStore?
 
     /// 用户可调阈值（P1）：`xico.largefiles.thresholdMB`，未设置默认 100MB。
     public static var configuredThreshold: Int64 {
@@ -567,12 +639,14 @@ public struct LargeFilesScanner: ScannerModule {
 
     public init(fs: FileSystemService, safety: SafetyEngine,
                 home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                thresholdBytes: Int64? = nil, maxItems: Int = 500) {
+                thresholdBytes: Int64? = nil, maxItems: Int = 500,
+                snapshotStore: ScanSnapshotStore? = nil) {
         self.fs = fs
         self.safety = safety
         self.home = home
         self.threshold = thresholdBytes ?? Self.configuredThreshold
         self.maxItems = maxItems
+        self.snapshotStore = snapshotStore
     }
 
     /// 体量达标的大文件，附带「是否长期未使用」的年龄维度（回应模块名「大文件与旧文件」）。
@@ -592,60 +666,16 @@ public struct LargeFilesScanner: ScannerModule {
     public func scan(progress: @escaping ProgressHandler) async throws -> ScanResult {
         let roots = scanRoots()
         let counter = AtomicInt()
-        let fs = self.fs
-        let safety = self.safety
-        let threshold = self.threshold
         let now = Date()
-
-        let home = self.home
-        // 各用户目录并发遍历，重叠 I/O 提速
-        var scored = await withTaskGroup(of: [ScoredFile].self) { group in
-            for root in roots {
-                group.addTask {
-                    var local: [ScoredFile] = []
-                    for await entry in fs.deepEnumerate(root, includeFiles: true) {
-                        if Task.isCancelled { break }
-                        // 用逻辑大小做廉价阈值过滤，命中后再取分配大小（只对 ≥阈值 的少量文件多一次 stat），
-                        // 让"可释放"按磁盘实际占用报告，消除稀疏/克隆文件的口径虚报。
-                        guard !entry.isDirectory, entry.size >= threshold else { continue }
-                        guard safety.verify(entry.url, intent: .trash).isAllowed else { continue }
-                        let allocated = fs.entry(for: entry.url)?.size ?? entry.size
-                        // deepEnumerate 已带回访问/修改时间，据此标注「长期未使用」的年龄维度。
-                        let stale = Self.isStale(access: entry.accessDate, modified: entry.modificationDate, now: now)
-                        local.append(ScoredFile(
-                            item: CleanableItem(url: entry.url, displayName: entry.url.lastPathComponent,
-                                                detail: entry.url.path, size: allocated,
-                                                safety: .caution, isSelected: false,
-                                                note: stale ? "长期未使用 · 超过 180 天未打开" : nil),
-                            stale: stale))
-                        let running = counter.add(allocated)
-                        progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: running))
-                    }
-                    return local
-                }
-            }
-            // 家目录顶层的大文件（如 ~/big.dmg）——此前只遍历子目录，整层漏掉
-            group.addTask {
-                var local: [ScoredFile] = []
-                for url in fs.contentsOfDirectory(home) {
-                    if Task.isCancelled { break }
-                    guard let e = fs.entry(for: url), !e.isDirectory, e.size >= threshold else { continue }
-                    guard safety.verify(url, intent: .trash).isAllowed else { continue }
-                    let stale = Self.isStale(access: e.accessDate, modified: e.modificationDate, now: now)
-                    local.append(ScoredFile(
-                        item: CleanableItem(url: url, displayName: url.lastPathComponent,
-                                            detail: url.path, size: e.size, safety: .caution, isSelected: false,
-                                            note: stale ? "长期未使用 · 超过 180 天未打开" : nil),
-                        stale: stale))
-                    let running = counter.add(e.size)
-                    progress(ScanProgress(message: url.lastPathComponent, bytesFound: running))
-                }
-                return local
-            }
-            var all: [ScoredFile] = []
-            for await part in group { all += part }
-            return all
+        let collection: (items: [ScoredFile], coverage: ScanCoverage?)
+        if let snapshotStore {
+            collection = await collectFromSharedIndex(roots: roots, store: snapshotStore,
+                                                      now: now, counter: counter, progress: progress)
+        } else {
+            collection = await collectLegacy(roots: roots, now: now,
+                                             counter: counter, progress: progress)
         }
+        var scored = collection.items
 
         scored.sort { $0.item.size > $1.item.size }
         if scored.count > maxItems { scored = Array(scored.prefix(maxItems)) }
@@ -667,7 +697,134 @@ public struct LargeFilesScanner: ScannerModule {
                 description: "扫描下载、文稿、影片等用户目录；删除前请确认，全部移入废纸篓可恢复。",
                 systemImage: "doc.viewfinder", safety: .caution, items: freshItems))
         }
-        return ScanResult(moduleID: .largeFiles, groups: groups)
+        return ScanResult(moduleID: .largeFiles, groups: groups, coverage: collection.coverage)
+    }
+
+    private func collectFromSharedIndex(roots: [URL], store: ScanSnapshotStore, now: Date,
+                                        counter: AtomicInt,
+                                        progress: @escaping ProgressHandler) async
+        -> (items: [ScoredFile], coverage: ScanCoverage?) {
+        let homePath = home.standardizedFileURL.path
+        let homeRoots = roots.filter { $0.standardizedFileURL.path.hasPrefix(homePath + "/") }
+        let externalRoots = roots.filter { !$0.standardizedFileURL.path.hasPrefix(homePath + "/") }
+        var snapshots = [await store.snapshot(for: home, progress: progress)]
+        for root in externalRoots {
+            snapshots.append(await store.snapshot(for: root, progress: progress))
+        }
+
+        var items: [ScoredFile] = []
+        for snapshot in snapshots {
+            for entry in snapshot.entries {
+                if Task.isCancelled { break }
+                if snapshot.root.standardizedFileURL.path == homePath {
+                    let directHomeFile = entry.url.deletingLastPathComponent().standardizedFileURL.path == homePath
+                    let inConfiguredRoot = homeRoots.contains {
+                        let path = $0.standardizedFileURL.path
+                        return entry.url.path == path || entry.url.path.hasPrefix(path + "/")
+                    }
+                    guard directHomeFile || inConfiguredRoot else { continue }
+                }
+                guard !entry.isHidden(relativeTo: snapshot.root),
+                      !entry.isInsideRebuildableDirectory(relativeTo: snapshot.root),
+                      entry.logicalBytes >= threshold,
+                      safety.verify(entry.url, intent: .trash).isAllowed else { continue }
+                let metadata = fs.entry(for: entry.url)
+                let stale = Self.isStale(access: metadata?.accessDate,
+                                         modified: metadata?.modificationDate, now: now)
+                let allocated = entry.allocatedBytes > 0 ? entry.allocatedBytes : entry.logicalBytes
+                items.append(ScoredFile(
+                    item: makeItem(url: entry.url, allocated: allocated,
+                                   reclaimable: entry.estimatedReclaimableBytes,
+                                   stale: stale),
+                    stale: stale
+                ))
+                let running = counter.add(entry.estimatedReclaimableBytes)
+                progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: running,
+                                      filesVisited: snapshot.coverage.filesVisited,
+                                      directoriesVisited: snapshot.coverage.directoriesVisited,
+                                      deniedDirectories: snapshot.coverage.deniedDirectories,
+                                      elapsedSeconds: snapshot.coverage.elapsedSeconds))
+            }
+        }
+        return (items, ScanCoverage.merged(snapshots.map(\.coverage)))
+    }
+
+    private func collectLegacy(roots: [URL], now: Date, counter: AtomicInt,
+                               progress: @escaping ProgressHandler) async
+        -> (items: [ScoredFile], coverage: ScanCoverage?) {
+        let fs = self.fs
+        let safety = self.safety
+        let threshold = self.threshold
+        let home = self.home
+        let scored = await withTaskGroup(of: [ScoredFile].self) { group in
+            for root in roots {
+                group.addTask {
+                    var local: [ScoredFile] = []
+                    for await entry in fs.deepEnumerate(root, includeFiles: true) {
+                        if Task.isCancelled { break }
+                        guard !entry.isDirectory, entry.size >= threshold,
+                              safety.verify(entry.url, intent: .trash).isAllowed else { continue }
+                        let allocated = fs.entry(for: entry.url)?.size ?? entry.size
+                        let stale = Self.isStale(access: entry.accessDate,
+                                                 modified: entry.modificationDate, now: now)
+                        local.append(ScoredFile(
+                            item: self.makeItem(url: entry.url, allocated: allocated,
+                                                reclaimable: allocated, stale: stale),
+                            stale: stale))
+                        let running = counter.add(allocated)
+                        progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: running))
+                    }
+                    return local
+                }
+            }
+            group.addTask {
+                var local: [ScoredFile] = []
+                for url in fs.contentsOfDirectory(home) {
+                    if Task.isCancelled { break }
+                    guard let entry = fs.entry(for: url), !entry.isDirectory,
+                          entry.size >= threshold,
+                          safety.verify(url, intent: .trash).isAllowed else { continue }
+                    let stale = Self.isStale(access: entry.accessDate,
+                                             modified: entry.modificationDate, now: now)
+                    local.append(ScoredFile(
+                        item: self.makeItem(url: url, allocated: entry.size,
+                                            reclaimable: entry.size, stale: stale),
+                        stale: stale))
+                    let running = counter.add(entry.size)
+                    progress(ScanProgress(message: url.lastPathComponent, bytesFound: running))
+                }
+                return local
+            }
+            var all: [ScoredFile] = []
+            for await part in group { all += part }
+            return all
+        }
+        return (scored, nil)
+    }
+
+    private func makeItem(url: URL, allocated: Int64, reclaimable: Int64,
+                          stale: Bool) -> CleanableItem {
+        var evidence = [ScanEvidence(code: "large-file-size", kind: .size,
+                                     title: "文件超过大文件阈值",
+                                     detail: "磁盘占用 \(allocated.formattedBytes)", strength: 1)]
+        if stale {
+            evidence.append(ScanEvidence(code: "last-used-180d", kind: .age,
+                                         title: "超过 180 天未使用", strength: 0.9))
+        }
+        return CleanableItem(
+            url: url, displayName: url.lastPathComponent, detail: url.path,
+            size: allocated, safety: .caution, isSelected: false,
+            note: stale ? "长期未使用 · 超过 180 天未打开" : nil,
+            assessment: FindingAssessment(
+                ruleID: stale ? "large-old-file" : "large-file",
+                confidence: stale ? 0.9 : 0.75,
+                evidence: evidence,
+                reclaimableBytes: reclaimable,
+                recovery: .trash,
+                regenerationCost: .high,
+                impact: "个人文件；删除前必须人工确认"
+            )
+        )
     }
 
     /// 用户内容目录 + ~/Library（大文件常藏在 Containers/Application Support/iOS 备份里）。
@@ -713,12 +870,29 @@ public struct TrashScanner: ScannerModule {
         var items: [CleanableItem] = []
         var total: Int64 = 0
         // 主废纸篓 + 各外置/网络卷的 .Trashes/<uid>（此前只扫家目录 .Trash，外置卷全漏）
-        for trash in trashLocations() {
+        let locations = trashLocations()
+        for trash in locations {
             for url in fs.contentsOfDirectory(trash) {
                 if Task.isCancelled { break }
                 let size = fs.allocatedSize(of: url)
                 items.append(CleanableItem(url: url, displayName: url.lastPathComponent,
-                                           detail: url.path, size: size, safety: .safe))
+                                           detail: url.path, size: size, safety: .safe,
+                                           assessment: FindingAssessment(
+                                            ruleID: "trash-content",
+                                            confidence: 0.99,
+                                            evidence: [
+                                                ScanEvidence(code: "system-trash-location",
+                                                             kind: .userLocation,
+                                                             title: "项目位于 macOS 废纸篓", strength: 1),
+                                                ScanEvidence(code: "permanent-delete-confirmation",
+                                                             kind: .safetyPolicy,
+                                                             title: "清空前必须再次确认", strength: 1)
+                                            ],
+                                            reclaimableBytes: size,
+                                            recovery: .none,
+                                            regenerationCost: .unknown,
+                                            impact: "清空废纸篓后不可恢复"
+                                           )))
                 total += size
                 progress(ScanProgress(message: url.lastPathComponent, bytesFound: total))
             }
@@ -727,7 +901,14 @@ public struct TrashScanner: ScannerModule {
         let group = ScanResultGroup(id: "trash", title: "废纸篓内容",
                                     description: "清空将彻底删除这些项目（不可恢复）。含外置卷废纸篓。",
                                     systemImage: "trash.circle", safety: .safe, items: items)
-        return ScanResult(moduleID: .trash, groups: items.isEmpty ? [] : [group])
+        let coverage = ScanCoverage(
+            roots: locations.map(\.path),
+            filesVisited: items.count,
+            directoriesVisited: locations.count,
+            bytesInspected: total,
+            hiddenFilesIncluded: true,
+            cancelled: Task.isCancelled)
+        return ScanResult(moduleID: .trash, groups: items.isEmpty ? [] : [group], coverage: coverage)
     }
 
     private func trashLocations() -> [URL] {
@@ -765,18 +946,25 @@ public struct DeepScanner: ScannerModule {
     private let fs: FileSystemService
     private let safety: SafetyEngine
     private let home: URL
+    private let snapshotStore: ScanSnapshotStore?
 
     private static let installerExts: Set<String> = ["dmg", "pkg", "mpkg", "xip", "iso"]
     private static let partialExts: Set<String> = ["crdownload", "part", "partial", "download"]
 
     public init(fs: FileSystemService, safety: SafetyEngine,
-                home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+                home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                snapshotStore: ScanSnapshotStore? = nil) {
         self.fs = fs
         self.safety = safety
         self.home = home
+        self.snapshotStore = snapshotStore
     }
 
     public func scan(progress: @escaping ProgressHandler) async throws -> ScanResult {
+        if let snapshotStore {
+            let snapshot = await snapshotStore.snapshot(for: home, progress: progress)
+            return scan(snapshot: snapshot, progress: progress)
+        }
         var installers: [CleanableItem] = []
         var partials: [CleanableItem] = []
         var zombies: [CleanableItem] = []
@@ -876,6 +1064,176 @@ public struct DeepScanner: ScannerModule {
                 items: zombies))
         }
         return ScanResult(moduleID: .deepScan, groups: groups)
+    }
+
+    /// 智能扫描复用共享快照，仅对少量候选补读修改时间，避免再次遍历整个家目录。
+    private func scan(snapshot: ScanSnapshot, progress: @escaping ProgressHandler) -> ScanResult {
+        var installers: [CleanableItem] = []
+        var partials: [CleanableItem] = []
+        var nodeModules: [URL: (allocated: Int64, reclaimable: Int64)] = [:]
+        var downloadPackages: [URL: (allocated: Int64, reclaimable: Int64)] = [:]
+        let now = Date()
+
+        for (index, entry) in snapshot.entries.enumerated() {
+            if Task.isCancelled { break }
+            if let package = Self.ancestor(named: "node_modules", of: entry.url, below: home) {
+                let old = nodeModules[package] ?? (0, 0)
+                nodeModules[package] = (old.allocated + entry.allocatedBytes,
+                                        old.reclaimable + entry.estimatedReclaimableBytes)
+                continue
+            }
+            if let package = Self.ancestor(withExtension: "download", of: entry.url, below: home) {
+                let old = downloadPackages[package] ?? (0, 0)
+                downloadPackages[package] = (old.allocated + entry.allocatedBytes,
+                                              old.reclaimable + entry.estimatedReclaimableBytes)
+                continue
+            }
+            guard !entry.isInsideRebuildableDirectory(relativeTo: home) else { continue }
+
+            let ext = entry.url.pathExtension.lowercased()
+            if Self.installerExts.contains(ext), entry.logicalBytes > 512 * 1024,
+               safety.verify(entry.url, intent: .trash).isAllowed {
+                let metadata = fs.entry(for: entry.url)
+                let age = now.timeIntervalSince(metadata?.modificationDate ?? metadata?.accessDate ?? now)
+                let stale = age > 30 * 86400
+                installers.append(CleanableItem(
+                    url: entry.url, displayName: entry.url.lastPathComponent,
+                    detail: entry.url.path, size: entry.allocatedBytes,
+                    safety: stale ? .safe : .caution, isSelected: false,
+                    note: stale ? "安装包 · 超过 30 天未动，装完即可删" : "安装包 · 装完即可删",
+                    assessment: FindingAssessment(
+                        ruleID: "leftover-installer", confidence: stale ? 0.9 : 0.7,
+                        evidence: [
+                            ScanEvidence(code: "installer-extension", kind: .applicationState,
+                                         title: "识别为 macOS 安装介质", detail: ".\(ext)", strength: 0.9),
+                            ScanEvidence(code: "installer-location", kind: .userLocation,
+                                         title: "位于用户文件范围",
+                                         detail: entry.url.deletingLastPathComponent().path, strength: 0.8),
+                            ScanEvidence(code: "installer-age", kind: .age,
+                                         title: stale ? "超过 30 天未修改" : "近期仍有修改",
+                                         strength: stale ? 0.9 : 0.5)
+                        ], reclaimableBytes: entry.estimatedReclaimableBytes,
+                        recovery: .trash, regenerationCost: .high,
+                        impact: "可能是用户保留的安装归档，始终需要人工确认")))
+            } else if Self.partialExts.contains(ext),
+                      safety.verify(entry.url, intent: .trash).isAllowed {
+                let modified = fs.entry(for: entry.url)?.modificationDate ?? now
+                guard now.timeIntervalSince(modified) > 7 * 86400 else { continue }
+                partials.append(makePartialItem(
+                    url: entry.url, allocated: max(entry.allocatedBytes, 1),
+                    reclaimable: entry.estimatedReclaimableBytes,
+                    detail: "下载残块超过 7 天未修改"))
+            }
+            if (index + 1).isMultiple(of: 1_500) {
+                progress(ScanProgress(
+                    message: xLocF("已走查 %@ 个文件", Self.countText(index + 1)),
+                    filesVisited: index + 1,
+                    elapsedSeconds: snapshot.coverage.elapsedSeconds))
+            }
+        }
+
+        var zombies: [CleanableItem] = []
+        for (url, sizes) in nodeModules where sizes.allocated >= 50 << 20 {
+            let projectDir = url.deletingLastPathComponent()
+            let modified = fs.entry(for: projectDir)?.modificationDate ?? now
+            guard now.timeIntervalSince(modified) > 90 * 86400,
+                  safety.verify(url, intent: .trash).isAllowed else { continue }
+            zombies.append(CleanableItem(
+                url: url, displayName: projectDir.lastPathComponent + "/node_modules",
+                detail: url.path, size: sizes.allocated, safety: .caution,
+                isSelected: false, note: "项目超过 90 天未动 · npm install 可完整重建",
+                assessment: FindingAssessment(
+                    ruleID: "zombie-node-modules", confidence: 0.92,
+                    evidence: [
+                        ScanEvidence(code: "node-modules-regenerable", kind: .regenerable,
+                                     title: "依赖可由包管理器重建", strength: 0.98),
+                        ScanEvidence(code: "project-age-90d", kind: .age,
+                                     title: "项目超过 90 天未修改", strength: 0.9)
+                    ], reclaimableBytes: sizes.reclaimable, recovery: .regenerate,
+                    regenerationCost: .medium, impact: "下次开发前需要重新安装依赖")))
+        }
+        for (url, sizes) in downloadPackages {
+            let modified = fs.entry(for: url)?.modificationDate ?? now
+            guard now.timeIntervalSince(modified) > 7 * 86400,
+                  safety.verify(url, intent: .trash).isAllowed else { continue }
+            partials.append(makePartialItem(
+                url: url, allocated: max(sizes.allocated, 1), reclaimable: sizes.reclaimable,
+                detail: "Safari 下载包超过 7 天未修改"))
+        }
+
+        let bytesFound = installers.reduce(0) { $0 + $1.estimatedReclaimableBytes }
+            + partials.reduce(0) { $0 + $1.estimatedReclaimableBytes }
+            + zombies.reduce(0) { $0 + $1.estimatedReclaimableBytes }
+        progress(ScanProgress(
+            message: xLocF("已走查 %@ 个文件", Self.countText(snapshot.entries.count)),
+            bytesFound: bytesFound, filesVisited: snapshot.entries.count,
+            directoriesVisited: snapshot.coverage.directoriesVisited,
+            deniedDirectories: snapshot.coverage.deniedDirectories,
+            elapsedSeconds: snapshot.coverage.elapsedSeconds))
+
+        installers.sort { $0.estimatedReclaimableBytes > $1.estimatedReclaimableBytes }
+        partials.sort { $0.estimatedReclaimableBytes > $1.estimatedReclaimableBytes }
+        zombies.sort { $0.estimatedReclaimableBytes > $1.estimatedReclaimableBytes }
+        var groups: [ScanResultGroup] = []
+        if !installers.isEmpty {
+            groups.append(ScanResultGroup(
+                id: "leftover-installers", title: "残留安装包",
+                description: "安装完成后的 .dmg / .pkg 等安装介质；始终由你确认后再移入废纸篓。",
+                systemImage: "shippingbox", safety: .caution, items: installers))
+        }
+        if !partials.isEmpty {
+            groups.append(ScanResultGroup(
+                id: "partial-downloads", title: "中断的下载",
+                description: "超过 7 天未修改的下载残块，可移入废纸篓并重新下载。",
+                systemImage: "icloud.and.arrow.down", safety: .safe, items: partials))
+        }
+        if !zombies.isEmpty {
+            groups.append(ScanResultGroup(
+                id: "zombie-node-modules", title: "僵尸依赖（node_modules）",
+                description: "超过 90 天未动的项目依赖树，可由 npm/yarn/pnpm 重建；默认不勾选。",
+                systemImage: "shippingbox.and.arrow.backward", safety: .caution,
+                explanation: "node_modules 是包管理器生成的依赖副本。删除后需重新安装依赖。",
+                items: zombies))
+        }
+        return ScanResult(moduleID: .deepScan, groups: groups, coverage: snapshot.coverage)
+    }
+
+    private func makePartialItem(url: URL, allocated: Int64, reclaimable: Int64,
+                                 detail: String) -> CleanableItem {
+        CleanableItem(
+            url: url, displayName: url.lastPathComponent, detail: url.path,
+            size: allocated, safety: .safe, note: "中断的下载残块",
+            assessment: FindingAssessment(
+                ruleID: "stale-partial-download", confidence: 0.98,
+                evidence: [
+                    ScanEvidence(code: "partial-download-state", kind: .applicationState,
+                                 title: "下载未完成", detail: detail, strength: 0.98),
+                    ScanEvidence(code: "partial-download-age", kind: .age,
+                                 title: "超过 7 天未修改", strength: 0.95)
+                ], reclaimableBytes: reclaimable, recovery: .redownload,
+                regenerationCost: .low, impact: "需要时可重新下载"))
+    }
+
+    private static func ancestor(named name: String, of url: URL, below root: URL) -> URL? {
+        ancestor(of: url, below: root) { $0 == name }
+    }
+
+    private static func ancestor(withExtension ext: String, of url: URL, below root: URL) -> URL? {
+        ancestor(of: url, below: root) {
+            URL(fileURLWithPath: $0).pathExtension.lowercased() == ext
+        }
+    }
+
+    private static func ancestor(of url: URL, below root: URL,
+                                 matching predicate: (String) -> Bool) -> URL? {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let components = url.standardizedFileURL.pathComponents
+        guard components.starts(with: rootComponents), components.count > rootComponents.count else { return nil }
+        for index in rootComponents.count..<(components.count - 1) where predicate(components[index]) {
+            return URL(fileURLWithPath: NSString.path(withComponents: Array(components[...index])),
+                       isDirectory: true)
+        }
+        return nil
     }
 
     /// 千分位计数（不依赖 locale 的稳定输出）。

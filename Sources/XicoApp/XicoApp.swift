@@ -18,6 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 单实例独占锁，持有到进程退出（flock 随其 fd 释放）。见 applicationDidFinishLaunching 的守卫。
     private var singletonLock: SingletonLock?
 
+    func applicationWillTerminate(_ notification: Notification) {
+        model.env.downloadManager.prepareForTermination()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         // 截图/调试用：--lang=ja|en|zh-Hans 强制界面语言（离屏验证多语言）
@@ -68,10 +72,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         #if DEBUG
-        // 以下 QA/开发者 CLI 入口（--probe-sensors/--deepscan/--diskbench）仅供调试，
+        // 以下 QA/开发者 CLI 入口（--probe-sensors/--perfprobe/--deepscan/--diskbench）仅供调试，
         // 门控进 DEBUG，绝不随发布二进制分发（对齐上方 render 工具的 #if DEBUG 处置）。
         if CommandLine.arguments.contains("--probe-sensors") {
             probeSensors()
+            NSApp.terminate(nil)
+            return
+        }
+        if CommandLine.arguments.contains(where: { $0 == "--perfprobe" || $0.hasPrefix("--perfprobe=") }) {
+            probeMetricsPerformance()
             NSApp.terminate(nil)
             return
         }
@@ -131,6 +140,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if CommandLine.arguments.contains("--monitoring-shots") {
             renderMonitoringShots()
+            NSApp.terminate(nil)
+            return
+        }
+        if CommandLine.arguments.contains("--auditshots") {
+            renderAuditShots()
             NSApp.terminate(nil)
             return
         }
@@ -197,14 +211,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         guard let raw = comps?.queryItems?.first(where: { $0.name == "url" })?.value,
-              let target = raw.removingPercentEncoding, target.contains("://") else { return }
+              !raw.isEmpty else { return }
         let kindStr = comps?.queryItems?.first(where: { $0.name == "kind" })?.value ?? "video"
         let kind = DownloadKind(rawValue: kindStr) ?? .video
+        // URLComponents.queryItems 已完成一次百分号解码；旧代码再次 removingPercentEncoding，
+        // 会把媒体 URL 自身路径中的 %2F/%2B 等再解一遍，导致签名直链失效。
+        let now = Date()
+        guard now.timeIntervalSince(lastDeepLinkDownload) > 0.8 else { return }
+        lastDeepLinkDownload = now
         NSApp.activate(ignoringOtherApps: true)
         for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
         model.selection = .downloader
-        model.env.downloadManager.add(urlString: target, kind: kind)
+        // 不静默丢弃输入：DownloadManager 会把不可安全执行的内容放进“隔离”任务，
+        // 正常 http(s)/magnet 则进入解析/下载状态机。
+        model.env.downloadManager.add(urlString: raw, kind: kind)
     }
+
+    /// 防恶意网页连续触发自定义协议，瞬间灌入大量下载任务并反复抢焦点。
+    private var lastDeepLinkDownload = Date.distantPast
 
     /// 上次深链激活时刻——用于对深链激活做速率限制，抵御恶意页面反复唤起。
     private var lastDeepLinkActivation = Date.distantPast

@@ -27,7 +27,8 @@ struct ServerAlertsView: View {
                     }
                     Divider().opacity(0.3).padding(.vertical, XSpacing.xs)
                     HStack(spacing: XSpacing.m) {
-                        Toggle(isOn: $vm.hostDownAlerts) { EmptyView() }.toggleStyle(.switch).labelsHidden()
+                        Toggle(isOn: $vm.hostDownAlerts) { EmptyView() }
+                            .toggleStyle(XThemeSwitchStyle()).labelsHidden()
                         VStack(alignment: .leading, spacing: 1) {
                             Text(xLoc("主机掉线通知")).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                             Text(xLoc("连接断开或采样连续失败时提醒")).font(XFont.micro).foregroundStyle(XColor.textTertiary)
@@ -56,7 +57,8 @@ struct ServerAlertsView: View {
         let r = rule.wrappedValue
         return VStack(spacing: XSpacing.s) {
             HStack(spacing: XSpacing.m) {
-                Toggle(isOn: rule.enabled) { EmptyView() }.toggleStyle(.switch).labelsHidden()
+                Toggle(isOn: rule.enabled) { EmptyView() }
+                    .toggleStyle(XThemeSwitchStyle()).labelsHidden()
                 Image(systemName: iconFor(r.metric)).font(.system(size: 14)).foregroundStyle(colorFor(r.metric))
                     .frame(width: 22)
                 VStack(alignment: .leading, spacing: 1) {

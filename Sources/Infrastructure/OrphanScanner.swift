@@ -86,7 +86,19 @@ public struct OrphanScanner: ScannerModule {
                 guard size > 0 else { continue }
                 items.append(CleanableItem(url: url, displayName: url.lastPathComponent,
                                            detail: url.path, size: size, safety: .caution,
-                                           note: "已卸载应用残留"))
+                                           note: "已卸载应用残留",
+                                           assessment: FindingAssessment(
+                                            ruleID: "orphan-\(bid)", confidence: 0.9,
+                                            evidence: [
+                                                ScanEvidence(code: "app-not-installed", kind: .applicationState,
+                                                             title: "未发现对应已安装或运行中的应用", strength: 0.9),
+                                                ScanEvidence(code: "bundle-artifact", kind: .pathOwnership,
+                                                             title: "路径与 Bundle ID 精确关联", strength: 0.95)
+                                            ],
+                                            ownerBundleID: bid, reclaimableBytes: size,
+                                            recovery: .trash, regenerationCost: .unknown,
+                                            impact: "可能包含已卸载应用的设置；请确认不再安装该应用"
+                                           )))
                 runningTotal += size
                 progress(ScanProgress(message: url.lastPathComponent, bytesFound: runningTotal))
             }

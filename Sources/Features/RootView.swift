@@ -35,6 +35,10 @@ public struct RootView: View {
         // 最小高度降到 640：小尺寸/低分屏（如 1280×800 扣掉菜单栏+程序坞）也能完整容纳窗口；
         // 各繁忙页（设置 / 结果操作条）内部本就带 ScrollView，可在此下限内正常滚动（审计 RootView:34 P3）。
         .frame(minWidth: 1080, minHeight: 640)
+        // 系统开关、滑块与焦点统一跟随当前主题。此前 Toggle 保持 macOS 灰色，
+        // 在状态栏设置里“开/关”主要只靠旋钮位置区分，暗色与低视力场景辨识度不足。
+        .tint(XColor.brand)
+        .accentColor(XColor.brand)
         .animation(XMotion.crossfade, value: model.themeID)   // 换主题时整树平滑淡入（XMotion.crossfade）
         .preferredColorScheme(model.appearance.colorScheme)
         .sheet(isPresented: $model.showPricing) { PricingView(model: model) }
@@ -452,14 +456,16 @@ struct PermissionBanner: View {
 /// 「标签 · 横向进度条 · 数值」的条形行，一屏读懂整机 CPU / 内存 / GPU / 存储 / 网络 / 散热 / 电池。
 public struct MenuBarView: View {
     @ObservedObject var model: AppModel
-    /// 高频快照现归 MetricsFeed（AppModel 不再每 tick 重发布，审计 P2）——菜单栏总览须观察本 feed 才能实时更新。
-    @ObservedObject var feed: MetricsFeed
+    /// 合并总览与单卡一致，只消费本地快照流；主窗口不可见时不触发全局 feed 失效。
+    let feed: MetricsFeed
     /// 已连接的远程服务器（菜单栏迷你监视器）——ServerCat 没有菜单栏能力。
     @ObservedObject var serverEngine: ServerMonitorEngine
+    @State private var currentSnapshot: SystemSnapshot?
     public init(model: AppModel) {
         self.model = model
-        self._feed = ObservedObject(wrappedValue: model.liveMetricsFeed)
+        self.feed = model.liveMetricsFeed
         self._serverEngine = ObservedObject(wrappedValue: model.env.serverMonitorEngine)
+        self._currentSnapshot = State(initialValue: model.liveMetricsFeed.liveSnapshot)
     }
 
     public var body: some View {
@@ -473,7 +479,7 @@ public struct MenuBarView: View {
                 }
             }
 
-            if let s = model.liveSnapshot {
+            if let s = currentSnapshot {
                 cpuCard(s)
                 memoryCard(s)
                 if let g = s.gpuUsage { gpuCard(s, g) }
@@ -502,6 +508,9 @@ public struct MenuBarView: View {
         }
         .padding(XSpacing.m)
         .frame(width: 300)
+        .onReceive(feed.snapshotPublisher.compactMap { $0 }) { snapshot in
+            currentSnapshot = snapshot
+        }
     }
 
     // MARK: - 服务器（迷你监视器）

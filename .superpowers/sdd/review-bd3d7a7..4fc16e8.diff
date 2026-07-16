@@ -1,0 +1,351 @@
+# Review package: bd3d7a7..4fc16e8da86e8ae4a68ea0a187743a2647a2c0fd
+
+## Commits
+4fc16e8 feat: sample protected processes through helper
+
+## Files changed
+ Sources/Infrastructure/HelperProxy.swift           | 44 ++++++++++++++++
+ .../Infrastructure/ProcessSnapshotProvider.swift   | 59 ++++++++++++++++++++++
+ Sources/Shared/HelperProtocol.swift                |  2 +
+ Sources/Shared/HelperSecurity.swift                |  3 +-
+ Sources/XicoHelper/main.swift                      | 25 +++++++++
+ .../HelperProcessSamplingTests.swift               | 57 +++++++++++++++++++++
+ 6 files changed, 189 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/Sources/Infrastructure/HelperProxy.swift b/Sources/Infrastructure/HelperProxy.swift
+index a4d4598..23507fe 100644
+--- a/Sources/Infrastructure/HelperProxy.swift
++++ b/Sources/Infrastructure/HelperProxy.swift
+@@ -1,16 +1,21 @@
+ import Foundation
+ import DesignSystem
+ import ServiceManagement
+ import Domain
+ import Shared
+ 
++public protocol PrivilegedProcessSampling: Sendable {
++    var processSamplingAvailable: Bool { get }
++    func sampleProcesses(pids: [Int32]) async -> ProcessHelperBatchResponse?
++}
++
+ /// 特权助手客户端：注册 / 状态查询 / 经 XPC 调用。
+ public final class HelperProxy: @unchecked Sendable {
+     public enum Status: Sendable, Equatable {
+         case notInstalled      // 未注册
+         case requiresApproval  // 已注册但用户需在系统设置中批准
+         case installed         // 就绪
+         case unavailable       // 当前构建无法使用（如未签名/未嵌入）
+     }
+ 
+     public init() {}
+@@ -138,20 +143,57 @@ public final class HelperProxy: @unchecked Sendable {
+                 connection.invalidate()
+                 return
+             }
+             proxy.removeProtected(paths: paths) { freed, failures in
+                 resumeOnce.finish((freed, failures))
+                 connection.invalidate()
+             }
+         }
+     }
+ 
++    public var processSamplingAvailable: Bool {
++        status() == .installed
++    }
++
++    public func sampleProcesses(pids: [Int32]) async -> ProcessHelperBatchResponse? {
++        guard pids.count <= XicoHelperInfo.maximumProcessSampleCount else { return nil }
++        return await withCheckedContinuation { continuation in
++            let connection = NSXPCConnection(
++                machServiceName: XicoHelperMachServiceName,
++                options: .privileged
++            )
++            connection.remoteObjectInterface = NSXPCInterface(with: XicoHelperProtocol.self)
++            Self.pinHelper(connection)
++            connection.resume()
++
++            let resumeOnce = ResumeGuard<ProcessHelperBatchResponse?>(continuation)
++            Self.scheduleTimeout(resumeOnce, connection, value: nil, timeout: 1.5)
++            let proxy = connection.remoteObjectProxyWithErrorHandler { _ in
++                resumeOnce.finish(nil)
++                connection.invalidate()
++            } as? XicoHelperProtocol
++            guard let proxy else {
++                resumeOnce.finish(nil)
++                connection.invalidate()
++                return
++            }
++            proxy.sampleProcesses(pids: pids.map(NSNumber.init(value:))) { data in
++                let response = data.flatMap { try? JSONDecoder().decode(
++                    ProcessHelperBatchResponse.self,
++                    from: $0
++                ) }
++                resumeOnce.finish(response)
++                connection.invalidate()
++            }
++        }
++    }
++
+     /// 版本握手：返回助手自报版本（连接失败/超时返回 nil）。
+     public func remoteVersion() async -> String? {
+         await withCheckedContinuation { continuation in
+             let connection = NSXPCConnection(machServiceName: XicoHelperMachServiceName, options: .privileged)
+             connection.remoteObjectInterface = NSXPCInterface(with: XicoHelperProtocol.self)
+             Self.pinHelper(connection)
+             connection.resume()
+             let resumeOnce = ResumeGuard<String?>(continuation)
+             Self.scheduleTimeout(resumeOnce, connection, value: nil, timeout: 5)
+             let proxy = connection.remoteObjectProxyWithErrorHandler { _ in
+@@ -182,20 +224,22 @@ public final class HelperProxy: @unchecked Sendable {
+         // finish() 会取消它，避免这枚定时块把 NSXPCConnection 一直留到 deadline 才释放。
+         let work = DispatchWorkItem {
+             guardRef.finish(value)
+             connection.invalidate()
+         }
+         guardRef.setTimeout(work)
+         DispatchQueue.global().asyncAfter(deadline: .now() + (timeout ?? callTimeout), execute: work)
+     }
+ }
+ 
++extension HelperProxy: PrivilegedProcessSampling {}
++
+ extension HelperProxy: PrivilegedCleaningService {
+     public func removeProtected(_ urls: [URL]) async -> PrivilegedRemovalReport {
+         let paths = urls.map(\.path)
+         let (freed, failures) = await removeProtected(paths: paths)
+         return PrivilegedRemovalReport(
+             freedBytes: freed,
+             failures: failures.map { URL(fileURLWithPath: $0) }
+         )
+     }
+ }
+diff --git a/Sources/Infrastructure/ProcessSnapshotProvider.swift b/Sources/Infrastructure/ProcessSnapshotProvider.swift
+index 7fa9d6d..b4e5a4b 100644
+--- a/Sources/Infrastructure/ProcessSnapshotProvider.swift
++++ b/Sources/Infrastructure/ProcessSnapshotProvider.swift
+@@ -27,10 +27,69 @@ public struct LocalProcessSnapshotProvider: ProcessSnapshotProviding {
+         return ProcessCapture(
+             records: records,
+             failures: failures,
+             wallDate: Date(),
+             monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
+             source: .local,
+             enumeratedCount: pids.count
+         )
+     }
+ }
++
++public struct HybridProcessSnapshotProvider: ProcessSnapshotProviding {
++    private let local: any ProcessSnapshotProviding
++    private let helper: any PrivilegedProcessSampling
++
++    public init(
++        local: any ProcessSnapshotProviding = LocalProcessSnapshotProvider(),
++        helper: any PrivilegedProcessSampling = HelperProxy()
++    ) {
++        self.local = local
++        self.helper = helper
++    }
++
++    public func capture() async -> ProcessCapture {
++        let localCapture = await local.capture()
++        let deniedPIDs = localCapture.failures.compactMap { pid, failure in
++            failure == .permissionDenied ? pid : nil
++        }.sorted()
++        guard !deniedPIDs.isEmpty, helper.processSamplingAvailable,
++              let response = await helper.sampleProcesses(pids: deniedPIDs),
++              !response.records.isEmpty else {
++            return localCapture
++        }
++
++        let requestedPIDs = Set(deniedPIDs)
++        let recovered = response.records.filter { requestedPIDs.contains($0.pid) }
++        guard !recovered.isEmpty else { return localCapture }
++
++        var recordsByIdentity = Dictionary(
++            localCapture.records.map {
++                (ProcessIdentity(pid: $0.pid, startTimeNanoseconds: $0.startTimeNanoseconds), $0)
++            },
++            uniquingKeysWith: { _, replacement in replacement }
++        )
++        for record in recovered {
++            let identity = ProcessIdentity(
++                pid: record.pid,
++                startTimeNanoseconds: record.startTimeNanoseconds
++            )
++            recordsByIdentity[identity] = record
++        }
++        var failures = localCapture.failures
++        for record in recovered {
++            failures.removeValue(forKey: record.pid)
++        }
++
++        return ProcessCapture(
++            records: recordsByIdentity.values.sorted {
++                if $0.pid != $1.pid { return $0.pid < $1.pid }
++                return $0.startTimeNanoseconds < $1.startTimeNanoseconds
++            },
++            failures: failures,
++            wallDate: localCapture.wallDate,
++            monotonicNanoseconds: localCapture.monotonicNanoseconds,
++            source: .helperEnhanced,
++            enumeratedCount: localCapture.enumeratedCount
++        )
++    }
++}
+diff --git a/Sources/Shared/HelperProtocol.swift b/Sources/Shared/HelperProtocol.swift
+index 92c0b65..af5b84a 100644
+--- a/Sources/Shared/HelperProtocol.swift
++++ b/Sources/Shared/HelperProtocol.swift
+@@ -51,13 +51,15 @@ public enum MaintenanceTask: String, Sendable, Codable, CaseIterable {
+         }
+     }
+ }
+ 
+ /// 主应用 ↔ 特权助手 的 XPC 接口（最小、白名单化）
+ @objc public protocol XicoHelperProtocol {
+     /// 执行一项维护任务
+     func runMaintenance(_ rawTask: String, reply: @escaping (Bool, String?) -> Void)
+     /// 删除需 root 权限的路径列表（助手端会再次做安全校验）
+     func removeProtected(paths: [String], reply: @escaping (Int64, [String]) -> Void)
++    /// 批量读取进程资源记录；响应仅包含固定字段的 Codable 数据。
++    func sampleProcesses(pids: [NSNumber], reply: @escaping (Data?) -> Void)
+     /// 助手版本（用于连通性自检）
+     func version(reply: @escaping (String) -> Void)
+ }
+diff --git a/Sources/Shared/HelperSecurity.swift b/Sources/Shared/HelperSecurity.swift
+index f03fdff..9e61c5c 100644
+--- a/Sources/Shared/HelperSecurity.swift
++++ b/Sources/Shared/HelperSecurity.swift
+@@ -1,15 +1,16 @@
+ import Foundation
+ 
+ /// 助手版本单一事实源——version() 握手用它比对，protocol 变更后能识别旧助手并自愈。
+ public enum XicoHelperInfo {
+-    public static let version = "0.3.0"
++    public static let version = "0.4.0"
++    public static let maximumProcessSampleCount = 4_096
+ }
+ 
+ /// 特权助手与主应用之间的「互信」配置。
+ ///
+ /// 助手以 root 运行，绝不信任任意调用方：仅接受满足下方代码签名要求的连接
+ /// （由 `NSXPCConnection.setCodeSigningRequirement(_:)` 在内核层强制校验）。
+ public enum XicoHelperSecurity {
+ 
+     /// 主应用 Bundle ID（与签名时的 identifier 一致）
+     public static let mainAppBundleID = "com.xico.app"
+diff --git a/Sources/XicoHelper/main.swift b/Sources/XicoHelper/main.swift
+index 8cbfdfd..9743464 100644
+--- a/Sources/XicoHelper/main.swift
++++ b/Sources/XicoHelper/main.swift
+@@ -121,20 +121,45 @@ final class HelperService: NSObject, XicoHelperProtocol, NSXPCListenerDelegate {
+                 freed += size
+                 Self.log.notice("已删除: \(std, privacy: .public) (\(size) bytes)")
+             } else {
+                 Self.log.error("删除失败/被拒: \(std, privacy: .public)")
+                 failures.append(path)
+             }
+         }
+         reply(freed, failures)
+     }
+ 
++    func sampleProcesses(pids: [NSNumber], reply: @escaping (Data?) -> Void) {
++        IdleExit.shared.beginOperation()
++        defer { IdleExit.shared.endOperation() }
++        guard pids.count <= XicoHelperInfo.maximumProcessSampleCount else {
++            reply(nil)
++            return
++        }
++
++        var records: [ProcessResourceRecord] = []
++        records.reserveCapacity(pids.count)
++        for number in pids {
++            let value = number.int64Value
++            guard value > 0, value <= Int64(Int32.max),
++                  case .success(let record) = DarwinProcessResourceReader.read(pid: Int32(value)) else {
++                continue
++            }
++            records.append(record)
++        }
++        let response = ProcessHelperBatchResponse(
++            requestedCount: pids.count,
++            records: records
++        )
++        reply(try? JSONEncoder().encode(response))
++    }
++
+     static func allocatedSize(atPath path: String) -> Int64 {
+         let url = URL(fileURLWithPath: path)
+         let keys: Set<URLResourceKey> = [.isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey]
+         guard let rv = try? url.resourceValues(forKeys: keys) else { return 0 }
+         if rv.isDirectory != true {
+             return Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
+         }
+         guard let enumerator = FileManager.default.enumerator(
+             at: url,
+             includingPropertiesForKeys: Array(keys),
+diff --git a/Tests/IntegrationTests/HelperProcessSamplingTests.swift b/Tests/IntegrationTests/HelperProcessSamplingTests.swift
+new file mode 100644
+index 0000000..333c943
+--- /dev/null
++++ b/Tests/IntegrationTests/HelperProcessSamplingTests.swift
+@@ -0,0 +1,57 @@
++import XCTest
++@testable import Infrastructure
++import Shared
++
++final class HelperProcessSamplingTests: XCTestCase {
++    func testHelperRecordReplacesPermissionDeniedFailure() async {
++        let local = FakeProvider(capture: .fixture(records: [.pid(1)], failures: [2: .permissionDenied]))
++        let helper = FakePrivilegedSampler(response: ProcessHelperBatchResponse(
++            requestedCount: 1, records: [.pid(2)]))
++        let capture = await HybridProcessSnapshotProvider(local: local, helper: helper).capture()
++        XCTAssertEqual(Set(capture.records.map(\.pid)), [1, 2])
++        XCTAssertNil(capture.failures[2])
++        XCTAssertEqual(capture.source, .helperEnhanced)
++    }
++
++    func testHelperTimeoutKeepsHonestLocalCoverage() async {
++        let local = FakeProvider(capture: .fixture(records: [.pid(1)], failures: [2: .permissionDenied]))
++        let helper = FakePrivilegedSampler(response: nil)
++        let capture = await HybridProcessSnapshotProvider(local: local, helper: helper).capture()
++        XCTAssertEqual(capture.records.map(\.pid), [1])
++        XCTAssertEqual(capture.failures[2], .permissionDenied)
++        XCTAssertEqual(capture.source, .local)
++    }
++}
++
++private struct FakeProvider: ProcessSnapshotProviding {
++    let value: ProcessCapture
++    init(capture: ProcessCapture) { value = capture }
++    func capture() async -> ProcessCapture { value }
++}
++
++private struct FakePrivilegedSampler: PrivilegedProcessSampling {
++    let response: ProcessHelperBatchResponse?
++    var processSamplingAvailable: Bool { true }
++    func sampleProcesses(pids: [Int32]) async -> ProcessHelperBatchResponse? { response }
++}
++
++private extension ProcessResourceRecord {
++    static func pid(_ pid: Int32) -> Self {
++        ProcessResourceRecord(pid: pid, parentPID: 1,
++                              startTimeNanoseconds: UInt64(pid),
++                              name: "p\(pid)", executablePath: "/usr/bin/p\(pid)",
++                              cpuTimeNanoseconds: 0, physicalFootprintBytes: 1_000_000,
++                              peakFootprintBytes: 1_000_000)
++    }
++}
++
++private extension ProcessCapture {
++    static func fixture(records: [ProcessResourceRecord],
++                        failures: [Int32: ProcessResourceReadFailure]) -> Self {
++        ProcessCapture(records: records, failures: failures,
++                       wallDate: Date(timeIntervalSince1970: 1),
++                       monotonicNanoseconds: 1_000_000_000,
++                       source: .local,
++                       enumeratedCount: records.count + failures.count)
++    }
++}

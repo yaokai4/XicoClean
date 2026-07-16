@@ -55,9 +55,27 @@ public struct ThreatScanner: ScannerModule {
         /// 把 plist + 其载荷加入结果组（去重、安全红线校验统一走这里）。
         func appendFinding(_ url: URL, _ dict: NSDictionary, note: String, to bucket: inout [CleanableItem]) {
             guard safety.verify(url, intent: .trash).isAllowed, seen.insert(url.path).inserted else { return }
+            let knownSignature = note.contains("命中已知")
+            let plistSize = max(fs.allocatedSize(of: url), 1)
             bucket.append(CleanableItem(url: url, displayName: url.lastPathComponent,
-                                        detail: url.path, size: max(fs.allocatedSize(of: url), 1),
-                                        safety: .risky, isSelected: false, note: note))
+                                        detail: url.path, size: plistSize,
+                                        safety: .risky, isSelected: false, note: note,
+                                        assessment: FindingAssessment(
+                                            ruleID: knownSignature ? "threat-signature" : "threat-heuristic",
+                                            confidence: knownSignature ? 0.98 : 0.72,
+                                            evidence: [
+                                                ScanEvidence(code: knownSignature ? "known-threat" : "launchd-anomaly",
+                                                             kind: knownSignature ? .signedRule : .applicationState,
+                                                             title: note,
+                                                             strength: knownSignature ? 0.98 : 0.72),
+                                                ScanEvidence(code: "launchd-location", kind: .pathOwnership,
+                                                             title: "位于 launchd 持久化位置", strength: 0.9)
+                                            ],
+                                            reclaimableBytes: plistSize,
+                                            recovery: .trash,
+                                            regenerationCost: .unknown,
+                                            impact: "移除前会先停用对应启动项；高风险结果必须人工确认"
+                                        )))
             progress(ScanProgress(message: url.lastPathComponent, bytesFound: 0))
             // 载荷本体：只删 plist 会留下磁盘上的可执行文件。
             // 但 plist 的 ProgramArguments 是攻击者可控字段——可指向任意用户文件
@@ -68,10 +86,24 @@ public struct ThreatScanner: ScannerModule {
                 let p = URL(fileURLWithPath: payload)
                 guard fs.exists(p), safety.verify(p, intent: .trash).isAllowed,
                       seen.insert(p.path).inserted else { continue }
+                let payloadSize = max(fs.allocatedSize(of: p), 1)
                 bucket.append(CleanableItem(url: p, displayName: p.lastPathComponent,
-                                            detail: p.path, size: max(fs.allocatedSize(of: p), 1),
+                                            detail: p.path, size: payloadSize,
                                             safety: .risky, isSelected: false,
-                                            note: "关联载荷"))
+                                            note: "关联载荷",
+                                            assessment: FindingAssessment(
+                                                ruleID: "threat-associated-payload",
+                                                confidence: knownSignature ? 0.96 : 0.7,
+                                                evidence: [
+                                                    ScanEvidence(code: "launchd-payload", kind: .applicationState,
+                                                                 title: "由可疑启动项直接加载", strength: 0.9),
+                                                    ScanEvidence(code: "vetted-payload-path", kind: .pathOwnership,
+                                                                 title: "载荷路径通过删除候选白名单", strength: 0.9)
+                                                ],
+                                                reclaimableBytes: payloadSize,
+                                                recovery: .trash,
+                                                impact: "关联可执行载荷；必须与启动项一并人工核对"
+                                            )))
             }
         }
 

@@ -169,6 +169,12 @@
    ],
    "safety": "caution",
    "systemImage": "archivebox",
+   "constraints": {
+    "minimumAgeDays": 180,
+    "recommendationConfidence": 0.85,
+    "recovery": "trash",
+    "regenerationCost": "high"
+   },
    "explanation": "App 分发归档，含导出安装包与符号化崩溃日志所需的 dSYM；删除后无法再从该归档导出或符号化对应版本，已上架版本的归档建议保留，确认不需要再删。"
   },
   {
@@ -690,6 +696,12 @@
    ],
    "safety": "safe",
    "systemImage": "shippingbox",
+   "constraints": {
+    "minimumAgeDays": 7,
+    "recommendationConfidence": 0.99,
+    "recovery": "regenerate",
+    "regenerationCost": "negligible"
+   },
    "explanation": "Docker Desktop 的运行日志，仅用于排查 Docker 自身问题；删除不影响任何镜像、容器与数据卷，新日志会继续生成。"
   },
   {
@@ -716,6 +728,12 @@
    ],
    "safety": "safe",
    "systemImage": "arrow.down.circle",
+   "constraints": {
+    "minimumAgeDays": 30,
+    "recommendationConfidence": 0.99,
+    "recovery": "redownload",
+    "regenerationCost": "medium"
+   },
    "explanation": "更新 iPhone/iPad 时下载的固件安装包（IPSW），升级完成后即无用；单个常达数 GB，需要时可从 Apple 服务器重新下载。"
   },
   {
@@ -728,6 +746,12 @@
    ],
    "safety": "caution",
    "systemImage": "paperclip",
+   "constraints": {
+    "minimumAgeDays": 30,
+    "recommendationConfidence": 0.85,
+    "recovery": "redownload",
+    "regenerationCost": "medium"
+   },
    "explanation": "Apple 邮件为预览附件而落盘的副本，原件仍在邮件服务器上、可重新下载；若曾直接编辑过预览打开的附件，删除前请确认已另存。"
   },
   {

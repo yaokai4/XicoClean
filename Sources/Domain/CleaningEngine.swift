@@ -41,7 +41,7 @@ public actor CleaningEngine {
             if plan.intent == .permanent, Self.isInsideTrash(item.url), Self.isSymlink(item.url) {
                 do {
                     try fs.remove(item.url)   // removeItem 删软链本身，不跟随目标
-                    reclaimed += item.size
+                    reclaimed += item.estimatedReclaimableBytes
                     removed += 1
                 } catch {
                     Self.log.error("清空废纸篓删除软链失败 \(item.url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
@@ -83,7 +83,7 @@ public actor CleaningEngine {
                     failures.append(CleaningFailure(url: item.url, reason: "特权助手拒绝或删除失败"))
                 } else {
                     // 直接采用助手实测释放字节，避免用扫描期估算 max() 虚高统计。
-                    reclaimed += report.freedBytes > 0 ? report.freedBytes : item.size
+                    reclaimed += report.freedBytes > 0 ? report.freedBytes : item.estimatedReclaimableBytes
                     removed += 1
                 }
                 progress(ScanProgress(
@@ -123,7 +123,7 @@ public actor CleaningEngine {
                 case .permanent:
                     try fs.remove(item.url)
                 }
-                reclaimed += item.size
+                reclaimed += item.estimatedReclaimableBytes
                 removed += 1
             } catch {
                 Self.log.error("删除失败 \(item.url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")

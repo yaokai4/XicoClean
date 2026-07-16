@@ -1,0 +1,976 @@
+# Review package: 9c9527f..eab1ffebf5808c6a14e956cbfb7249fe7e83b8c2
+
+## Commits
+eab1ffe feat: aggregate resource usage by application
+
+## Files changed
+ .../ApplicationOwnershipResolver.swift             | 126 +++++++++
+ .../ApplicationUsageAggregator.swift               | 185 ++++++++++++++
+ .../Infrastructure/ApplicationUsageModels.swift    |  60 +++++
+ Sources/Infrastructure/ProcessSampler.swift        | 283 ++++++++++++++++-----
+ .../ApplicationUsageAggregatorTests.swift          | 244 ++++++++++++++++++
+ 5 files changed, 830 insertions(+), 68 deletions(-)
+
+## Diff
+diff --git a/Sources/Infrastructure/ApplicationOwnershipResolver.swift b/Sources/Infrastructure/ApplicationOwnershipResolver.swift
+new file mode 100644
+index 0000000..589f804
+--- /dev/null
++++ b/Sources/Infrastructure/ApplicationOwnershipResolver.swift
+@@ -0,0 +1,126 @@
++import Foundation
++import Shared
++
++public struct ApplicationMetadata: Sendable, Equatable {
++    public let bundleIdentifier: String?
++    public let displayName: String?
++
++    public init(bundleIdentifier: String?, displayName: String?) {
++        self.bundleIdentifier = bundleIdentifier
++        self.displayName = displayName
++    }
++}
++
++public protocol ApplicationMetadataProviding: Sendable {
++    func metadata(forApplicationAt path: String) -> ApplicationMetadata
++}
++
++public struct BundleApplicationMetadataProvider: ApplicationMetadataProviding {
++    public init() {}
++
++    public func metadata(forApplicationAt path: String) -> ApplicationMetadata {
++        guard let bundle = Bundle(url: URL(fileURLWithPath: path)) else {
++            return ApplicationMetadata(bundleIdentifier: nil, displayName: nil)
++        }
++        let displayName = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
++            ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
++        return ApplicationMetadata(bundleIdentifier: bundle.bundleIdentifier, displayName: displayName)
++    }
++}
++
++public struct ResolvedApplicationOwnership: Sendable, Equatable {
++    public let identity: ApplicationIdentity
++    public let displayName: String
++    public let bundleIdentifier: String?
++    public let bundlePath: String?
++}
++
++public struct ApplicationOwnershipResolver: Sendable {
++    private let metadataProvider: any ApplicationMetadataProviding
++
++    public init(metadataProvider: any ApplicationMetadataProviding = BundleApplicationMetadataProvider()) {
++        self.metadataProvider = metadataProvider
++    }
++
++    public static func outermostApplicationPath(in executablePath: String) -> String? {
++        let components = (executablePath as NSString).pathComponents
++        guard let applicationIndex = components.firstIndex(where: { $0.hasSuffix(".app") }) else {
++            return nil
++        }
++        return NSString.path(withComponents: Array(components[...applicationIndex]))
++    }
++
++    public func resolve(
++        _ records: [ProcessResourceRecord]
++    ) -> [ProcessIdentity: ResolvedApplicationOwnership] {
++        let byPID = Dictionary(uniqueKeysWithValues: records.map { ($0.pid, $0) })
++        var resolved: [ProcessIdentity: ResolvedApplicationOwnership] = [:]
++        var visiting: Set<ProcessIdentity> = []
++
++        func ownership(for record: ProcessResourceRecord) -> ResolvedApplicationOwnership {
++            let process = ProcessIdentity(
++                pid: record.pid,
++                startTimeNanoseconds: record.startTimeNanoseconds
++            )
++            if let existing = resolved[process] { return existing }
++
++            if let path = record.executablePath,
++               let applicationPath = Self.outermostApplicationPath(in: path) {
++                let metadata = metadataProvider.metadata(forApplicationAt: applicationPath)
++                let fallbackName = ((applicationPath as NSString).lastPathComponent as NSString)
++                    .deletingPathExtension
++                let result = ResolvedApplicationOwnership(
++                    identity: ApplicationIdentity(
++                        rawValue: metadata.bundleIdentifier.map { "bundle:\($0)" }
++                            ?? "app:\(applicationPath)"
++                    ),
++                    displayName: metadata.displayName ?? fallbackName,
++                    bundleIdentifier: metadata.bundleIdentifier,
++                    bundlePath: applicationPath
++                )
++                resolved[process] = result
++                return result
++            }
++
++            if visiting.insert(process).inserted {
++                if let parent = byPID[record.parentPID] {
++                    let parentIdentity = ProcessIdentity(
++                        pid: parent.pid,
++                        startTimeNanoseconds: parent.startTimeNanoseconds
++                    )
++                    if !visiting.contains(parentIdentity) {
++                        let result = ownership(for: parent)
++                        resolved[process] = result
++                        visiting.remove(process)
++                        return result
++                    }
++                }
++                visiting.remove(process)
++            }
++
++            let result: ResolvedApplicationOwnership
++            if let path = record.executablePath {
++                result = ResolvedApplicationOwnership(
++                    identity: ApplicationIdentity(rawValue: "exec:\(path)"),
++                    displayName: record.name,
++                    bundleIdentifier: nil,
++                    bundlePath: nil
++                )
++            } else {
++                result = ResolvedApplicationOwnership(
++                    identity: ApplicationIdentity(rawValue: "name:\(record.name)"),
++                    displayName: record.name,
++                    bundleIdentifier: nil,
++                    bundlePath: nil
++                )
++            }
++            resolved[process] = result
++            return result
++        }
++
++        for record in records {
++            _ = ownership(for: record)
++        }
++        return resolved
++    }
++}
+diff --git a/Sources/Infrastructure/ApplicationUsageAggregator.swift b/Sources/Infrastructure/ApplicationUsageAggregator.swift
+new file mode 100644
+index 0000000..6bc45c8
+--- /dev/null
++++ b/Sources/Infrastructure/ApplicationUsageAggregator.swift
+@@ -0,0 +1,185 @@
++import Foundation
++import Shared
++
++public struct ProcessCPUDeltaCalculator: Sendable {
++    private var previousTime: UInt64?
++    private var previousCPUByProcess: [ProcessIdentity: UInt64] = [:]
++    private let maximumIntervalNanoseconds: UInt64
++
++    public init(maximumIntervalNanoseconds: UInt64 = 10_000_000_000) {
++        self.maximumIntervalNanoseconds = maximumIntervalNanoseconds
++    }
++
++    public mutating func reset() {
++        previousTime = nil
++        previousCPUByProcess = [:]
++    }
++
++    public mutating func rates(for capture: ProcessCapture) -> [ProcessIdentity: Double]? {
++        let oldTime = previousTime
++        let oldCPUByProcess = previousCPUByProcess
++        previousTime = capture.monotonicNanoseconds
++        previousCPUByProcess = Dictionary(uniqueKeysWithValues: capture.records.map {
++            (ProcessIdentity(pid: $0.pid, startTimeNanoseconds: $0.startTimeNanoseconds),
++             $0.cpuTimeNanoseconds)
++        })
++
++        guard let oldTime,
++              capture.monotonicNanoseconds > oldTime else { return nil }
++        let interval = capture.monotonicNanoseconds - oldTime
++        guard interval <= maximumIntervalNanoseconds else { return nil }
++
++        let elapsed = Double(interval)
++        var rates: [ProcessIdentity: Double] = [:]
++        rates.reserveCapacity(capture.records.count)
++        for record in capture.records {
++            let identity = ProcessIdentity(
++                pid: record.pid,
++                startTimeNanoseconds: record.startTimeNanoseconds
++            )
++            guard let previous = oldCPUByProcess[identity],
++                  record.cpuTimeNanoseconds >= previous else { continue }
++            let delta = Double(record.cpuTimeNanoseconds - previous)
++            rates[identity] = delta / elapsed * 100
++        }
++        return rates
++    }
++}
++
++public struct ApplicationUsageAggregator: Sendable {
++    private let logicalCPUCount: Int
++
++    public init(logicalCPUCount: Int) {
++        self.logicalCPUCount = max(1, logicalCPUCount)
++    }
++
++    public func aggregate(
++        records: [ProcessResourceRecord],
++        ownership: [ProcessIdentity: ResolvedApplicationOwnership],
++        cpuRawByProcess: [ProcessIdentity: Double],
++        combinesProcesses: Bool
++    ) -> [ApplicationUsage] {
++        struct Group {
++            let ownership: ResolvedApplicationOwnership
++            var records: [ProcessResourceRecord]
++        }
++
++        var groups: [ApplicationIdentity: Group] = [:]
++        for record in records {
++            let process = ProcessIdentity(
++                pid: record.pid,
++                startTimeNanoseconds: record.startTimeNanoseconds
++            )
++            guard let resolved = ownership[process] else { continue }
++            let groupIdentity = combinesProcesses
++                ? resolved.identity
++                : ApplicationIdentity(
++                    rawValue: "process:\(record.pid):\(record.startTimeNanoseconds)"
++                )
++            if groups[groupIdentity] == nil {
++                let groupOwnership = ResolvedApplicationOwnership(
++                    identity: groupIdentity,
++                    displayName: resolved.displayName,
++                    bundleIdentifier: resolved.bundleIdentifier,
++                    bundlePath: resolved.bundlePath
++                )
++                groups[groupIdentity] = Group(ownership: groupOwnership, records: [])
++            }
++            groups[groupIdentity]?.records.append(record)
++        }
++
++        return groups.values.map { group in
++            let sortedRecords = group.records.sorted { lhs, rhs in
++                if lhs.parentPID == rhs.pid { return false }
++                if rhs.parentPID == lhs.pid { return true }
++                return lhs.pid < rhs.pid
++            }
++            let members = sortedRecords.map { record in
++                let identity = ProcessIdentity(
++                    pid: record.pid,
++                    startTimeNanoseconds: record.startTimeNanoseconds
++                )
++                return ApplicationMemberUsage(
++                    identity: identity,
++                    name: record.name,
++                    cpuRawPercent: cpuRawByProcess[identity],
++                    physicalFootprintBytes: record.physicalFootprintBytes
++                )
++            }
++            let knownCPU = members.compactMap(\.cpuRawPercent)
++            let rawCPU = knownCPU.isEmpty ? nil : knownCPU.reduce(0, +)
++            return ApplicationUsage(
++                id: group.ownership.identity,
++                displayName: group.ownership.displayName,
++                bundleIdentifier: group.ownership.bundleIdentifier,
++                bundlePath: group.ownership.bundlePath,
++                representativePID: sortedRecords.first?.pid ?? 0,
++                members: members,
++                cpuRawPercent: rawCPU,
++                cpuNormalizedPercent: rawCPU.map {
++                    min(100, $0 / Double(logicalCPUCount))
++                },
++                physicalFootprintBytes: sortedRecords.reduce(0) {
++                    $0 + $1.physicalFootprintBytes
++                },
++                peakFootprintBytes: sortedRecords.reduce(0) {
++                    $0 + $1.peakFootprintBytes
++                },
++                trend: ApplicationUsageTrend(cpuRaw: [], memoryBytes: [])
++            )
++        }.sorted {
++            let lhsCPU = $0.cpuRawPercent ?? -.infinity
++            let rhsCPU = $1.cpuRawPercent ?? -.infinity
++            if lhsCPU != rhsCPU { return lhsCPU > rhsCPU }
++            return $0.id.rawValue < $1.id.rawValue
++        }
++    }
++}
++
++public enum ApplicationUsageMetric: Sendable {
++    case cpu
++    case memory
++}
++
++public enum UsageRanker {
++    public static func order(
++        _ usages: [ApplicationUsage],
++        metric: ApplicationUsageMetric,
++        previousOrder: [ApplicationIdentity]
++    ) -> [ApplicationUsage] {
++        let priorIndex = Dictionary(
++            uniqueKeysWithValues: previousOrder.enumerated().map { ($0.element, $0.offset) }
++        )
++
++        func value(_ usage: ApplicationUsage) -> Double? {
++            switch metric {
++            case .cpu: return usage.cpuRawPercent
++            case .memory: return Double(usage.physicalFootprintBytes)
++            }
++        }
++
++        return usages.sorted { lhs, rhs in
++            let lhsValue = value(lhs)
++            let rhsValue = value(rhs)
++            switch (lhsValue, rhsValue) {
++            case let (lhsValue?, rhsValue?):
++                let larger = max(lhsValue, rhsValue)
++                if abs(lhsValue - rhsValue) > larger * 0.03 {
++                    return lhsValue > rhsValue
++                }
++            case (_?, nil):
++                return true
++            case (nil, _?):
++                return false
++            case (nil, nil):
++                break
++            }
++
++            if let lhsIndex = priorIndex[lhs.id], let rhsIndex = priorIndex[rhs.id],
++               lhsIndex != rhsIndex {
++                return lhsIndex < rhsIndex
++            }
++            return lhs.id.rawValue < rhs.id.rawValue
++        }
++    }
++}
+diff --git a/Sources/Infrastructure/ApplicationUsageModels.swift b/Sources/Infrastructure/ApplicationUsageModels.swift
+index 01dde4f..91df176 100644
+--- a/Sources/Infrastructure/ApplicationUsageModels.swift
++++ b/Sources/Infrastructure/ApplicationUsageModels.swift
+@@ -50,10 +50,70 @@ public struct PIDEnumerator: Sendable {
+             }
+             capacity *= 2
+         }
+         return []
+     }
+ }
+ 
+ public protocol ProcessSnapshotProviding: Sendable {
+     func capture() async -> ProcessCapture
+ }
++
++public struct ApplicationIdentity: Hashable, Codable, Sendable, Identifiable {
++    public let rawValue: String
++    public var id: String { rawValue }
++}
++
++public enum CPUDisplayMode: String, CaseIterable, Codable, Sendable {
++    case normalized
++    case totalCore
++}
++
++public struct ApplicationMemberUsage: Identifiable, Sendable {
++    public let identity: ProcessIdentity
++    public let name: String
++    public let cpuRawPercent: Double?
++    public let physicalFootprintBytes: Int64
++    public var id: ProcessIdentity { identity }
++}
++
++public struct ApplicationUsageTrend: Sendable {
++    public var cpuRaw: [Double]
++    public var memoryBytes: [Int64]
++}
++
++public struct ApplicationUsage: Identifiable, Sendable {
++    public let id: ApplicationIdentity
++    public let displayName: String
++    public let bundleIdentifier: String?
++    public let bundlePath: String?
++    public let representativePID: Int32
++    public let members: [ApplicationMemberUsage]
++    public let cpuRawPercent: Double?
++    public let cpuNormalizedPercent: Double?
++    public let physicalFootprintBytes: Int64
++    public let peakFootprintBytes: Int64
++    public var trend: ApplicationUsageTrend
++    public var memberCount: Int { members.count }
++    public func cpuPercent(mode: CPUDisplayMode) -> Double? {
++        mode == .normalized ? cpuNormalizedPercent : cpuRawPercent
++    }
++}
++
++public struct ProcessCoverage: Sendable, Equatable {
++    public let enumerated: Int
++    public let sampled: Int
++    public let denied: Int
++    public let exited: Int
++    public var fraction: Double { enumerated > 0 ? Double(sampled) / Double(enumerated) : 0 }
++}
++
++public enum ProcessSamplingStatus: String, Sendable { case warmingUp, live, partial, stale, unavailable }
++
++public struct ApplicationUsageSnapshot: Sendable {
++    public let byCPU: [ApplicationUsage]
++    public let byMemory: [ApplicationUsage]
++    public let status: ProcessSamplingStatus
++    public let coverage: ProcessCoverage
++    public let sampledAt: Date
++    public let source: ProcessCaptureSource
++}
+diff --git a/Sources/Infrastructure/ProcessSampler.swift b/Sources/Infrastructure/ProcessSampler.swift
+index 2071afb..643e328 100644
+--- a/Sources/Infrastructure/ProcessSampler.swift
++++ b/Sources/Infrastructure/ProcessSampler.swift
+@@ -1,94 +1,241 @@
+ import Foundation
+-import Darwin
++import Shared
+ 
+-/// 单个进程的资源占用。
++/// Compatibility model used by existing monitoring consumers until they migrate to
++/// `ApplicationUsageSnapshot`.
+ public struct ProcessUsage: Sendable, Identifiable {
+-    public let id: Int32          // pid
++    public let id: Int32
+     public let name: String
+-    public let cpuPercent: Double // 0...(核数×100)
+-    public let memoryBytes: Int64 // phys_footprint（对齐活动监视器"内存"列）
++    public let cpuPercent: Double
++    public let memoryBytes: Int64
+ }
+ 
+-/// 进程资源采样器：proc_listallpids + proc_pid_rusage 差分。
+-/// 与 top/活动监视器同权，普通用户即可读全部进程，无需特权。
+-public final class ProcessSampler: @unchecked Sendable {
+-    private let lock = NSLock()
+-    private var prevCPUTime: [Int32: UInt64] = [:]
+-    private var prevWall: Date?
++public actor ProcessSampler {
++    private let provider: any ProcessSnapshotProviding
++    private let resolver: ApplicationOwnershipResolver
++    private let aggregator: ApplicationUsageAggregator
++    private var cpu = ProcessCPUDeltaCalculator()
++    private var trends: [ApplicationIdentity: ApplicationUsageTrend] = [:]
++    private var trendLastSeen: [ApplicationIdentity: UInt64] = [:]
++    private var previousCPUOrder: [ApplicationIdentity] = []
++    private var previousMemoryOrder: [ApplicationIdentity] = []
++    nonisolated private let legacy = LegacyProcessSampler()
+ 
+-    public init() {}
++    public init(
++        provider: any ProcessSnapshotProviding = LocalProcessSnapshotProvider(),
++        logicalCPUCount: Int = ProcessInfo.processInfo.activeProcessorCount
++    ) {
++        self.provider = provider
++        self.resolver = ApplicationOwnershipResolver()
++        self.aggregator = ApplicationUsageAggregator(logicalCPUCount: logicalCPUCount)
++    }
+ 
+-    /// 返回按 CPU 和按内存排序的前 N 个进程。
+-    public func sample(top: Int = 6) -> (byCPU: [ProcessUsage], byMemory: [ProcessUsage]) {
+-        let pids = allPIDs()
+-        guard !pids.isEmpty else { return ([], []) }
++    public func resetBaseline() {
++        cpu.reset()
++    }
+ 
+-        let now = Date()
+-        lock.lock()
+-        let prevWallLocal = prevWall
+-        let prevMap = prevCPUTime
+-        lock.unlock()
+-        let wallDelta = prevWallLocal.map { now.timeIntervalSince($0) } ?? 0
++    public func sample(
++        limit: Int = 6,
++        combinesProcesses: Bool = true
++    ) async -> ApplicationUsageSnapshot {
++        let capture = await provider.capture()
++        let cpuRates = cpu.rates(for: capture)
++        let ownership = resolver.resolve(capture.records)
++        let usages = aggregator.aggregate(
++            records: capture.records,
++            ownership: ownership,
++            cpuRawByProcess: cpuRates ?? [:],
++            combinesProcesses: combinesProcesses
++        )
+ 
+-        var newCPUTime: [Int32: UInt64] = [:]
+-        newCPUTime.reserveCapacity(pids.count)
+-        var results: [ProcessUsage] = []
+-        results.reserveCapacity(pids.count)
++        var cpuOrder: [ApplicationUsage]
++        if cpuRates == nil {
++            cpuOrder = []
++        } else {
++            cpuOrder = UsageRanker.order(
++                usages.filter { $0.cpuRawPercent != nil },
++                metric: .cpu,
++                previousOrder: previousCPUOrder
++            )
++        }
++        var memoryOrder = UsageRanker.order(
++            usages,
++            metric: .memory,
++            previousOrder: previousMemoryOrder
++        )
+ 
+-        for pid in pids where pid > 0 {
+-            guard let info = rusage(pid) else { continue }
+-            let cpuTime = info.ri_user_time &+ info.ri_system_time   // 纳秒
+-            newCPUTime[pid] = cpuTime
+-            var cpuPercent = 0.0
+-            if wallDelta > 0, let prev = prevMap[pid], cpuTime >= prev {
+-                let deltaNs = Double(cpuTime - prev)
+-                cpuPercent = (deltaNs / (wallDelta * 1_000_000_000)) * 100
+-            }
+-            let mem = Int64(info.ri_phys_footprint)
+-            // 跳过既不耗 CPU 又几乎不占内存的僵尸/内核线程
+-            if cpuPercent < 0.05 && mem < 2_000_000 { continue }
+-            results.append(ProcessUsage(id: pid, name: processName(pid),
+-                                        cpuPercent: cpuPercent, memoryBytes: mem))
++        updateTrends(
++            cpuOrder: cpuOrder,
++            memoryOrder: memoryOrder,
++            allCurrentIDs: Set(usages.map(\.id)),
++            monotonicNanoseconds: capture.monotonicNanoseconds
++        )
++        cpuOrder = cpuOrder.map(attachingTrend)
++        memoryOrder = memoryOrder.map(attachingTrend)
++
++        let boundedLimit = max(0, limit)
++        cpuOrder = Array(cpuOrder.prefix(boundedLimit))
++        memoryOrder = Array(memoryOrder.prefix(boundedLimit))
++        previousCPUOrder = cpuOrder.map(\.id)
++        previousMemoryOrder = memoryOrder.map(\.id)
++
++        let denied = capture.failures.values.filter { $0 == .permissionDenied }.count
++        let exited = capture.failures.values.filter { $0 == .exited }.count
++        let hasUnreadable = capture.failures.values.contains(.unreadable)
++        let coverage = ProcessCoverage(
++            enumerated: capture.enumeratedCount,
++            sampled: capture.records.count,
++            denied: denied,
++            exited: exited
++        )
++        let status: ProcessSamplingStatus
++        if capture.records.isEmpty {
++            status = .unavailable
++        } else if cpuRates == nil {
++            status = .warmingUp
++        } else if denied > 0 || hasUnreadable {
++            status = .partial
++        } else {
++            status = .live
+         }
+ 
+-        lock.lock(); prevCPUTime = newCPUTime; prevWall = now; lock.unlock()
++        return ApplicationUsageSnapshot(
++            byCPU: cpuOrder,
++            byMemory: memoryOrder,
++            status: status,
++            coverage: coverage,
++            sampledAt: capture.wallDate,
++            source: capture.source
++        )
++    }
+ 
+-        let byCPU = Array(results.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(top))
+-        let byMem = Array(results.sorted { $0.memoryBytes > $1.memoryBytes }.prefix(top))
+-        return (byCPU, byMem)
++    /// Temporary source compatibility for call sites migrated in the next task.
++    public nonisolated func sample(top: Int) -> (
++        byCPU: [ProcessUsage],
++        byMemory: [ProcessUsage]
++    ) {
++        legacy.sample(top: top)
+     }
+ 
+-    /// 某进程的即时内存占用（phys_footprint）。用于给「运行中应用」列表标注内存，
+-    /// 无需时间差分即准确（CPU% 才需要两次采样，故此处只给内存）。
+-    public func memoryFootprint(pid: Int32) -> Int64? {
+-        guard let info = rusage(pid) else { return nil }
+-        return Int64(info.ri_phys_footprint)
++    /// Temporary source compatibility for the running-app optimization view.
++    public nonisolated func memoryFootprint(pid: Int32) -> Int64? {
++        legacy.memoryFootprint(pid: pid)
+     }
+ 
+-    private func allPIDs() -> [Int32] {
+-        let count = proc_listallpids(nil, 0)
+-        guard count > 0 else { return [] }
+-        var pids = [Int32](repeating: 0, count: Int(count) + 32)
+-        let bytes = proc_listallpids(&pids, Int32(pids.count) * Int32(MemoryLayout<Int32>.size))
+-        guard bytes > 0 else { return [] }
+-        let n = Int(bytes) / MemoryLayout<Int32>.size
+-        return Array(pids.prefix(n))
++    private func updateTrends(
++        cpuOrder: [ApplicationUsage],
++        memoryOrder: [ApplicationUsage],
++        allCurrentIDs: Set<ApplicationIdentity>,
++        monotonicNanoseconds: UInt64
++    ) {
++        let trackedUsages = Array(cpuOrder.prefix(20)) + Array(memoryOrder.prefix(20))
++        let trackedByID = Dictionary(trackedUsages.map { ($0.id, $0) },
++                                    uniquingKeysWith: { first, _ in first })
++        let trackedIDs = Set(trackedByID.keys)
++
++        for id in Array(trends.keys) {
++            if allCurrentIDs.contains(id) {
++                if !trackedIDs.contains(id) {
++                    trends.removeValue(forKey: id)
++                    trendLastSeen.removeValue(forKey: id)
++                }
++            } else if let lastSeen = trendLastSeen[id],
++                      monotonicNanoseconds >= lastSeen,
++                      monotonicNanoseconds - lastSeen >= 120_000_000_000 {
++                trends.removeValue(forKey: id)
++                trendLastSeen.removeValue(forKey: id)
++            }
++        }
++
++        for (id, usage) in trackedByID {
++            var trend = trends[id] ?? ApplicationUsageTrend(cpuRaw: [], memoryBytes: [])
++            if let rawCPU = usage.cpuRawPercent {
++                trend.cpuRaw.append(rawCPU)
++                if trend.cpuRaw.count > 60 {
++                    trend.cpuRaw.removeFirst(trend.cpuRaw.count - 60)
++                }
++            }
++            trend.memoryBytes.append(usage.physicalFootprintBytes)
++            if trend.memoryBytes.count > 60 {
++                trend.memoryBytes.removeFirst(trend.memoryBytes.count - 60)
++            }
++            trends[id] = trend
++            trendLastSeen[id] = monotonicNanoseconds
++        }
+     }
+ 
+-    private func rusage(_ pid: Int32) -> rusage_info_v4? {
+-        var info = rusage_info_v4()
+-        let rc = withUnsafeMutablePointer(to: &info) { ptr -> Int32 in
+-            ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+-                proc_pid_rusage(pid, RUSAGE_INFO_V4, $0)
++    private func attachingTrend(to usage: ApplicationUsage) -> ApplicationUsage {
++        var result = usage
++        result.trend = trends[usage.id] ?? ApplicationUsageTrend(cpuRaw: [], memoryBytes: [])
++        return result
++    }
++}
++
++private final class LegacyProcessSampler: @unchecked Sendable {
++    private let lock = NSLock()
++    private let enumerator = PIDEnumerator()
++    private var previousCPUTime: [Int32: UInt64] = [:]
++    private var previousWall: Date?
++
++    func sample(top: Int) -> (byCPU: [ProcessUsage], byMemory: [ProcessUsage]) {
++        let records = enumerator.allPIDs().compactMap { pid -> ProcessResourceRecord? in
++            guard case .success(let record) = DarwinProcessResourceReader.read(pid: pid) else {
++                return nil
+             }
++            return record
+         }
+-        return rc == 0 ? info : nil
++        guard !records.isEmpty else { return ([], []) }
++
++        let now = Date()
++        lock.lock()
++        let oldWall = previousWall
++        let oldCPUTime = previousCPUTime
++        lock.unlock()
++        let elapsed = oldWall.map { now.timeIntervalSince($0) } ?? 0
++
++        var nextCPUTime: [Int32: UInt64] = [:]
++        var usages: [ProcessUsage] = []
++        nextCPUTime.reserveCapacity(records.count)
++        usages.reserveCapacity(records.count)
++        for record in records {
++            nextCPUTime[record.pid] = record.cpuTimeNanoseconds
++            var cpuPercent = 0.0
++            if elapsed > 0,
++               let previous = oldCPUTime[record.pid],
++               record.cpuTimeNanoseconds >= previous {
++                cpuPercent = Double(record.cpuTimeNanoseconds - previous)
++                    / (elapsed * 1_000_000_000) * 100
++            }
++            if cpuPercent < 0.05 && record.physicalFootprintBytes < 2_000_000 { continue }
++            usages.append(ProcessUsage(
++                id: record.pid,
++                name: record.name,
++                cpuPercent: cpuPercent,
++                memoryBytes: record.physicalFootprintBytes
++            ))
++        }
++
++        lock.lock()
++        previousCPUTime = nextCPUTime
++        previousWall = now
++        lock.unlock()
++
++        let boundedTop = max(0, top)
++        let byCPU = usages.sorted {
++            if $0.cpuPercent != $1.cpuPercent { return $0.cpuPercent > $1.cpuPercent }
++            return $0.id < $1.id
++        }
++        let byMemory = usages.sorted {
++            if $0.memoryBytes != $1.memoryBytes { return $0.memoryBytes > $1.memoryBytes }
++            return $0.id < $1.id
++        }
++        return (Array(byCPU.prefix(boundedTop)), Array(byMemory.prefix(boundedTop)))
+     }
+ 
+-    private func processName(_ pid: Int32) -> String {
+-        var buf = [CChar](repeating: 0, count: 256)
+-        let n = proc_name(pid, &buf, UInt32(buf.count))
+-        if n > 0 { return String(cString: buf) }
+-        return "PID \(pid)"
++    func memoryFootprint(pid: Int32) -> Int64? {
++        guard case .success(let record) = DarwinProcessResourceReader.read(pid: pid) else {
++            return nil
++        }
++        return record.physicalFootprintBytes
+     }
+ }
+diff --git a/Tests/IntegrationTests/ApplicationUsageAggregatorTests.swift b/Tests/IntegrationTests/ApplicationUsageAggregatorTests.swift
+new file mode 100644
+index 0000000..903682f
+--- /dev/null
++++ b/Tests/IntegrationTests/ApplicationUsageAggregatorTests.swift
+@@ -0,0 +1,244 @@
++import XCTest
++@testable import Infrastructure
++import Shared
++
++final class ApplicationUsageAggregatorTests: XCTestCase {
++    private func record(pid: Int32, parent: Int32 = 1, start: UInt64 = 1,
++                        path: String?, cpu: UInt64, memory: Int64) -> ProcessResourceRecord {
++        ProcessResourceRecord(pid: pid, parentPID: parent, startTimeNanoseconds: start,
++                              name: "p\(pid)", executablePath: path,
++                              cpuTimeNanoseconds: cpu, physicalFootprintBytes: memory,
++                              peakFootprintBytes: memory)
++    }
++
++    func testChromeHelperUsesOutermostApplicationBundle() {
++        let path = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"
++        XCTAssertEqual(ApplicationOwnershipResolver.outermostApplicationPath(in: path),
++                       "/Applications/Google Chrome.app")
++    }
++
++    func testBundleMetadataAndParentChainDefineApplicationOwnership() {
++        let applicationPath = "/Applications/Demo.app"
++        let records = [
++            record(pid: 10, path: "\(applicationPath)/Contents/MacOS/Demo",
++                   cpu: 2_000_000_000, memory: 400_000_000),
++            record(pid: 11, parent: 10, path: "/usr/bin/demo-helper",
++                   cpu: 1_000_000_000, memory: 200_000_000)
++        ]
++        let metadata = ApplicationMetadata(
++            bundleIdentifier: "com.example.demo",
++            displayName: "Demo Display Name"
++        )
++        let ownership = ApplicationOwnershipResolver(metadataProvider: DictionaryMetadataProvider(
++            metadataByPath: [applicationPath: metadata]
++        )).resolve(records)
++        let root = ownership[ProcessIdentity(pid: 10, startTimeNanoseconds: 1)]
++        let child = ownership[ProcessIdentity(pid: 11, startTimeNanoseconds: 1)]
++
++        XCTAssertEqual(root?.identity.rawValue, "bundle:com.example.demo")
++        XCTAssertEqual(root?.displayName, "Demo Display Name")
++        XCTAssertEqual(root?.bundlePath, applicationPath)
++        XCTAssertEqual(child, root)
++    }
++
++    func testApplicationAggregationSumsMembers() {
++        let records = [
++            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo", cpu: 2_000_000_000, memory: 400_000_000),
++            record(pid: 11, parent: 10, path: nil, cpu: 1_000_000_000, memory: 200_000_000)
++        ]
++        let ownership = ApplicationOwnershipResolver().resolve(records)
++        let usage = ApplicationUsageAggregator(logicalCPUCount: 8).aggregate(
++            records: records, ownership: ownership,
++            cpuRawByProcess: [ProcessIdentity(pid: 10, startTimeNanoseconds: 1): 80,
++                              ProcessIdentity(pid: 11, startTimeNanoseconds: 1): 40],
++            combinesProcesses: true).first!
++        XCTAssertEqual(usage.memberCount, 2)
++        XCTAssertEqual(usage.physicalFootprintBytes, 600_000_000)
++        XCTAssertEqual(usage.cpuRawPercent!, 120, accuracy: 0.001)
++        XCTAssertEqual(usage.cpuNormalizedPercent!, 15, accuracy: 0.001)
++    }
++
++    func testFirstSampleAndLongGapWarmUpInsteadOfZero() {
++        var calculator = ProcessCPUDeltaCalculator(maximumIntervalNanoseconds: 10_000_000_000)
++        let first = ProcessCapture.fixture(time: 1_000_000_000, cpu: 1_000_000_000, start: 1)
++        let second = ProcessCapture.fixture(time: 2_000_000_000, cpu: 2_000_000_000, start: 1)
++        let late = ProcessCapture.fixture(time: 30_000_000_000, cpu: 3_000_000_000, start: 1)
++        let afterLate = ProcessCapture.fixture(time: 31_000_000_000, cpu: 4_000_000_000, start: 1)
++        XCTAssertNil(calculator.rates(for: first))
++        XCTAssertEqual(calculator.rates(for: second)?.values.first ?? -.infinity,
++                       100, accuracy: 0.001)
++        XCTAssertNil(calculator.rates(for: late))
++        XCTAssertEqual(calculator.rates(for: afterLate)?.values.first ?? -.infinity,
++                       100, accuracy: 0.001)
++    }
++
++    func testReusedPIDDoesNotInheritCPUTime() {
++        var calculator = ProcessCPUDeltaCalculator()
++        _ = calculator.rates(for: .fixture(time: 1_000_000_000, cpu: 1_000_000_000, start: 1))
++        let reused = calculator.rates(for: .fixture(time: 2_000_000_000, cpu: 9_000_000_000, start: 2))
++        XCTAssertTrue(reused?.isEmpty == true)
++    }
++
++    func testStableRankingKeepsPreviousOrderInsideThreePercentBand() {
++        let a = ApplicationUsage.fixture(id: "a", rawCPU: 50, memory: 100)
++        let b = ApplicationUsage.fixture(id: "b", rawCPU: 49, memory: 99)
++        let ordered = UsageRanker.order([b, a], metric: .cpu, previousOrder: [b.id, a.id])
++        XCTAssertEqual(ordered.map(\.id), [b.id, a.id])
++    }
++
++    func testCombineProcessesDisabledKeepsMembersSeparate() {
++        let records = [
++            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
++                   cpu: 2_000_000_000, memory: 400_000_000),
++            record(pid: 11, parent: 10, path: nil,
++                   cpu: 1_000_000_000, memory: 200_000_000)
++        ]
++        let ownership = ApplicationOwnershipResolver().resolve(records)
++        let usages = ApplicationUsageAggregator(logicalCPUCount: 8).aggregate(
++            records: records,
++            ownership: ownership,
++            cpuRawByProcess: [:],
++            combinesProcesses: false
++        )
++
++        XCTAssertEqual(usages.count, 2)
++        XCTAssertEqual(Set(usages.map(\.memberCount)), [1])
++    }
++
++    func testSamplerWarmsUpWithMemoryRowsThenPublishesLiveCPU() async {
++        let records = [
++            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
++                   cpu: 1_000_000_000, memory: 400_000_000)
++        ]
++        let nextRecords = [
++            record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
++                   cpu: 2_000_000_000, memory: 450_000_000)
++        ]
++        let provider = FixtureProcessSnapshotProvider(captures: [
++            .fixture(time: 1_000_000_000, records: records),
++            .fixture(time: 2_000_000_000, records: nextRecords)
++        ])
++        let sampler = ProcessSampler(provider: provider, logicalCPUCount: 8)
++
++        let warming = await sampler.sample()
++        XCTAssertEqual(warming.status, .warmingUp)
++        XCTAssertTrue(warming.byCPU.isEmpty)
++        XCTAssertEqual(warming.byMemory.count, 1)
++        XCTAssertNil(warming.byMemory.first?.cpuRawPercent)
++
++        let live = await sampler.sample()
++        XCTAssertEqual(live.status, .live)
++        XCTAssertEqual(live.byCPU.first?.cpuRawPercent ?? -.infinity,
++                       100, accuracy: 0.001)
++        XCTAssertEqual(live.byMemory.first?.physicalFootprintBytes, 450_000_000)
++    }
++
++    func testSamplerCapsTrendsAtSixtySamples() async {
++        var captures: [ProcessCapture] = []
++        for index in 0..<62 {
++            let time = UInt64(index + 1) * 1_000_000_000
++            let sample = record(
++                pid: 10,
++                path: "/Applications/Demo.app/Contents/MacOS/Demo",
++                cpu: time,
++                memory: 400_000_000 + Int64(index)
++            )
++            captures.append(.fixture(time: time, records: [sample]))
++        }
++        let provider = FixtureProcessSnapshotProvider(captures: captures)
++        let sampler = ProcessSampler(provider: provider, logicalCPUCount: 8)
++
++        var latest: ApplicationUsageSnapshot?
++        for _ in captures {
++            latest = await sampler.sample()
++        }
++
++        XCTAssertEqual(latest?.byMemory.first?.trend.cpuRaw.count, 60)
++        XCTAssertEqual(latest?.byMemory.first?.trend.memoryBytes.count, 60)
++    }
++
++    func testSamplerDropsTrendAfterApplicationIsAbsentForOver120Seconds() async {
++        let first = record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
++                           cpu: 1_000_000_000, memory: 400_000_000)
++        let second = record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
++                            cpu: 2_000_000_000, memory: 410_000_000)
++        let returned = record(pid: 10, path: "/Applications/Demo.app/Contents/MacOS/Demo",
++                              cpu: 3_000_000_000, memory: 420_000_000)
++        let provider = FixtureProcessSnapshotProvider(captures: [
++            .fixture(time: 1_000_000_000, records: [first]),
++            .fixture(time: 2_000_000_000, records: [second]),
++            .fixture(time: 123_000_000_000, records: []),
++            .fixture(time: 124_000_000_000, records: [returned])
++        ])
++        let sampler = ProcessSampler(provider: provider, logicalCPUCount: 8)
++
++        _ = await sampler.sample()
++        _ = await sampler.sample()
++        _ = await sampler.sample()
++        let latest = await sampler.sample()
++
++        XCTAssertEqual(latest.byMemory.first?.trend.memoryBytes, [420_000_000])
++    }
++}
++
++private extension ProcessCapture {
++    static func fixture(time: UInt64, cpu: UInt64, start: UInt64) -> Self {
++        let record = ProcessResourceRecord(pid: 42, parentPID: 1,
++                                           startTimeNanoseconds: start,
++                                           name: "fixture", executablePath: "/usr/bin/fixture",
++                                           cpuTimeNanoseconds: cpu,
++                                           physicalFootprintBytes: 1_000_000,
++                                           peakFootprintBytes: 1_000_000)
++        return ProcessCapture(records: [record], failures: [:],
++                              wallDate: Date(timeIntervalSince1970: Double(time) / 1_000_000_000),
++                              monotonicNanoseconds: time, source: .local, enumeratedCount: 1)
++    }
++
++    static func fixture(time: UInt64, records: [ProcessResourceRecord]) -> Self {
++        ProcessCapture(
++            records: records,
++            failures: [:],
++            wallDate: Date(timeIntervalSince1970: Double(time) / 1_000_000_000),
++            monotonicNanoseconds: time,
++            source: .local,
++            enumeratedCount: records.count
++        )
++    }
++}
++
++private extension ApplicationUsage {
++    static func fixture(id: String, rawCPU: Double, memory: Int64) -> Self {
++        let process = ProcessIdentity(pid: Int32(id.utf8.first ?? 1), startTimeNanoseconds: 1)
++        return ApplicationUsage(
++            id: ApplicationIdentity(rawValue: id), displayName: id,
++            bundleIdentifier: nil, bundlePath: nil, representativePID: process.pid,
++            members: [ApplicationMemberUsage(identity: process, name: id,
++                                             cpuRawPercent: rawCPU,
++                                             physicalFootprintBytes: memory)],
++            cpuRawPercent: rawCPU, cpuNormalizedPercent: rawCPU / 8,
++            physicalFootprintBytes: memory, peakFootprintBytes: memory,
++            trend: ApplicationUsageTrend(cpuRaw: [], memoryBytes: []))
++    }
++}
++
++private actor FixtureProcessSnapshotProvider: ProcessSnapshotProviding {
++    private let captures: [ProcessCapture]
++    private var index = 0
++
++    init(captures: [ProcessCapture]) {
++        self.captures = captures
++    }
++
++    func capture() async -> ProcessCapture {
++        defer { index += 1 }
++        return captures[min(index, captures.count - 1)]
++    }
++}
++
++private struct DictionaryMetadataProvider: ApplicationMetadataProviding {
++    let metadataByPath: [String: ApplicationMetadata]
++
++    func metadata(forApplicationAt path: String) -> ApplicationMetadata {
++        metadataByPath[path] ?? ApplicationMetadata(bundleIdentifier: nil, displayName: nil)
++    }
++}

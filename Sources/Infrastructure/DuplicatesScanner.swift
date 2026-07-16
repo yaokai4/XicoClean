@@ -11,14 +11,20 @@ public struct DuplicatesScanner: Sendable {
     public let root: URL
     private let minSize: Int64
     private let maxGroups: Int
+    private let snapshotStore: ScanSnapshotStore?
+    private let workLimiter: ScanWorkLimiter?
 
     public init(fs: FileSystemService, safety: SafetyEngine, root: URL,
-                minSizeBytes: Int64 = 1 * 1024 * 1024, maxGroups: Int = 200) {
+                minSizeBytes: Int64 = 1 * 1024 * 1024, maxGroups: Int = 200,
+                snapshotStore: ScanSnapshotStore? = nil,
+                workLimiter: ScanWorkLimiter? = nil) {
         self.fs = fs
         self.safety = safety
         self.root = root
         self.minSize = minSizeBytes
         self.maxGroups = maxGroups
+        self.snapshotStore = snapshotStore
+        self.workLimiter = workLimiter
     }
 
     public func scan(progress: @escaping ProgressHandler) async -> ScanResult {
@@ -26,18 +32,35 @@ public struct DuplicatesScanner: Sendable {
         var bySize: [Int64: [URL]] = [:]
         var seenInodes = Set<String>()
         var scanned: Int64 = 0
+        var indexedByPath: [String: ScanIndexEntry] = [:]
+        var coverage: ScanCoverage?
 
-        for await entry in fs.deepEnumerate(root, includeFiles: true) {
-            if Task.isCancelled { break }
-            guard !entry.isDirectory, entry.size >= minSize else { continue }
-            guard safety.verify(entry.url, intent: .trash).isAllowed else { continue }
-            if let id = inodeKey(entry.url) {
-                if seenInodes.contains(id) { continue }
-                seenInodes.insert(id)
+        if let snapshotStore {
+            let snapshot = await snapshotStore.snapshot(for: root, progress: progress)
+            coverage = snapshot.coverage
+            for entry in snapshot.entries {
+                if Task.isCancelled { break }
+                guard !entry.isHidden(relativeTo: snapshot.root),
+                      !entry.isInsideRebuildableDirectory(relativeTo: snapshot.root),
+                      entry.logicalBytes >= minSize,
+                      safety.verify(entry.url, intent: .trash).isAllowed else { continue }
+                bySize[entry.logicalBytes, default: []].append(entry.url)
+                indexedByPath[entry.url.path] = entry
+                scanned += entry.logicalBytes
             }
-            bySize[entry.size, default: []].append(entry.url)
-            scanned += entry.size
-            progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: 0))
+        } else {
+            for await entry in fs.deepEnumerate(root, includeFiles: true) {
+                if Task.isCancelled { break }
+                guard !entry.isDirectory, entry.size >= minSize else { continue }
+                guard safety.verify(entry.url, intent: .trash).isAllowed else { continue }
+                if let id = inodeKey(entry.url) {
+                    if seenInodes.contains(id) { continue }
+                    seenInodes.insert(id)
+                }
+                bySize[entry.size, default: []].append(entry.url)
+                scanned += entry.size
+                progress(ScanProgress(message: entry.url.lastPathComponent, bytesFound: 0))
+            }
         }
 
         // 2. 同大小者先做头尾哈希快速筛，命中再做全量哈希确认（杜绝中段不同被误判 → 防删错）
@@ -52,7 +75,14 @@ public struct DuplicatesScanner: Sendable {
             var iterator = partialTargets.makeIterator()
             func addNext() {
                 guard let c = iterator.next() else { return }
-                group.addTask { (c.url, c.size, self.partialHash(c.url, size: c.size)) }
+                group.addTask {
+                    if let limiter = self.workLimiter {
+                        return await limiter.withPermit {
+                            (c.url, c.size, self.partialHash(c.url, size: c.size))
+                        }
+                    }
+                    return (c.url, c.size, self.partialHash(c.url, size: c.size))
+                }
             }
             for _ in 0..<lanes { addNext() }
             var out: [(URL, Int64, String)] = []
@@ -83,7 +113,14 @@ public struct DuplicatesScanner: Sendable {
             func addNext() {
                 guard let c = iterator.next() else { return }
                 inFlight += 1
-                group.addTask { (c.url, c.size, self.fullHash(c.url)) }
+                group.addTask {
+                    if let limiter = self.workLimiter {
+                        return await limiter.withPermit {
+                            (c.url, c.size, self.fullHash(c.url))
+                        }
+                    }
+                    return (c.url, c.size, self.fullHash(c.url))
+                }
             }
             for _ in 0..<lanes { addNext() }
             var out: [(URL, Int64, String)] = []
@@ -116,16 +153,34 @@ public struct DuplicatesScanner: Sendable {
                 var wasted: Int64 = 0
                 for (idx, url) in sorted.enumerated() {
                     // 体积口径 = 物理已分配字节（P0：逻辑大小对压缩/克隆/稀疏虚高）。
-                    let phys = Self.physicalSize(url) ?? size
+                    let indexed = indexedByPath[url.path]
+                    let phys = indexed?.allocatedBytes ?? Self.physicalSize(url) ?? size
+                    let reclaimable = indexed?.estimatedReclaimableBytes ?? phys
                     // 默认全不勾（P0 默认勾选纪律）：重复的是**用户自己的文件**，
                     // 「删哪份」必须交回用户——比 CleanMyMac 更克制是卖点不是退让。
                     items.append(CleanableItem(url: url, displayName: url.lastPathComponent,
                                                detail: url.path, size: phys, safety: .caution,
                                                isSelected: false,
-                                               note: idx == 0 ? xLoc("建议保留（路径最短）") : nil))
-                    if idx != 0 { wasted += phys }
+                                               note: idx == 0 ? xLoc("建议保留（路径最短）") : nil,
+                                               assessment: FindingAssessment(
+                                                ruleID: "duplicate-sha256",
+                                                confidence: 1,
+                                                evidence: [
+                                                    ScanEvidence(code: "sha256-full", kind: .exactContent,
+                                                                 title: "完整 SHA-256 内容一致", strength: 1),
+                                                    ScanEvidence(code: "user-scan-root", kind: .userLocation,
+                                                                 title: "位于用户选择的扫描范围", strength: 1)
+                                                ],
+                                                reclaimableBytes: reclaimable,
+                                                recovery: .trash,
+                                                regenerationCost: .high,
+                                                impact: "内容相同，但路径和文件名可能仍有用途"
+                                               )))
+                    if idx != 0 { wasted += reclaimable }
                 }
-                let cloneNote = anyAreClones(dupURLs) ? xLoc(" · 含 APFS 克隆，实际释放可能接近 0") : ""
+                let indexedClone = dupURLs.contains { indexedByPath[$0.path]?.isAPFSClone == true }
+                let cloneNote = (indexedClone || anyAreClones(dupURLs))
+                    ? xLoc(" · 含 APFS 克隆，按独占块估算释放") : ""
                 groups.append(ScanResultGroup(
                     id: hash,
                     title: xLocF("%@ · %d 份", sorted[0].lastPathComponent, dupURLs.count),
@@ -134,9 +189,11 @@ public struct DuplicatesScanner: Sendable {
             }
         }
 
-        groups.sort { $0.selectedSize > $1.selectedSize }
+        // 重复文件默认全不勾选，selectedSize 恒为 0；按可回收量排序才不会在 maxGroups
+        // 截断时随机丢掉真正浪费空间的大组。
+        groups.sort { $0.reclaimableSize > $1.reclaimableSize }
         if groups.count > maxGroups { groups = Array(groups.prefix(maxGroups)) }
-        return ScanResult(moduleID: .duplicates, groups: groups)
+        return ScanResult(moduleID: .duplicates, groups: groups, coverage: coverage)
     }
 
     /// 物理已分配字节（所有 fork）；读不到返回 nil 由调用方回退逻辑大小。

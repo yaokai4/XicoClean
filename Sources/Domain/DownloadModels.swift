@@ -53,7 +53,7 @@ public struct MediaFormat: Sendable, Identifiable, Equatable, Codable {
 }
 
 /// 探测结果：一个页面/链接解析出的媒体清单。
-public struct MediaManifest: Sendable, Equatable {
+public struct MediaManifest: Sendable, Equatable, Codable {
     public var title: String
     public var uploader: String?
     public var durationSeconds: Double?
@@ -81,7 +81,7 @@ public struct MediaManifest: Sendable, Equatable {
     }
 }
 
-public enum DownloadState: Sendable, Equatable {
+public enum DownloadState: Sendable, Equatable, Codable {
     case queued
     case probing
     case ready                       // 已探测，待选格式/开始
@@ -89,6 +89,8 @@ public enum DownloadState: Sendable, Equatable {
     case postprocessing
     case completed(path: String)
     case failed(reason: String)
+    /// 已接收但不可执行：保留用户输入与原因，不把危险协议/畸形命令交给下载引擎。
+    case quarantined(reason: String)
     case paused
     case canceled
 
@@ -96,7 +98,7 @@ public enum DownloadState: Sendable, Equatable {
         switch self { case .probing, .downloading, .postprocessing: return true; default: return false }
     }
     public var isTerminal: Bool {
-        switch self { case .completed, .failed, .canceled: return true; default: return false }
+        switch self { case .completed, .failed, .quarantined, .canceled: return true; default: return false }
     }
     public var progressValue: Double {
         switch self {
@@ -115,14 +117,57 @@ public enum DownloadState: Sendable, Equatable {
         case .postprocessing: return "后处理中…"
         case .completed: return "已完成"
         case .failed(let r): return r
+        case .quarantined(let r): return r
         case .paused: return "已暂停"
         case .canceled: return "已取消"
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, progress, speed, eta, path, reason }
+    private enum Kind: String, Codable {
+        case queued, probing, ready, downloading, postprocessing, completed, failed, quarantined, paused, canceled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        switch try c.decode(Kind.self, forKey: .kind) {
+        case .queued: self = .queued
+        case .probing: self = .probing
+        case .ready: self = .ready
+        case .downloading:
+            self = .downloading(progress: max(0, min(1, try c.decode(Double.self, forKey: .progress))),
+                                speed: try c.decodeIfPresent(String.self, forKey: .speed) ?? "",
+                                eta: try c.decodeIfPresent(String.self, forKey: .eta) ?? "")
+        case .postprocessing: self = .postprocessing
+        case .completed: self = .completed(path: try c.decode(String.self, forKey: .path))
+        case .failed: self = .failed(reason: try c.decode(String.self, forKey: .reason))
+        case .quarantined: self = .quarantined(reason: try c.decode(String.self, forKey: .reason))
+        case .paused: self = .paused
+        case .canceled: self = .canceled
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .queued: try c.encode(Kind.queued, forKey: .kind)
+        case .probing: try c.encode(Kind.probing, forKey: .kind)
+        case .ready: try c.encode(Kind.ready, forKey: .kind)
+        case .downloading(let progress, let speed, let eta):
+            try c.encode(Kind.downloading, forKey: .kind)
+            try c.encode(progress, forKey: .progress); try c.encode(speed, forKey: .speed); try c.encode(eta, forKey: .eta)
+        case .postprocessing: try c.encode(Kind.postprocessing, forKey: .kind)
+        case .completed(let path): try c.encode(Kind.completed, forKey: .kind); try c.encode(path, forKey: .path)
+        case .failed(let reason): try c.encode(Kind.failed, forKey: .kind); try c.encode(reason, forKey: .reason)
+        case .quarantined(let reason): try c.encode(Kind.quarantined, forKey: .kind); try c.encode(reason, forKey: .reason)
+        case .paused: try c.encode(Kind.paused, forKey: .kind)
+        case .canceled: try c.encode(Kind.canceled, forKey: .kind)
         }
     }
 }
 
 /// 一个下载任务。
-public struct DownloadJob: Sendable, Identifiable, Equatable {
+public struct DownloadJob: Sendable, Identifiable, Equatable, Codable {
     public var id: UUID
     public var sourceURL: String
     public var title: String
@@ -170,14 +215,37 @@ public struct DownloadPreferences: Codable, Sendable, Equatable {
     public var embedMetadata: Bool
     public var embedThumbnail: Bool
     public var clipboardMonitor: Bool
+    /// 从浏览器读取 Cookies——对 X(Twitter)/需登录站点是能否下载的关键（"none" = 不用）。
+    public var cookiesBrowser: String      // none / safari / chrome / edge / firefox / brave
+    /// 同时下载的最大并发数（对标 Downie 的队列并发）。
+    public var maxConcurrent: Int
+
+    public static let cookieBrowserOptions = ["none", "safari", "chrome", "edge", "firefox", "brave"]
 
     public init(videoQuality: VideoQuality = .best, audioFormat: String = "mp3",
                 embedSubtitles: Bool = false, subtitleLangs: String = "en.*,zh.*",
-                embedMetadata: Bool = true, embedThumbnail: Bool = true, clipboardMonitor: Bool = false) {
+                embedMetadata: Bool = true, embedThumbnail: Bool = true, clipboardMonitor: Bool = false,
+                cookiesBrowser: String = "none", maxConcurrent: Int = 3) {
         self.videoQuality = videoQuality; self.audioFormat = audioFormat
         self.embedSubtitles = embedSubtitles; self.subtitleLangs = subtitleLangs
         self.embedMetadata = embedMetadata; self.embedThumbnail = embedThumbnail
         self.clipboardMonitor = clipboardMonitor
+        self.cookiesBrowser = cookiesBrowser
+        self.maxConcurrent = max(1, min(maxConcurrent, 8))
+    }
+
+    // 向后兼容解码：老版本持久化的偏好没有新键，`decodeIfPresent` 兜底默认值（否则整份偏好会被丢弃重置）。
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        videoQuality = try c.decodeIfPresent(VideoQuality.self, forKey: .videoQuality) ?? .best
+        audioFormat = try c.decodeIfPresent(String.self, forKey: .audioFormat) ?? "mp3"
+        embedSubtitles = try c.decodeIfPresent(Bool.self, forKey: .embedSubtitles) ?? false
+        subtitleLangs = try c.decodeIfPresent(String.self, forKey: .subtitleLangs) ?? "en.*,zh.*"
+        embedMetadata = try c.decodeIfPresent(Bool.self, forKey: .embedMetadata) ?? true
+        embedThumbnail = try c.decodeIfPresent(Bool.self, forKey: .embedThumbnail) ?? true
+        clipboardMonitor = try c.decodeIfPresent(Bool.self, forKey: .clipboardMonitor) ?? false
+        cookiesBrowser = try c.decodeIfPresent(String.self, forKey: .cookiesBrowser) ?? "none"
+        maxConcurrent = max(1, min(try c.decodeIfPresent(Int.self, forKey: .maxConcurrent) ?? 3, 8))
     }
 }
 

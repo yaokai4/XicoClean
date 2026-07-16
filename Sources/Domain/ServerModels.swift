@@ -47,6 +47,8 @@ public struct ServerHost: Identifiable, Codable, Sendable, Hashable {
     public var group: String?
     /// 跳板机 ProxyJump（预留）：指向另一台 ServerHost.id。
     public var jumpHostID: UUID?
+    /// 用户确认过的 OpenSSH known_hosts 行。不是机密；用于严格固定服务器身份，禁止静默 TOFU。
+    public var pinnedHostKeys: [String]?
     /// 上次探测到的远端系统："Linux" / "Darwin" / "FreeBSD"。
     public var lastKnownOS: String?
     /// 展示：SF Symbol 图标名 + 主题渐变色索引。
@@ -60,6 +62,7 @@ public struct ServerHost: Identifiable, Codable, Sendable, Hashable {
     public init(id: UUID = UUID(), name: String, hostname: String, port: Int = 22,
                 username: String, authKind: SSHAuthKind = .password,
                 privateKeyRef: String? = nil, group: String? = nil, jumpHostID: UUID? = nil,
+                pinnedHostKeys: [String]? = nil,
                 lastKnownOS: String? = nil, symbol: String = "server.rack",
                 colorIndex: Int = 0, pollInterval: Double = 3, tunnels: [Tunnel] = []) {
         self.id = id
@@ -71,6 +74,7 @@ public struct ServerHost: Identifiable, Codable, Sendable, Hashable {
         self.privateKeyRef = privateKeyRef
         self.group = group
         self.jumpHostID = jumpHostID
+        self.pinnedHostKeys = pinnedHostKeys
         self.lastKnownOS = lastKnownOS
         self.symbol = symbol
         self.colorIndex = colorIndex
@@ -82,6 +86,8 @@ public struct ServerHost: Identifiable, Codable, Sendable, Hashable {
     public var endpointLabel: String {
         port == 22 ? "\(username)@\(hostname)" : "\(username)@\(hostname):\(port)"
     }
+
+    public var hasPinnedHostKey: Bool { !(pinnedHostKeys ?? []).isEmpty }
 }
 
 // MARK: 端口转发隧道
@@ -243,10 +249,26 @@ public struct SFTPEntry: Sendable, Identifiable, Equatable {
     public var isSymlink: Bool
     public var size: Int64
     public var permissions: String   // ls -l 风格 longname 首段
-    public var id: String { name }
-    public init(name: String, isDirectory: Bool, isSymlink: Bool = false, size: Int64, permissions: String) {
+    /// 结构化目录协议里的原始名称；用于让无效 UTF-8/控制字符文件仍能稳定展示且不误操作。
+    public var rawNameBase64: String?
+    public var isOperationallySafe: Bool
+    public var id: String { rawNameBase64 ?? name }
+    public init(name: String, isDirectory: Bool, isSymlink: Bool = false, size: Int64, permissions: String,
+                rawNameBase64: String? = nil, isOperationallySafe: Bool = true) {
         self.name = name; self.isDirectory = isDirectory; self.isSymlink = isSymlink
         self.size = size; self.permissions = permissions
+        self.rawNameBase64 = rawNameBase64; self.isOperationallySafe = isOperationallySafe
+    }
+
+    public var displayName: String {
+        guard isOperationallySafe else {
+            let escaped = name.unicodeScalars.map { scalar -> String in
+                if scalar.value < 0x20 || scalar.value == 0x7f { return String(format: "\\u{%02X}", scalar.value) }
+                return String(scalar)
+            }.joined()
+            return escaped.isEmpty ? "<non-UTF8: \(rawNameBase64 ?? "")>" : escaped
+        }
+        return name
     }
 }
 

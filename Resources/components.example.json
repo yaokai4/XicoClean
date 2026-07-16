@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "sequence": 1,
+  "issuedAt": 1800000000,
+  "expiresAt": 1800864000,
+  "minimumAppVersion": "0.2.0",
+  "components": [
+    {
+      "id": "yt-dlp",
+      "version": "REPLACE_WITH_PINNED_VERSION",
+      "architecture": "universal",
+      "downloadURL": "https://components.example.com/yt-dlp_macos",
+      "sha256": "REPLACE_WITH_64_HEX_CHARACTERS________________________________",
+      "size": 1,
+      "archive": "raw",
+      "executableName": "yt-dlp"
+    },
+    {
+      "id": "ffmpeg",
+      "version": "REPLACE_WITH_PINNED_VERSION",
+      "architecture": "arm64",
+      "downloadURL": "https://components.example.com/ffmpeg-arm64.zip",
+      "sha256": "REPLACE_WITH_64_HEX_CHARACTERS________________________________",
+      "size": 1,
+      "archive": "zip",
+      "executableName": "ffmpeg"
+    },
+    {
+      "id": "aria2",
+      "version": "REPLACE_WITH_PINNED_VERSION",
+      "architecture": "arm64",
+      "downloadURL": "https://components.example.com/aria2-arm64.tar.gz",
+      "sha256": "REPLACE_WITH_64_HEX_CHARACTERS________________________________",
+      "size": 1,
+      "archive": "tar.gz",
+      "executableName": "aria2c"
+    }
+  ]
+}

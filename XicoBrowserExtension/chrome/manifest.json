@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "102",
+  "name": "Xico 下载助手",
+  "version": "1.0.0",
+  "description": "在浏览器里捕获视频/音频真实地址（尤其 X / Twitter 需要登录才能抓取的视频），一键交给 Xico 桌面版下载。",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "用 Xico 下载此页视频"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "activeTab",
+    "storage",
+    "webRequest",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

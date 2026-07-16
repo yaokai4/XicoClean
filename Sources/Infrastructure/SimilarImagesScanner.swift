@@ -17,6 +17,8 @@ public struct SimilarImagesScanner: Sendable {
     private let minSize: Int64
     private let distanceThreshold: Float
     private let maxGroups: Int
+    private let snapshotStore: ScanSnapshotStore?
+    private let workLimiter: ScanWorkLimiter?
 
     private static let imageExtensions: Set<String> = [
         "jpg", "jpeg", "png", "heic", "heif", "gif", "tiff", "tif", "bmp", "webp"
@@ -30,7 +32,9 @@ public struct SimilarImagesScanner: Sendable {
                 roots: [URL]? = nil,
                 minSizeBytes: Int64 = 50 * 1024,
                 distanceThreshold: Float = 0.28,
-                maxGroups: Int = 200) {
+                maxGroups: Int = 200,
+                snapshotStore: ScanSnapshotStore? = nil,
+                workLimiter: ScanWorkLimiter? = nil) {
         self.fs = fs
         self.safety = safety
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -40,19 +44,54 @@ public struct SimilarImagesScanner: Sendable {
         self.minSize = minSizeBytes
         self.distanceThreshold = distanceThreshold
         self.maxGroups = maxGroups
+        self.snapshotStore = snapshotStore
+        self.workLimiter = workLimiter
     }
 
     public func scan(progress: @escaping ProgressHandler) async -> ScanResult {
         #if canImport(Vision)
         // 1. 收集候选图片
-        var candidates: [(url: URL, size: Int64)] = []
-        for root in roots {
-            for await entry in fs.deepEnumerate(root, includeFiles: true) {
-                if Task.isCancelled { break }
-                guard !entry.isDirectory, entry.size >= minSize else { continue }
-                guard Self.imageExtensions.contains(entry.url.pathExtension.lowercased()) else { continue }
-                guard safety.verify(entry.url, intent: .trash).isAllowed else { continue }
-                candidates.append((entry.url, entry.size))
+        var candidates: [(url: URL, size: Int64, reclaimable: Int64)] = []
+        var coverageReports: [ScanCoverage] = []
+        var seenPaths = Set<String>()
+        if let snapshotStore {
+            let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+            let allInsideHome = roots.allSatisfy {
+                $0.standardizedFileURL.path.hasPrefix(home.path + "/")
+            }
+            let snapshotRoots = allInsideHome ? [home] : roots
+            for snapshotRoot in snapshotRoots {
+                let snapshot = await snapshotStore.snapshot(for: snapshotRoot, progress: progress)
+                coverageReports.append(snapshot.coverage)
+                for entry in snapshot.entries {
+                    if Task.isCancelled { break }
+                    if allInsideHome {
+                        let insideConfiguredRoot = roots.contains {
+                            let path = $0.standardizedFileURL.path
+                            return entry.url.path == path || entry.url.path.hasPrefix(path + "/")
+                        }
+                        guard insideConfiguredRoot else { continue }
+                    }
+                    guard !entry.isHidden(relativeTo: snapshot.root),
+                          !entry.isInsideRebuildableDirectory(relativeTo: snapshot.root),
+                          entry.logicalBytes >= minSize,
+                          Self.imageExtensions.contains(entry.url.pathExtension.lowercased()),
+                          safety.verify(entry.url, intent: .trash).isAllowed,
+                          seenPaths.insert(entry.url.path).inserted else { continue }
+                    let allocated = entry.allocatedBytes > 0 ? entry.allocatedBytes : entry.logicalBytes
+                    candidates.append((entry.url, allocated, entry.estimatedReclaimableBytes))
+                }
+            }
+        } else {
+            for root in roots {
+                for await entry in fs.deepEnumerate(root, includeFiles: true) {
+                    if Task.isCancelled { break }
+                    guard !entry.isDirectory, entry.size >= minSize else { continue }
+                    guard Self.imageExtensions.contains(entry.url.pathExtension.lowercased()) else { continue }
+                    guard safety.verify(entry.url, intent: .trash).isAllowed else { continue }
+                    let physical = DuplicatesScanner.physicalSize(entry.url) ?? entry.size
+                    candidates.append((entry.url, physical, physical))
+                }
             }
         }
 
@@ -64,7 +103,16 @@ public struct SimilarImagesScanner: Sendable {
             var iterator = candidates.makeIterator()
             func addNext() {
                 guard let c = iterator.next() else { return }
-                group.addTask { Self.featureBox(url: c.url, size: c.size) }
+                group.addTask {
+                    if let limiter = self.workLimiter {
+                        return await limiter.withPermit {
+                            Self.featureBox(url: c.url, size: c.size,
+                                            reclaimable: c.reclaimable)
+                        }
+                    }
+                    return Self.featureBox(url: c.url, size: c.size,
+                                           reclaimable: c.reclaimable)
+                }
             }
             for _ in 0..<lanes { addNext() }
             var out: [FeaturePrintBox] = []
@@ -80,67 +128,83 @@ public struct SimilarImagesScanner: Sendable {
             return out
         }
 
-        // 3. 贪心聚类：先按纵横比分桶，把全局 O(n²) 降到「各桶内 O(k²)」——只有比例相近的图才可能
-        //    相似，跨桶必不相似故安全跳过；桶内与已有簇的代表距离 < 阈值即归入。
+        // 3. 图聚类：先按纵横比分桶，再在桶内建立“距离 < 阈值”的无向边，取连通分量。
+        //    相比只看首张代表图的贪心算法，结果不再受文件枚举顺序影响。
         var byAspect: [Int: [FeaturePrintBox]] = [:]
         for p in prints { byAspect[Self.aspectBucket(p.aspect), default: []].append(p) }
-        // 簇按纵横比桶分别维护：每个 item 只与「本桶」已有簇比较，跨桶必不相似故从不参与比较。
-        // 关键区别于旧实现——旧版把所有桶的簇塞进一个全局数组，每个 item 仍要线性扫描整张全局簇表
-        // （再靠 aspectBucket 相等判断跳过），全不相似的图集下退化为跨桶 O(n²)；此处以桶为键的字典
-        // 把比较严格限制在各桶内 O(k²)，正如注释本意。
         var clustersByBucket: [Int: [[FeaturePrintBox]]] = [:]
         for (bucket, bucketItems) in byAspect {
             if Task.isCancelled { break }
-            var bucketClusters: [[FeaturePrintBox]] = []
-            for item in bucketItems {
-                if Task.isCancelled { break }
-                var placed = false
-                for i in bucketClusters.indices {
-                    guard let rep = bucketClusters[i].first else { continue }
-                    // 距离默认设为「无穷远」：一旦 computeDistance 抛错（指纹不兼容/损坏），
-                    // 视为不相似而非相似——出错方向必须偏向不聚类，绝不能默认把不同图片并入同组预删。
-                    var distance = Float.greatestFiniteMagnitude
-                    do {
-                        try rep.print.computeDistance(&distance, to: item.print)
-                    } catch {
-                        continue   // 无法比较 → 不归入此簇
-                    }
-                    if distance < distanceThreshold {
-                        bucketClusters[i].append(item); placed = true; break
+            var unionFind = UnionFind(count: bucketItems.count)
+            if bucketItems.count > 1 {
+                for left in 0..<(bucketItems.count - 1) {
+                    for right in (left + 1)..<bucketItems.count {
+                        if Task.isCancelled { break }
+                        var distance = Float.greatestFiniteMagnitude
+                        do {
+                            try bucketItems[left].print.computeDistance(
+                                &distance, to: bucketItems[right].print)
+                        } catch {
+                            continue
+                        }
+                        if distance < distanceThreshold { unionFind.union(left, right) }
                     }
                 }
-                if !placed { bucketClusters.append([item]) }
             }
-            clustersByBucket[bucket] = bucketClusters
+            var components: [Int: [FeaturePrintBox]] = [:]
+            for index in bucketItems.indices {
+                components[unionFind.find(index), default: []].append(bucketItems[index])
+            }
+            clustersByBucket[bucket] = Array(components.values)
         }
         let clusters = clustersByBucket.values.flatMap { $0 }
 
         // 4. 生成结果组（仅保留 ≥2 张的簇；保留体积最大者）
         var groups: [ScanResultGroup] = []
         for cluster in clusters where cluster.count > 1 {
-            let sorted = cluster.sorted { $0.size > $1.size }   // 最大的作为"保留"
+            let sorted = cluster.sorted {
+                $0.pixelCount == $1.pixelCount ? $0.size > $1.size : $0.pixelCount > $1.pixelCount
+            }
             var items: [CleanableItem] = []
             var wasted: Int64 = 0
             for (idx, m) in sorted.enumerated() {
                 // 体积口径 = 物理已分配字节（P0）；默认全不勾——相似照片是用户的照片，
                 // 「删哪张」交回用户（P0 默认勾选纪律，比 CMM 更克制）。
-                let phys = DuplicatesScanner.physicalSize(m.url) ?? m.size
+                let phys = m.size
                 items.append(CleanableItem(url: m.url, displayName: m.url.lastPathComponent,
                                            detail: m.url.path, size: phys, safety: .caution,
                                            isSelected: false,
-                                           note: idx == 0 ? "建议保留（最大）" : nil))
-                if idx != 0 { wasted += phys }
+                                           note: idx == 0 ? "建议保留（分辨率最高）" : nil,
+                                           assessment: FindingAssessment(
+                                            ruleID: "vision-similar-image",
+                                            confidence: 0.85,
+                                            evidence: [
+                                                ScanEvidence(code: "vision-feature-print",
+                                                             kind: .visualSimilarity,
+                                                             title: "Vision 视觉特征相似", strength: 0.9),
+                                                ScanEvidence(code: "aspect-ratio-bucket",
+                                                             kind: .size,
+                                                             title: "图片宽高比相近", strength: 0.75)
+                                            ],
+                                            reclaimableBytes: m.reclaimable,
+                                            recovery: .trash,
+                                            regenerationCost: .high,
+                                            impact: "相似不等于重复，必须人工确认"
+                                           )))
+                if idx != 0 { wasted += m.reclaimable }
             }
             groups.append(ScanResultGroup(
                 id: "sim-\(sorted[0].url.path)",
                 title: xLocF("%@ · %d 张相似", sorted[0].url.lastPathComponent, cluster.count),
-                description: xLocF("预计可释放约 %@（保留最大的一张）", wasted.formattedBytes),
+                description: xLocF("预计可释放约 %@（建议保留分辨率最高的一张）", wasted.formattedBytes),
                 systemImage: "photo.on.rectangle.angled", safety: .caution, items: items))
         }
-        groups.sort { $0.selectedSize > $1.selectedSize }
+        // 相似照片默认全不勾选，不能用恒为 0 的 selectedSize 排序。
+        groups.sort { $0.reclaimableSize > $1.reclaimableSize }
         // 结果组封顶（对齐 DuplicatesScanner.maxGroups）：病态输入下也不会无上限地堆结果/占内存。
         if groups.count > maxGroups { groups = Array(groups.prefix(maxGroups)) }
-        return ScanResult(moduleID: .similarImages, groups: groups)
+        return ScanResult(moduleID: .similarImages, groups: groups,
+                          coverage: ScanCoverage.merged(coverageReports))
         #else
         return ScanResult(moduleID: .similarImages, groups: [])
         #endif
@@ -153,21 +217,26 @@ public struct SimilarImagesScanner: Sendable {
     private struct FeaturePrintBox: @unchecked Sendable {
         let url: URL
         let size: Int64
+        let reclaimable: Int64
         let aspect: Double
+        let pixelCount: Int64
         let print: VNFeaturePrintObservation
     }
 
     /// 对单张图：先用 CGImageSourceCreateThumbnailAtIndex 限制最大边到 thumbnailMaxPixel 解码缩略图，
     /// 再在缩略图上算 Vision 指纹（指纹本就用固定小网格，全分辨率解码是浪费）。保留取消支持。
-    private static func featureBox(url: URL, size: Int64) -> FeaturePrintBox? {
+    private static func featureBox(url: URL, size: Int64,
+                                   reclaimable: Int64) -> FeaturePrintBox? {
         if Task.isCancelled { return nil }
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         // 纵横比用轻量属性读取（不解码像素），用于聚类前分桶。
         var aspect = 0.0
+        var pixelCount: Int64 = 0
         if let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
            let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
            let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue, h > 0 {
             aspect = w / h
+            pixelCount = Int64(w * h)
         }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -180,7 +249,8 @@ public struct SimilarImagesScanner: Sendable {
         do {
             try handler.perform([request])
             guard let fp = request.results?.first as? VNFeaturePrintObservation else { return nil }
-            return FeaturePrintBox(url: url, size: size, aspect: aspect, print: fp)
+            return FeaturePrintBox(url: url, size: size, reclaimable: reclaimable,
+                                   aspect: aspect, pixelCount: pixelCount, print: fp)
         } catch {
             XicoLog.scan.debug("图片指纹失败 \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil
@@ -192,6 +262,35 @@ public struct SimilarImagesScanner: Sendable {
     private static func aspectBucket(_ aspect: Double) -> Int {
         guard aspect > 0 else { return 0 }
         return Int((log(aspect) / 0.06).rounded())
+    }
+
+    private struct UnionFind {
+        private var parent: [Int]
+        private var rank: [UInt8]
+
+        init(count: Int) {
+            parent = Array(0..<count)
+            rank = Array(repeating: 0, count: count)
+        }
+
+        mutating func find(_ value: Int) -> Int {
+            if parent[value] != value { parent[value] = find(parent[value]) }
+            return parent[value]
+        }
+
+        mutating func union(_ left: Int, _ right: Int) {
+            let a = find(left)
+            let b = find(right)
+            guard a != b else { return }
+            if rank[a] < rank[b] {
+                parent[a] = b
+            } else if rank[a] > rank[b] {
+                parent[b] = a
+            } else {
+                parent[b] = a
+                rank[a] += 1
+            }
+        }
     }
     #endif
 }

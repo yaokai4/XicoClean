@@ -73,6 +73,61 @@ final class DefinitionsUpdateServiceTests: XCTestCase {
         }
     }
 
+    func testValidationRejectsUnsafeRuleDSLBounds() throws {
+        let definition = CleanupDefinition(
+            id: "bad-constraints",
+            category: "system-junk",
+            title: "Bad",
+            description: "test",
+            paths: ["~/Library/Caches/Test"],
+            constraints: CleanupConstraints(
+                minimumAgeDays: -1,
+                minimumSizeBytes: 100,
+                maximumSizeBytes: 10,
+                recommendationConfidence: 1.5
+            )
+        )
+        let service = DefinitionsUpdateService(
+            bundled: library(version: 1), endpoint: nil,
+            trustedPublicKeys: [:], cacheDirectory: tmpDir
+        )
+        XCTAssertThrowsError(try service.validate(
+            DefinitionsLibrary(version: 2, definitions: [definition])))
+    }
+
+    func testValidationRejectsExpiredAndUnknownKillSwitchRules() throws {
+        let base = library(version: 2)
+        let service = DefinitionsUpdateService(
+            bundled: library(version: 1), endpoint: nil,
+            trustedPublicKeys: [:], cacheDirectory: tmpDir
+        )
+        XCTAssertThrowsError(try service.validate(DefinitionsLibrary(
+            version: 2,
+            definitions: base.definitions,
+            issuedAt: Date().addingTimeInterval(-10 * 86_400),
+            expiresAt: Date().addingTimeInterval(-1)
+        )))
+        XCTAssertThrowsError(try service.validate(DefinitionsLibrary(
+            version: 3,
+            definitions: base.definitions,
+            disabledDefinitionIDs: ["not-present"]
+        )))
+    }
+
+    func testValidationRejectsEmptyThreatSignature() throws {
+        let base = library(version: 2)
+        let service = DefinitionsUpdateService(
+            bundled: library(version: 1), endpoint: nil,
+            trustedPublicKeys: [:], cacheDirectory: tmpDir
+        )
+
+        XCTAssertThrowsError(try service.validate(DefinitionsLibrary(
+            version: 2,
+            definitions: base.definitions,
+            threatSignatures: [""]
+        )))
+    }
+
     private func library(version: Int) -> DefinitionsLibrary {
         DefinitionsLibrary(version: version, definitions: [
             CleanupDefinition(

@@ -26,8 +26,10 @@ APP="$HOME/Applications/Xico.app"
 PROFILE="${XICO_NOTARY_PROFILE:-XicoNotary}"
 DIST="$ROOT/dist"
 
-# 1. 必须有 Developer ID（公证只认这个，开发签名不行）
-if ! security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
+# 1. 必须有 Developer ID（公证只认这个，开发签名不行）。先完整捕获输出，避免
+# pipefail + grep -q 提前退出令上游收到 SIGPIPE，从而把有效证书误判为缺失。
+SIGNING_IDENTITIES="$(security find-identity -v -p codesigning)"
+if ! grep -q "Developer ID Application" <<<"$SIGNING_IDENTITIES"; then
   echo "✗ 未找到 Developer ID Application 证书。"
   echo "  请先在 developer.apple.com 申请并安装该证书后重试。"
   echo "  （本机目前只有 Apple Development 证书，仅供本机调试，无法对外公证。）"
@@ -37,14 +39,15 @@ fi
 # 2. 构建并用 Developer ID 签名（make_app 会自动优先选用 Developer ID）
 echo "▶︎ 构建并签名"
 scripts/make_app.sh release >/dev/null
-codesign -dvvv "$APP" 2>&1 | grep -q "Developer ID Application" \
+APP_SIGNATURE="$(codesign -dvvv "$APP" 2>&1)"
+grep -q "Authority=Developer ID Application:" <<<"$APP_SIGNATURE" \
   || { echo "✗ 签名身份不是 Developer ID，无法公证。"; exit 1; }
 codesign --verify --strict --deep "$APP" && echo "✓ 代码签名校验通过"
 
 # 2.5 校验发布关键 Info.plist 键非空——否则会产出「拒收一切正版许可证 / 无法在线更新」的坏包。
 echo "▶︎ 校验发布 Info.plist 键"
 PLIST="$APP/Contents/Info.plist"
-for key in XicoLicensePublicKeys XicoDefinitionsURL XicoDefinitionsPublicKeys SUFeedURL; do
+for key in XicoLicensePublicKeys XicoDefinitionsURL XicoDefinitionsPublicKeys XicoComponentsURL XicoComponentsPublicKeys XicoUpdatePublicKeys SUFeedURL; do
   val="$(plutil -extract "$key" raw -o - "$PLIST" 2>/dev/null || true)"
   if [ -z "$val" ]; then
     echo "✗ Info.plist 缺少或为空: $key"
@@ -79,7 +82,7 @@ hdiutil create -volname "Xico" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev
 rm -rf "$STAGE"
 
 # 5.5 签名并公证 DMG 本身（此前 DMG 未签未公证，安装体验差一档）
-DMG_IDENTITY="$(security find-identity -v -p codesigning | grep -m1 'Developer ID Application' | awk '{print $2}')"
+DMG_IDENTITY="$(awk '/Developer ID Application/ && !found { print $2; found = 1 }' <<<"$SIGNING_IDENTITIES")"
 codesign --force --timestamp --sign "$DMG_IDENTITY" "$DMG" && echo "✓ DMG 已签名"
 echo "▶︎ 公证 DMG"
 xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait

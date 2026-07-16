@@ -323,6 +323,8 @@ final class MetricsGatingTests: XCTestCase {
 
     func testFocusedMonitoringShotsSkipInteractiveLicenseKeychain() {
         XCTAssertTrue(AppModel.isOfflineRender(arguments: ["Xico", "--monitoring-shots"]))
+        XCTAssertTrue(AppModel.isOfflineRender(arguments: ["Xico", "--perfprobe"]))
+        XCTAssertTrue(AppModel.isOfflineRender(arguments: ["Xico", "--perfprobe=cpu-detail"]))
         XCTAssertFalse(AppModel.isOfflineRender(arguments: ["Xico"]))
     }
 

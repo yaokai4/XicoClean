@@ -58,6 +58,7 @@ public struct ServersView: View {
                     } label: {
                         Image(systemName: "ellipsis.circle").font(.system(size: 17)).foregroundStyle(XColor.textSecondary)
                     }.menuStyle(.borderlessButton).frame(width: 30)
+                        .accessibilityLabel(xLoc("更多服务器操作"))
                 }
             }
             Divider().opacity(0.25)
@@ -79,6 +80,11 @@ public struct ServersView: View {
         }
         .sheet(item: $tunnelsHost) { h in
             TunnelsView(vm: vm, tunnels: vm.tunnels, host: h, onClose: { tunnelsHost = nil }, gate: { gateAction($0) })
+        }
+        .sheet(item: $vm.pendingHostTrust) { request in
+            HostTrustSheet(request: request,
+                           onCancel: { vm.cancelHostTrust() },
+                           onTrust: { vm.trustPendingHost() })
         }
         .xToast($vm.toast)
     }
@@ -148,6 +154,7 @@ public struct ServersView: View {
                         .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { vm.selectedHostID = host.id } }
                         .contextMenu {
                             Button { tunnelsHost = host } label: { Label(xLoc("端口转发…"), systemImage: "arrow.left.arrow.right") }
+                            Button { vm.reverifyHost(host) } label: { Label(xLoc("重新验证服务器指纹…"), systemImage: "checkmark.shield") }
                             Button(xLoc("编辑")) { startEdit(host) }
                             Button(xLoc("删除"), role: .destructive) { vm.deleteHost(host.id) }
                         }
@@ -215,18 +222,24 @@ public struct ServersView: View {
             connectButton(host, state: state)
             Menu {
                 Button { tunnelsHost = host } label: { Label(xLoc("端口转发…"), systemImage: "arrow.left.arrow.right") }
+                Button { vm.reverifyHost(host) } label: { Label(xLoc("重新验证服务器指纹…"), systemImage: "checkmark.shield") }
                 Button(xLoc("编辑")) { startEdit(host) }
                 Button(xLoc("删除"), role: .destructive) { vm.deleteHost(host.id) }
             } label: {
                 Image(systemName: "ellipsis.circle").font(.system(size: 18)).foregroundStyle(XColor.textSecondary)
             }.menuStyle(.borderlessButton).frame(width: 28)
+                .accessibilityLabel(xLoc("更多服务器操作") + " " + host.name)
         }
         .padding(.horizontal, XSpacing.xl)
         .padding(.vertical, XSpacing.m)
     }
 
     @ViewBuilder private func connectButton(_ host: ServerHost, state: ConnectionState) -> some View {
-        if state.isLive {
+        if vm.scanningHostIDs.contains(host.id) {
+            HStack(spacing: 6) { XSpinner(size: 13); Text(xLoc("读取服务器指纹")).font(XFont.caption) }
+                .foregroundStyle(XColor.textSecondary)
+                .accessibilityElement(children: .combine)
+        } else if state.isLive {
             Button { vm.disconnect(host) } label: { Label(xLoc("断开"), systemImage: "stop.circle") }
                 .buttonStyle(XSecondaryButtonStyle())
         } else if state.isBusy {
@@ -250,6 +263,88 @@ public struct ServersView: View {
 
     private func startAdd() { editingHost = nil; showingEditor = true }
     private func startEdit(_ host: ServerHost) { editingHost = host; showingEditor = true }
+}
+
+// MARK: - 首次连接服务器身份确认
+
+public struct HostTrustSheet: View {
+    let request: HostTrustRequest
+    let onCancel: () -> Void
+    let onTrust: () -> Void
+
+    public init(request: HostTrustRequest, onCancel: @escaping () -> Void, onTrust: @escaping () -> Void) {
+        self.request = request; self.onCancel = onCancel; self.onTrust = onTrust
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: XSpacing.l) {
+            HStack(alignment: .top, spacing: XSpacing.m) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: XRadius.control, style: .continuous)
+                        .fill(XColor.warning.opacity(0.14))
+                    Image(systemName: request.replacesExistingKeys ? "exclamationmark.shield.fill" : "checkmark.shield.fill")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(request.replacesExistingKeys ? XColor.danger : XColor.warning)
+                }
+                .frame(width: 48, height: 48)
+                .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: XSpacing.xs) {
+                    Text(request.replacesExistingKeys ? xLoc("服务器指纹发生重新验证") : xLoc("确认服务器身份"))
+                        .font(XFont.title2).foregroundStyle(XColor.textPrimary)
+                    Text(request.host.endpointLabel)
+                        .font(XFont.captionMono).foregroundStyle(XColor.textSecondary)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Text(request.replacesExistingKeys
+                 ? xLoc("这会替换此前固定的服务器身份。请先通过服务商控制台或管理员独立核对下面的 SHA-256 指纹；如果不是你预期的变更，请取消。")
+                 : xLoc("首次连接前，请通过服务商控制台或管理员独立核对下面的 SHA-256 指纹。仅确认地址相同还不足以排除中间人攻击。"))
+                .font(XFont.body).foregroundStyle(XColor.textSecondary).lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 0) {
+                ForEach(Array(request.keys.enumerated()), id: \.element.id) { index, key in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(key.algorithm).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
+                            Spacer()
+                            XBadge(xLoc("公开主机密钥"), color: XColor.info)
+                        }
+                        Text(key.fingerprint)
+                            .font(XFont.captionMono).foregroundStyle(XColor.textSecondary)
+                            .textSelection(.enabled)
+                            .accessibilityLabel(xLoc("SHA-256 指纹") + " " + key.fingerprint)
+                    }
+                    .padding(XSpacing.m)
+                    if index < request.keys.count - 1 { Divider().opacity(0.35) }
+                }
+            }
+            .background(XColor.surfaceAlt.opacity(0.65), in: RoundedRectangle(cornerRadius: XRadius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous).strokeBorder(XColor.border, lineWidth: 1))
+
+            HStack(spacing: XSpacing.s) {
+                Image(systemName: "lock.shield").foregroundStyle(XColor.success).accessibilityHidden(true)
+                Text(xLoc("确认后会固定这些密钥；未来密钥变化时，Xico 会阻止连接，不会静默接受。"))
+                    .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+            }
+
+            HStack {
+                Spacer()
+                Button(xLoc("取消"), action: onCancel).buttonStyle(XSecondaryButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                Button(request.replacesExistingKeys ? xLoc("替换并固定指纹") : xLoc("信任并连接"), action: onTrust)
+                    .buttonStyle(XPrimaryButtonStyle())
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(XSpacing.xl)
+        .frame(width: 580)
+        .interactiveDismissDisabled()
+        .accessibilityElement(children: .contain)
+    }
 }
 
 // MARK: - 主机栏行

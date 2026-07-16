@@ -1,0 +1,260 @@
+# Review package: bc20c5e..9c9527fe0166a5ebc9bfd00c804b2abec7ca72fb
+
+## Commits
+9c9527f fix: capture every visible process
+
+## Files changed
+ .../Infrastructure/ApplicationUsageModels.swift    | 59 ++++++++++++++
+ .../Infrastructure/ProcessSnapshotProvider.swift   | 36 +++++++++
+ Sources/Shared/ProcessResourceRecord.swift         | 91 ++++++++++++++++++++++
+ .../ProcessSnapshotProviderTests.swift             | 37 +++++++++
+ 4 files changed, 223 insertions(+)
+
+## Diff
+diff --git a/Sources/Infrastructure/ApplicationUsageModels.swift b/Sources/Infrastructure/ApplicationUsageModels.swift
+new file mode 100644
+index 0000000..01dde4f
+--- /dev/null
++++ b/Sources/Infrastructure/ApplicationUsageModels.swift
+@@ -0,0 +1,59 @@
++import Foundation
++import Darwin
++import Shared
++
++public struct ProcessIdentity: Hashable, Codable, Sendable {
++    public let pid: Int32
++    public let startTimeNanoseconds: UInt64
++}
++
++public enum ProcessCaptureSource: String, Sendable { case local, helperEnhanced }
++
++public struct ProcessCapture: Sendable {
++    public let records: [ProcessResourceRecord]
++    public let failures: [Int32: ProcessResourceReadFailure]
++    public let wallDate: Date
++    public let monotonicNanoseconds: UInt64
++    public let source: ProcessCaptureSource
++    public let enumeratedCount: Int
++}
++
++public protocol PIDListing: Sendable {
++    func estimatedCount() -> Int
++    func fill(_ buffer: inout [Int32]) -> Int
++}
++
++public struct DarwinPIDListing: PIDListing {
++    public init() {}
++
++    public func estimatedCount() -> Int { max(0, Int(proc_listallpids(nil, 0))) }
++    public func fill(_ buffer: inout [Int32]) -> Int {
++        Int(proc_listallpids(&buffer, Int32(buffer.count * MemoryLayout<Int32>.size)))
++    }
++}
++
++public struct PIDEnumerator: Sendable {
++    let listing: any PIDListing
++    let reserve: Int
++    public init(listing: any PIDListing = DarwinPIDListing(), reserve: Int = 64) {
++        self.listing = listing
++        self.reserve = reserve
++    }
++    public func allPIDs() -> [Int32] {
++        var capacity = max(64, listing.estimatedCount() + reserve)
++        for _ in 0..<4 {
++            var buffer = [Int32](repeating: 0, count: capacity)
++            let count = listing.fill(&buffer)
++            guard count > 0 else { return [] }
++            if count < capacity {
++                return Array(Set(buffer.prefix(count).filter { $0 > 0 })).sorted()
++            }
++            capacity *= 2
++        }
++        return []
++    }
++}
++
++public protocol ProcessSnapshotProviding: Sendable {
++    func capture() async -> ProcessCapture
++}
+diff --git a/Sources/Infrastructure/ProcessSnapshotProvider.swift b/Sources/Infrastructure/ProcessSnapshotProvider.swift
+new file mode 100644
+index 0000000..7fa9d6d
+--- /dev/null
++++ b/Sources/Infrastructure/ProcessSnapshotProvider.swift
+@@ -0,0 +1,36 @@
++import Foundation
++import Shared
++
++public struct LocalProcessSnapshotProvider: ProcessSnapshotProviding {
++    private let enumerator: PIDEnumerator
++
++    public init(enumerator: PIDEnumerator = PIDEnumerator()) {
++        self.enumerator = enumerator
++    }
++
++    public func capture() async -> ProcessCapture {
++        let pids = enumerator.allPIDs()
++        var records: [ProcessResourceRecord] = []
++        var failures: [Int32: ProcessResourceReadFailure] = [:]
++        records.reserveCapacity(pids.count)
++        failures.reserveCapacity(pids.count)
++
++        for pid in pids {
++            switch DarwinProcessResourceReader.read(pid: pid) {
++            case .success(let record):
++                records.append(record)
++            case .failure(let failure):
++                failures[pid] = failure
++            }
++        }
++
++        return ProcessCapture(
++            records: records,
++            failures: failures,
++            wallDate: Date(),
++            monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
++            source: .local,
++            enumeratedCount: pids.count
++        )
++    }
++}
+diff --git a/Sources/Shared/ProcessResourceRecord.swift b/Sources/Shared/ProcessResourceRecord.swift
+new file mode 100644
+index 0000000..e08dc07
+--- /dev/null
++++ b/Sources/Shared/ProcessResourceRecord.swift
+@@ -0,0 +1,91 @@
++import Foundation
++import Darwin
++
++public struct ProcessResourceRecord: Codable, Sendable, Hashable {
++    public let pid: Int32
++    public let parentPID: Int32
++    public let startTimeNanoseconds: UInt64
++    public let name: String
++    public let executablePath: String?
++    public let cpuTimeNanoseconds: UInt64
++    public let physicalFootprintBytes: Int64
++    public let peakFootprintBytes: Int64
++    public init(pid: Int32, parentPID: Int32, startTimeNanoseconds: UInt64,
++                name: String, executablePath: String?, cpuTimeNanoseconds: UInt64,
++                physicalFootprintBytes: Int64, peakFootprintBytes: Int64) {
++        self.pid = pid
++        self.parentPID = parentPID
++        self.startTimeNanoseconds = startTimeNanoseconds
++        self.name = name
++        self.executablePath = executablePath
++        self.cpuTimeNanoseconds = cpuTimeNanoseconds
++        self.physicalFootprintBytes = physicalFootprintBytes
++        self.peakFootprintBytes = peakFootprintBytes
++    }
++}
++
++public enum ProcessResourceReadFailure: String, Error, Codable, Sendable {
++    case permissionDenied
++    case exited
++    case unreadable
++
++    static func fromErrno(_ value: Int32) -> Self {
++        switch value {
++        case EPERM, EACCES: return .permissionDenied
++        case ESRCH: return .exited
++        default: return .unreadable
++        }
++    }
++}
++
++public struct ProcessHelperBatchResponse: Codable, Sendable {
++    public let requestedCount: Int
++    public let records: [ProcessResourceRecord]
++    public init(requestedCount: Int, records: [ProcessResourceRecord]) {
++        self.requestedCount = requestedCount
++        self.records = records
++    }
++}
++
++public enum DarwinProcessResourceReader {
++    public static func read(pid: Int32) -> Result<ProcessResourceRecord, ProcessResourceReadFailure> {
++        var bsd = proc_bsdinfo()
++        let bsdSize = Int32(MemoryLayout<proc_bsdinfo>.stride)
++        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, bsdSize) == bsdSize else {
++            return .failure(.fromErrno(errno))
++        }
++
++        var usage = rusage_info_v4()
++        let usageResult = withUnsafeMutablePointer(to: &usage) { pointer -> Int32 in
++            pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
++                proc_pid_rusage(pid, RUSAGE_INFO_V4, $0)
++            }
++        }
++        guard usageResult == 0 else { return .failure(.fromErrno(errno)) }
++
++        var pathBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
++        let pathLength = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
++        let executablePath: String? = pathLength > 0
++            ? String(decoding: pathBuffer.prefix(Int(pathLength)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
++            : nil
++
++        var nameBuffer = [CChar](repeating: 0, count: 256)
++        let nameLength = proc_name(pid, &nameBuffer, UInt32(nameBuffer.count))
++        let name = nameLength > 0
++            ? String(decoding: nameBuffer.prefix(Int(nameLength)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
++            : "PID \(pid)"
++
++        let start = UInt64(bsd.pbi_start_tvsec) * 1_000_000_000
++            + UInt64(bsd.pbi_start_tvusec) * 1_000
++        return .success(ProcessResourceRecord(
++            pid: pid,
++            parentPID: Int32(bitPattern: bsd.pbi_ppid),
++            startTimeNanoseconds: start,
++            name: name,
++            executablePath: executablePath,
++            cpuTimeNanoseconds: usage.ri_user_time &+ usage.ri_system_time,
++            physicalFootprintBytes: Int64(usage.ri_phys_footprint),
++            peakFootprintBytes: Int64(usage.ri_lifetime_max_phys_footprint)
++        ))
++    }
++}
+diff --git a/Tests/IntegrationTests/ProcessSnapshotProviderTests.swift b/Tests/IntegrationTests/ProcessSnapshotProviderTests.swift
+new file mode 100644
+index 0000000..53f0f92
+--- /dev/null
++++ b/Tests/IntegrationTests/ProcessSnapshotProviderTests.swift
+@@ -0,0 +1,37 @@
++import XCTest
++@testable import Infrastructure
++import Shared
++
++final class ProcessSnapshotProviderTests: XCTestCase {
++    private final class FakeListing: PIDListing, @unchecked Sendable {
++        let estimate: Int
++        let values: [Int32]
++        init(estimate: Int, values: [Int32]) {
++            self.estimate = estimate
++            self.values = values
++        }
++        func estimatedCount() -> Int { estimate }
++        func fill(_ buffer: inout [Int32]) -> Int {
++            let count = min(buffer.count, values.count)
++            for index in 0..<count { buffer[index] = values[index] }
++            return values.count > buffer.count ? buffer.count : values.count
++        }
++    }
++
++    func testPIDReturnValueIsCountNotBytes() {
++        let listing = FakeListing(estimate: 8, values: [11, 12, 13, 14, 15, 16, 17, 18])
++        XCTAssertEqual(PIDEnumerator(listing: listing, reserve: 0).allPIDs(),
++                       [11, 12, 13, 14, 15, 16, 17, 18])
++    }
++
++    func testPIDEnumeratorGrowsWhenBufferFills() {
++        let expected = (1...100).map(Int32.init)
++        let listing = FakeListing(estimate: 1, values: expected)
++        XCTAssertEqual(PIDEnumerator(listing: listing, reserve: 0).allPIDs(), expected)
++    }
++
++    func testIdentityIncludesStartTime() {
++        XCTAssertNotEqual(ProcessIdentity(pid: 42, startTimeNanoseconds: 1),
++                          ProcessIdentity(pid: 42, startTimeNanoseconds: 2))
++    }
++}

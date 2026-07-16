@@ -58,11 +58,12 @@ public enum XColor {
     public static var memCached: Color     { ring(3) }
     public static var memFree: Color       { idle }
 
-    public static let success      = dynamic(light: 0x1FB87A, dark: 0x35DEA0)
-    public static let warning      = dynamic(light: 0xF59E0B, dark: 0xFFC53D)
-    public static let danger       = dynamic(light: 0xF24B5E, dark: 0xFF6F80)
+    // 浅色档同时会承载状态文字/徽标：统一压深到白底 ≥ 4.5:1；暗色档保持高亮以对抗墨色表面。
+    public static let success      = dynamic(light: 0x087A52, dark: 0x35DEA0)
+    public static let warning      = dynamic(light: 0x976000, dark: 0xFFC53D)
+    public static let danger       = dynamic(light: 0xC5283D, dark: 0xFF6F80)
     /// 信息/中性提示（区别于告警橙）——用于非告警型引导横幅等。
-    public static let info         = dynamic(light: 0x2E74E6, dark: 0x6BA6FF)
+    public static let info         = dynamic(light: 0x2868C7, dark: 0x6BA6FF)
     /// 强调色之上的前景（按钮/图标块白字）。品牌渐变足够深，白字达标。
     public static let onAccent     = Color.white
     /// 非活动/占位中性色（分段控件未选段、骨架屏等），比 textTertiary 更淡。

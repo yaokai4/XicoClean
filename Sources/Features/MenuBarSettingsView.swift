@@ -378,7 +378,7 @@ public struct MenuBarSettingsView: View {
                     .accessibilityLabel(xLocF("展开 %@ 详情", item.title))
                 }
                 Spacer()
-                Toggle("", isOn: enabled).toggleStyle(.switch).labelsHidden()
+                Toggle("", isOn: enabled).toggleStyle(XThemeSwitchStyle()).labelsHidden()
                     .accessibilityLabel(item.title)
             }
             if enabled.wrappedValue, expanded {
@@ -403,7 +403,7 @@ public struct MenuBarSettingsView: View {
                         Spacer()
                         Toggle("", isOn: mbBool("xico.mb.combined.\(sub.id)",
                                                 default: ["cpu", "memory", "network"].contains(sub.id)))
-                            .toggleStyle(.switch).labelsHidden().controlSize(.mini)
+                            .toggleStyle(XThemeSwitchStyle(compact: true)).labelsHidden()
                             .accessibilityLabel(sub.title)
                     }
                 }
@@ -587,7 +587,7 @@ public struct MenuBarSettingsView: View {
         HStack {
             Text(title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
             Spacer()
-            Toggle("", isOn: binding).toggleStyle(.switch).labelsHidden()
+            Toggle("", isOn: binding).toggleStyle(XThemeSwitchStyle()).labelsHidden()
                 .accessibilityLabel(title)
         }
     }

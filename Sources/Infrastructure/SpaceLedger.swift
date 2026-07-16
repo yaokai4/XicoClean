@@ -53,11 +53,12 @@ public struct SpaceLedger: Sendable {
         if let range = date.range(of: "com.apple.TimeMachine.") { date.removeSubrange(range) }
         if date.hasSuffix(".local") { date.removeLast(".local".count) }
         guard !date.isEmpty, date.allSatisfy({ $0.isNumber || $0 == "-" }) else { return false }
+        let snapshotDate = date
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: "/usr/bin/tmutil")
-                proc.arguments = ["deletelocalsnapshots", date]
+                proc.arguments = ["deletelocalsnapshots", snapshotDate]
                 proc.standardOutput = FileHandle.nullDevice
                 proc.standardError = FileHandle.nullDevice
                 do { try proc.run() } catch { return continuation.resume(returning: false) }

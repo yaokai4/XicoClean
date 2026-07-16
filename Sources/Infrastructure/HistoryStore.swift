@@ -188,7 +188,7 @@ public final class HistoryStore: @unchecked Sendable {
     /// **异步**落盘，读者不被磁盘 I/O 阻塞。两者都在同一私有串行队列上执行，序号守卫使较旧快照
     /// 绝不覆盖较新的（无论到达先后），磁盘最终态恒为最新快照。
     private func persist(_ snapshot: (records: [CleaningRecord], seq: UInt64), sync: Bool = true) {
-        let work = { [self] in
+        let work: @Sendable () -> Void = { [self, snapshot] in
             guard snapshot.seq > lastWrittenSeq else { return }   // 已有更新的快照落过盘：跳过陈旧写
             do {
                 let data = try JSONEncoder().encode(snapshot.records)

@@ -97,6 +97,183 @@ public enum SafetyLevel: String, Sendable, Codable, CaseIterable {
 
 // MARK: - 扫描结果模型
 
+/// 扫描结论所依据的事实类型。删除资格仍由 SafetyEngine 决定；证据只负责解释与推荐排序。
+public enum ScanEvidenceKind: String, Sendable, Codable, Hashable {
+    case signedRule
+    case pathOwnership
+    case regenerable
+    case age
+    case size
+    case exactContent
+    case visualSimilarity
+    case applicationState
+    case codeSignature
+    case userLocation
+    case safetyPolicy
+}
+
+/// 一条可审计的命中证据。`strength` 是 0...1 的证据强度，不是删除授权。
+public struct ScanEvidence: Sendable, Codable, Hashable, Identifiable {
+    public let code: String
+    public let kind: ScanEvidenceKind
+    public let title: String
+    public let detail: String
+    public let strength: Double
+
+    public var id: String { code }
+
+    public init(code: String, kind: ScanEvidenceKind, title: String,
+                detail: String = "", strength: Double = 1) {
+        self.code = code
+        self.kind = kind
+        self.title = title
+        self.detail = detail
+        self.strength = min(max(strength, 0), 1)
+    }
+}
+
+public enum RecoveryMethod: String, Sendable, Codable, Hashable {
+    case trash
+    case regenerate
+    case redownload
+    case appManaged
+    case none
+
+    public var label: String {
+        switch self {
+        case .trash: return "可从废纸篓恢复"
+        case .regenerate: return "应用可自动重建"
+        case .redownload: return "需要时可重新下载"
+        case .appManaged: return "请使用所属应用管理"
+        case .none: return "不可自动恢复"
+        }
+    }
+}
+
+public enum RegenerationCost: String, Sendable, Codable, Hashable {
+    case negligible
+    case low
+    case medium
+    case high
+    case unknown
+}
+
+/// 扫描器对单项给出的可解释判断。置信度影响默认推荐，但不能绕过删除期安全闸门。
+public struct FindingAssessment: Sendable, Codable, Hashable {
+    public let ruleID: String?
+    public let confidence: Double
+    public let evidence: [ScanEvidence]
+    public let ownerBundleID: String?
+    public let reclaimableBytes: Int64
+    public let recovery: RecoveryMethod
+    public let regenerationCost: RegenerationCost
+    public let impact: String?
+    public let provenance: String
+
+    public init(ruleID: String? = nil, confidence: Double, evidence: [ScanEvidence],
+                ownerBundleID: String? = nil, reclaimableBytes: Int64,
+                recovery: RecoveryMethod = .trash,
+                regenerationCost: RegenerationCost = .unknown,
+                impact: String? = nil, provenance: String = "local") {
+        self.ruleID = ruleID
+        self.confidence = min(max(confidence, 0), 1)
+        self.evidence = evidence
+        self.ownerBundleID = ownerBundleID
+        self.reclaimableBytes = max(0, reclaimableBytes)
+        self.recovery = recovery
+        self.regenerationCost = regenerationCost
+        self.impact = impact
+        self.provenance = provenance
+    }
+
+    /// 旧扫描器的兼容判断。它仍明确标注为本地安全策略证据，避免出现没有任何理由的结果项。
+    public static func compatible(safety: SafetyLevel, size: Int64) -> FindingAssessment {
+        FindingAssessment(
+            confidence: safety == .safe ? 0.98 : (safety == .caution ? 0.75 : 0.45),
+            evidence: [ScanEvidence(
+                code: "safety-policy",
+                kind: .safetyPolicy,
+                title: "通过 Xico 删除安全策略",
+                strength: safety == .safe ? 0.98 : 0.7
+            )],
+            reclaimableBytes: size,
+            recovery: safety == .safe ? .regenerate : .trash,
+            regenerationCost: safety == .safe ? .low : .unknown,
+            provenance: "compatibility"
+        )
+    }
+
+    /// 只有高置信、至少两类独立证据的安全项才允许扫描器默认推荐。
+    public var qualifiesForAutomaticSelection: Bool {
+        confidence >= 0.95 && Set(evidence.map(\.kind)).count >= 2
+    }
+}
+
+/// 扫描覆盖报告：让“很干净”同时说明扫到了哪里、哪些地方没有读取。
+public struct ScanCoverage: Sendable, Codable, Hashable {
+    public let roots: [String]
+    public let filesVisited: Int
+    public let directoriesVisited: Int
+    public let bytesInspected: Int64
+    public let deniedDirectories: Int
+    public let skippedMounts: Int
+    public let skippedSymlinks: Int
+    public let cloudPlaceholdersSkipped: Int
+    public let excludedByPolicy: Int
+    public let hiddenFilesIncluded: Bool
+    public let cancelled: Bool
+    public let elapsedSeconds: Double
+    public let limitations: [String]
+
+    public init(roots: [String], filesVisited: Int = 0, directoriesVisited: Int = 0,
+                bytesInspected: Int64 = 0, deniedDirectories: Int = 0,
+                skippedMounts: Int = 0, skippedSymlinks: Int = 0,
+                cloudPlaceholdersSkipped: Int = 0, excludedByPolicy: Int = 0,
+                hiddenFilesIncluded: Bool = false,
+                cancelled: Bool = false, elapsedSeconds: Double = 0,
+                limitations: [String] = []) {
+        self.roots = roots
+        self.filesVisited = max(0, filesVisited)
+        self.directoriesVisited = max(0, directoriesVisited)
+        self.bytesInspected = max(0, bytesInspected)
+        self.deniedDirectories = max(0, deniedDirectories)
+        self.skippedMounts = max(0, skippedMounts)
+        self.skippedSymlinks = max(0, skippedSymlinks)
+        self.cloudPlaceholdersSkipped = max(0, cloudPlaceholdersSkipped)
+        self.excludedByPolicy = max(0, excludedByPolicy)
+        self.hiddenFilesIncluded = hiddenFilesIncluded
+        self.cancelled = cancelled
+        self.elapsedSeconds = max(0, elapsedSeconds)
+        self.limitations = limitations
+    }
+
+    public var isComplete: Bool {
+        !cancelled && deniedDirectories == 0 && limitations.isEmpty
+    }
+
+    public static func merged(_ reports: [ScanCoverage]) -> ScanCoverage? {
+        guard !reports.isEmpty else { return nil }
+        // 同一份共享快照会被多个扫描器引用。按值去重后再汇总，避免把同一轮家目录
+        // 遍历的文件数、权限缺口和字节数重复计算三次。
+        let reports = Array(Set(reports))
+        return ScanCoverage(
+            roots: Array(Set(reports.flatMap(\.roots))).sorted(),
+            filesVisited: reports.reduce(0) { $0 + $1.filesVisited },
+            directoriesVisited: reports.reduce(0) { $0 + $1.directoriesVisited },
+            bytesInspected: reports.reduce(0) { $0 + $1.bytesInspected },
+            deniedDirectories: reports.reduce(0) { $0 + $1.deniedDirectories },
+            skippedMounts: reports.reduce(0) { $0 + $1.skippedMounts },
+            skippedSymlinks: reports.reduce(0) { $0 + $1.skippedSymlinks },
+            cloudPlaceholdersSkipped: reports.reduce(0) { $0 + $1.cloudPlaceholdersSkipped },
+            excludedByPolicy: reports.reduce(0) { $0 + $1.excludedByPolicy },
+            hiddenFilesIncluded: reports.allSatisfy(\.hiddenFilesIncluded),
+            cancelled: reports.contains(where: \.cancelled),
+            elapsedSeconds: reports.map(\.elapsedSeconds).max() ?? 0,
+            limitations: Array(Set(reports.flatMap(\.limitations))).sorted()
+        )
+    }
+}
+
 /// 单个可清理项
 public struct CleanableItem: Identifiable, Sendable, Hashable {
     public let id: UUID
@@ -114,6 +291,8 @@ public struct CleanableItem: Identifiable, Sendable, Hashable {
     /// 正确的处置方式，**任何路径都不得执行删除**——组全选跳过、UI 不给勾选框、引擎拒删三层闸。
     /// 此前仅靠 isSelected:false 初始态兜底，组勾选框一勾就会被卷入删除（2026-07 审计缺口）。
     public let isInformational: Bool
+    /// 可解释判断：证据、置信度、归属、真实可回收量与恢复方式。
+    public let assessment: FindingAssessment
 
     public init(
         id: UUID = UUID(),
@@ -125,7 +304,8 @@ public struct CleanableItem: Identifiable, Sendable, Hashable {
         isSelected: Bool? = nil,
         requiresHelper: Bool = false,
         note: String? = nil,
-        isInformational: Bool = false
+        isInformational: Bool = false,
+        assessment: FindingAssessment? = nil
     ) {
         self.id = id
         self.url = url
@@ -135,8 +315,15 @@ public struct CleanableItem: Identifiable, Sendable, Hashable {
         self.safety = safety
         self.requiresHelper = requiresHelper
         self.isInformational = isInformational
-        self.isSelected = isInformational ? false : (isSelected ?? (requiresHelper ? false : safety.defaultSelected))
+        self.assessment = assessment ?? .compatible(safety: safety, size: size)
+        // 未迁移的旧扫描器维持原选择行为；一旦显式提供 assessment，就必须满足高置信双证据门槛。
+        let automatic = safety.defaultSelected && (assessment?.qualifiesForAutomaticSelection ?? true)
+        self.isSelected = isInformational ? false : (isSelected ?? (requiresHelper ? false : automatic))
         self.note = note
+    }
+
+    public var estimatedReclaimableBytes: Int64 {
+        isInformational ? 0 : assessment.reclaimableBytes
     }
 }
 
@@ -164,21 +351,23 @@ public struct ScanResultGroup: Identifiable, Sendable {
     }
 
     public var totalSize: Int64 { items.reduce(0) { $0 + $1.size } }
-    public var selectedSize: Int64 { items.filter(\.isSelected).reduce(0) { $0 + $1.size } }
+    public var selectedSize: Int64 { items.filter(\.isSelected).reduce(0) { $0 + $1.estimatedReclaimableBytes } }
     /// 真正可清理的字节（剔除「仅提示」项）：头条「可清理 X GB」与进度环分母必须用这个口径——
     /// 引擎永不删的字节计入「可清理」即是行业虚标（2026-07 终审 P1）。组卡自身仍显示 totalSize
     ///（该组的事实体量，配「仅提示」徽标是诚实的）。
-    public var reclaimableSize: Int64 { items.filter { !$0.isInformational }.reduce(0) { $0 + $1.size } }
+    public var reclaimableSize: Int64 { items.reduce(0) { $0 + $1.estimatedReclaimableBytes } }
 }
 
 /// 一个模块扫描后的完整结果
 public struct ScanResult: Sendable {
     public let moduleID: ModuleID
     public var groups: [ScanResultGroup]
+    public let coverage: ScanCoverage?
 
-    public init(moduleID: ModuleID, groups: [ScanResultGroup]) {
+    public init(moduleID: ModuleID, groups: [ScanResultGroup], coverage: ScanCoverage? = nil) {
         self.moduleID = moduleID
         self.groups = groups
+        self.coverage = coverage
     }
 
     public var totalReclaimable: Int64 { groups.reduce(0) { $0 + $1.reclaimableSize } }
@@ -192,11 +381,21 @@ public struct ScanProgress: Sendable {
     public var fraction: Double?      // 0...1，未知时为 nil
     public var message: String
     public var bytesFound: Int64
+    public var filesVisited: Int
+    public var directoriesVisited: Int
+    public var deniedDirectories: Int
+    public var elapsedSeconds: Double
 
-    public init(fraction: Double? = nil, message: String = "", bytesFound: Int64 = 0) {
+    public init(fraction: Double? = nil, message: String = "", bytesFound: Int64 = 0,
+                filesVisited: Int = 0, directoriesVisited: Int = 0,
+                deniedDirectories: Int = 0, elapsedSeconds: Double = 0) {
         self.fraction = fraction
         self.message = message
         self.bytesFound = bytesFound
+        self.filesVisited = max(0, filesVisited)
+        self.directoriesVisited = max(0, directoriesVisited)
+        self.deniedDirectories = max(0, deniedDirectories)
+        self.elapsedSeconds = max(0, elapsedSeconds)
     }
 }
 
@@ -219,7 +418,7 @@ public struct CleaningPlan: Sendable {
         self.intent = intent
     }
 
-    public var totalSize: Int64 { items.reduce(0) { $0 + $1.size } }
+    public var totalSize: Int64 { items.reduce(0) { $0 + $1.estimatedReclaimableBytes } }
 }
 
 public struct CleaningFailure: Sendable {

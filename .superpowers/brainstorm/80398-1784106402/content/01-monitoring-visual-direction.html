@@ -1,0 +1,214 @@
+<style>
+  :root {
+    --ink: #0a0d14;
+    --panel: #121722;
+    --line: rgba(255,255,255,.09);
+    --muted: #8f98ad;
+    --text: #f7f8fc;
+    --cpu: #78a7ff;
+    --memory: #c58cff;
+    --network: #63e6c2;
+    --system: #ff7cad;
+  }
+  .hero-copy { max-width: 920px; margin-bottom: 28px; }
+  .hero-copy h2 { font-size: 32px; letter-spacing: -.04em; margin-bottom: 8px; }
+  .hero-copy .subtitle { font-size: 16px; line-height: 1.7; }
+  .principles { display:flex; flex-wrap:wrap; gap:8px; margin:18px 0 6px; }
+  .principle { padding:7px 11px; border-radius:999px; border:1px solid rgba(120,167,255,.23); background:rgba(120,167,255,.08); color:#adcbff; font-size:12px; font-weight:700; }
+  .direction-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; align-items:stretch; }
+  .direction { border-radius:22px; overflow:hidden; border:1px solid rgba(255,255,255,.11); background:#0e121b; cursor:pointer; transition:.2s ease; box-shadow:0 20px 55px rgba(0,0,0,.22); }
+  .direction:hover { transform:translateY(-3px); border-color:rgba(129,170,255,.45); }
+  .direction.selected { outline:2px solid #7aa8ff; outline-offset:3px; }
+  .direction-top { min-height:420px; padding:16px; position:relative; color:var(--text); }
+  .recommended { position:absolute; right:14px; top:14px; padding:5px 9px; border-radius:999px; background:linear-gradient(135deg,#77a9ff,#8f7cff); color:white; font-size:10px; font-weight:800; letter-spacing:.05em; z-index:2; }
+  .window { border:1px solid rgba(255,255,255,.1); border-radius:18px; overflow:hidden; background:rgba(15,19,30,.96); box-shadow:inset 0 1px rgba(255,255,255,.05),0 18px 55px rgba(0,0,0,.35); }
+  .window-title { display:flex; justify-content:space-between; align-items:center; padding:15px 16px 12px; }
+  .app-title { display:flex; align-items:center; gap:10px; font-weight:800; font-size:16px; }
+  .metric-icon { width:30px; height:30px; display:grid; place-items:center; border-radius:10px; background:rgba(120,167,255,.15); color:#9ebdff; }
+  .chip { color:#8e98ad; font-size:11px; }
+  .precision { background:radial-gradient(circle at 15% 5%,rgba(71,123,255,.19),transparent 35%),radial-gradient(circle at 90% 70%,rgba(81,238,200,.10),transparent 38%),#090d15; }
+  .precision .window { backdrop-filter:blur(26px); background:linear-gradient(145deg,rgba(25,31,46,.94),rgba(13,17,27,.96)); }
+  .metric-hero { display:grid; grid-template-columns:98px 1fr; gap:14px; padding:4px 16px 15px; }
+  .ring { width:88px; height:88px; border-radius:50%; display:grid; place-items:center; background:conic-gradient(var(--cpu) 0 58%,var(--system) 58% 77%,rgba(255,255,255,.08) 77%); position:relative; }
+  .ring:after { content:""; position:absolute; inset:9px; border-radius:50%; background:#151b28; }
+  .ring strong { z-index:1; font-size:25px; }
+  .submetrics { display:grid; grid-template-columns:1fr 1fr; gap:10px; align-content:center; }
+  .submetric span { display:block; color:#8993a8; font-size:11px; margin-bottom:2px; }
+  .submetric b { font-size:15px; }
+  .spark { height:60px; margin:0 16px 12px; position:relative; overflow:hidden; border-bottom:1px solid var(--line); background:linear-gradient(to bottom,transparent 49%,rgba(255,255,255,.045) 50%,transparent 51%); }
+  .spark svg { position:absolute; inset:0; width:100%; height:100%; }
+  .process-label { display:flex; justify-content:space-between; color:#8d97aa; font-size:10px; text-transform:uppercase; letter-spacing:.06em; padding:0 16px 7px; }
+  .processes { padding:0 10px 12px; }
+  .process { display:grid; grid-template-columns:26px 1fr auto auto; gap:8px; align-items:center; padding:7px 7px; border-radius:10px; font-size:11px; }
+  .process:first-child { background:rgba(120,167,255,.10); }
+  .app-icon { width:23px; height:23px; border-radius:7px; display:grid; place-items:center; background:linear-gradient(145deg,#755cff,#c377ff); font-size:9px; font-weight:900; }
+  .process .name { font-weight:700; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .process .cpu { color:#a9c5ff; font-variant-numeric:tabular-nums; }
+  .process .mem { color:#c7cad5; min-width:48px; text-align:right; font-variant-numeric:tabular-nums; }
+  .trust { margin:0 10px 10px; padding:8px 10px; border-radius:10px; display:flex; align-items:center; gap:7px; color:#85efcb; background:rgba(60,218,170,.08); border:1px solid rgba(75,223,181,.13); font-size:10px; font-weight:700; }
+  .jewel { background:radial-gradient(circle at 12% 2%,rgba(255,80,154,.28),transparent 35%),radial-gradient(circle at 92% 90%,rgba(102,58,255,.32),transparent 44%),#120b1c; }
+  .jewel .window { background:linear-gradient(150deg,rgba(42,24,57,.96),rgba(19,13,32,.97)); border-color:rgba(255,166,218,.17); }
+  .jewel .metric-icon { background:rgba(255,111,185,.16); color:#ff9dd1; }
+  .jewel .ring { background:conic-gradient(#ff76b6 0 58%,#c987ff 58% 77%,rgba(255,255,255,.08) 77%); }
+  .jewel .ring:after { background:#24162f; }
+  .jewel .process:first-child { background:rgba(255,111,185,.1); }
+  .jewel .process .cpu { color:#ff9bd0; }
+  .jewel .trust { color:#ffd0e9; background:rgba(255,107,184,.08); border-color:rgba(255,107,184,.14); }
+  .native { background:linear-gradient(145deg,#f1f2f5,#dadde5); }
+  .native .window { background:rgba(250,251,253,.94); border-color:rgba(0,0,0,.1); color:#11131a; box-shadow:inset 0 1px white,0 18px 45px rgba(24,29,40,.18); }
+  .native .metric-icon { background:#e4e8f1; color:#355f9f; }
+  .native .chip,.native .submetric span,.native .process-label { color:#697083; }
+  .native .ring { background:conic-gradient(#3d74c9 0 58%,#8a9bc0 58% 77%,rgba(26,36,52,.09) 77%); }
+  .native .ring:after { background:#f4f6fa; }
+  .native .spark { border-color:rgba(0,0,0,.08); background:linear-gradient(to bottom,transparent 49%,rgba(0,0,0,.045) 50%,transparent 51%); }
+  .native .process:first-child { background:rgba(58,105,180,.08); }
+  .native .process .cpu { color:#315f9f; }
+  .native .process .mem { color:#5d6473; }
+  .native .app-icon { background:linear-gradient(145deg,#5d73b6,#8494c7); color:white; }
+  .native .trust { color:#31705d; background:rgba(44,143,107,.07); border-color:rgba(44,143,107,.12); }
+  .direction-body { padding:16px 17px 18px; background:rgba(255,255,255,.035); min-height:132px; color:#e8eaf0; }
+  .direction-body h3 { font-size:16px; margin:0 0 6px; color:#fff; }
+  .direction-body p { margin:0; font-size:12px; line-height:1.58; color:#9da5b7; }
+  .direction-body .pick { display:inline-block; margin-top:11px; color:#8db2ff; font-size:11px; font-weight:800; }
+  .program { margin-top:26px; padding:20px; border:1px solid rgba(127,150,205,.17); border-radius:18px; background:linear-gradient(145deg,rgba(63,83,130,.07),rgba(95,56,124,.04)); }
+  .program h3 { margin-top:0; font-size:15px; }
+  .phases { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-top:13px; }
+  .phase { padding:13px; border-radius:13px; background:rgba(103,126,176,.075); border:1px solid rgba(126,149,202,.12); }
+  .phase b { display:block; font-size:12px; margin-bottom:5px; }
+  .phase span { color:#8f98aa; font-size:11px; line-height:1.45; }
+  .phase-no { color:#7da9ff; font-size:10px; font-weight:900; letter-spacing:.08em; margin-bottom:6px; }
+  .prompt { margin:18px 0 2px; text-align:center; color:#9ba3b4; font-size:13px; }
+  @media (max-width: 980px) { .direction-grid { grid-template-columns:1fr; } .direction-top { min-height:0; } .phases { grid-template-columns:1fr 1fr; } }
+</style>
+
+<div class="hero-copy">
+  <h2>Xico 监控系统 · 视觉北极星</h2>
+  <p class="subtitle">这不是给现有面板“换一套颜色”，而是把准确度、信息层级和高级感变成同一套系统。下面三种方向都用真实监控内容演示；请选择希望贯穿菜单栏、监控中心和设置页的主方向。</p>
+  <div class="principles">
+    <span class="principle">应用级准确聚合</span>
+    <span class="principle">数据颜色固定语义</span>
+    <span class="principle">一眼总览 · 一步深挖</span>
+    <span class="principle">原生 macOS 质感</span>
+    <span class="principle">低开销实时采样</span>
+  </div>
+</div>
+
+<div class="direction-grid">
+  <div class="direction" data-choice="precision-glass" onclick="toggleSelect(this)">
+    <div class="direction-top precision">
+      <span class="recommended">推荐 · RECOMMENDED</span>
+      <div class="window">
+        <div class="window-title">
+          <div class="app-title"><span class="metric-icon">▦</span>处理器</div>
+          <span class="chip">Apple M1 · 实时</span>
+        </div>
+        <div class="metric-hero">
+          <div class="ring"><strong>77%</strong></div>
+          <div class="submetrics">
+            <div class="submetric"><span>用户</span><b>58%</b></div>
+            <div class="submetric"><span>系统</span><b>19%</b></div>
+            <div class="submetric"><span>P / E 核</span><b>3.20 / 2.06</b></div>
+            <div class="submetric"><span>温度</span><b>68°C</b></div>
+          </div>
+        </div>
+        <div class="spark">
+          <svg viewBox="0 0 320 60" preserveAspectRatio="none"><defs><linearGradient id="pg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#78a7ff" stop-opacity=".34"/><stop offset="1" stop-color="#78a7ff" stop-opacity="0"/></linearGradient></defs><path d="M0 49 C22 44 25 28 47 30 S79 45 103 35 S139 15 162 26 S198 49 224 38 S255 17 277 25 S301 15 320 13 L320 60 L0 60Z" fill="url(#pg)"/><path d="M0 49 C22 44 25 28 47 30 S79 45 103 35 S139 15 162 26 S198 49 224 38 S255 17 277 25 S301 15 320 13" fill="none" stroke="#82adff" stroke-width="2.2"/></svg>
+        </div>
+        <div class="process-label"><span>应用聚合</span><span>CPU　内存</span></div>
+        <div class="processes">
+          <div class="process"><span class="app-icon">X</span><span class="name">Xico · 3 个进程</span><b class="cpu">15.8%</b><span class="mem">1.24 GB</span></div>
+          <div class="process"><span class="app-icon">C</span><span class="name">Codex · 7 个进程</span><b class="cpu">8.6%</b><span class="mem">860 MB</span></div>
+          <div class="process"><span class="app-icon">G</span><span class="name">Google Chrome · 21 个进程</span><b class="cpu">5.2%</b><span class="mem">2.31 GB</span></div>
+        </div>
+        <div class="trust">● 采样完整 · 已按应用合并 · 0–100% 口径</div>
+      </div>
+    </div>
+    <div class="direction-body">
+      <h3>A · Precision Glass 精密玻璃</h3>
+      <p>石墨黑玻璃承载高密度信息，颜色只服务于数据语义。克制、锐利、像专业仪器；最适合“超越 iStat”的长期产品定位。</p>
+      <span class="pick">点击选择此方向</span>
+    </div>
+  </div>
+
+  <div class="direction" data-choice="jewel-atelier" onclick="toggleSelect(this)">
+    <div class="direction-top jewel">
+      <div class="window">
+        <div class="window-title">
+          <div class="app-title"><span class="metric-icon">✦</span>处理器</div>
+          <span class="chip">Apple M1 · 实时</span>
+        </div>
+        <div class="metric-hero">
+          <div class="ring"><strong>77%</strong></div>
+          <div class="submetrics">
+            <div class="submetric"><span>用户</span><b>58%</b></div>
+            <div class="submetric"><span>系统</span><b>19%</b></div>
+            <div class="submetric"><span>P / E 核</span><b>3.20 / 2.06</b></div>
+            <div class="submetric"><span>温度</span><b>68°C</b></div>
+          </div>
+        </div>
+        <div class="spark">
+          <svg viewBox="0 0 320 60" preserveAspectRatio="none"><defs><linearGradient id="jg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff70b7" stop-opacity=".38"/><stop offset="1" stop-color="#bd76ff" stop-opacity="0"/></linearGradient></defs><path d="M0 49 C22 44 25 28 47 30 S79 45 103 35 S139 15 162 26 S198 49 224 38 S255 17 277 25 S301 15 320 13 L320 60 L0 60Z" fill="url(#jg)"/><path d="M0 49 C22 44 25 28 47 30 S79 45 103 35 S139 15 162 26 S198 49 224 38 S255 17 277 25 S301 15 320 13" fill="none" stroke="#ff7cbe" stroke-width="2.2"/></svg>
+        </div>
+        <div class="process-label"><span>应用聚合</span><span>CPU　内存</span></div>
+        <div class="processes">
+          <div class="process"><span class="app-icon">X</span><span class="name">Xico · 3 个进程</span><b class="cpu">15.8%</b><span class="mem">1.24 GB</span></div>
+          <div class="process"><span class="app-icon">C</span><span class="name">Codex · 7 个进程</span><b class="cpu">8.6%</b><span class="mem">860 MB</span></div>
+          <div class="process"><span class="app-icon">G</span><span class="name">Google Chrome · 21 个进程</span><b class="cpu">5.2%</b><span class="mem">2.31 GB</span></div>
+        </div>
+        <div class="trust">✦ 精细但更具品牌张力与情绪光感</div>
+      </div>
+    </div>
+    <div class="direction-body">
+      <h3>B · Jewel Atelier 宝石工坊</h3>
+      <p>强化 Xico 现有紫粉品牌资产，光感更浓、个性更强。辨识度最高，但长期高频使用时视觉存在感也更强。</p>
+      <span class="pick">点击选择此方向</span>
+    </div>
+  </div>
+
+  <div class="direction" data-choice="native-pro" onclick="toggleSelect(this)">
+    <div class="direction-top native">
+      <div class="window">
+        <div class="window-title">
+          <div class="app-title"><span class="metric-icon">⌘</span>处理器</div>
+          <span class="chip">Apple M1 · 实时</span>
+        </div>
+        <div class="metric-hero">
+          <div class="ring"><strong>77%</strong></div>
+          <div class="submetrics">
+            <div class="submetric"><span>用户</span><b>58%</b></div>
+            <div class="submetric"><span>系统</span><b>19%</b></div>
+            <div class="submetric"><span>P / E 核</span><b>3.20 / 2.06</b></div>
+            <div class="submetric"><span>温度</span><b>68°C</b></div>
+          </div>
+        </div>
+        <div class="spark">
+          <svg viewBox="0 0 320 60" preserveAspectRatio="none"><defs><linearGradient id="ng" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#477acb" stop-opacity=".22"/><stop offset="1" stop-color="#477acb" stop-opacity="0"/></linearGradient></defs><path d="M0 49 C22 44 25 28 47 30 S79 45 103 35 S139 15 162 26 S198 49 224 38 S255 17 277 25 S301 15 320 13 L320 60 L0 60Z" fill="url(#ng)"/><path d="M0 49 C22 44 25 28 47 30 S79 45 103 35 S139 15 162 26 S198 49 224 38 S255 17 277 25 S301 15 320 13" fill="none" stroke="#477acb" stroke-width="2.2"/></svg>
+        </div>
+        <div class="process-label"><span>应用聚合</span><span>CPU　内存</span></div>
+        <div class="processes">
+          <div class="process"><span class="app-icon">X</span><span class="name">Xico · 3 个进程</span><b class="cpu">15.8%</b><span class="mem">1.24 GB</span></div>
+          <div class="process"><span class="app-icon">C</span><span class="name">Codex · 7 个进程</span><b class="cpu">8.6%</b><span class="mem">860 MB</span></div>
+          <div class="process"><span class="app-icon">G</span><span class="name">Google Chrome · 21 个进程</span><b class="cpu">5.2%</b><span class="mem">2.31 GB</span></div>
+        </div>
+        <div class="trust">● 原生、安静、无学习成本</div>
+      </div>
+    </div>
+    <div class="direction-body">
+      <h3>C · Native Pro 原生专业</h3>
+      <p>更接近 macOS 系统工具，明亮、清晰、最克制。可用性稳健，但品牌辨识度和“惊艳感”弱于前两种。</p>
+      <span class="pick">点击选择此方向</span>
+    </div>
+  </div>
+</div>
+
+<div class="program">
+  <h3>“全部完成”的交付拆分</h3>
+  <div class="phases">
+    <div class="phase"><div class="phase-no">01 · TRUST CORE</div><b>可信采样基座</b><span>全 PID、应用聚合、统一 CPU/内存口径、特权进程覆盖、基准对照测试</span></div>
+    <div class="phase"><div class="phase-no">02 · MENU SURFACES</div><b>菜单栏全套面板</b><span>CPU、内存、网络、磁盘、GPU、温度、电池与可配置状态项</span></div>
+    <div class="phase"><div class="phase-no">03 · DEEP MONITOR</div><b>深度监控中心</b><span>跨指标趋势、应用检查器、异常解释、硬件与传感器细节</span></div>
+    <div class="phase"><div class="phase-no">04 · PRODUCT POLISH</div><b>产品级精修</b><span>动效、无障碍、本地化、能耗、截图回归、性能与稳定性验收</span></div>
+  </div>
+</div>
+
+<p class="prompt">请点击 A / B / C 选择主视觉方向；如果你没有额外偏好，我建议采用 A，并把 B 保留为可选主题。</p>

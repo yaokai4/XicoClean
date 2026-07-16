@@ -1,0 +1,2078 @@
+# Review package: f62d4bd..HEAD
+
+## Commits
+c13bb9c test: cover precision monitoring presentation
+
+## Files changed
+ .../PrecisionMonitoringComponents.swift            |  10 +-
+ .../Resources/de.lproj/Localizable.strings         |  48 ++++--
+ .../Resources/en.lproj/Localizable.strings         |  46 ++++--
+ .../Resources/es.lproj/Localizable.strings         |  46 ++++--
+ .../Resources/fr.lproj/Localizable.strings         |  46 ++++--
+ .../Resources/it.lproj/Localizable.strings         |  48 ++++--
+ .../Resources/ja.lproj/Localizable.strings         |  46 ++++--
+ .../Resources/ko.lproj/Localizable.strings         |  46 ++++--
+ .../Resources/pt-BR.lproj/Localizable.strings      |  46 ++++--
+ .../Resources/ru.lproj/Localizable.strings         |  48 ++++--
+ .../Resources/zh-Hans.lproj/Localizable.strings    |  18 +++
+ .../Resources/zh-Hant.lproj/Localizable.strings    |  46 ++++--
+ Sources/Features/AppModel.swift                    |  34 +++--
+ Sources/Features/ApplicationUsageViews.swift       | 137 +++++++++++++----
+ Sources/Features/MenuPanels.swift                  |  31 +++-
+ .../Infrastructure/ApplicationUsageModels.swift    |  50 +++++++
+ Sources/XicoApp/LiveShotRenderer.swift             | 163 +++++++++++++++++++++
+ Sources/XicoApp/XicoApp.swift                      |   5 +
+ .../ApplicationUsagePresentationTests.swift        |  52 +++++++
+ Tests/FeatureTests/LocalizationCoverageTests.swift | 101 ++++++++++++-
+ Tests/FeatureTests/MetricsGatingTests.swift        |   5 +
+ 21 files changed, 887 insertions(+), 185 deletions(-)
+
+## Diff
+diff --git a/Sources/DesignSystem/PrecisionMonitoringComponents.swift b/Sources/DesignSystem/PrecisionMonitoringComponents.swift
+index 7a35456..d7d5b50 100644
+--- a/Sources/DesignSystem/PrecisionMonitoringComponents.swift
++++ b/Sources/DesignSystem/PrecisionMonitoringComponents.swift
+@@ -37,37 +37,40 @@ public struct XMonitoringSection<Content: View>: View {
+                     .fill(XColor.surface(at: .raised)))
+             .overlay(
+                 RoundedRectangle(cornerRadius: 14, style: .continuous)
+                     .strokeBorder(XColor.border, lineWidth: 1 / max(displayScale, 1)))
+     }
+ }
+ 
+ public struct XSamplingStatusPill: View {
+     private let text: String
+     private let tone: XSamplingTone
++    private let accessibilityDetail: String?
+ 
+-    public init(_ text: String, tone: XSamplingTone) {
++    public init(_ text: String, tone: XSamplingTone, accessibilityDetail: String? = nil) {
+         self.text = text
+         self.tone = tone
++        self.accessibilityDetail = accessibilityDetail
+     }
+ 
+     public var body: some View {
+         HStack(spacing: XSpacing.xs) {
+             Circle().fill(tone.color).frame(width: 6, height: 6)
++                .accessibilityHidden(true)
+             Text(text).font(XFont.nano).lineLimit(1)
+         }
+         .foregroundStyle(tone.color)
+         .padding(.horizontal, 7)
+         .padding(.vertical, 3)
+         .background(Capsule().fill(tone.color.opacity(XAlpha.tint)))
+         .accessibilityElement(children: .ignore)
+-        .accessibilityLabel(text)
++        .accessibilityLabel([text, accessibilityDetail].compactMap { $0 }.joined(separator: "，"))
+     }
+ }
+ 
+ /// A single-semantic-color gauge for a single metric.
+ public struct XSemanticGauge<Center: View>: View {
+     private let fraction: Double
+     private let color: Color
+     private let size: CGFloat
+     private let lineWidth: CGFloat
+     private let center: Center
+@@ -82,24 +85,26 @@ public struct XSemanticGauge<Center: View>: View {
+         self.fraction = min(1, max(0, fraction))
+         self.color = color
+         self.size = size
+         self.lineWidth = lineWidth
+         self.center = center()
+     }
+ 
+     public var body: some View {
+         ZStack {
+             Circle().stroke(color.opacity(XAlpha.ghost), lineWidth: lineWidth)
++                .accessibilityHidden(true)
+             Circle()
+                 .trim(from: 0, to: fraction)
+                 .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                 .rotationEffect(.degrees(-90))
++                .accessibilityHidden(true)
+             center
+         }
+         .frame(width: size, height: size)
+     }
+ }
+ 
+ public extension XSemanticGauge where Center == EmptyView {
+     init(fraction: Double, color: Color, size: CGFloat = 60, lineWidth: CGFloat = 7) {
+         self.init(fraction: fraction, color: color, size: size, lineWidth: lineWidth) { EmptyView() }
+     }
+@@ -121,15 +126,16 @@ public struct XAlignedValueColumn: View {
+         self.value = value
+         self.emphasized = emphasized
+         self.alignment = alignment
+     }
+ 
+     public var body: some View {
+         VStack(alignment: alignment, spacing: 1) {
+             Text(label).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+             Text(value)
+                 .font(emphasized ? XFont.captionEmphasis.monospacedDigit() : XFont.microMono)
++                .monospacedDigit()
+                 .foregroundStyle(emphasized ? XColor.textPrimary : XColor.textSecondary)
+                 .lineLimit(1)
+         }
+     }
+ }
+diff --git a/Sources/DesignSystem/Resources/de.lproj/Localizable.strings b/Sources/DesignSystem/Resources/de.lproj/Localizable.strings
+index de20fe8..244a111 100644
+--- a/Sources/DesignSystem/Resources/de.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/de.lproj/Localizable.strings
+@@ -941,21 +941,21 @@
+ "从收集篮移除" = "Aus dem Sammelkorb entfernen";
+ "清空收集篮" = "Sammelkorb leeren";
+ "删除前可逐项查看，随时移出。执行后移入废纸篓，可恢复。" = "Vor dem Löschen jedes Objekt prüfen und jederzeit entfernen. Gelöschtes landet im Papierkorb und ist wiederherstellbar.";
+ "已移入废纸篓，可随时恢复。" = "In den Papierkorb gelegt – jederzeit wiederherstellbar.";
+ 
+ /* P3 · 菜单栏换血（钉住/时间窗/预设/排序/电池） (2026-07) */
+ "钉住为浮动窗口" = "Als schwebendes Fenster anheften";
+ "循环次数 / 健康度见「硬件」页" = "Ladezyklen & Zustand auf der Hardware-Seite";
+ "打开硬件页" = "Hardware öffnen";
+ "此设备没有电池，或电池信息暂不可用。" = "Dieser Mac hat keine Batterie oder die Daten sind nicht verfügbar.";
+-"实时" = "Live";
++"实时" = "Echtzeit";
+ "15 分" = "15 Min";
+ "1 时" = "1 Std";
+ "一键预设开箱即好看；想细调再逐项展开" = "Ein-Klick-Vorgaben sehen sofort gut aus; zum Feinjustieren Eintrag aufklappen";
+ "极简" = "Minimal";
+ "性能" = "Leistung";
+ "全景" = "Panorama";
+ "单一合并项 · 单色" = "Ein kombiniertes Element · einfarbig";
+ "CPU + 内存 + GPU" = "CPU + Speicher + GPU";
+ "五项常驻 · 彩色" = "Fünf Elemente · farbig";
+ "合并项（多迷你图并排）" = "Kombiniert (Mini-Grafiken nebeneinander)";
+@@ -1522,24 +1522,42 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
+-"CPU · 口径" = "CPU · 口径";
+-"二进制 GiB / MiB" = "二进制 GiB / MiB";
+-"内存单位" = "内存单位";
+-"十进制 GB / MB" = "十进制 GB / MB";
+-"合并应用进程" = "合并应用进程";
+-"均衡" = "均衡";
+-"密度" = "密度";
+-"归一化 0–100%" = "归一化 0–100%";
+-"总核心 0–N×100%" = "总核心 0–N×100%";
+-"排行数量" = "排行数量";
+-"省电（5 秒）" = "省电（5 秒）";
+-"紧凑" = "紧凑";
+-"详细" = "详细";
+-"采样中" = "采样中";
++"CPU · 口径" = "CPU · Skala";
++"二进制 GiB / MiB" = "Binär GiB / MiB";
++"内存单位" = "Speichereinheit";
++"十进制 GB / MB" = "Dezimal GB / MB";
++"合并应用进程" = "App-Prozesse gruppieren";
++"均衡" = "Ausgewogen";
++"密度" = "Dichte";
++"归一化 0–100%" = "Normalisiert 0–100%";
++"总核心 0–N×100%" = "Gesamte Kerne 0–N×100%";
++"排行数量" = "Anzahl Top-Apps";
++"省电（5 秒）" = "Energiesparend (5 Sekunden)";
++"紧凑" = "Kompakt";
++"详细" = "Detailliert";
++"采样中" = "Messung läuft…";
++"Xico 压力指数" = "Xico-Druckindex";
++"部分数据" = "Teildaten";
++"数据已过期" = "Daten veraltet";
++"数据不可用" = "Daten nicht verfügbar";
++"数据覆盖 %d%%" = "Datenabdeckung %d%%";
++"应用检查器" = "App-Inspektor";
++"物理内存" = "Physischer Speicher";
++"峰值内存" = "Maximaler Speicher";
++"应用聚合" = "App-Aggregat";
++"独立进程" = "Einzelprozess";
++"%d 个进程" = "%d Prozesse";
++"采样来源" = "Messquelle";
++"本地采样" = "Lokale Messung";
++"助手增强" = "Durch Hilfsdienst erweitert";
++"已退出" = "Beendet";
++"十进制 GB" = "Dezimal GB";
++"二进制 GiB" = "Binär GiB";
++"合并子进程" = "Unterprozesse gruppieren";
+diff --git a/Sources/DesignSystem/Resources/en.lproj/Localizable.strings b/Sources/DesignSystem/Resources/en.lproj/Localizable.strings
+index cc8d065..fa91676 100644
+--- a/Sources/DesignSystem/Resources/en.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/en.lproj/Localizable.strings
+@@ -1522,24 +1522,42 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
+-"CPU · 口径" = "CPU · 口径";
+-"二进制 GiB / MiB" = "二进制 GiB / MiB";
+-"内存单位" = "内存单位";
+-"十进制 GB / MB" = "十进制 GB / MB";
+-"合并应用进程" = "合并应用进程";
+-"均衡" = "均衡";
+-"密度" = "密度";
+-"归一化 0–100%" = "归一化 0–100%";
+-"总核心 0–N×100%" = "总核心 0–N×100%";
+-"排行数量" = "排行数量";
+-"省电（5 秒）" = "省电（5 秒）";
+-"紧凑" = "紧凑";
+-"详细" = "详细";
+-"采样中" = "采样中";
++"CPU · 口径" = "CPU · Scale";
++"二进制 GiB / MiB" = "Binary GiB / MiB";
++"内存单位" = "Memory units";
++"十进制 GB / MB" = "Decimal GB / MB";
++"合并应用进程" = "Group app processes";
++"均衡" = "Balanced";
++"密度" = "Density";
++"归一化 0–100%" = "Normalized 0–100%";
++"总核心 0–N×100%" = "Total cores 0–N×100%";
++"排行数量" = "Number of top apps";
++"省电（5 秒）" = "Power saving (5 seconds)";
++"紧凑" = "Compact";
++"详细" = "Detailed";
++"采样中" = "Sampling…";
++"Xico 压力指数" = "Xico Pressure Index";
++"部分数据" = "Partial data";
++"数据已过期" = "Data is stale";
++"数据不可用" = "Data unavailable";
++"数据覆盖 %d%%" = "Data coverage %d%%";
++"应用检查器" = "App Inspector";
++"物理内存" = "Physical memory";
++"峰值内存" = "Peak memory";
++"应用聚合" = "App aggregate";
++"独立进程" = "Individual process";
++"%d 个进程" = "%d processes";
++"采样来源" = "Sampling source";
++"本地采样" = "Local sampling";
++"助手增强" = "Helper-enhanced";
++"已退出" = "Exited";
++"十进制 GB" = "Decimal GB";
++"二进制 GiB" = "Binary GiB";
++"合并子进程" = "Group subprocesses";
+diff --git a/Sources/DesignSystem/Resources/es.lproj/Localizable.strings b/Sources/DesignSystem/Resources/es.lproj/Localizable.strings
+index 1720b31..cdad9c0 100644
+--- a/Sources/DesignSystem/Resources/es.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/es.lproj/Localizable.strings
+@@ -1522,24 +1522,42 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
+-"CPU · 口径" = "CPU · 口径";
+-"二进制 GiB / MiB" = "二进制 GiB / MiB";
+-"内存单位" = "内存单位";
+-"十进制 GB / MB" = "十进制 GB / MB";
+-"合并应用进程" = "合并应用进程";
+-"均衡" = "均衡";
+-"密度" = "密度";
+-"归一化 0–100%" = "归一化 0–100%";
+-"总核心 0–N×100%" = "总核心 0–N×100%";
+-"排行数量" = "排行数量";
+-"省电（5 秒）" = "省电（5 秒）";
+-"紧凑" = "紧凑";
+-"详细" = "详细";
+-"采样中" = "采样中";
++"CPU · 口径" = "CPU · Escala";
++"二进制 GiB / MiB" = "Binario GiB / MiB";
++"内存单位" = "Unidad de memoria";
++"十进制 GB / MB" = "Decimal GB / MB";
++"合并应用进程" = "Agrupar procesos de apps";
++"均衡" = "Equilibrada";
++"密度" = "Densidad";
++"归一化 0–100%" = "Normalizado 0–100%";
++"总核心 0–N×100%" = "Total de núcleos 0–N×100%";
++"排行数量" = "Número de resultados";
++"省电（5 秒）" = "Ahorro de energía (5 segundos)";
++"紧凑" = "Compacta";
++"详细" = "Detallada";
++"采样中" = "Muestreando…";
++"Xico 压力指数" = "Índice de presión de Xico";
++"部分数据" = "Datos parciales";
++"数据已过期" = "Datos obsoletos";
++"数据不可用" = "Datos no disponibles";
++"数据覆盖 %d%%" = "Cobertura de datos %d%%";
++"应用检查器" = "Inspector de aplicaciones";
++"物理内存" = "Memoria física";
++"峰值内存" = "Pico de memoria";
++"应用聚合" = "Aplicación agrupada";
++"独立进程" = "Proceso individual";
++"%d 个进程" = "%d procesos";
++"采样来源" = "Origen de muestreo";
++"本地采样" = "Muestreo local";
++"助手增强" = "Mejorado por el asistente";
++"已退出" = "Finalizado";
++"十进制 GB" = "GB decimales";
++"二进制 GiB" = "GiB binarios";
++"合并子进程" = "Agrupar subprocesos";
+diff --git a/Sources/DesignSystem/Resources/fr.lproj/Localizable.strings b/Sources/DesignSystem/Resources/fr.lproj/Localizable.strings
+index 5f74f10..441eab3 100644
+--- a/Sources/DesignSystem/Resources/fr.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/fr.lproj/Localizable.strings
+@@ -1522,24 +1522,42 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
+-"CPU · 口径" = "CPU · 口径";
+-"二进制 GiB / MiB" = "二进制 GiB / MiB";
+-"内存单位" = "内存单位";
+-"十进制 GB / MB" = "十进制 GB / MB";
+-"合并应用进程" = "合并应用进程";
+-"均衡" = "均衡";
+-"密度" = "密度";
+-"归一化 0–100%" = "归一化 0–100%";
+-"总核心 0–N×100%" = "总核心 0–N×100%";
+-"排行数量" = "排行数量";
+-"省电（5 秒）" = "省电（5 秒）";
+-"紧凑" = "紧凑";
+-"详细" = "详细";
+-"采样中" = "采样中";
++"CPU · 口径" = "CPU · Échelle";
++"二进制 GiB / MiB" = "Binaire GiB / MiB";
++"内存单位" = "Unité de mémoire";
++"十进制 GB / MB" = "Décimal GB / MB";
++"合并应用进程" = "Regrouper les processus par app";
++"均衡" = "Équilibrée";
++"密度" = "Densité";
++"归一化 0–100%" = "Normalisé 0–100%";
++"总核心 0–N×100%" = "Total des cœurs 0–N×100%";
++"排行数量" = "Nombre de résultats";
++"省电（5 秒）" = "Économie d’énergie (5 secondes)";
++"紧凑" = "Compacte";
++"详细" = "Détaillée";
++"采样中" = "Échantillonnage…";
++"Xico 压力指数" = "Indice de pression Xico";
++"部分数据" = "Données partielles";
++"数据已过期" = "Données obsolètes";
++"数据不可用" = "Données indisponibles";
++"数据覆盖 %d%%" = "Couverture des données %d%%";
++"应用检查器" = "Inspecteur d’application";
++"物理内存" = "Mémoire physique";
++"峰值内存" = "Pic de mémoire";
++"应用聚合" = "Application agrégée";
++"独立进程" = "Processus individuel";
++"%d 个进程" = "%d processus";
++"采样来源" = "Source d’échantillonnage";
++"本地采样" = "Échantillonnage local";
++"助手增强" = "Enrichi par l’assistant";
++"已退出" = "Terminé";
++"十进制 GB" = "GB décimaux";
++"二进制 GiB" = "GiB binaires";
++"合并子进程" = "Regrouper les sous-processus";
+diff --git a/Sources/DesignSystem/Resources/it.lproj/Localizable.strings b/Sources/DesignSystem/Resources/it.lproj/Localizable.strings
+index 3a48f7a..5c78575 100644
+--- a/Sources/DesignSystem/Resources/it.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/it.lproj/Localizable.strings
+@@ -941,21 +941,21 @@
+ "从收集篮移除" = "Rimuovi dal raccoglitore";
+ "清空收集篮" = "Svuota raccoglitore";
+ "删除前可逐项查看，随时移出。执行后移入废纸篓，可恢复。" = "Controlla ogni elemento prima di eliminare; rimuovilo quando vuoi. Il tutto finisce nel Cestino ed è recuperabile.";
+ "已移入废纸篓，可随时恢复。" = "Spostato nel Cestino: recuperabile in qualsiasi momento.";
+ 
+ /* P3 · 菜单栏换血（钉住/时间窗/预设/排序/电池） (2026-07) */
+ "钉住为浮动窗口" = "Fissa come finestra mobile";
+ "循环次数 / 健康度见「硬件」页" = "Cicli e stato nella pagina Hardware";
+ "打开硬件页" = "Apri Hardware";
+ "此设备没有电池，或电池信息暂不可用。" = "Questo Mac non ha batteria o le informazioni non sono disponibili.";
+-"实时" = "Live";
++"实时" = "In tempo reale";
+ "15 分" = "15 min";
+ "1 时" = "1 ora";
+ "一键预设开箱即好看；想细调再逐项展开" = "I preset stanno bene subito; espandi una voce per la regolazione fine";
+ "极简" = "Minimale";
+ "性能" = "Prestazioni";
+ "全景" = "Panorama";
+ "单一合并项 · 单色" = "Un elemento combinato · mono";
+ "CPU + 内存 + GPU" = "CPU + memoria + GPU";
+ "五项常驻 · 彩色" = "Cinque elementi · a colori";
+ "合并项（多迷你图并排）" = "Combinato (mini grafici affiancati)";
+@@ -1522,24 +1522,42 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
+-"CPU · 口径" = "CPU · 口径";
+-"二进制 GiB / MiB" = "二进制 GiB / MiB";
+-"内存单位" = "内存单位";
+-"十进制 GB / MB" = "十进制 GB / MB";
+-"合并应用进程" = "合并应用进程";
+-"均衡" = "均衡";
+-"密度" = "密度";
+-"归一化 0–100%" = "归一化 0–100%";
+-"总核心 0–N×100%" = "总核心 0–N×100%";
+-"排行数量" = "排行数量";
+-"省电（5 秒）" = "省电（5 秒）";
+-"紧凑" = "紧凑";
+-"详细" = "详细";
+-"采样中" = "采样中";
++"CPU · 口径" = "CPU · Scala";
++"二进制 GiB / MiB" = "Binario GiB / MiB";
++"内存单位" = "Unità di memoria";
++"十进制 GB / MB" = "Decimale GB / MB";
++"合并应用进程" = "Raggruppa processi app";
++"均衡" = "Bilanciata";
++"密度" = "Densità";
++"归一化 0–100%" = "Normalizzata 0–100%";
++"总核心 0–N×100%" = "Totale core 0–N×100%";
++"排行数量" = "Numero di risultati";
++"省电（5 秒）" = "Risparmio energetico (5 secondi)";
++"紧凑" = "Compatta";
++"详细" = "Dettagliata";
++"采样中" = "Campionamento…";
++"Xico 压力指数" = "Indice di pressione Xico";
++"部分数据" = "Dati parziali";
++"数据已过期" = "Dati obsoleti";
++"数据不可用" = "Dati non disponibili";
++"数据覆盖 %d%%" = "Copertura dati %d%%";
++"应用检查器" = "Ispettore applicazione";
++"物理内存" = "Memoria fisica";
++"峰值内存" = "Picco di memoria";
++"应用聚合" = "App aggregata";
++"独立进程" = "Processo singolo";
++"%d 个进程" = "%d processi";
++"采样来源" = "Origine campionamento";
++"本地采样" = "Campionamento locale";
++"助手增强" = "Potenziato dall’assistente";
++"已退出" = "Terminato";
++"十进制 GB" = "GB decimali";
++"二进制 GiB" = "GiB binari";
++"合并子进程" = "Raggruppa sottoprocessi";
+diff --git a/Sources/DesignSystem/Resources/ja.lproj/Localizable.strings b/Sources/DesignSystem/Resources/ja.lproj/Localizable.strings
+index 9871a81..2d0b413 100644
+--- a/Sources/DesignSystem/Resources/ja.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/ja.lproj/Localizable.strings
+@@ -1522,24 +1522,42 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
+-"CPU · 口径" = "CPU · 口径";
+-"二进制 GiB / MiB" = "二进制 GiB / MiB";
+-"内存单位" = "内存单位";
+-"十进制 GB / MB" = "十进制 GB / MB";
+-"合并应用进程" = "合并应用进程";
+-"均衡" = "均衡";
+-"密度" = "密度";
+-"归一化 0–100%" = "归一化 0–100%";
+-"总核心 0–N×100%" = "总核心 0–N×100%";
+-"排行数量" = "排行数量";
+-"省电（5 秒）" = "省电（5 秒）";
+-"紧凑" = "紧凑";
+-"详细" = "详细";
+-"采样中" = "采样中";
++"CPU · 口径" = "CPU・表示範囲";
++"二进制 GiB / MiB" = "2進単位 GiB / MiB";
++"内存单位" = "メモリ単位";
++"十进制 GB / MB" = "10進単位 GB / MB";
++"合并应用进程" = "アプリのプロセスを統合";
++"均衡" = "標準";
++"密度" = "表示密度";
++"归一化 0–100%" = "正規化 0–100%";
++"总核心 0–N×100%" = "全コア合計 0–N×100%";
++"排行数量" = "ランキング件数";
++"省电（5 秒）" = "省電力（5秒）";
++"紧凑" = "コンパクト";
++"详细" = "詳細";
++"采样中" = "サンプリング中…";
++"Xico 压力指数" = "Xico プレッシャー指数";
++"部分数据" = "部分的なデータ";
++"数据已过期" = "データが古くなっています";
++"数据不可用" = "データを取得できません";
++"数据覆盖 %d%%" = "データカバレッジ %d%%";
++"应用检查器" = "アプリインスペクタ";
++"物理内存" = "物理メモリ";
++"峰值内存" = "ピークメモリ";
++"应用聚合" = "アプリ集約";
++"独立进程" = "個別プロセス";
++"%d 个进程" = "%d 個のプロセス";
++"采样来源" = "サンプリング元";
++"本地采样" = "ローカルサンプリング";
++"助手增强" = "ヘルパーで補完";
++"已退出" = "終了済み";
++"十进制 GB" = "10進単位 GB";
++"二进制 GiB" = "2進単位 GiB";
++"合并子进程" = "子プロセスを統合";
+diff --git a/Sources/DesignSystem/Resources/ko.lproj/Localizable.strings b/Sources/DesignSystem/Resources/ko.lproj/Localizable.strings
+index 29ee133..8ee7ae9 100644
+--- a/Sources/DesignSystem/Resources/ko.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/ko.lproj/Localizable.strings
+@@ -1522,24 +1522,42 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
+-"CPU · 口径" = "CPU · 口径";
+-"二进制 GiB / MiB" = "二进制 GiB / MiB";
+-"内存单位" = "内存单位";
+-"十进制 GB / MB" = "十进制 GB / MB";
+-"合并应用进程" = "合并应用进程";
+-"均衡" = "均衡";
+-"密度" = "密度";
+-"归一化 0–100%" = "归一化 0–100%";
+-"总核心 0–N×100%" = "总核心 0–N×100%";
+-"排行数量" = "排行数量";
+-"省电（5 秒）" = "省电（5 秒）";
+-"紧凑" = "紧凑";
+-"详细" = "详细";
+-"采样中" = "采样中";
++"CPU · 口径" = "CPU · 표시 범위";
++"二进制 GiB / MiB" = "이진 단위 GiB / MiB";
++"内存单位" = "메모리 단위";
++"十进制 GB / MB" = "십진 단위 GB / MB";
++"合并应用进程" = "앱 프로세스 통합";
++"均衡" = "균형";
++"密度" = "밀도";
++"归一化 0–100%" = "정규화 0–100%";
++"总核心 0–N×100%" = "전체 코어 0–N×100%";
++"排行数量" = "순위 개수";
++"省电（5 秒）" = "절전(5초)";
++"紧凑" = "컴팩트";
++"详细" = "상세";
++"采样中" = "샘플링 중…";
++"Xico 压力指数" = "Xico 메모리 압력 지수";
++"部分数据" = "일부 데이터";
++"数据已过期" = "오래된 데이터";
++"数据不可用" = "데이터를 사용할 수 없음";
++"数据覆盖 %d%%" = "데이터 범위 %d%%";
++"应用检查器" = "앱 검사기";
++"物理内存" = "물리 메모리";
++"峰值内存" = "최대 메모리";
++"应用聚合" = "앱 통합";
++"独立进程" = "개별 프로세스";
++"%d 个进程" = "프로세스 %d개";
++"采样来源" = "샘플링 소스";
++"本地采样" = "로컬 샘플링";
++"助手增强" = "도우미로 보강";
++"已退出" = "종료됨";
++"十进制 GB" = "십진 GB";
++"二进制 GiB" = "이진 GiB";
++"合并子进程" = "하위 프로세스 통합";
+diff --git a/Sources/DesignSystem/Resources/pt-BR.lproj/Localizable.strings b/Sources/DesignSystem/Resources/pt-BR.lproj/Localizable.strings
+index 3d9bf6f..23a04ee 100644
+--- a/Sources/DesignSystem/Resources/pt-BR.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/pt-BR.lproj/Localizable.strings
+@@ -1522,24 +1522,42 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
+-"CPU · 口径" = "CPU · 口径";
+-"二进制 GiB / MiB" = "二进制 GiB / MiB";
+-"内存单位" = "内存单位";
+-"十进制 GB / MB" = "十进制 GB / MB";
+-"合并应用进程" = "合并应用进程";
+-"均衡" = "均衡";
+-"密度" = "密度";
+-"归一化 0–100%" = "归一化 0–100%";
+-"总核心 0–N×100%" = "总核心 0–N×100%";
+-"排行数量" = "排行数量";
+-"省电（5 秒）" = "省电（5 秒）";
+-"紧凑" = "紧凑";
+-"详细" = "详细";
+-"采样中" = "采样中";
++"CPU · 口径" = "CPU · Escala";
++"二进制 GiB / MiB" = "Binário GiB / MiB";
++"内存单位" = "Unidade de memória";
++"十进制 GB / MB" = "Decimal GB / MB";
++"合并应用进程" = "Agrupar processos do app";
++"均衡" = "Equilibrada";
++"密度" = "Densidade";
++"归一化 0–100%" = "Normalizada 0–100%";
++"总核心 0–N×100%" = "Total dos núcleos 0–N×100%";
++"排行数量" = "Quantidade no ranking";
++"省电（5 秒）" = "Economia de energia (5 segundos)";
++"紧凑" = "Compacta";
++"详细" = "Detalhada";
++"采样中" = "Amostrando…";
++"Xico 压力指数" = "Índice de pressão do Xico";
++"部分数据" = "Dados parciais";
++"数据已过期" = "Dados desatualizados";
++"数据不可用" = "Dados indisponíveis";
++"数据覆盖 %d%%" = "Cobertura dos dados %d%%";
++"应用检查器" = "Inspetor de apps";
++"物理内存" = "Memória física";
++"峰值内存" = "Pico de memória";
++"应用聚合" = "App agregado";
++"独立进程" = "Processo individual";
++"%d 个进程" = "%d processos";
++"采样来源" = "Fonte da amostragem";
++"本地采样" = "Amostragem local";
++"助手增强" = "Aprimorado pelo assistente";
++"已退出" = "Encerrado";
++"十进制 GB" = "GB decimais";
++"二进制 GiB" = "GiB binários";
++"合并子进程" = "Agrupar subprocessos";
+diff --git a/Sources/DesignSystem/Resources/ru.lproj/Localizable.strings b/Sources/DesignSystem/Resources/ru.lproj/Localizable.strings
+index 8b428ed..a84ae3f 100644
+--- a/Sources/DesignSystem/Resources/ru.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/ru.lproj/Localizable.strings
+@@ -941,21 +941,21 @@
+ "从收集篮移除" = "Убрать из корзины сбора";
+ "清空收集篮" = "Очистить корзину сбора";
+ "删除前可逐项查看，随时移出。执行后移入废纸篓，可恢复。" = "Просмотрите каждый элемент перед удалением; любой можно убрать. Удалённое попадает в Корзину и восстановимо.";
+ "已移入废纸篓，可随时恢复。" = "Перемещено в Корзину — можно восстановить в любой момент.";
+ 
+ /* P3 · 菜单栏换血（钉住/时间窗/预设/排序/电池） (2026-07) */
+ "钉住为浮动窗口" = "Закрепить как плавающее окно";
+ "循环次数 / 健康度见「硬件」页" = "Циклы и состояние — на странице «Оборудование»";
+ "打开硬件页" = "Открыть «Оборудование»";
+ "此设备没有电池，或电池信息暂不可用。" = "У этого Mac нет батареи или данные недоступны.";
+-"实时" = "Сейчас";
++"实时" = "В реальном времени";
+ "15 分" = "15 мин";
+ "1 时" = "1 ч";
+ "一键预设开箱即好看；想细调再逐项展开" = "Пресеты в один клик выглядят отлично сразу; для тонкой настройки раскройте пункт";
+ "极简" = "Минимум";
+ "性能" = "Производительность";
+ "全景" = "Панорама";
+ "单一合并项 · 单色" = "Один объединённый · моно";
+ "CPU + 内存 + GPU" = "CPU + память + GPU";
+ "五项常驻 · 彩色" = "Пять пунктов · цвет";
+ "合并项（多迷你图并排）" = "Объединённый (мини-графики в ряд)";
+@@ -1522,24 +1522,42 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
+-"CPU · 口径" = "CPU · 口径";
+-"二进制 GiB / MiB" = "二进制 GiB / MiB";
+-"内存单位" = "内存单位";
+-"十进制 GB / MB" = "十进制 GB / MB";
+-"合并应用进程" = "合并应用进程";
+-"均衡" = "均衡";
+-"密度" = "密度";
+-"归一化 0–100%" = "归一化 0–100%";
+-"总核心 0–N×100%" = "总核心 0–N×100%";
+-"排行数量" = "排行数量";
+-"省电（5 秒）" = "省电（5 秒）";
+-"紧凑" = "紧凑";
+-"详细" = "详细";
+-"采样中" = "采样中";
++"CPU · 口径" = "CPU · Шкала";
++"二进制 GiB / MiB" = "Двоичные GiB / MiB";
++"内存单位" = "Единицы памяти";
++"十进制 GB / MB" = "Десятичные GB / MB";
++"合并应用进程" = "Объединять процессы приложений";
++"均衡" = "Сбалансированная";
++"密度" = "Плотность";
++"归一化 0–100%" = "Нормализованная 0–100%";
++"总核心 0–N×100%" = "Все ядра 0–N×100%";
++"排行数量" = "Количество в рейтинге";
++"省电（5 秒）" = "Энергосбережение (5 секунд)";
++"紧凑" = "Компактная";
++"详细" = "Подробная";
++"采样中" = "Идёт выборка…";
++"Xico 压力指数" = "Индекс давления памяти Xico";
++"部分数据" = "Частичные данные";
++"数据已过期" = "Данные устарели";
++"数据不可用" = "Данные недоступны";
++"数据覆盖 %d%%" = "Охват данных: %d%%";
++"应用检查器" = "Инспектор приложения";
++"物理内存" = "Физическая память";
++"峰值内存" = "Пиковая память";
++"应用聚合" = "Агрегированное приложение";
++"独立进程" = "Отдельный процесс";
++"%d 个进程" = "Процессов: %d";
++"采样来源" = "Источник выборки";
++"本地采样" = "Локальная выборка";
++"助手增强" = "Расширено помощником";
++"已退出" = "Завершён";
++"十进制 GB" = "Десятичные GB";
++"二进制 GiB" = "Двоичные GiB";
++"合并子进程" = "Объединять дочерние процессы";
+diff --git a/Sources/DesignSystem/Resources/zh-Hans.lproj/Localizable.strings b/Sources/DesignSystem/Resources/zh-Hans.lproj/Localizable.strings
+index 775c445..78e3fee 100644
+--- a/Sources/DesignSystem/Resources/zh-Hans.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/zh-Hans.lproj/Localizable.strings
+@@ -1535,10 +1535,28 @@
+ "合并应用进程" = "合并应用进程";
+ "均衡" = "均衡";
+ "密度" = "密度";
+ "归一化 0–100%" = "归一化 0–100%";
+ "总核心 0–N×100%" = "总核心 0–N×100%";
+ "排行数量" = "排行数量";
+ "省电（5 秒）" = "省电（5 秒）";
+ "紧凑" = "紧凑";
+ "详细" = "详细";
+ "采样中" = "采样中";
++"Xico 压力指数" = "Xico 压力指数";
++"部分数据" = "部分数据";
++"数据已过期" = "数据已过期";
++"数据不可用" = "数据不可用";
++"数据覆盖 %d%%" = "数据覆盖 %d%%";
++"应用检查器" = "应用检查器";
++"物理内存" = "物理内存";
++"峰值内存" = "峰值内存";
++"应用聚合" = "应用聚合";
++"独立进程" = "独立进程";
++"%d 个进程" = "%d 个进程";
++"采样来源" = "采样来源";
++"本地采样" = "本地采样";
++"助手增强" = "助手增强";
++"已退出" = "已退出";
++"十进制 GB" = "十进制 GB";
++"二进制 GiB" = "二进制 GiB";
++"合并子进程" = "合并子进程";
+diff --git a/Sources/DesignSystem/Resources/zh-Hant.lproj/Localizable.strings b/Sources/DesignSystem/Resources/zh-Hant.lproj/Localizable.strings
+index 908978c..cd2fcd5 100644
+--- a/Sources/DesignSystem/Resources/zh-Hant.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/zh-Hant.lproj/Localizable.strings
+@@ -1521,24 +1521,42 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "主机 · %d";
+ "准备中…" = "准备中…";
+ "合并 / 音频组件" = "合并 / 音频组件";
+ "告警" = "告警";
+ "实时监控" = "实时监控";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。";
+ "连接你的第一台服务器" = "连接你的第一台服务器";
+-"CPU · 口径" = "CPU · 口径";
+-"二进制 GiB / MiB" = "二进制 GiB / MiB";
+-"内存单位" = "内存单位";
+-"十进制 GB / MB" = "十进制 GB / MB";
+-"合并应用进程" = "合并应用进程";
+-"均衡" = "均衡";
+-"密度" = "密度";
+-"归一化 0–100%" = "归一化 0–100%";
+-"总核心 0–N×100%" = "总核心 0–N×100%";
+-"排行数量" = "排行数量";
+-"省电（5 秒）" = "省电（5 秒）";
+-"紧凑" = "紧凑";
+-"详细" = "详细";
+-"采样中" = "采样中";
++"CPU · 口径" = "CPU · 口徑";
++"二进制 GiB / MiB" = "二進位 GiB / MiB";
++"内存单位" = "記憶體單位";
++"十进制 GB / MB" = "十進位 GB / MB";
++"合并应用进程" = "合併應用程式行程";
++"均衡" = "均衡顯示";
++"密度" = "顯示密度";
++"归一化 0–100%" = "標準化 0–100%";
++"总核心 0–N×100%" = "全核心 0–N×100%";
++"排行数量" = "排行數量";
++"省电（5 秒）" = "省電（5 秒）";
++"紧凑" = "緊湊";
++"详细" = "詳細";
++"采样中" = "取樣中…";
++"Xico 压力指数" = "Xico 壓力指數";
++"部分数据" = "部分資料";
++"数据已过期" = "資料已過期";
++"数据不可用" = "無法取得資料";
++"数据覆盖 %d%%" = "資料涵蓋率 %d%%";
++"应用检查器" = "應用程式檢查器";
++"物理内存" = "實體記憶體";
++"峰值内存" = "記憶體峰值";
++"应用聚合" = "應用程式彙整";
++"独立进程" = "獨立行程";
++"%d 个进程" = "%d 個行程";
++"采样来源" = "取樣來源";
++"本地采样" = "本機取樣";
++"助手增强" = "輔助程式增強";
++"已退出" = "已結束";
++"十进制 GB" = "十進位 GB";
++"二进制 GiB" = "二進位 GiB";
++"合并子进程" = "合併子行程";
+diff --git a/Sources/Features/AppModel.swift b/Sources/Features/AppModel.swift
+index 6e33aec..db1f817 100644
+--- a/Sources/Features/AppModel.swift
++++ b/Sources/Features/AppModel.swift
+@@ -471,20 +471,24 @@ public final class AppModel: ObservableObject {
+         similarImagesVM = vm
+         return vm
+     }
+ 
+     public init(
+         env: XicoEnvironment = .live(),
+         processSampler: ProcessSampler = .production()
+     ) {
+         self.env = env
+         self.processes = processSampler
++        // 离屏 QA 工具以裸调试二进制运行时没有正式 App 的 Keychain ACL；若仍读取许可锚点，
++        // Security.framework 会等待钥匙串授权并让截图命令永久悬挂。仅这些显式调试入口跳过
++        // 许可/在线复验/哨兵副作用；正常 App、测试与发布构建路径完全不变。
++        let offlineRender = Self.isOfflineRender(arguments: CommandLine.arguments)
+         if let raw = UserDefaults.standard.string(forKey: "xico.appearance"),
+            let a = AppAppearance(rawValue: raw) {
+             appearance = a
+         }
+         if let tid = UserDefaults.standard.string(forKey: "xico.themeID") {
+             themeID = tid
+         }
+         XThemeStore.shared.current = XTheme.byID(themeID)   // 启动即应用已保存主题
+         XLocale.load()                               // 载入已保存语言
+         language = XLocale.current
+@@ -497,44 +501,56 @@ public final class AppModel: ObservableObject {
+         if CommandLine.arguments.contains("--onboarding") { showOnboarding = true }
+         if CommandLine.arguments.contains(where: { $0.hasPrefix("--open=") }) { showOnboarding = false }
+         if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--open=") }) {
+             selection = ModuleID(String(arg.dropFirst("--open=".count)))
+         }
+         if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--appearance=") }),
+            let a = AppAppearance(rawValue: String(arg.dropFirst("--appearance=".count))) {
+             appearance = a
+         }
+         refreshPermissions()
+-        refreshLicense()
+-        revalidateLicenseOnline()
+-        // 菜单栏长驻进程可能数周不重启——每 6h 唤醒一次复验入口
+-        // （内部仍按 72h 节流，绝大多数唤醒直接返回，不产生网络请求）。
+-        Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+-            Task { @MainActor in self?.revalidateLicenseOnline() }
++        if !offlineRender {
++            refreshLicense()
++            revalidateLicenseOnline()
++            // 菜单栏长驻进程可能数周不重启——每 6h 唤醒一次复验入口
++            // （内部仍按 72h 节流，绝大多数唤醒直接返回，不产生网络请求）。
++            Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
++                Task { @MainActor in self?.revalidateLicenseOnline() }
++            }
++            setTrashSentinel(enabled: Self.trashSentinelEnabled)
+         }
+-        setTrashSentinel(enabled: Self.trashSentinelEnabled)
+         refreshMetrics()
+         NotificationCenter.default.addObserver(forName: .xicoDidClean, object: nil, queue: .main) { [weak self] _ in
+             Task { @MainActor in self?.refreshMetrics() }
+         }
+         // 用户去系统设置授予「完全磁盘访问」/ 批准助手 / 导入许可证后回到 App，
+         // 必须重新读状态——否则横幅一直挂到重启（审计 C1）。
+         NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                object: nil, queue: .main) { [weak self] _ in
+             Task { @MainActor in
+                 self?.refreshPermissions()
+-                self?.refreshLicense()
+-                self?.revalidateLicenseOnline()
++                if !offlineRender {
++                    self?.refreshLicense()
++                    self?.revalidateLicenseOnline()
++                }
+             }
+         }
+     }
+ 
++    nonisolated static func isOfflineRender(arguments: [String]) -> Bool {
++        let offlineFlags: Set<String> = [
++            "--shots", "--webshots", "--menubar", "--glyphs", "--layout",
++            "--liveshots", "--auditshots", "--monitoring-shots", "--icon",
++        ]
++        return arguments.contains { offlineFlags.contains($0) }
++    }
++
+     public func refreshPermissions() {
+         hasFullDiskAccess = env.permissions.hasFullDiskAccess()
+     }
+ 
+     /// 菜单栏采样入口。全系统 + 全进程 rusage 采样在后台任务执行，仅回主线程发布快照（审计 P1）。
+     public func refreshMetrics() {
+         guard !isSampling else { return }   // 单飞：上一帧未落地前不排下一帧
+         // 冷启动首帧不再同步跑重快照（会阻塞主线程做全传感器/IORegistry/sysctl 采样，审计 P3）——
+         // 首帧交给下方后台任务异步填充，界面短暂显示占位（XSpinner）后即刷新。
+         isSampling = true
+diff --git a/Sources/Features/ApplicationUsageViews.swift b/Sources/Features/ApplicationUsageViews.swift
+index 408df91..60aa642 100644
+--- a/Sources/Features/ApplicationUsageViews.swift
++++ b/Sources/Features/ApplicationUsageViews.swift
+@@ -245,20 +245,66 @@ public struct ApplicationUsageRowPresentation: Equatable, Sendable {
+ 
+         switch focus {
+         case .cpu:
+             return Self(primaryText: cpuText, secondaryText: memoryText, fillFraction: fill)
+         case .memory:
+             return Self(primaryText: memoryText, secondaryText: cpuText, fillFraction: fill)
+         }
+     }
+ }
+ 
++public enum ApplicationUsageAccessibility {
++    public struct Chart: Equatable, Sendable {
++        public let label: String
++        public let value: String
++
++        public init(label: String, value: String) {
++            self.label = label
++            self.value = value
++        }
++    }
++
++    public static func rowLabel(
++        usage: ApplicationUsage,
++        presentation: ApplicationUsageRowPresentation,
++        focus: ApplicationUsageFocus
++    ) -> String {
++        let cpu = focus == .cpu ? presentation.primaryText : presentation.secondaryText
++        let memory = focus == .memory ? presentation.primaryText : presentation.secondaryText
++        return [
++            usage.displayName,
++            xLocF("%d 个进程", usage.memberCount),
++            "CPU \(cpu)",
++            "\(xLoc("内存")) \(memory)",
++        ].joined(separator: "，")
++    }
++
++    public static func statusLabel(
++        status: ProcessSamplingStatus,
++        coverage: ProcessCoverage
++    ) -> String {
++        let state: String
++        switch status {
++        case .live: state = xLoc("实时")
++        case .warmingUp: state = xLoc("采样中")
++        case .partial: state = xLoc("部分数据")
++        case .stale: state = xLoc("数据已过期")
++        case .unavailable: state = xLoc("数据不可用")
++        }
++        return "\(state)，\(coverage.displayText)"
++    }
++
++    public static func chart(label: String, latestValue: String?) -> Chart {
++        Chart(label: label, value: latestValue ?? xLoc("采样中"))
++    }
++}
++
+ public struct ApplicationUsageList: View {
+     private let focus: ApplicationUsageFocus
+     private let snapshot: ApplicationUsageSnapshot
+     private let cpuMode: CPUDisplayMode
+     private let memoryStyle: MemoryUnitStyle
+     private let totalMemory: Int64
+     private let onSelect: (ApplicationIdentity) -> Void
+ 
+     public init(
+         focus: ApplicationUsageFocus,
+@@ -302,20 +348,21 @@ public struct ApplicationUsageList: View {
+             VStack(alignment: .leading, spacing: XSpacing.s) {
+                 HStack(spacing: XSpacing.s) {
+                     Text(xLoc("应用"))
+                         .font(XFont.captionEmphasis)
+                         .foregroundStyle(XColor.textPrimary)
+                     samplingPill
+                     if displayStatus == .partial || displayStatus == .stale {
+                         Text(snapshot.coverage.displayText)
+                             .font(XFont.nano)
+                             .foregroundStyle(XColor.textTertiary)
++                            .accessibilityHidden(true)
+                     }
+                     Spacer(minLength: 0)
+                 }
+ 
+                 if displayStatus == .unavailable {
+                     unavailableBlock
+                 } else if usages.isEmpty {
+                     waitingBlock
+                 } else {
+                     columnHeader
+@@ -386,60 +433,57 @@ public struct ApplicationUsageList: View {
+                         Text(String(
+                             format: "%.1f%%",
+                             Double(max(0, usage.physicalFootprintBytes)) / Double(totalMemory) * 100))
+                         .font(XFont.nano.monospacedDigit())
+                         .foregroundStyle(XColor.textTertiary)
+                     }
+                 }
+                 .frame(width: 66, alignment: .trailing)
+                 Text(presentation.secondaryText)
+                     .font(XFont.microMono)
++                    .monospacedDigit()
+                     .foregroundStyle(XColor.textSecondary)
+                     .frame(width: 66, alignment: .trailing)
+             }
+             .padding(.horizontal, 6)
+             .padding(.vertical, 4)
+             .contentShape(Rectangle())
+             .background(alignment: .leading) {
+                 GeometryReader { proxy in
+                     RoundedRectangle(cornerRadius: XRadius.chip, style: .continuous)
+                         .fill(metricColor.opacity(0.10))
+                         .frame(width: proxy.size.width * presentation.fillFraction)
++                        .accessibilityHidden(true)
+                 }
+             }
+         }
+         .buttonStyle(.plain)
+-        .accessibilityLabel(rowAccessibilityLabel(usage, presentation: presentation))
++        .accessibilityElement(children: .ignore)
++        .accessibilityLabel(ApplicationUsageAccessibility.rowLabel(
++            usage: usage,
++            presentation: presentation,
++            focus: focus))
+         .help(xLoc("应用检查器"))
+     }
+ 
+-    private func rowAccessibilityLabel(
+-        _ usage: ApplicationUsage,
+-        presentation: ApplicationUsageRowPresentation
+-    ) -> String {
+-        let cpu = focus == .cpu ? presentation.primaryText : presentation.secondaryText
+-        let memory = focus == .memory ? presentation.primaryText : presentation.secondaryText
+-        return "\(usage.displayName)，\(xLocF("%d 个进程", usage.memberCount))，CPU \(cpu)，\(xLoc("内存")) \(memory)"
+-    }
+-
+     @ViewBuilder private var samplingPill: some View {
+         switch displayStatus {
+         case .live:
+-            XSamplingStatusPill(xLoc("实时"), tone: .live)
++            XSamplingStatusPill(xLoc("实时"), tone: .live, accessibilityDetail: snapshot.coverage.displayText)
+         case .warmingUp:
+-            XSamplingStatusPill(xLoc("采样中"), tone: .warming)
++            XSamplingStatusPill(xLoc("采样中"), tone: .warming, accessibilityDetail: snapshot.coverage.displayText)
+         case .partial:
+-            XSamplingStatusPill(xLoc("部分数据"), tone: .attention)
++            XSamplingStatusPill(xLoc("部分数据"), tone: .attention, accessibilityDetail: snapshot.coverage.displayText)
+         case .stale:
+-            XSamplingStatusPill(xLoc("数据已过期"), tone: .attention)
++            XSamplingStatusPill(xLoc("数据已过期"), tone: .attention, accessibilityDetail: snapshot.coverage.displayText)
+         case .unavailable:
+-            XSamplingStatusPill(xLoc("数据不可用"), tone: .unavailable)
++            XSamplingStatusPill(xLoc("数据不可用"), tone: .unavailable, accessibilityDetail: snapshot.coverage.displayText)
+         }
+     }
+ 
+     private var unavailableBlock: some View {
+         HStack(spacing: XSpacing.s) {
+             Image(systemName: "arrow.clockwise.circle")
+                 .foregroundStyle(XColor.textTertiary)
+             Text(xLoc("数据不可用"))
+                 .font(XFont.captionEmphasis)
+                 .foregroundStyle(XColor.textPrimary)
+@@ -554,23 +598,29 @@ public struct ApplicationUsageInspector: View {
+                             .font(XFont.title2)
+                             .foregroundStyle(XColor.textPrimary)
+                         if let bundleIdentifier = usage.bundleIdentifier {
+                             Text(bundleIdentifier)
+                                 .font(XFont.captionMono)
+                                 .foregroundStyle(XColor.textTertiary)
+                         }
+                     }
+                     Spacer()
+                     if lifecycleState == .exited {
+-                        XSamplingStatusPill(xLoc("已退出"), tone: .attention)
++                        XSamplingStatusPill(
++                            xLoc("已退出"),
++                            tone: .attention,
++                            accessibilityDetail: (lastSnapshot ?? feed.applicationUsage).coverage.displayText)
+                     } else if lifecycleState == .stale {
+-                        XSamplingStatusPill(xLoc("数据已过期"), tone: .attention)
++                        XSamplingStatusPill(
++                            xLoc("数据已过期"),
++                            tone: .attention,
++                            accessibilityDetail: (lastSnapshot ?? feed.applicationUsage).coverage.displayText)
+                     } else {
+                         inspectorSamplingPill
+                     }
+                 }
+ 
+                 currentMetrics(usage)
+                 trendSection(usage)
+                 memberSection(usage)
+                 sourceSection
+             }
+@@ -617,38 +667,59 @@ public struct ApplicationUsageInspector: View {
+         let memoryValues = Array(usage.trend.memoryBytes.suffix(60))
+         let memoryMax = max(memoryValues.max() ?? 1, 1)
+         let memory = memoryValues.map { Double(max(0, $0)) / Double(memoryMax) }
+ 
+         return XMonitoringSection {
+             VStack(alignment: .leading, spacing: XSpacing.s) {
+                 Text("60 s · CPU / \(xLoc("内存"))")
+                     .font(XFont.captionEmphasis)
+                     .foregroundStyle(XColor.textPrimary)
+                 HStack(spacing: XSpacing.m) {
+-                    trendChart(title: "CPU", values: cpu, color: XColor.auroraBlue)
+-                    trendChart(title: xLoc("内存"), values: memory, color: XColor.auroraViolet)
++                    trendChart(
++                        title: "CPU",
++                        values: cpu,
++                        latestValue: usage.cpuPercent(mode: cpuMode).map { String(format: "%.1f%%", $0) },
++                        color: XColor.auroraBlue)
++                    trendChart(
++                        title: xLoc("内存"),
++                        values: memory,
++                        latestValue: usage.trend.memoryBytes.last?.formattedMemory(style: memoryStyle),
++                        color: XColor.auroraViolet)
+                 }
+             }
+         }
+     }
+ 
+-    private func trendChart(title: String, values: [Double], color: Color) -> some View {
+-        VStack(alignment: .leading, spacing: XSpacing.xs) {
++    private func trendChart(
++        title: String,
++        values: [Double],
++        latestValue: String?,
++        color: Color
++    ) -> some View {
++        let accessibility = ApplicationUsageAccessibility.chart(label: title, latestValue: latestValue)
++        return VStack(alignment: .leading, spacing: XSpacing.xs) {
+             Text(title).font(XFont.nano).foregroundStyle(XColor.textTertiary)
++                .accessibilityHidden(true)
+             if values.count > 1 {
+                 XLineChart(values: values, colors: [color], showGrid: true)
+                     .frame(height: 86)
++                    .accessibilityElement(children: .ignore)
++                    .accessibilityLabel(accessibility.label)
++                    .accessibilityValue(accessibility.value)
+             } else {
+                 Text(xLoc("采样中"))
+                     .font(XFont.caption)
+                     .foregroundStyle(XColor.textTertiary)
+                     .frame(maxWidth: .infinity, minHeight: 86)
++                    .accessibilityElement(children: .ignore)
++                    .accessibilityLabel(accessibility.label)
++                    .accessibilityValue(accessibility.value)
+             }
+         }
+         .frame(maxWidth: .infinity, alignment: .leading)
+     }
+ 
+     private func memberSection(_ usage: ApplicationUsage) -> some View {
+         XMonitoringSection {
+             VStack(alignment: .leading, spacing: XSpacing.s) {
+                 HStack {
+                     Text(xLoc("应用聚合"))
+@@ -656,28 +727,31 @@ public struct ApplicationUsageInspector: View {
+                         .foregroundStyle(XColor.textPrimary)
+                     Spacer()
+                     Text(xLocF("%d 个进程", usage.memberCount))
+                         .font(XFont.nano)
+                         .foregroundStyle(XColor.textTertiary)
+                 }
+                 memberHeader
+                 ForEach(usage.members) { member in
+                     HStack(spacing: XSpacing.s) {
+                         Text("\(member.identity.pid)")
++                            .monospacedDigit()
+                             .frame(width: 52, alignment: .leading)
+                         Text(member.name)
+                             .lineLimit(1)
+                             .truncationMode(.middle)
+                             .frame(maxWidth: .infinity, alignment: .leading)
+                         Text(formatCPU(member.cpuRawPercent))
++                            .monospacedDigit()
+                             .frame(width: 72, alignment: .trailing)
+                         Text(member.physicalFootprintBytes.formattedMemory(style: memoryStyle))
++                            .monospacedDigit()
+                             .frame(width: 88, alignment: .trailing)
+                     }
+                     .font(XFont.captionMono)
+                     .foregroundStyle(XColor.textSecondary)
+                     .padding(.vertical, 2)
+                 }
+             }
+         }
+     }
+ 
+@@ -713,38 +787,49 @@ public struct ApplicationUsageInspector: View {
+     }
+ 
+     private func metadataRow(_ systemImage: String, _ value: String) -> some View {
+         HStack {
+             Image(systemName: systemImage)
+                 .font(XFont.caption)
+                 .foregroundStyle(XColor.textTertiary)
+                 .frame(width: 16)
+             Spacer()
+             Text(value).font(XFont.captionMono).foregroundStyle(XColor.textSecondary)
++                .monospacedDigit()
+         }
+     }
+ 
+     @ViewBuilder private var inspectorSamplingPill: some View {
+         switch feed.applicationUsage.effectiveStatus(
+             now: Date(),
+             refreshInterval: MonitoringPreferences.refreshInterval().rawValue
+         ) {
+         case .live:
+-            XSamplingStatusPill(xLoc("实时"), tone: .live)
++            XSamplingStatusPill(
++                xLoc("实时"), tone: .live,
++                accessibilityDetail: feed.applicationUsage.coverage.displayText)
+         case .warmingUp:
+-            XSamplingStatusPill(xLoc("采样中"), tone: .warming)
++            XSamplingStatusPill(
++                xLoc("采样中"), tone: .warming,
++                accessibilityDetail: feed.applicationUsage.coverage.displayText)
+         case .partial:
+-            XSamplingStatusPill(xLoc("部分数据"), tone: .attention)
++            XSamplingStatusPill(
++                xLoc("部分数据"), tone: .attention,
++                accessibilityDetail: feed.applicationUsage.coverage.displayText)
+         case .stale:
+-            XSamplingStatusPill(xLoc("数据已过期"), tone: .attention)
++            XSamplingStatusPill(
++                xLoc("数据已过期"), tone: .attention,
++                accessibilityDetail: feed.applicationUsage.coverage.displayText)
+         case .unavailable:
+-            XSamplingStatusPill(xLoc("数据不可用"), tone: .unavailable)
++            XSamplingStatusPill(
++                xLoc("数据不可用"), tone: .unavailable,
++                accessibilityDetail: feed.applicationUsage.coverage.displayText)
+         }
+     }
+ 
+     private func cpuTrend(_ usage: ApplicationUsage) -> [Double] {
+         let coreCount = Double(max(ProcessInfo.processInfo.activeProcessorCount, 1))
+         return usage.trend.cpuRaw.suffix(60).map { raw in
+             let percent = cpuMode == .normalized ? raw / coreCount : raw
+             let maximum = cpuMode == .normalized ? 100 : coreCount * 100
+             return min(1, max(0, percent / maximum))
+         }
+diff --git a/Sources/Features/MenuPanels.swift b/Sources/Features/MenuPanels.swift
+index eb3d88c..3e4cce9 100644
+--- a/Sources/Features/MenuPanels.swift
++++ b/Sources/Features/MenuPanels.swift
+@@ -234,22 +234,26 @@ public struct MenuMetricPanel: View {
+                     Image(systemName: "power").font(XFont.captionEmphasis)
+                         .foregroundStyle(XColor.textTertiary)
+                 }
+                 .buttonStyle(.plain)
+                 .accessibilityLabel(xLoc("退出"))
+             }
+             .layoutPriority(2)
+         }
+         .padding(XSpacing.m)
+         .frame(width: panelWidth)
+-        .onReceive(feed.snapshotPublisher.compactMap { $0 }) { snapshot in
+-            guard metric == .memory else { return }
++        .onAppear {
++            guard metric == .memory, let snapshot = feed.liveSnapshot else { return }
++            recordMemoryHistory(snapshot)
++        }
++        .onChange(of: feed.applicationUsage.sampledAt) {
++            guard metric == .memory, let snapshot = feed.liveSnapshot else { return }
+             recordMemoryHistory(snapshot)
+         }
+         .sheet(item: $selectedApplication) { identity in
+             ApplicationUsageInspector(
+                 feed: feed,
+                 identity: identity,
+                 cpuMode: cpuMode,
+                 memoryStyle: memoryStyle)
+         }
+     }
+@@ -369,20 +373,23 @@ public struct MenuMetricPanel: View {
+     }
+ 
+     // MARK: - CPU 面板（CPU 单一主叙事 + 应用双指标排行）
+ 
+     @ViewBuilder private func cpuContent(_ s: SystemSnapshot) -> some View {
+         VStack(alignment: .leading, spacing: XSpacing.m) {
+             XMonitoringSection {
+                 VStack(alignment: .leading, spacing: XSpacing.m) {
+                     HStack(spacing: XSpacing.m) {
+                         semanticGauge(s.cpuUsage, color: XColor.auroraBlue)
++                            .accessibilityElement(children: .ignore)
++                            .accessibilityLabel(xLoc("处理器"))
++                            .accessibilityValue("\(Int((s.cpuUsage * 100).rounded()))%")
+                         VStack(alignment: .leading, spacing: XSpacing.s) {
+                             HStack(spacing: XSpacing.l) {
+                                 metricChip(xLoc("用户"), "\(Int(s.cpuUser * 100))%")
+                                 metricChip(xLoc("系统"), "\(Int(s.cpuSystem * 100))%")
+                             }
+                             HStack(spacing: XSpacing.l) {
+                                 metricChip(xLoc("平均负载"), loadTriple(s))
+                                 if let t = s.cpuTemp {
+                                     metricChip(xLoc("温度"), String(format: "%.0f°C", t))
+                                 }
+@@ -408,24 +415,28 @@ public struct MenuMetricPanel: View {
+                         Text("CPU · \(xLoc(window.title))")
+                             .font(XFont.captionEmphasis)
+                             .foregroundStyle(XColor.textPrimary)
+                         Spacer()
+                         windowPicker
+                     }
+                     // 实时窗保留用户/系统拆分；长窗使用单一 CPU 蓝总占用线。
+                     if window == .live, feed.cpuUserHistory.count > 1 {
+                         StackedCPUBars(user: feed.cpuUserHistory, system: feed.cpuSysHistory)
+                             .frame(height: 40)
++                            .accessibilityElement(children: .ignore)
+                             .accessibilityLabel(xLoc("处理器占用历史曲线"))
++                            .accessibilityValue("\(Int((s.cpuUsage * 100).rounded()))%")
+                     } else {
+                         historyChart(feed.rings.cpu, colors: [XColor.auroraBlue], height: 40)
++                            .accessibilityElement(children: .ignore)
+                             .accessibilityLabel(xLoc("处理器占用历史曲线"))
++                            .accessibilityValue("\(Int((s.cpuUsage * 100).rounded()))%")
+                     }
+                     HStack(spacing: XSpacing.m) {
+                         HStack(spacing: 3) {
+                             Circle().fill(XColor.auroraBlue).frame(width: 6, height: 6)
+                             Text(xLoc("用户")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                         }
+                         HStack(spacing: 3) {
+                             Circle().fill(XColor.accentPink).frame(width: 6, height: 6)
+                             Text(xLoc("系统")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                         }
+@@ -523,26 +534,31 @@ public struct MenuMetricPanel: View {
+                         VStack(alignment: .leading, spacing: 2) {
+                             Text(xLoc(MemoryPressureDisplayCopy.stateLabel)).font(XFont.nano)
+                                 .foregroundStyle(XColor.textTertiary)
+                             Text(xLoc(s.memoryPressureLabel)).font(XFont.captionEmphasis)
+                                 .foregroundStyle(pressureColor(s))
+                         }
+                         .accessibilityElement(children: .ignore)
+                         .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.stateLabel))
+                         .accessibilityValue(xLoc(s.memoryPressureLabel))
+                         semanticGauge(s.memoryUsedFraction, color: XColor.auroraViolet)
++                            .accessibilityElement(children: .ignore)
++                            .accessibilityLabel(xLoc("内存"))
++                            .accessibilityValue("\(Int((s.memoryUsedFraction * 100).rounded()))%")
+                         VStack(alignment: .leading, spacing: 2) {
+                             Text(s.memoryUsed.formattedMemory(style: memoryStyle))
+                                 .font(XFont.monoLarge)
++                                .monospacedDigit()
+                                 .foregroundStyle(XColor.textPrimary)
+                             Text(xLocF("/ %@", s.memoryTotal.formattedMemory(style: memoryStyle)))
+                                 .font(XFont.caption)
++                                .monospacedDigit()
+                                 .foregroundStyle(XColor.textSecondary)
+                         }
+                         Spacer(minLength: 0)
+                     }
+                     memSegmentBar(s)
+                     memLegendRow(xLoc("应用内存"), s.memoryApp, XColor.memApp)
+                     memLegendRow(xLoc("联动内存"), s.memoryWired, XColor.memWired)
+                     memLegendRow(xLoc("已压缩"), s.memoryCompressed, XColor.memCompressed)
+                     memLegendRow(xLoc("缓存文件"), s.memoryCached, XColor.memCached)
+                     memLegendRow(xLoc("可用"), s.memoryAvailable, XColor.memFree)
+@@ -574,28 +590,30 @@ public struct MenuMetricPanel: View {
+ 
+     private func memSegmentBar(_ s: SystemSnapshot) -> some View {
+         let total = max(1.0, Double(s.memoryTotal))
+         // Available already includes cached files. Only mutually exclusive used categories become
+         // colored segments; the unfilled track is available, while cached remains an explicit row.
+         return XSegmentBar(segments: [
+             .init(id: "app", fraction: Double(s.memoryApp) / total,        color: XColor.memApp),
+             .init(id: "wired", fraction: Double(s.memoryWired) / total,    color: XColor.memWired),
+             .init(id: "comp", fraction: Double(s.memoryCompressed) / total, color: XColor.memCompressed),
+         ], height: 9)
++        .accessibilityHidden(true)
+     }
+ 
+     private func memLegendRow(_ label: String, _ bytes: Int64, _ color: Color) -> some View {
+         HStack(spacing: XSpacing.s) {
+             Circle().fill(color).frame(width: 7, height: 7)
+             Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+             Spacer()
+             Text(bytes.formattedMemory(style: memoryStyle)).font(XFont.mono).foregroundStyle(XColor.textPrimary)
++                .monospacedDigit()
+         }
+     }
+ 
+     private func swapBar(_ s: SystemSnapshot) -> some View {
+         VStack(alignment: .leading, spacing: XSpacing.xs) {
+             HStack {
+                 Text(xLoc("交换区")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                 Spacer()
+                 Text(xLocF(
+                     "%@ / %@",
+@@ -633,38 +651,44 @@ public struct MenuMetricPanel: View {
+                 HStack {
+                     Text("\(xLoc("内存")) · 60 s")
+                         .font(XFont.captionEmphasis)
+                         .foregroundStyle(XColor.textPrimary)
+                     Spacer()
+                     XSegmentedControl(
+                         selection: $memoryHistoryMetricRaw,
+                         options: MemoryPanelHistoryMetric.allCases.map {
+                             .init(tag: $0.rawValue, label: $0.title, a11y: $0.title)
+                         })
+-                    .scaleEffect(0.86, anchor: .trailing)
++                    .fixedSize(horizontal: true, vertical: false)
++                    .scaleEffect(0.80, anchor: .trailing)
+                 }
+                 if selectedMemoryHistory.count > 1 {
+                     XLineChart(
+                         values: selectedMemoryHistory,
+                         colors: [XColor.auroraViolet],
+                         showGrid: true,
+                         hoverLabel: { index in
+                             guard selectedMemoryHistory.indices.contains(index) else { return "" }
+                             return "\(Int((selectedMemoryHistory[index] * 100).rounded()))%"
+                         })
+                     .frame(height: 44)
++                    .accessibilityElement(children: .ignore)
+                     .accessibilityLabel(memoryHistoryMetric.title)
++                    .accessibilityValue("\(Int(((selectedMemoryHistory.last ?? 0) * 100).rounded()))%")
+                 } else {
+                     Text(xLoc("采样中"))
+                         .font(XFont.caption)
+                         .foregroundStyle(XColor.textTertiary)
+                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
++                        .accessibilityElement(children: .ignore)
++                        .accessibilityLabel(memoryHistoryMetric.title)
++                        .accessibilityValue(xLoc("采样中"))
+                 }
+             }
+         }
+     }
+ 
+     private func recordMemoryHistory(_ snapshot: SystemSnapshot) {
+         memoryHistory.record(
+             pressureIndex: snapshot.memoryPressureIndex,
+             totalBytes: snapshot.memoryTotal,
+             compressedBytes: snapshot.memoryCompressed,
+@@ -775,20 +799,21 @@ public struct MenuMetricPanel: View {
+             }
+             Text(rate.formattedRate).font(XFont.monoLarge).foregroundStyle(XColor.textPrimary)
+         }
+     }
+ 
+     private func metricChip(_ label: String, _ value: String) -> some View {
+         VStack(alignment: .leading, spacing: 1) {
+             Text(label).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                 .lineLimit(1).minimumScaleFactor(0.85)
+             Text(value).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
++                .monospacedDigit()
+         }
+         .frame(maxWidth: .infinity, alignment: .leading)
+     }
+ 
+     // MARK: - 温度面板（全部传感器 + 热状态 + 风扇，对标 iStat Sensors）
+ 
+     @ViewBuilder private func temperatureContent(_ s: SystemSnapshot) -> some View {
+         // 每帧只排一次序、SSD 均值只算一次（此前在 body 内重复排序/过滤，审计 P3 MenuPanels:472）。
+         let sortedSensors = model.sensorTemps.sorted { $0.celsius > $1.celsius }
+         let ssdAvg = avgTemp(.ssd)
+diff --git a/Sources/Infrastructure/ApplicationUsageModels.swift b/Sources/Infrastructure/ApplicationUsageModels.swift
+index 28df0f7..2267c38 100644
+--- a/Sources/Infrastructure/ApplicationUsageModels.swift
++++ b/Sources/Infrastructure/ApplicationUsageModels.swift
+@@ -138,10 +138,60 @@ public struct ApplicationUsageSnapshot: Sendable {
+         source: ProcessCaptureSource
+     ) {
+         self.byCPU = byCPU
+         self.byMemory = byMemory
+         self.status = status
+         self.coverage = coverage
+         self.sampledAt = sampledAt
+         self.source = source
+     }
+ }
++
++#if DEBUG
++/// Narrow deterministic factory used by focused off-screen monitoring QA.
++/// It is compiled out of release builds so fixture construction cannot become production API.
++public extension ApplicationUsage {
++    static func monitoringFixture(
++        id: String,
++        name: String,
++        cpuRaw: Double?,
++        cpuNormalized: Double?,
++        memory: Int64,
++        memberCount: Int = 1
++    ) -> Self {
++        let count = max(1, memberCount)
++        let safeMemory = max(0, memory)
++        let baseMemory = safeMemory / Int64(count)
++        let remainder = safeMemory % Int64(count)
++        let members = (0..<count).map { index in
++            let pid = Int32(9_000 + index)
++            let started = UInt64(1_000 + index)
++            let memberName = index == 0 ? name : name + " Helper " + String(index)
++            let memberCPU = cpuRaw.map { $0 / Double(count) }
++            let memberMemory = baseMemory + (index == 0 ? remainder : 0)
++            return ApplicationMemberUsage(
++                identity: ProcessIdentity(pid: pid, startTimeNanoseconds: started),
++                name: memberName,
++                cpuRawPercent: memberCPU,
++                physicalFootprintBytes: memberMemory)
++        }
++        let cpuTrend = cpuRaw.map { value in
++            (0..<60).map { index in value * (0.72 + Double(index % 12) * 0.02) }
++        } ?? []
++        let memoryTrend = (0..<60).map { index in
++            Int64(Double(safeMemory) * (0.88 + Double(index % 10) * 0.01))
++        }
++        return Self(
++            id: ApplicationIdentity(rawValue: "fixture:\(id)"),
++            displayName: name,
++            bundleIdentifier: nil,
++            bundlePath: nil,
++            representativePID: members[0].identity.pid,
++            members: members,
++            cpuRawPercent: cpuRaw,
++            cpuNormalizedPercent: cpuNormalized,
++            physicalFootprintBytes: safeMemory,
++            peakFootprintBytes: Int64(Double(safeMemory) * 1.18),
++            trend: ApplicationUsageTrend(cpuRaw: cpuTrend, memoryBytes: memoryTrend))
++    }
++}
++#endif
+diff --git a/Sources/XicoApp/LiveShotRenderer.swift b/Sources/XicoApp/LiveShotRenderer.swift
+index ffe0fd8..9d2dded 100644
+--- a/Sources/XicoApp/LiveShotRenderer.swift
++++ b/Sources/XicoApp/LiveShotRenderer.swift
+@@ -91,20 +91,183 @@ func renderLiveShots() {
+                 if let png = rep.representation(using: .png, properties: [:]) {
+                     try? png.write(to: dir.appendingPathComponent("\(name)-\(suffix).png"))
+                 }
+             }
+             window.orderOut(nil)
+         }
+     }
+     FileHandle.standardError.write("rendered live shots to \(dir.path)\n".data(using: .utf8)!)
+ }
+ 
++/// Precision Monitoring focused QA: exact six-state evidence set at the production 336 pt width.
++/// Live panels receive two full one-second sampling intervals after attachment; degraded-state
++/// panels use deterministic DEBUG fixtures and settle before the stale threshold.
++@MainActor
++func renderMonitoringShots() {
++    let dir = URL(fileURLWithPath: "/tmp/xico-monitoring-shots")
++    try? FileManager.default.removeItem(at: dir)
++    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
++
++    let defaults = UserDefaults.standard
++    let controlledKeys = [
++        MonitoringPreferences.refreshIntervalKey,
++        MonitoringPreferences.processLimitKey,
++        MonitoringPreferences.densityKey,
++    ]
++    let savedDefaults = Dictionary(uniqueKeysWithValues: controlledKeys.map { ($0, defaults.object(forKey: $0)) })
++    defer {
++        for key in controlledKeys {
++            if let value = savedDefaults[key] ?? nil { defaults.set(value, forKey: key) }
++            else { defaults.removeObject(forKey: key) }
++        }
++    }
++    MonitoringPreferences.setRefreshInterval(.oneSecond)
++    defaults.set(4, forKey: MonitoringPreferences.processLimitKey)
++    defaults.set(MonitoringPanelDensity.balanced.rawValue, forKey: MonitoringPreferences.densityKey)
++
++    let env = XicoEnvironment.live()
++    let liveModel = AppModel(env: env)
++    liveModel.setMetricsDetailConsumerVisible(true)
++    liveModel.prepareApplicationSampling()
++    liveModel.refreshMetrics()
++    liveModel.startMetricsTimer()
++
++    let liveShots: [(String, MenuMetric, ColorScheme)] = [
++        ("cpu-dark", .cpu, .dark),
++        ("cpu-light", .cpu, .light),
++        ("memory-dark", .memory, .dark),
++        ("memory-light", .memory, .light),
++    ]
++    for (name, metric, scheme) in liveShots {
++        renderMonitoringPage(
++            name: name,
++            model: liveModel,
++            metric: metric,
++            scheme: scheme,
++            settle: 2.4,
++            directory: dir)
++    }
++
++    let fixtureModel = AppModel(env: env)
++    fixtureModel.refreshMetrics()
++    let systemDeadline = Date().addingTimeInterval(3)
++    while fixtureModel.liveSnapshot == nil, Date() < systemDeadline {
++        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
++    }
++
++    let atlasWarming = ApplicationUsage.monitoringFixture(
++        id: "atlas-warming", name: "Atlas Studio", cpuRaw: nil, cpuNormalized: nil,
++        memory: 1_820_000_000, memberCount: 3)
++    let safariWarming = ApplicationUsage.monitoringFixture(
++        id: "safari-warming", name: "Safari", cpuRaw: nil, cpuNormalized: nil,
++        memory: 780_000_000, memberCount: 2)
++    fixtureModel.liveMetricsFeed.applicationUsage = ApplicationUsageSnapshot(
++        byCPU: [],
++        byMemory: [atlasWarming, safariWarming],
++        status: .warmingUp,
++        coverage: ProcessCoverage(enumerated: 96, sampled: 0, denied: 0, exited: 0),
++        sampledAt: Date(),
++        source: .local)
++    fixtureModel.liveMetricsFeed.objectWillChange.send()
++    renderMonitoringPage(
++        name: "cpu-warming-dark",
++        model: fixtureModel,
++        metric: .cpu,
++        scheme: .dark,
++        settle: 0.35,
++        directory: dir)
++
++    let xcode = ApplicationUsage.monitoringFixture(
++        id: "xcode", name: "Xcode", cpuRaw: 112, cpuNormalized: 14,
++        memory: 3_240_000_000, memberCount: 4)
++    let atlas = ApplicationUsage.monitoringFixture(
++        id: "atlas", name: "Atlas Studio", cpuRaw: 56, cpuNormalized: 7,
++        memory: 1_860_000_000, memberCount: 3)
++    let safari = ApplicationUsage.monitoringFixture(
++        id: "safari", name: "Safari", cpuRaw: 24, cpuNormalized: 3,
++        memory: 920_000_000, memberCount: 2)
++    let partial = ApplicationUsageSnapshot(
++        byCPU: [xcode, atlas, safari],
++        byMemory: [xcode, atlas, safari],
++        status: .partial,
++        coverage: ProcessCoverage(enumerated: 100, sampled: 76, denied: 24, exited: 0),
++        sampledAt: Date(),
++        source: .helperEnhanced)
++    fixtureModel.liveMetricsFeed.applicationUsage = partial
++    fixtureModel.liveMetricsFeed.objectWillChange.send()
++    renderMonitoringPage(
++        name: "memory-partial-dark",
++        model: fixtureModel,
++        metric: .memory,
++        scheme: .dark,
++        settle: 0.35,
++        directory: dir)
++
++    liveModel.setMetricsDetailConsumerVisible(false)
++    FileHandle.standardError.write("rendered monitoring shots to \(dir.path)\n".data(using: .utf8)!)
++}
++
++@MainActor
++private func renderMonitoringPage(
++    name: String,
++    model: AppModel,
++    metric: MenuMetric,
++    scheme: ColorScheme,
++    settle: TimeInterval,
++    directory: URL
++) {
++    let height: CGFloat
++    if metric == .memory { height = 820 }
++    else if name.contains("warming") { height = 520 }
++    else { height = 736 }
++    let size = CGSize(width: 336, height: height)
++    let panel = MenuMetricPanel(model: model, metric: metric)
++        .background(
++            RoundedRectangle(cornerRadius: 16, style: .continuous)
++                .fill(XColor.surface))
++    let root = ZStack(alignment: .top) {
++        AppBackground()
++        panel
++    }
++    .frame(width: size.width, height: size.height, alignment: .top)
++    .clipped()
++    .environment(\.colorScheme, scheme)
++    .environment(\.locale, XLocale.swiftUILocale)
++    .tint(XColor.brand)
++    .accentColor(XColor.brand)
++
++    let hosting = NSHostingView(rootView: root)
++    hosting.frame = NSRect(origin: .zero, size: size)
++    let window = NSWindow(
++        contentRect: hosting.frame,
++        styleMask: [.borderless],
++        backing: .buffered,
++        defer: false)
++    window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
++    window.contentView = hosting
++    window.setFrameOrigin(NSPoint(x: -4_000, y: -4_000))
++    window.orderFront(nil)
++
++    let deadline = Date().addingTimeInterval(settle)
++    while Date() < deadline {
++        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
++    }
++    hosting.layoutSubtreeIfNeeded()
++    if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
++        hosting.cacheDisplay(in: hosting.bounds, to: rep)
++        if let png = rep.representation(using: .png, properties: [:]) {
++            try? png.write(to: directory.appendingPathComponent("\(name).png"))
++        }
++    }
++    window.orderOut(nil)
++}
++
+ /// 渲染单页（供主题验证等临时快照复用）。
+ @MainActor
+ private func renderPage(name: String, view: AnyView, size: CGSize, dir: URL, scheme: ColorScheme) {
+     let root = ZStack { AppBackground(); view }
+         .frame(width: size.width, height: size.height)
+         .environment(\.colorScheme, scheme)
+     let hosting = NSHostingView(rootView: root)
+     hosting.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
+     let window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+     window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+diff --git a/Sources/XicoApp/XicoApp.swift b/Sources/XicoApp/XicoApp.swift
+index 1fc4f2e..004ee73 100644
+--- a/Sources/XicoApp/XicoApp.swift
++++ b/Sources/XicoApp/XicoApp.swift
+@@ -122,20 +122,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
+             exit(r == nil ? 1 : 0)
+         }
+         #endif
+         #if DEBUG
+         // 离屏实时快照工具仅供 QA/调试，随 LiveShotRenderer 一起编译进 DEBUG，绝不进发布包。
+         if CommandLine.arguments.contains("--liveshots") {
+             renderLiveShots()
+             NSApp.terminate(nil)
+             return
+         }
++        if CommandLine.arguments.contains("--monitoring-shots") {
++            renderMonitoringShots()
++            NSApp.terminate(nil)
++            return
++        }
+         #endif
+         // 单实例守卫：更新替换 App 或多路径安装时旧实例可能仍在运行——两个进程会各画一套
+         // 菜单栏状态项（用户报告的「莫名冒出两个一样的监控」）。
+         // 仅靠「枚举同 bundle 的其他实例」在两进程近乎同时启动时会竞态：两边都看见对方便一起退出
+         // （剩 0 个）、或都没看见对方便并存（剩 2 个）。因此以 Application Support 里的一把独占
+         // flock 作权威裁决——内核原子，恰好一个进程能拿到锁；拿不到的用「更早启动 / 更小 PID」的
+         // 确定性次序挑出既有实例，激活并交棒后退出自己，绝不并存。
+         if let bid = Bundle.main.bundleIdentifier, !bid.isEmpty {
+             let lock = SingletonLock(bundleID: bid)
+             if lock.acquire() {
+diff --git a/Tests/FeatureTests/ApplicationUsagePresentationTests.swift b/Tests/FeatureTests/ApplicationUsagePresentationTests.swift
+index 0f44be9..63764f3 100644
+--- a/Tests/FeatureTests/ApplicationUsagePresentationTests.swift
++++ b/Tests/FeatureTests/ApplicationUsagePresentationTests.swift
+@@ -204,20 +204,72 @@ final class ApplicationUsagePresentationTests: XCTestCase {
+     }
+ 
+     func testMissingPressureIndexProducesNeutralEmptyGauge() {
+         let missing = XicoPressureGaugePresentation(index: nil)
+         let valid = XicoPressureGaugePresentation(index: 0.72)
+         XCTAssertFalse(missing.hasValue)
+         XCTAssertEqual(missing.fraction, 0)
+         XCTAssertTrue(valid.hasValue)
+         XCTAssertEqual(valid.fraction, 0.72)
+     }
++
++    func testApplicationRowAccessibilityReadsNameCountCPUStateAndMemoryInOrder() {
++        let usage = ApplicationUsage.fixture(
++            cpuRaw: nil,
++            cpuNormalized: nil,
++            memory: 1_073_741_824,
++            pids: [7, 8])
++        let row = ApplicationUsageRowPresentation.make(
++            usage: usage,
++            focus: .memory,
++            cpuMode: .normalized,
++            memoryStyle: .binary)
++
++        XCTAssertEqual(
++            ApplicationUsageAccessibility.rowLabel(usage: usage, presentation: row, focus: .memory),
++            "Fixture，2 个进程，CPU 采样中，内存 1.00 GiB")
++    }
++
++    func testSamplingStatusAccessibilityAlwaysIncludesCoverage() {
++        let coverage = ProcessCoverage(enumerated: 100, sampled: 82, denied: 18, exited: 0)
++        XCTAssertEqual(
++            ApplicationUsageAccessibility.statusLabel(status: .partial, coverage: coverage),
++            "部分数据，数据覆盖 82%")
++        XCTAssertEqual(
++            ApplicationUsageAccessibility.statusLabel(status: .live, coverage: coverage),
++            "实时，数据覆盖 82%")
++    }
++
++    func testChartAccessibilityExposesConciseLabelAndLatestValue() {
++        XCTAssertEqual(
++            ApplicationUsageAccessibility.chart(label: "CPU", latestValue: "42.0%"),
++            .init(label: "CPU", value: "42.0%"))
++        XCTAssertEqual(
++            ApplicationUsageAccessibility.chart(label: "内存", latestValue: nil),
++            .init(label: "内存", value: "采样中"))
++    }
++
++    func testDebugMonitoringFixtureBuildsDeterministicMembersAndTrend() {
++        let fixture = ApplicationUsage.monitoringFixture(
++            id: "atlas",
++            name: "Atlas Studio",
++            cpuRaw: 96,
++            cpuNormalized: 12,
++            memory: 1_200_000_000,
++            memberCount: 2)
++
++        XCTAssertEqual(fixture.id.rawValue, "fixture:atlas")
++        XCTAssertEqual(fixture.displayName, "Atlas Studio")
++        XCTAssertEqual(fixture.members.map(\.identity.pid), [9_000, 9_001])
++        XCTAssertEqual(fixture.trend.cpuRaw.count, 60)
++        XCTAssertEqual(fixture.trend.memoryBytes.count, 60)
++    }
+ }
+ 
+ @MainActor
+ final class MonitoringWindowRelationshipTests: XCTestCase {
+     func testAttachedSheetCountsAsInsideAndSuppressesParentDismissal() {
+         _ = NSApplication.shared
+         let card = NSPanel(
+             contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
+             styleMask: [.borderless],
+             backing: .buffered,
+diff --git a/Tests/FeatureTests/LocalizationCoverageTests.swift b/Tests/FeatureTests/LocalizationCoverageTests.swift
+index a057d5d..dd78e35 100644
+--- a/Tests/FeatureTests/LocalizationCoverageTests.swift
++++ b/Tests/FeatureTests/LocalizationCoverageTests.swift
+@@ -7,20 +7,63 @@ import Foundation
+ /// 做两件事：
+ /// 1. 扫描 Sources/ 下所有 .swift，抽出本地化调用的字面量参数——既包括直接的
+ ///    `xLoc("…")` / `xLocF("…")` / `Text(localized: "…")`，也包括「把原始中文字面量喂进
+ ///    内部会 xLoc 的 helper」这类间接键：`sectionLabel("…")`（SettingsView，内部 xLoc）与
+ ///    `record(module: "…")`（历史记录的模块名，后续经 moduleLabel→xLoc 显示）。断言每一个都能在
+ ///    基准表 zh-Hans Localizable.strings 里找到（否则列出全部孤儿 key 并失败）。
+ /// 2. 断言 11 份 Localizable.strings 的 key 集合完全一致（parity）——仅 file-to-file
+ ///    数量相等并不足以防泄漏，故两条同时校验。
+ final class LocalizationCoverageTests: XCTestCase {
+ 
++    /// Precision Monitoring 首个切片的公开文案契约。这个清单刻意保持为 20 项；
++    /// 新文案必须经过产品审阅后再加入，避免截图工具或辅助功能字符串悄悄扩张翻译面。
++    private static let monitoringKeyInventory = [
++        "Xico 压力指数",
++        "采样中",
++        "实时",
++        "部分数据",
++        "数据已过期",
++        "数据不可用",
++        "数据覆盖 %d%%",
++        "应用检查器",
++        "物理内存",
++        "峰值内存",
++        "应用聚合",
++        "独立进程",
++        "%d 个进程",
++        "采样来源",
++        "本地采样",
++        "助手增强",
++        "已退出",
++        "十进制 GB",
++        "二进制 GiB",
++        "合并子进程",
++    ]
++
++    /// Task 6 为设置页先占位的文案。Task 8 必须一次性偿还所有非中文翻译债。
++    private static let monitoringPlaceholderDebt = [
++        "CPU · 口径",
++        "二进制 GiB / MiB",
++        "内存单位",
++        "十进制 GB / MB",
++        "合并应用进程",
++        "均衡",
++        "密度",
++        "归一化 0–100%",
++        "总核心 0–N×100%",
++        "排行数量",
++        "省电（5 秒）",
++        "紧凑",
++        "详细",
++        "采样中",
++    ]
++
+     /// 全部 11 种语言（与 DesignSystem/Resources/*.lproj 一一对应）。
+     private static let locales = [
+         "en", "zh-Hans", "zh-Hant", "ja", "ko",
+         "de", "fr", "es", "it", "pt-BR", "ru",
+     ]
+ 
+     /// 基准语言（源语言）：key 即中文，其余语言都应覆盖它的 key 集合。
+     private static let baseLocale = "zh-Hans"
+ 
+     // MARK: - 路径推导（从 #filePath 逆推包根）
+@@ -42,26 +85,38 @@ final class LocalizationCoverageTests: XCTestCase {
+             .appendingPathComponent("DesignSystem", isDirectory: true)
+             .appendingPathComponent("Resources", isDirectory: true)
+             .appendingPathComponent("\(locale).lproj", isDirectory: true)
+             .appendingPathComponent("Localizable.strings", isDirectory: false)
+     }
+ 
+     // MARK: - 载入 .strings key 集合
+ 
+     /// 用 PropertyList 解析（`.strings` 即老式 plist），取其 key 集合。
+     private func keys(of locale: String) throws -> Set<String> {
++        Set(try table(of: locale).keys)
++    }
++
++    private func table(of locale: String) throws -> [String: String] {
+         let url = stringsURL(locale)
+         let data = try Data(contentsOf: url)
+         let obj = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+         let dict = try XCTUnwrap(obj as? [String: String],
+                                  "\(locale) Localizable.strings 应解析为字符串字典")
+-        return Set(dict.keys)
++        return dict
++    }
++
++    private func formatSpecifiers(in string: String) throws -> [String] {
++        let regex = try NSRegularExpression(
++            pattern: #"%(?:%|@|d|(?:\.\d+)?[fiu])"#)
++        let ns = string as NSString
++        return regex.matches(in: string, range: NSRange(location: 0, length: ns.length))
++            .map { ns.substring(with: $0.range) }
+     }
+ 
+     /// 反转义源码字面量里的常见转义序列，使其与 PropertyList 解析出的真实字符 key 对齐。
+     static func unescape(_ s: String) -> String {
+         var out = ""
+         var it = s.makeIterator()
+         while let c = it.next() {
+             if c == "\\", let n = it.next() {
+                 switch n {
+                 case "n": out.append("\n")
+@@ -157,20 +212,62 @@ final class LocalizationCoverageTests: XCTestCase {
+             let extra = other.subtracting(base).sorted()
+             XCTAssertTrue(
+                 missing.isEmpty && extra.isEmpty,
+                 "\(locale) 与 \(Self.baseLocale) 的 key 集合不一致。\n"
+                     + "缺失（\(missing.count)）：\(missing.joined(separator: "、"))\n"
+                     + "多余（\(extra.count)）：\(extra.joined(separator: "、"))"
+             )
+         }
+     }
+ 
++    /// (3) Precision Monitoring 公开键清单必须恰好为设计批准的 20 项，且 11 种语言全部覆盖。
++    func testPrecisionMonitoringInventoryIsExactAndComplete() throws {
++        XCTAssertEqual(Self.monitoringKeyInventory.count, 20)
++        XCTAssertEqual(Set(Self.monitoringKeyInventory).count, 20, "监控键清单不得重复")
++
++        let expected = Set(Self.monitoringKeyInventory)
++        for locale in Self.locales {
++            let missing = expected.subtracting(try keys(of: locale)).sorted()
++            XCTAssertTrue(
++                missing.isEmpty,
++                "\(locale) 缺少 Precision Monitoring 键：\(missing.joined(separator: "、"))")
++        }
++    }
++
++    /// (4) 翻译不能破坏 printf 占位符；`%d` 与字面量百分号 `%%` 都必须原样保留。
++    func testPrecisionMonitoringTranslationsPreserveFormatSpecifiers() throws {
++        for locale in Self.locales {
++            let translations = try table(of: locale)
++            for key in Self.monitoringKeyInventory {
++                let value = try XCTUnwrap(translations[key], "\(locale) 缺少 \(key)")
++                XCTAssertEqual(
++                    try formatSpecifiers(in: value),
++                    try formatSpecifiers(in: key),
++                    "\(locale) 的 \(key) 破坏了格式符")
++            }
++        }
++    }
++
++    /// (5) 十种非简体中文语言不得继续显示中文 source placeholder。
++    /// 专名与单位可以保留在译文中，但整句仍必须由该语言完成本地化。
++    func testMonitoringTranslationsDoNotLeakSourcePlaceholders() throws {
++        let required = Set(Self.monitoringKeyInventory + Self.monitoringPlaceholderDebt)
++        for locale in Self.locales where locale != Self.baseLocale {
++            let translations = try table(of: locale)
++            for key in required {
++                let value = try XCTUnwrap(translations[key], "\(locale) 缺少 \(key)")
++                XCTAssertFalse(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
++                XCTAssertNotEqual(value, key, "\(locale) 仍在显示中文占位：\(key)")
++            }
++        }
++    }
++
+     // MARK: - definitions.json 派生 key
+ 
+     /// definitions.json 的绝对路径（Sources/Domain/Resources/definitions.json）。
+     private func definitionsJSONURL() -> URL {
+         sourcesDir()
+             .appendingPathComponent("Domain", isDirectory: true)
+             .appendingPathComponent("Resources", isDirectory: true)
+             .appendingPathComponent("definitions.json", isDirectory: false)
+     }
+ 
+@@ -184,21 +281,21 @@ final class LocalizationCoverageTests: XCTestCase {
+         let defs = try XCTUnwrap(root["definitions"] as? [[String: Any]],
+                                  "definitions.json 应含 definitions 数组")
+         var out = Set<String>()
+         for d in defs {
+             if let title = d["title"] as? String { out.insert(title) }
+             if let desc = d["description"] as? String { out.insert(desc) }
+         }
+         return out
+     }
+ 
+-    /// (3) definitions.json 里每个 title/description（经 xLoc 显示）都必须存在于基准 zh-Hans 表，
++    /// (6) definitions.json 里每个 title/description（经 xLoc 显示）都必须存在于基准 zh-Hans 表，
+     /// 否则这 ~112 条会向 10 个非中文语言泄漏原始中文。
+     func testDefinitionsJSONKeysAreLocalized() throws {
+         let base = try keys(of: Self.baseLocale)
+         let defKeys = try definitionsStrings()
+         // 抽取结果不应为空——否则说明 JSON 结构变化导致抽取失效（防止测试假绿）。
+         XCTAssertFalse(defKeys.isEmpty,
+                        "未从 definitions.json 抽到任何 title/description，抽取逻辑可能已失效")
+ 
+         let missing = defKeys.subtracting(base).sorted()
+         XCTAssertTrue(
+diff --git a/Tests/FeatureTests/MetricsGatingTests.swift b/Tests/FeatureTests/MetricsGatingTests.swift
+index df0d3fb..55b3d03 100644
+--- a/Tests/FeatureTests/MetricsGatingTests.swift
++++ b/Tests/FeatureTests/MetricsGatingTests.swift
+@@ -241,20 +241,25 @@ final class MetricsGatingTests: XCTestCase {
+         withMonitoringDefaults { defaults in
+             for value in [Double.nan, Double.infinity, -Double.infinity] {
+                 defaults.set(value, forKey: MonitoringPreferences.refreshIntervalKey)
+ 
+                 XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), .oneSecond)
+                 XCTAssertEqual(defaults.double(forKey: MonitoringPreferences.refreshIntervalKey), 1.0)
+             }
+         }
+     }
+ 
++    func testFocusedMonitoringShotsSkipInteractiveLicenseKeychain() {
++        XCTAssertTrue(AppModel.isOfflineRender(arguments: ["Xico", "--monitoring-shots"]))
++        XCTAssertFalse(AppModel.isOfflineRender(arguments: ["Xico"]))
++    }
++
+     func testCanonicalMonitoringKeysTakePrecedenceOverLegacyTaskFourKeys() {
+         withMonitoringDefaults { defaults in
+             defaults.set(false, forKey: "xico.monitoring.combinesProcesses")
+             defaults.set(4, forKey: "xico.monitoring.processLimit")
+             defaults.set(true, forKey: MonitoringPreferences.combinesProcessesKey)
+             defaults.set(20, forKey: MonitoringPreferences.processLimitKey)
+ 
+             XCTAssertTrue(MonitoringPreferences.combinesProcesses(defaults))
+             XCTAssertEqual(MonitoringPreferences.processLimit(defaults), 20)
+         }

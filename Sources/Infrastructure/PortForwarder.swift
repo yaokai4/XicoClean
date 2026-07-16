@@ -1,23 +1,22 @@
 import Foundation
+import Darwin
 import Domain
-import Citadel
-import NIOCore
-import NIOPosix
+import DesignSystem
 
-/// 本地端口转发（SSH local forward，`ssh -L`）——ServerCat 完全没有，Termius/Core Shell 核心能力。
+/// 本地端口转发（SSH local forward，`ssh -L`）——ServerCat 完全没有，Termius/Core Shell 的核心能力。
 ///
-/// 关键：SSH 连接与本地监听 socket 用**同一条单线程 event loop**（把自建 group 传给两者），
-/// 于是每对「本地入站 ↔ direct-tcpip」通道都在同一 loop 上，GlueHandler 的同步互调安全无竞态。
+/// 走系统 `ssh -L <local>:<targetHost>:<targetPort> -N`（专用连接、不复用），原生支持 rsa-sha2 与任意
+/// `.pem` 私钥。相比旧的 NIO direct-tcpip 手写胶水，既更简洁又免受 Citadel 的 SHA-1 RSA 限制。
 public final class PortForwarder: @unchecked Sendable {
     public let localPort: Int
     public let targetHost: String
     public let targetPort: Int
     private let host: ServerHost
 
-    private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     private let lock = NSLock()
-    private var _client: SSHClient?
-    private var _serverChannel: Channel?
+    private var _process: Process?
+    private var _ctx: SSHContext?
+    private var stopped = false
 
     public init(host: ServerHost, localPort: Int, targetHost: String, targetPort: Int) {
         self.host = host
@@ -26,112 +25,87 @@ public final class PortForwarder: @unchecked Sendable {
         self.targetPort = targetPort
     }
 
-    // 锁访问收进同步方法（NSLock.lock 在 async 上下文不可用）。
-    private func setClient(_ c: SSHClient?) { lock.lock(); _client = c; lock.unlock() }
-    private func setServerChannel(_ c: Channel?) { lock.lock(); _serverChannel = c; lock.unlock() }
-    private func takeAll() -> (Channel?, SSHClient?) { lock.lock(); let sc = _serverChannel; let c = _client; _serverChannel = nil; _client = nil; lock.unlock(); return (sc, c) }
+    private func storeIfActive(_ p: Process, _ c: SSHContext) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !stopped else { return false }
+        _process = p; _ctx = c
+        return true
+    }
+    private func takeAll(markStopped: Bool = false) -> (Process?, SSHContext?) {
+        lock.lock(); if markStopped { stopped = true }
+        let p = _process; let c = _ctx; _process = nil; _ctx = nil; lock.unlock()
+        return (p, c)
+    }
+    private var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
 
     public func start(credential: SSHCredential) async throws {
-        // 1) 在自建单线程 group 上建立 SSH 连接。
-        let auth = try HostConnection.authMethod(username: host.username, credential: credential)
-        let client = try await SSHClient.connect(
-            host: host.hostname, port: host.port,
-            authenticationMethod: auth, hostKeyValidator: .acceptAnything(),
-            reconnect: .never, group: group, connectTimeout: .seconds(15))
-        setClient(client)
+        if isStopped { throw CancellationError() }
+        guard SSHInputValidator.isValidPort(localPort), SSHInputValidator.isValidPort(targetPort),
+              SSHInputValidator.isValidHostname(targetHost) else {
+            throw ServerSSHError.invalidConfiguration(xLoc("请检查本地端口、目标主机与目标端口"))
+        }
+        // 专用连接（隧道需长期独占，不走 ControlMaster 复用）。
+        let ctx = try SSHContext(host: host, credential: credential, multiplexed: false)
+        let args = ctx.sshArgs(extra: [
+            "-N",                                                  // 只转发、不执行远端命令
+            "-o", "ExitOnForwardFailure=yes",                      // 本地端口占用 → 立即失败
+            "-L", "127.0.0.1:\(localPort):\(targetHost):\(targetPort)"
+        ])
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: SSHContext.sshPath)
+        proc.arguments = args
+        var env = ProcessInfo.processInfo.environment
+        for (k, v) in ctx.environment { env[k] = v }
+        proc.environment = env
+        let errPipe = Pipe()
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = errPipe
+        proc.standardInput = FileHandle.nullDevice
+        let errBox = ErrBox()
+        errPipe.fileHandleForReading.readabilityHandler = { h in
+            let d = h.availableData; if !d.isEmpty { errBox.append(d) }
+        }
+        do { try proc.run() } catch {
+            ctx.close()
+            throw ServerSSHError.connectFailed(xLoc("无法启动端口转发：") + "\(error)")
+        }
+        guard storeIfActive(proc, ctx) else {
+            Self.stopProcess(proc); ctx.close(); throw CancellationError()
+        }
 
-        // 2) 在同一 group 上监听本地端口；每个入站连接开一条到目标的 direct-tcpip 通道并对接。
-        let target = self.targetHost
-        let targetPort = self.targetPort
-        let bootstrap = ServerBootstrap(group: group)
-            .serverChannelOption(ChannelOptions.backlog, value: 64)
-            .childChannelInitializer { inbound in
-                inbound.eventLoop.makeFutureWithTask {
-                    let origin = try SocketAddress(ipAddress: "127.0.0.1", port: 0)
-                    let sshChannel = try await client.createDirectTCPIPChannel(
-                        using: .init(targetHost: target, targetPort: targetPort, originatorAddress: origin)
-                    ) { $0.eventLoop.makeSucceededFuture(()) }
-                    return sshChannel
-                }.flatMap { (sshChannel: Channel) -> EventLoopFuture<Void> in
-                    let (localGlue, remoteGlue) = GlueHandler.matchedPair()
-                    return inbound.pipeline.addHandler(localGlue).flatMap {
-                        sshChannel.pipeline.addHandler(remoteGlue)
-                    }
-                }.flatMapError { _ in
-                    inbound.close()
-                }
-            }
-
-        let serverChannel = try await bootstrap.bind(host: "127.0.0.1", port: localPort).get()
-        setServerChannel(serverChannel)
+        // 给鉴权 + 绑定一点时间；若在窗口内退出即视为失败（鉴权失败/端口占用）。
+        try? await Task.sleep(nanoseconds: 1_800_000_000)
+        if Task.isCancelled { await stop(); throw CancellationError() }
+        if !proc.isRunning {
+            _ = takeAll()
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            ctx.close()
+            let msg = errBox.text
+            throw ServerSSHError.connectFailed(friendlySSHError(msg, code: proc.terminationStatus))
+        }
     }
 
     public func stop() async {
-        let (sc, c) = takeAll()
-        try? await sc?.close()
-        try? await c?.close()
-        try? await group.shutdownGracefully()
-    }
-}
-
-/// NIO 规范「胶水」处理器：把两条通道双向对接，含 EOF / 背压 / 关闭传播。
-/// 仅在两条通道处于**同一 event loop** 时安全——本转发器已用同一单线程 group 保证。
-private final class GlueHandler {
-    private var partner: GlueHandler?
-    private var context: ChannelHandlerContext?
-    private var pendingRead = false
-
-    private init() {}
-
-    static func matchedPair() -> (GlueHandler, GlueHandler) {
-        let first = GlueHandler()
-        let second = GlueHandler()
-        first.partner = second
-        second.partner = first
-        return (first, second)
+        let (p, c) = takeAll(markStopped: true)
+        if let p, p.isRunning { Self.stopProcess(p) }
+        c?.close()
     }
 
-    private func partnerWrite(_ data: NIOAny) { context?.write(data, promise: nil) }
-    private func partnerFlush() { context?.flush() }
-    private func partnerWriteEOF() { context?.close(mode: .output, promise: nil) }
-    private func partnerCloseFull() { context?.close(promise: nil) }
-    private func partnerBecameWritable() {
-        if pendingRead { pendingRead = false; context?.read() }
-    }
-    private var partnerWritable: Bool { context?.channel.isWritable ?? false }
-}
-
-extension GlueHandler: ChannelDuplexHandler {
-    typealias InboundIn = NIOAny
-    typealias InboundOut = NIOAny
-    typealias OutboundIn = NIOAny
-    typealias OutboundOut = NIOAny
-
-    func handlerAdded(context: ChannelHandlerContext) { self.context = context }
-    func handlerRemoved(context: ChannelHandlerContext) { self.context = nil; partner = nil }
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) { partner?.partnerWrite(data) }
-    func channelReadComplete(context: ChannelHandlerContext) { partner?.partnerFlush() }
-    func channelInactive(context: ChannelHandlerContext) { partner?.partnerCloseFull() }
-
-    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-        if let evt = event as? ChannelEvent, case .inputClosed = evt {
-            partner?.partnerWriteEOF()
-        } else {
-            context.fireUserInboundEventTriggered(event)
+    private static func stopProcess(_ process: Process) {
+        let pid = process.processIdentifier
+        process.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.75) {
+            if process.isRunning { _ = Darwin.kill(pid, SIGKILL) }
         }
     }
 
-    func errorCaught(context: ChannelHandlerContext, error: Error) { partner?.partnerCloseFull() }
-
-    func channelWritabilityChanged(context: ChannelHandlerContext) {
-        if context.channel.isWritable { partner?.partnerBecameWritable() }
-    }
-
-    func read(context: ChannelHandlerContext) {
-        if let partner, partner.partnerWritable {
-            context.read()
-        } else {
-            pendingRead = true
+    private final class ErrBox: @unchecked Sendable {
+        private let lock = NSLock(); private var d = Data()
+        func append(_ x: Data) {
+            lock.lock(); defer { lock.unlock() }
+            let room = max(0, 1_048_576 - d.count)
+            if room > 0 { d.append(x.prefix(room)) }
         }
+        var text: String { lock.lock(); defer { lock.unlock() }; return String(data: d, encoding: .utf8) ?? "" }
     }
 }

@@ -9,6 +9,8 @@ public final class TunnelManager: ObservableObject {
 
     @Published public private(set) var states: [UUID: TunnelState] = [:]
     private var forwarders: [UUID: PortForwarder] = [:]
+    private var startTasks: [UUID: Task<Void, Never>] = [:]
+    private var startGenerations: [UUID: UUID] = [:]
 
     public init() {}
 
@@ -22,13 +24,24 @@ public final class TunnelManager: ObservableObject {
                                 targetHost: tunnel.targetHost, targetPort: tunnel.targetPort)
         forwarders[tunnel.id] = fwd
         let id = tunnel.id
-        Task {
+        let generation = UUID()
+        startGenerations[id] = generation
+        startTasks[id] = Task {
+            defer {
+                if startGenerations[id] == generation {
+                    startTasks[id] = nil; startGenerations[id] = nil
+                }
+            }
             do {
                 try await fwd.start(credential: credential)
-                states[id] = .active
+                if forwarders[id] === fwd { states[id] = .active }
+            } catch is CancellationError {
+                if forwarders[id] === fwd { states[id] = .stopped; forwarders[id] = nil }
             } catch {
-                states[id] = .failed((error as? LocalizedError)?.errorDescription ?? "\(error)")
-                forwarders[id] = nil
+                if forwarders[id] === fwd {
+                    states[id] = .failed((error as? LocalizedError)?.errorDescription ?? "\(error)")
+                    forwarders[id] = nil
+                }
                 await fwd.stop()
             }
         }
@@ -37,6 +50,8 @@ public final class TunnelManager: ObservableObject {
     public func stop(_ id: UUID) {
         let fwd = forwarders[id]
         forwarders[id] = nil
+        startTasks[id]?.cancel(); startTasks[id] = nil
+        startGenerations[id] = nil
         states[id] = .stopped
         Task { await fwd?.stop() }
     }

@@ -191,7 +191,7 @@ public struct OptimizationView: View {
                                 reload()
                             }
                         }))
-                        .toggleStyle(.switch).labelsHidden()
+                        .toggleStyle(XThemeSwitchStyle()).labelsHidden()
                         .accessibilityLabel(xLocF("启用或停用启动项 %@", agent.label))
                 }
             }

@@ -183,7 +183,20 @@ public struct WeChatScanner: ScannerModule, Sendable {
                     dbItems.append(CleanableItem(url: child, displayName: name, detail: child.path,
                                                  size: e.size, safety: .risky,
                                                  note: "聊天记录本体 · 请用微信内置的存储空间管理瘦身",
-                                                 isInformational: true))
+                                                 isInformational: true,
+                                                 assessment: FindingAssessment(
+                                                    ruleID: "wechat-database", confidence: 1,
+                                                    evidence: [
+                                                        ScanEvidence(code: "wechat-db", kind: .pathOwnership,
+                                                                     title: "微信聊天记录数据库", strength: 1),
+                                                        ScanEvidence(code: "app-managed-only", kind: .safetyPolicy,
+                                                                     title: "Xico 永不直接删除", strength: 1)
+                                                    ],
+                                                    ownerBundleID: "com.tencent.xinWeChat",
+                                                    reclaimableBytes: 0, recovery: .appManaged,
+                                                    regenerationCost: .high,
+                                                    impact: "删除会直接丢失聊天记录"
+                                                 )))
                 }
                 continue
             }
@@ -213,11 +226,32 @@ public struct WeChatScanner: ScannerModule, Sendable {
             }
             let size = fs.allocatedSize(of: item)
             guard size > 64 * 1024 else { continue }   // 碎渣不值得列
+            var evidence = [
+                ScanEvidence(code: category.groupID, kind: .pathOwnership,
+                             title: "微信数据目录分类确认", strength: 0.95)
+            ]
+            if category.isChatMedia {
+                evidence.append(ScanEvidence(code: "wechat-age-threshold", kind: .age,
+                                             title: "早于 \(Self.daysThreshold) 天", strength: 0.9))
+            } else {
+                evidence.append(ScanEvidence(code: "wechat-regenerable", kind: .regenerable,
+                                             title: "微信可自动重建或重新下载", strength: 0.98))
+            }
             itemsByCategory[category, default: []].append(CleanableItem(
                 url: item, displayName: item.lastPathComponent, detail: item.path,
                 size: size, safety: category.safety,
                 isSelected: category.isChatMedia ? false : nil,
-                note: category.isChatMedia ? xLocF("早于 %d 天", Self.daysThreshold) : nil))
+                note: category.isChatMedia ? xLocF("早于 %d 天", Self.daysThreshold) : nil,
+                assessment: FindingAssessment(
+                    ruleID: category.groupID,
+                    confidence: category.isChatMedia ? 0.9 : 0.99,
+                    evidence: evidence,
+                    ownerBundleID: "com.tencent.xinWeChat",
+                    reclaimableBytes: size,
+                    recovery: category.isChatMedia ? .trash : .regenerate,
+                    regenerationCost: category.isChatMedia ? .high : .low,
+                    impact: category.explanation
+                )))
             total += size
             progress(ScanProgress(message: item.lastPathComponent, bytesFound: total))
         }

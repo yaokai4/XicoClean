@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import Domain
 import Infrastructure
 import DesignSystem
@@ -21,6 +23,8 @@ struct HostEditorView: View {
     @State private var symbol: String
     @State private var pollInterval: Double
     @State private var jumpHostID: UUID?
+    @State private var keyDropActive = false
+    @State private var keyImportNote: String?
 
     private let hasStoredPassword: Bool
     private let hasStoredKey: Bool
@@ -84,16 +88,42 @@ struct HostEditorView: View {
                         }
                     } else {
                         VStack(alignment: .leading, spacing: XSpacing.xs) {
-                            label(xLoc("私钥（OpenSSH 格式，ed25519 / RSA）"))
-                            TextEditor(text: $privateKeyPEM)
-                                .font(XFont.captionMono).frame(height: 110)
-                                .padding(XSpacing.s)
-                                .background(XColor.surfaceAlt.opacity(0.6), in: RoundedRectangle(cornerRadius: XRadius.control))
-                                .overlay(RoundedRectangle(cornerRadius: XRadius.control).strokeBorder(XColor.border))
-                            if hasStoredKey && privateKeyPEM.isEmpty {
+                            HStack(alignment: .firstTextBaseline) {
+                                label(xLoc("私钥（.pem / OpenSSH · RSA / ed25519）"))
+                                Spacer()
+                                Button { importKeyFile() } label: {
+                                    Label(xLoc("从文件导入…"), systemImage: "doc.badge.plus")
+                                        .font(XFont.micro)
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(XColor.brand)
+                                .help(xLoc("选择一个 .pem / id_rsa / id_ed25519 私钥文件"))
+                            }
+                            ZStack {
+                                TextEditor(text: $privateKeyPEM)
+                                    .font(XFont.captionMono).frame(height: 110)
+                                    .padding(XSpacing.s)
+                                    .scrollContentBackground(.hidden)
+                                    .background(XColor.surfaceAlt.opacity(0.6), in: RoundedRectangle(cornerRadius: XRadius.control))
+                                    .overlay(RoundedRectangle(cornerRadius: XRadius.control)
+                                        .strokeBorder(keyDropActive ? XColor.brand : XColor.border, lineWidth: keyDropActive ? 2 : 1))
+                                if privateKeyPEM.isEmpty {
+                                    Text(xLoc("粘贴私钥内容，或把 .pem 文件拖到这里"))
+                                        .font(XFont.captionMono).foregroundStyle(XColor.textTertiary)
+                                        .allowsHitTesting(false)
+                                        .padding(.horizontal, XSpacing.m)
+                                }
+                            }
+                            // 拖放 .pem / 私钥文件到编辑框即导入。
+                            .onDrop(of: [.fileURL], isTargeted: $keyDropActive) { providers in
+                                loadDroppedKey(providers); return true
+                            }
+                            if let note = keyImportNote {
+                                Text(note).font(XFont.micro).foregroundStyle(XColor.success)
+                            } else if hasStoredKey && privateKeyPEM.isEmpty {
                                 Text(xLoc("已保存私钥 · 留空则不修改")).font(XFont.micro).foregroundStyle(XColor.textTertiary)
                             }
-                            SecureField(xLoc("私钥口令（可选）"), text: $passphrase)
+                            SecureField(xLoc("私钥口令（可选，密钥加密时填写）"), text: $passphrase)
                                 .textFieldStyle(.plain)
                                 .padding(.horizontal, XSpacing.m).padding(.vertical, XSpacing.s)
                                 .background(XColor.surfaceAlt.opacity(0.8), in: Capsule())
@@ -156,18 +186,21 @@ struct HostEditorView: View {
     }
 
     private var isValid: Bool {
-        !hostname.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !username.trimmingCharacters(in: .whitespaces).isEmpty &&
-        Int(port) != nil
+        SSHInputValidator.isValidHostname(hostname) &&
+        SSHInputValidator.isValidUsername(username) &&
+        Int(port).map(SSHInputValidator.isValidPort) == true
     }
 
     private func save() {
-        let resolvedName = name.trimmingCharacters(in: .whitespaces).isEmpty ? hostname : name
-        var host = editing ?? ServerHost(name: resolvedName, hostname: hostname, username: username)
+        let cleanHostname = SSHInputValidator.normalizedHostname(hostname)
+        let cleanUsername = SSHInputValidator.normalizedUsername(username)
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = cleanName.isEmpty ? cleanHostname : cleanName
+        var host = editing ?? ServerHost(name: resolvedName, hostname: cleanHostname, username: cleanUsername)
         host.name = resolvedName
-        host.hostname = hostname.trimmingCharacters(in: .whitespaces)
+        host.hostname = cleanHostname
         host.port = Int(port) ?? 22
-        host.username = username.trimmingCharacters(in: .whitespaces)
+        host.username = cleanUsername
         host.authKind = authKind
         host.symbol = symbol
         host.colorIndex = colorIndex
@@ -178,6 +211,47 @@ struct HostEditorView: View {
                     privateKeyPEM: authKind == .privateKey ? privateKeyPEM : nil,
                     passphrase: authKind == .privateKey ? passphrase : nil)
         onClose()
+    }
+
+    // MARK: 私钥文件导入（.pem / id_rsa / id_ed25519）
+
+    private func importKeyFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.title = xLoc("选择私钥文件")
+        panel.message = xLoc("支持 AWS/Lightsail .pem、id_rsa、id_ed25519 等私钥文件")
+        // .pem 有官方 UTType；私钥文件常无扩展名，故也允许「无扩展名」与纯数据。
+        panel.allowedContentTypes = [UTType(filenameExtension: "pem") ?? .data, .data, .text, .item]
+        panel.allowsOtherFileTypes = true
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        loadKey(from: url)
+    }
+
+    private func loadDroppedKey(_ providers: [NSItemProvider]) {
+        guard let provider = providers.first else { return }
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            guard let url else { return }
+            DispatchQueue.main.async { loadKey(from: url) }
+        }
+    }
+
+    private func loadKey(from url: URL) {
+        guard let raw = try? String(contentsOf: url, encoding: .utf8) else {
+            keyImportNote = nil
+            vm.toast = xLoc("无法读取该文件（可能不是文本格式的私钥）")
+            return
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.contains("PRIVATE KEY") else {
+            keyImportNote = nil
+            vm.toast = xLoc("该文件不像私钥（缺少 PRIVATE KEY 头）。请选择 .pem / id_rsa / id_ed25519")
+            return
+        }
+        privateKeyPEM = trimmed
+        keyImportNote = xLocF("已从 %@ 导入私钥", url.lastPathComponent)
     }
 
     private func label(_ text: String) -> some View {

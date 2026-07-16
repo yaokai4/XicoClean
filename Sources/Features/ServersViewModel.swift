@@ -3,6 +3,18 @@ import Domain
 import Infrastructure
 import DesignSystem
 
+public struct HostTrustRequest: Identifiable, Sendable {
+    public let id = UUID()
+    public let host: ServerHost
+    public let keys: [SSHHostKey]
+    public let reconnectHostID: UUID?
+    public let replacesExistingKeys: Bool
+    public init(host: ServerHost, keys: [SSHHostKey], reconnectHostID: UUID?, replacesExistingKeys: Bool) {
+        self.host = host; self.keys = keys; self.reconnectHostID = reconnectHostID
+        self.replacesExistingKeys = replacesExistingKeys
+    }
+}
+
 /// 服务器套件视图模型：主机 CRUD、凭据（Keychain）取放、连接/断开、命令控制台与批量执行、片段库。
 /// 门禁在视图层用 `model.licenseStatus` 判定（浏览免费；连接/执行等动作需授权）。
 @MainActor
@@ -20,6 +32,8 @@ public final class ServersViewModel: ObservableObject {
     @Published public var consoleOutput: [UUID: String] = [:]
     @Published public var runningCommandHosts: Set<UUID> = []
     @Published public var toast: String?
+    @Published public var pendingHostTrust: HostTrustRequest?
+    @Published public var scanningHostIDs: Set<UUID> = []
     // 告警配置
     @Published public var alertRules: [ServerAlertRule] = []
     @Published public var hostDownAlerts: Bool = true
@@ -143,10 +157,74 @@ public final class ServersViewModel: ObservableObject {
         }
         // 跳板机链：若设了 jumpHostID，解析出跳板机主机与其凭据一并传入。
         var jump: (host: ServerHost, credential: SSHCredential)?
-        if let jid = host.jumpHostID, let jh = hosts.first(where: { $0.id == jid }), let jc = credential(for: jh) {
+        if let jid = host.jumpHostID {
+            guard let jh = hosts.first(where: { $0.id == jid }), let jc = credential(for: jh) else {
+                toast = xLoc("跳板机不存在或缺少凭据")
+                return
+            }
+            guard jh.hasPinnedHostKey else {
+                requestHostTrust(jh, reconnectHostID: host.id, via: nil)
+                return
+            }
             jump = (jh, jc)
         }
+        guard host.hasPinnedHostKey else {
+            requestHostTrust(host, reconnectHostID: host.id, via: jump)
+            return
+        }
         engine.connect(host: host, credential: cred, via: jump)
+    }
+
+    /// 手动重新扫描；用于用户在服务商控制台核对后替换已变化的 host key。
+    public func reverifyHost(_ host: ServerHost) {
+        var jump: (host: ServerHost, credential: SSHCredential)?
+        if let jid = host.jumpHostID, let jh = hosts.first(where: { $0.id == jid }), let jc = credential(for: jh) {
+            guard jh.hasPinnedHostKey else {
+                toast = xLoc("请先连接并确认跳板机指纹")
+                return
+            }
+            jump = (jh, jc)
+        }
+        requestHostTrust(host, reconnectHostID: nil, via: jump)
+    }
+
+    public func trustPendingHost() {
+        guard let request = pendingHostTrust else { return }
+        var host = request.host
+        host.pinnedHostKeys = request.keys.map(\.rawLine)
+        store.upsert(host)
+        pendingHostTrust = nil
+        reload()
+        toast = xLoc("服务器指纹已固定；以后发生变化会自动阻止连接")
+        if let reconnectID = request.reconnectHostID,
+           let reconnect = hosts.first(where: { $0.id == reconnectID }) {
+            connect(reconnect)
+        }
+    }
+
+    public func cancelHostTrust() { pendingHostTrust = nil }
+
+    private func requestHostTrust(_ host: ServerHost, reconnectHostID: UUID?,
+                                  via jump: (host: ServerHost, credential: SSHCredential)?) {
+        guard !scanningHostIDs.contains(host.id) else { return }
+        scanningHostIDs.insert(host.id)
+        Task {
+            defer { scanningHostIDs.remove(host.id) }
+            do {
+                let keys: [SSHHostKey]
+                if let jump {
+                    keys = try await SSHHostKeyScanner.scan(hostname: host.hostname, port: host.port,
+                                                            via: jump.host, credential: jump.credential)
+                } else {
+                    keys = try await SSHHostKeyScanner.scan(hostname: host.hostname, port: host.port)
+                }
+                pendingHostTrust = HostTrustRequest(host: host, keys: keys,
+                                                    reconnectHostID: reconnectHostID,
+                                                    replacesExistingKeys: host.hasPinnedHostKey)
+            } catch {
+                toast = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            }
+        }
     }
 
     public func disconnect(_ host: ServerHost) { engine.disconnect(host.id) }

@@ -6,8 +6,7 @@ import DesignSystem
 /// 远程服务器实时监控引擎——与本地 `MetricsEngine` 同构的发布模型，但按主机维护多份状态。
 ///
 /// 每台连接的主机跑一条采样循环（`Task`，继承 MainActor）：`await` 时真正的 SSH 采样在
-/// `HostConnection` actor + NIO 事件循环里执行（不阻塞主线程），解析亦在 actor 内（off-main），
-/// 主线程只做最终 `@Published` 发布——与 `MetricsEngine.apply` 的「后台采样、主线程发布」纪律一致。
+/// 系统 ssh 子进程中执行（不阻塞主线程），主线程只做最终 `@Published` 发布。
 @MainActor
 public final class ServerMonitorEngine: ObservableObject {
     public static let historyLength = 60
@@ -103,9 +102,8 @@ public final class ServerMonitorEngine: ObservableObject {
 
     private func runPollLoop(id: UUID, conn: HostConnection, interval: Double, credential: SSHCredential,
                              via jump: (host: ServerHost, credential: SSHCredential)?) async {
-        // 循环任一路径退出（连接失败 / 连续采样失败 / 取消 / 正常结束）都必须释放本主机的
-        // pollTasks/connections 槽位并关闭底层 SSHClient——否则 connect() 的去重守卫会永久拒绝重连、
-        // 且 SSHClient/NIO 通道泄漏（审计 P1）。仅当槽位仍属于本 conn 时清理，避免误清已重建的新连接。
+        // 循环任一路径退出都必须释放本主机的任务/连接槽位并关闭底层 SSH 控制连接。
+        // 仅当槽位仍属于本 conn 时清理，避免迟到结果误伤用户刚发起的新连接。
         defer {
             if let cur = connections[id], cur === conn {
                 pollTasks[id] = nil
@@ -116,11 +114,13 @@ public final class ServerMonitorEngine: ObservableObject {
         do {
             try await conn.connect(credential: credential, via: jump)
         } catch {
+            guard !Task.isCancelled, connections[id] === conn else { return }
             let m = message(error)
             states[id] = .failed(m)
             emitHostDown(id, reason: m)
             return
         }
+        guard !Task.isCancelled, connections[id] === conn else { return }
         states[id] = .connected
         let ns = UInt64(max(1, interval) * 1_000_000_000)
         var tick = 0
@@ -128,9 +128,11 @@ public final class ServerMonitorEngine: ObservableObject {
         while !Task.isCancelled {
             do {
                 if let snap = try await conn.sampleMetrics(includeServices: tick % 5 == 0) {
+                    guard !Task.isCancelled, connections[id] === conn else { break }
                     apply(id, snap)
                     consecutiveErrors = 0
                 } else {
+                    guard !Task.isCancelled, connections[id] === conn else { break }
                     states[id] = .degraded(xLoc("采样解析失败"))
                 }
             } catch {

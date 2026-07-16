@@ -479,6 +479,10 @@ public final class AppModel: ObservableObject {
         let vm = ModuleSessionViewModel(
             env: e, title: title, intent: intent,
             scanProvider: { handler in
+                if moduleID == .largeFiles {
+                    e.scanIndex.invalidate()
+                    e.scanIndex.prewarm(FileManager.default.homeDirectoryForCurrentUser)
+                }
                 guard let scanner = e.scanner(for: moduleID) else { return [] }
                 return [try await scanner.scan(progress: handler)]
             })
@@ -536,6 +540,8 @@ public final class AppModel: ObservableObject {
         let vm = ModuleSessionViewModel(
             env: e, title: xLoc("重复文件"), intent: .trash,
             scanProvider: { handler in
+                e.scanIndex.invalidate()
+                e.scanIndex.prewarm(box.url)
                 let result = await e.duplicatesScanner(root: box.url).scan(progress: handler)
                 return [result]
             })
@@ -569,6 +575,8 @@ public final class AppModel: ObservableObject {
         let vm = ModuleSessionViewModel(
             env: e, title: xLoc("相似图片"), intent: .trash,
             scanProvider: { handler in
+                e.scanIndex.invalidate()
+                e.scanIndex.prewarm(FileManager.default.homeDirectoryForCurrentUser)
                 let result = await e.similarImagesScanner().scan(progress: handler)
                 return [result]
             })
@@ -645,7 +653,11 @@ public final class AppModel: ObservableObject {
             "--shots", "--webshots", "--menubar", "--glyphs", "--layout",
             "--liveshots", "--auditshots", "--monitoring-shots", "--icon",
         ]
-        return arguments.contains { offlineFlags.contains($0) }
+        return arguments.contains {
+            offlineFlags.contains($0)
+                || $0 == "--perfprobe"
+                || $0.hasPrefix("--perfprobe=")
+        }
     }
 
     public func refreshPermissions() {
@@ -953,7 +965,10 @@ public final class AppModel: ObservableObject {
         var model = "Mac"
         if size > 0 {
             var buf = [CChar](repeating: 0, count: size)
-            if sysctlbyname("hw.model", &buf, &size, nil, 0) == 0 { model = String(cString: buf) }
+            if sysctlbyname("hw.model", &buf, &size, nil, 0) == 0 {
+                let bytes = buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+                model = String(decoding: bytes, as: UTF8.self)
+            }
         }
         // FNV-1a：确定性（同机每次一致），不可逆，仅取低 24 位作短后缀。
         var hash: UInt64 = 0xcbf29ce484222325

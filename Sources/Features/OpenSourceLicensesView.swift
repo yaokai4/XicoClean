@@ -16,12 +16,7 @@ struct OpenSourceLicensesView: View {
     }
 
     private let libraries: [Component] = [
-        .init(name: "Citadel", license: "MIT", usage: "SSH 客户端（远程监控 / 终端 / SFTP / 隧道）", url: "https://github.com/orlandos-nl/Citadel"),
-        .init(name: "swift-nio-ssh", license: "Apache-2.0", usage: "SSH 协议栈", url: "https://github.com/apple/swift-nio-ssh"),
-        .init(name: "SwiftNIO", license: "Apache-2.0", usage: "异步网络框架", url: "https://github.com/apple/swift-nio"),
-        .init(name: "swift-crypto", license: "Apache-2.0", usage: "加密原语", url: "https://github.com/apple/swift-crypto"),
-        .init(name: "SwiftTerm", license: "MIT", usage: "交互式终端仿真", url: "https://github.com/migueldeicaza/SwiftTerm"),
-        .init(name: "BigInt", license: "MIT", usage: "大整数（SSH 密钥）", url: "https://github.com/attaswift/BigInt")
+        .init(name: "SwiftTerm", license: "MIT", usage: "交互式终端仿真", url: "https://github.com/migueldeicaza/SwiftTerm")
     ]
 
     private let runtime: [Component] = [

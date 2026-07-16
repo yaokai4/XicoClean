@@ -32,6 +32,17 @@ fi
 APP_BUNDLE_ID="com.xico.app"
 HELPER_LABEL="com.xico.app.helper"
 
+verify_helper_identifier() {
+  local helper_path="$1"
+  local actual_identifier
+  actual_identifier="$(codesign -dv "$helper_path" 2>&1 | sed -n 's/^Identifier=//p' | head -1)"
+  if [ "$actual_identifier" != "$HELPER_LABEL" ]; then
+    echo "✗ 助手签名标识错误：期望 $HELPER_LABEL，实际 ${actual_identifier:-未读取到}"
+    exit 1
+  fi
+  echo "✓ 助手签名标识: $actual_identifier"
+}
+
 # 版本单一事实源：优先 git tag（形如 v1.2.0 → 1.2.0），回落到 0.2.0；
 # build 号取提交计数，保证单调递增。可用环境变量 XICO_VERSION 覆盖。
 VERSION="${XICO_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)}"
@@ -160,6 +171,9 @@ cat <<PLIST
 PLIST
 append_info_string "XicoDefinitionsURL" "${XICO_DEFINITIONS_URL:-}"
 append_info_string "XicoDefinitionsPublicKeys" "${XICO_DEFINITIONS_PUBLIC_KEYS:-}"
+append_info_string "XicoComponentsURL" "${XICO_COMPONENTS_URL:-}"
+append_info_string "XicoComponentsPublicKeys" "${XICO_COMPONENTS_PUBLIC_KEYS:-}"
+append_info_string "XicoUpdatePublicKeys" "${XICO_UPDATE_PUBLIC_KEYS:-}"
 append_info_string "XicoLicensePublicKeys" "${XICO_LICENSE_PUBLIC_KEYS:-}"
 append_info_string "XicoPurchaseURL" "${XICO_PURCHASE_URL:-https://mac.xicoai.com/buy}"
 # 在线激活服务地址（软件把激活码 POST 到 <此地址>/api/license/activate）
@@ -222,7 +236,8 @@ if [ -x "$CONTENTS/Resources/Engines/ffmpeg" ]; then
   codesign --force --options runtime $TS --sign "$IDENTITY" "$CONTENTS/Resources/Engines/ffmpeg"
   echo "▶︎ 已签名内置 ffmpeg"
 fi
-codesign --force --options runtime $TS --entitlements "$HELPER_ENT" --sign "$IDENTITY" "$CONTENTS/MacOS/XicoHelper"
+codesign --force --identifier "$HELPER_LABEL" --options runtime $TS --entitlements "$HELPER_ENT" --sign "$IDENTITY" "$CONTENTS/MacOS/XicoHelper"
+verify_helper_identifier "$CONTENTS/MacOS/XicoHelper"
 codesign --force --options runtime $TS --entitlements "$APP_ENT" --sign "$IDENTITY" "$APP"
 codesign --verify --strict "$APP" && echo "✓ 签名校验通过"
 
@@ -232,6 +247,7 @@ rm -rf "$DEST"; mkdir -p "$HOME/Applications"
 ditto "$APP" "$DEST"
 rm -rf "$WORK"
 codesign --verify --strict "$DEST" && echo "✓ 落盘后签名仍校验通过"
+verify_helper_identifier "$DEST/Contents/MacOS/XicoHelper"
 
 echo "✓ 已生成: $DEST"
 TEAM="$(codesign -dvvv "$DEST" 2>&1 | grep TeamIdentifier | cut -d= -f2 || true)"

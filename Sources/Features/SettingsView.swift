@@ -179,7 +179,7 @@ public struct SettingsView: View {
         settingRow(icon: "bell.badge", colors: [XColor.accentTeal, XColor.auroraBlue],
                    title: xLoc("删除 App 时提示残留"),
                    subtitle: xLoc("把 App 拖入废纸篓后自动检测其残留文件并发送通知，点按直达卸载器。只提示，绝不自动删除。")) {
-            Toggle("", isOn: $sentinelEnabled).toggleStyle(.switch).labelsHidden()
+            Toggle("", isOn: $sentinelEnabled).toggleStyle(XThemeSwitchStyle()).labelsHidden()
                 .accessibilityLabel(xLoc("删除 App 时提示残留"))
                 .onChange(of: sentinelEnabled) { model.setTrashSentinel(enabled: sentinelEnabled) }
         }
@@ -192,7 +192,7 @@ public struct SettingsView: View {
     private var soundCard: some View {
         settingRow(icon: "speaker.wave.2", colors: [XColor.ringMint, XColor.accentTeal],
                    title: xLoc("界面音效"), subtitle: xLoc("扫描完成 / 清理完成 / 删除执行的轻量提示音；跟随系统「界面声音」偏好")) {
-            Toggle("", isOn: $soundEnabled).toggleStyle(.switch).labelsHidden()
+            Toggle("", isOn: $soundEnabled).toggleStyle(XThemeSwitchStyle()).labelsHidden()
                 .accessibilityLabel(xLoc("界面音效"))
         }
     }
@@ -204,7 +204,7 @@ public struct SettingsView: View {
     private var hapticsCard: some View {
         settingRow(icon: "hand.tap", colors: [XColor.ringLav, XColor.brand],
                    title: xLoc("触感反馈"), subtitle: xLoc("清理完成 / 拖拽吸附 / 阈值跨越时触控板轻震；无支持硬件时自动无效")) {
-            Toggle("", isOn: $hapticsEnabled).toggleStyle(.switch).labelsHidden()
+            Toggle("", isOn: $hapticsEnabled).toggleStyle(XThemeSwitchStyle()).labelsHidden()
                 .accessibilityLabel(xLoc("触感反馈"))
         }
     }
@@ -633,7 +633,7 @@ public struct SettingsView: View {
                     guard let i = model.alertRules.firstIndex(where: { $0.id == rule.id }) else { return }
                     model.alertRules[i].enabled = on
                     model.saveAlertRules()
-                })).toggleStyle(.switch).labelsHidden()
+                })).toggleStyle(XThemeSwitchStyle()).labelsHidden()
                 .accessibilityLabel(xLocF("%@ 告警开关", xLoc(rule.metric.title)))
             Button {
                 withAnimation(XMotion.snappy) { model.alertRules.removeAll { $0.id == rule.id } }

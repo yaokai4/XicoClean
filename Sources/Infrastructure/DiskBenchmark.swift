@@ -86,6 +86,14 @@ private final class AtomicBytes: @unchecked Sendable {
     var value: Int64 { lock.lock(); defer { lock.unlock() }; return v }
 }
 
+/// QD1 延迟样本只由工作线程写、汇总线程读；封装可变数组，避免跨并发闭包捕获局部 var。
+private final class AtomicLatencies: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [Double] = []
+    func replace(with value: [Double]) { lock.lock(); samples = value; lock.unlock() }
+    var value: [Double] { lock.lock(); defer { lock.unlock() }; return samples }
+}
+
 public final class DiskBenchmarkService: @unchecked Sendable {
     public static let seqChunkBytes = 64 * 1024 * 1024       // 64MB：大块摊薄 NOCACHE 每调用开销（实测优于 8/32MB）
     public static let seqThreads = 2                          // QD2：喂饱 Apple NVMe 写入的最小并发（实测 +25%）
@@ -330,8 +338,7 @@ public final class DiskBenchmarkService: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(Self.rndSeconds)
         let opsCounter = AtomicBytes()
         let group = DispatchGroup()
-        let latLock = NSLock()
-        var latenciesUS: [Double] = []   // 仅 QD1 收集
+        let latencyStore = AtomicLatencies()   // 仅 QD1 收集
 
         for _ in 0..<threads {
             group.enter()
@@ -357,7 +364,7 @@ public final class DiskBenchmarkService: @unchecked Sendable {
                     opsCounter.add(1)
                 }
                 if collectLatency {
-                    latLock.lock(); latenciesUS = local; latLock.unlock()
+                    latencyStore.replace(with: local)
                 }
             }
         }
@@ -372,6 +379,7 @@ public final class DiskBenchmarkService: @unchecked Sendable {
         guard ops > 0, elapsed > 0.2, !isCancelled() else { return nil }
         let iops = Double(ops) / elapsed
         var avg = 0.0, p99 = 0.0
+        let latenciesUS = latencyStore.value
         if !latenciesUS.isEmpty {
             avg = latenciesUS.reduce(0, +) / Double(latenciesUS.count)
             let sorted = latenciesUS.sorted()

@@ -74,4 +74,27 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertTrue(removed.isEmpty)
         XCTAssertEqual(report.failures.map(\.url), [url])
     }
+
+    func testCleaningReportUsesEstimatedReclaimableBytes() async {
+        let url = URL(fileURLWithPath: "/tmp/XicoCloneCandidate")
+        let fs = MemoryFS(existing: [url.path])
+        let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs)
+        let item = CleanableItem(
+            url: url, displayName: "clone", size: 10_000,
+            assessment: FindingAssessment(
+                confidence: 1,
+                evidence: [
+                    ScanEvidence(code: "exact", kind: .exactContent, title: "内容相同"),
+                    ScanEvidence(code: "clone", kind: .size, title: "APFS 独占块")
+                ],
+                reclaimableBytes: 1_024,
+                recovery: .none,
+                regenerationCost: .unknown))
+
+        let report = await engine.execute(CleaningPlan(items: [item], intent: .permanent))
+
+        XCTAssertEqual(report.removedCount, 1)
+        XCTAssertEqual(report.reclaimedBytes, 1_024,
+                       "清理结果不得把克隆/稀疏文件的表观大小当成真实释放量")
+    }
 }

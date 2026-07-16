@@ -1,0 +1,554 @@
+# Review package: da20fe0..063b175
+
+## Commits
+063b175 fix: define trustworthy memory pressure semantics
+
+## Files changed
+ Sources/Features/MenuPanels.swift               |   6 +-
+ Sources/Infrastructure/LiveMetrics.swift        | 102 ++++++++++++++++-------
+ Sources/Infrastructure/MemoryMetrics.swift      |  71 ++++++++++++++++
+ Sources/XicoApp/MenuBarController.swift         |   6 +-
+ Tests/IntegrationTests/MemoryMetricsTests.swift | 105 ++++++++++++++++++++++++
+ 5 files changed, 256 insertions(+), 34 deletions(-)
+
+## Diff
+diff --git a/Sources/Features/MenuPanels.swift b/Sources/Features/MenuPanels.swift
+index 6bbba47..2739ae2 100644
+--- a/Sources/Features/MenuPanels.swift
++++ b/Sources/Features/MenuPanels.swift
+@@ -208,21 +208,21 @@ public struct MenuMetricPanel: View {
+         model.selection = id
+         for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
+     }
+ 
+     // MARK: 轻量洞察（P2·AI 解读的规则内核：阈值 + 进程榜归因，严格基于真实数据，不编造）
+ 
+     /// 面板顶部的一句话洞察；无异常返回 nil（不占位、不制造焦虑）。
+     private func insight(_ s: SystemSnapshot) -> String? {
+         switch metric {
+         case .memory:
+-            if s.memoryPressure >= 4 || (s.memoryPressurePercent ?? 0) >= 0.7 {
++            if s.memoryPressure >= 4 || (s.memoryPressureIndex ?? 0) >= 0.7 {
+                 if let top = model.topByMemory.first {
+                     return xLocF("内存压力偏高——%@ 占 %@，建议关闭或一键清理", top.name, top.memoryBytes.formattedMemory)
+                 }
+                 return xLoc("内存压力偏高，建议关闭大内存应用")
+             }
+             if s.swapTotal > 0, s.swapUsedFraction >= 0.8 {
+                 return xLoc("交换区接近占满，系统正频繁换页")
+             }
+         case .disk:
+             if s.diskTotal > 0, s.diskFree < 10 << 30 {
+@@ -435,22 +435,22 @@ public struct MenuMetricPanel: View {
+     }
+ 
+     // MARK: - 内存面板（压力环 + 用量环 + 分段条 + 完整图例 + 分页 + 交换 + 进程榜）
+ 
+     @ViewBuilder private func memoryContent(_ s: SystemSnapshot) -> some View {
+         VStack(alignment: .leading, spacing: XSpacing.m) {
+             HStack(spacing: XSpacing.l) {
+                 // 压力环：色随等级（正常绿 / 警告橙 / 危险红）。中心状态词随长语言自动缩放不换行。
+                 XMiniRing(fraction: s.pressureFractionPreferred, colors: pressureColors(s), size: 62, lineWidth: 7) {
+                     VStack(spacing: 0) {
+-                        // 连续压力值（kern.memorystatus_level，与 iStat 同源）优先显示百分数。
+-                        if let pct = s.memoryPressurePercent {
++                        // 明确命名的 Xico 压力指数；指数不可用时显示内核三态，不伪装百分数。
++                        if let pct = s.memoryPressureIndex {
+                             Text("\(Int((pct * 100).rounded()))%").font(XFont.monoMini)
+                                 .foregroundStyle(XColor.textPrimary)
+                         } else {
+                             Text(xLoc(s.memoryPressureLabel)).font(XFont.micro)
+                                 .foregroundStyle(XColor.textPrimary)
+                                 .lineLimit(1).minimumScaleFactor(0.5)
+                         }
+                         Text(xLoc("压力")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                     }
+                     .frame(maxWidth: 44)
+diff --git a/Sources/Infrastructure/LiveMetrics.swift b/Sources/Infrastructure/LiveMetrics.swift
+index 8dfc3ae..1d19b5d 100644
+--- a/Sources/Infrastructure/LiveMetrics.swift
++++ b/Sources/Infrastructure/LiveMetrics.swift
+@@ -15,29 +15,30 @@ public enum ThermalLevel: String, Sendable {
+ public struct SystemSnapshot: Sendable {
+     public let cpuUsage: Double          // 0...1 聚合
+     public let perCore: [Double]         // 每逻辑核 0...1
+     public let cpuUser: Double           // 0...1
+     public let cpuSystem: Double         // 0...1
+     public let load1: Double
+     public let load5: Double
+     public let load15: Double
+     public let memoryUsed: Int64         // 活动监视器口径「已使用」
+     public let memoryTotal: Int64
++    public let memoryAvailable: Int64    // 可立即使用或快速回收（包含缓存文件）
+     public let memoryApp: Int64          // 应用内存
+     public let memoryWired: Int64        // 联动内存
+     public let memoryCompressed: Int64   // 已压缩
+     public let memoryCached: Int64        // 缓存文件（计入可用）
+     public let swapUsed: Int64
+     public let swapTotal: Int64
+     public let memoryPressure: Int      // 1=正常 2=警告 4=危险（kern.memorystatus_vm_pressure_level）
+-    /// 连续内存压力 0...1（= 1 - kern.memorystatus_level/100，与 iStat 同源口径）；sysctl 不可用为 nil。
+-    public let memoryPressurePercent: Double?
++    /// Xico 压力指数 0...1：综合内核可用度、压力状态、可用/压缩内存与交换区占用；采样失败为 nil。
++    public let memoryPressureIndex: Double?
+     public let pageIns: Int64           // 累计换入字节
+     public let pageOuts: Int64          // 累计换出字节
+     public let diskFree: Int64
+     public let diskTotal: Int64
+     public let netDownBytesPerSec: Double
+     public let netUpBytesPerSec: Double
+     public let diskReadBytesPerSec: Double    // 全盘读速率（IOBlockStorageDriver 统计差分）
+     public let diskWriteBytesPerSec: Double   // 全盘写速率
+     public let gpuUsage: Double?          // 0...1（IOAccelerator）
+     public let cpuTemp: Double?           // ℃（Apple Silicon HID / Intel SMC）
+@@ -48,26 +49,26 @@ public struct SystemSnapshot: Sendable {
+     /// 剩余使用时间（分钟；nil = 无电池 / 外接电源 / 系统尚在估算）。IOPSGetTimeRemainingEstimate。
+     public let batteryMinutesRemaining: Int?
+     public let thermal: ThermalLevel
+     public let fanRPM: Int?
+ 
+     // 兼容旧字段：活跃 ≈ 应用内存（菜单栏/仪表沿用）
+     public var memoryActive: Int64 { memoryApp }
+     public var memoryUsedFraction: Double { memoryTotal > 0 ? Double(memoryUsed) / Double(memoryTotal) : 0 }
+     public var diskUsedFraction: Double { diskTotal > 0 ? Double(diskTotal - diskFree) / Double(diskTotal) : 0 }
+     public var swapUsedFraction: Double { swapTotal > 0 ? Double(swapUsed) / Double(swapTotal) : 0 }
+-    /// 内存压力 0...1（正常≈0.25 警告≈0.6 危险≈0.9），供压力环显示。
++    /// 仅在 Xico 压力指数不可用时使用的三态回退值（正常≈0.25、警告≈0.6、危险≈0.9）。
+     public var memoryPressureFraction: Double {
+         switch memoryPressure { case 4: return 0.9; case 2: return 0.6; default: return 0.25 }
+     }
+-    /// 压力环/菜单栏优先用连续值（读得到 kern.memorystatus_level 时），否则退回三档近似。
+-    public var pressureFractionPreferred: Double { memoryPressurePercent ?? memoryPressureFraction }
++    /// 详情压力环优先使用 Xico 压力指数，指数不可用时才退回三态近似。
++    public var pressureFractionPreferred: Double { memoryPressureIndex ?? memoryPressureFraction }
+     public var memoryPressureLabel: String {
+         switch memoryPressure { case 4: return "危险"; case 2: return "警告"; default: return "正常" }
+     }
+ }
+ 
+ public struct MacInfo: Sendable {
+     public let model: String
+     public let chip: String
+     public let macOS: String
+     public let memory: String
+@@ -104,58 +105,85 @@ public final class LiveMetricsSampler: @unchecked Sendable {
+     /// 采样一帧系统快照。
+     ///
+     /// `consumerVisible`：是否有在屏的详情消费者（监视 / 硬件页）。
+     /// - `true`（默认，保持既有调用方全量语义）：GPU / 温度 / 风扇 / 电池全部读取。
+     /// - `false`：菜单栏常驻循环的**稳态省电**路径——没人看时跳过昂贵读取
+     ///   （GPU 走 IOAccelerator 枚举、温度走 HID 热传感器枚举、风扇走 SMC 读键、电源走 IOPS），
+     ///   仅当对应菜单栏字形仍启用时才按需读取。字形启用状态直接读 `xico.mb.*` UserDefaults
+     ///   以保持自洽（不改 AppModel 公有 API）。风扇 / 电池无专属菜单栏字形，故仅在详情可见时读。
+     ///   被跳过的字段返回 nil（各字段本就是 Optional，UI 静默降级）。
+     public func sample(consumerVisible: Bool = true) -> SystemSnapshot {
++        let needSwap = Self.shouldSampleSwap(
++            consumerVisible: consumerVisible,
++            memoryGlyphEnabled: Self.menuGlyphEnabled("memory", default: true),
++            memoryMetric: UserDefaults.standard.string(forKey: "xico.mb.memory.metric")
++        )
+         let cpu = sampleCPU()
+         let cores = samplePerCore()
+         let mem = sampleMemory()
+-        let swap = sampleSwap()
++        let swap: (used: Int64, total: Int64) = needSwap ? sampleSwap() : (0, 0)
+         let net = sampleNetwork()
+         let disk = sampleDiskIO()
+         let load = loadAverage()
+         let cap = fs.volumeCapacity(for: FileManager.default.homeDirectoryForCurrentUser)
+         let needGPU = consumerVisible || Self.menuGlyphEnabled("gpu", default: false)
+         let needTemp = consumerVisible || Self.menuGlyphEnabled("temp", default: false)
+         // GPU：需要则读并平滑；跳过时以 smoothedGPU(nil) 清空 EMA，避免下次恢复采样时残留陈旧值。
+         let gpu = needGPU
+             ? smoothedGPU(hardware.acceleratorPerformance().utilization.map { min(1, max(0, $0 / 100)) })
+             : smoothedGPU(nil)
+         let temp: (cpu: Double?, gpu: Double?, ssd: Double?) = needTemp ? sensors.summary3() : (nil, nil, nil)
+         // 电池：详情可见或菜单栏电池字形启用时读取（IOPS 快照成本低，与 gpu/temp 同一门控模式）。
+         let needBattery = consumerVisible || Self.menuGlyphEnabled("battery", default: false)
+         let battery: (percent: Int?, charging: Bool) = needBattery ? batteryStatus() : (nil, false)
+         let batteryMinutes: Int? = needBattery ? batteryTimeRemaining() : nil
+         let fan: Int? = consumerVisible ? smc.fanRPM() : nil
++        let pressureState = memoryPressureLevel()
++        let pressureIndex: Double?
++        if mem.isValid, mem.total > 0 {
++            pressureIndex = MemoryPressureIndex.score(
++                kernelAvailableLevel: memoryStatusAvailableLevel(),
++                pressureState: pressureState,
++                availableFraction: Double(mem.available) / Double(mem.total),
++                compressedFraction: Double(mem.compressed) / Double(mem.total),
++                swapFraction: swap.total > 0 ? Double(swap.used) / Double(swap.total) : 0
++            )
++        } else {
++            pressureIndex = nil
++        }
+         return SystemSnapshot(
+             cpuUsage: cpu.busy, perCore: cores, cpuUser: cpu.user, cpuSystem: cpu.system,
+             load1: load.0, load5: load.1, load15: load.2,
+             memoryUsed: mem.used, memoryTotal: mem.total,
++            memoryAvailable: mem.available,
+             memoryApp: mem.app, memoryWired: mem.wired, memoryCompressed: mem.compressed, memoryCached: mem.cached,
+             swapUsed: swap.used, swapTotal: swap.total,
+-            memoryPressure: memoryPressureLevel(), memoryPressurePercent: memoryStatusPressurePercent(),
++            memoryPressure: pressureState, memoryPressureIndex: pressureIndex,
+             pageIns: mem.pageIns, pageOuts: mem.pageOuts,
+             diskFree: cap?.available ?? 0, diskTotal: cap?.total ?? 0,
+             netDownBytesPerSec: net.down, netUpBytesPerSec: net.up,
+             diskReadBytesPerSec: disk.read, diskWriteBytesPerSec: disk.write,
+             gpuUsage: gpu,
+             cpuTemp: temp.cpu, gpuTemp: temp.gpu, ssdTemp: temp.ssd,
+             batteryPercent: battery.percent, batteryCharging: battery.charging,
+             batteryMinutesRemaining: batteryMinutes,
+             thermal: thermalLevel(), fanRPM: fan)
+     }
+ 
++    static func shouldSampleSwap(
++        consumerVisible: Bool,
++        memoryGlyphEnabled: Bool,
++        memoryMetric: String?
++    ) -> Bool {
++        consumerVisible || (memoryGlyphEnabled && memoryMetric != "used")
++    }
++
+     /// 某菜单栏字形是否启用（直接读 `xico.mb.<id>` UserDefaults，与 MenuBarController 同源）。
+     /// 未写入过该键时用传入默认值（须与 MenuBarController / SettingsView 的默认一致）。
+     private static func menuGlyphEnabled(_ id: String, default def: Bool) -> Bool {
+         let key = "xico.mb.\(id)"
+         guard UserDefaults.standard.object(forKey: key) != nil else { return def }
+         return UserDefaults.standard.bool(forKey: key)
+     }
+ 
+     // MARK: 磁盘 I/O（IOBlockStorageDriver Statistics 差分，与 iStat 同源）
+ 
+@@ -268,73 +296,91 @@ public final class LiveMetricsSampler: @unchecked Sendable {
+             let dn = Double(cur[i].nice &- prev[i].nice)
+             let di = Double(cur[i].idle &- prev[i].idle)
+             let busy = max(0, du + ds + dn)
+             let total = busy + max(0, di)
+             return total > 0 ? min(1, busy / total) : 0
+         }
+     }
+ 
+     // MARK: 内存（活动监视器口径）
+ 
+-    private func sampleMemory() -> (used: Int64, total: Int64, app: Int64, wired: Int64, compressed: Int64, cached: Int64, pageIns: Int64, pageOuts: Int64) {
++    private func sampleMemory() -> (
++        used: Int64,
++        total: Int64,
++        available: Int64,
++        app: Int64,
++        wired: Int64,
++        compressed: Int64,
++        cached: Int64,
++        pageIns: Int64,
++        pageOuts: Int64,
++        isValid: Bool
++    ) {
+         let total = Int64(ProcessInfo.processInfo.physicalMemory)
+         var stats = vm_statistics64()
+         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.stride / MemoryLayout<integer_t>.stride)
+         let result = withUnsafeMutablePointer(to: &stats) { ptr -> kern_return_t in
+             ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                 host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+             }
+         }
+-        guard result == KERN_SUCCESS else { return (0, total, 0, 0, 0, 0, 0, 0) }
++        guard result == KERN_SUCCESS else { return (0, total, 0, 0, 0, 0, 0, 0, 0, false) }
+         let page = Int64(getpagesize())
+-        // 活动监视器口径：
+-        //   应用内存 = internal_page_count − purgeable_count
+-        //   联动     = wire_count
+-        //   已压缩   = compressor_page_count
+-        //   缓存文件 = external_page_count + purgeable_count（计入「可用」）
+-        //   已使用   = 应用 + 联动 + 已压缩
+-        let purgeable = Int64(stats.purgeable_count)
+-        let internalPages = Int64(stats.internal_page_count)
+-        let external = Int64(stats.external_page_count)
+-        let app = max(0, (internalPages - purgeable)) * page
+-        let wired = Int64(stats.wire_count) * page
+-        let compressed = Int64(stats.compressor_page_count) * page
+-        let cached = (external + purgeable) * page
+-        let used = app + wired + compressed
++        let breakdown = MemoryBreakdown.calculate(
++            totalBytes: total,
++            pageSize: page,
++            pages: MemoryPageCounts(
++                internalPages: Int64(stats.internal_page_count),
++                purgeablePages: Int64(stats.purgeable_count),
++                externalPages: Int64(stats.external_page_count),
++                wiredPages: Int64(stats.wire_count),
++                compressorPages: Int64(stats.compressor_page_count)
++            )
++        )
+         let pageIns = Int64(stats.pageins) * page
+         let pageOuts = Int64(stats.pageouts) * page
+-        return (used, total, app, wired, compressed, cached, pageIns, pageOuts)
++        return (
++            breakdown.usedBytes,
++            total,
++            breakdown.availableBytes,
++            breakdown.applicationBytes,
++            breakdown.wiredBytes,
++            breakdown.compressedBytes,
++            breakdown.cachedBytes,
++            pageIns,
++            pageOuts,
++            true
++        )
+     }
+ 
+     /// CPU 当前频率（MHz）：性能核 / 能效核。经 IOReport DVFS 驻留率加权。
+     /// 不可用（Intel / 接口变更）返回 nil。内部阻塞约 90ms，请在后台调用。
+     public func cpuFrequency() -> (performance: Double, efficiency: Double)? {
+         var p: Double = 0, e: Double = 0
+         return xico_cpu_frequency(&p, &e) == 1 ? (p, e) : nil
+     }
+ 
+     /// 内存压力等级：1=正常 2=警告 4=危险。
+     private func memoryPressureLevel() -> Int {
+         var level: Int32 = 1
+         var size = MemoryLayout<Int32>.size
+         return sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nil, 0) == 0 ? Int(level) : 1
+     }
+ 
+-    /// 连续内存压力（0...1）：kern.memorystatus_level 是「距危险还剩多少可用度」的百分数（100=充裕），
+-    /// 压力 = 1 - level/100——与 iStat/memory_pressure 工具同源。读不到返回 nil（UI 退回三档近似）。
+-    private func memoryStatusPressurePercent() -> Double? {
++    /// 内核报告的内存可用度（0...100，100=充裕）；读不到时由 Xico 指数的其他输入继续评分。
++    private func memoryStatusAvailableLevel() -> Int? {
+         var level: Int32 = 0
+         var size = MemoryLayout<Int32>.size
+         guard sysctlbyname("kern.memorystatus_level", &level, &size, nil, 0) == 0, level >= 0, level <= 100 else {
+             return nil
+         }
+-        return Double(100 - level) / 100
++        return Int(level)
+     }
+ 
+     private func sampleSwap() -> (used: Int64, total: Int64) {
+         var usage = xsw_usage()
+         var size = MemoryLayout<xsw_usage>.stride
+         var mib: [Int32] = [CTL_VM, VM_SWAPUSAGE]
+         let r = sysctl(&mib, 2, &usage, &size, nil, 0)
+         guard r == 0 else { return (0, 0) }
+         return (Int64(usage.xsu_used), Int64(usage.xsu_total))
+     }
+diff --git a/Sources/Infrastructure/MemoryMetrics.swift b/Sources/Infrastructure/MemoryMetrics.swift
+new file mode 100644
+index 0000000..04c6443
+--- /dev/null
++++ b/Sources/Infrastructure/MemoryMetrics.swift
+@@ -0,0 +1,71 @@
++public struct MemoryPageCounts: Sendable, Equatable {
++    public let internalPages: Int64
++    public let purgeablePages: Int64
++    public let externalPages: Int64
++    public let wiredPages: Int64
++    public let compressorPages: Int64
++
++    public init(
++        internalPages: Int64,
++        purgeablePages: Int64,
++        externalPages: Int64,
++        wiredPages: Int64,
++        compressorPages: Int64
++    ) {
++        self.internalPages = internalPages
++        self.purgeablePages = purgeablePages
++        self.externalPages = externalPages
++        self.wiredPages = wiredPages
++        self.compressorPages = compressorPages
++    }
++}
++
++public struct MemoryBreakdown: Sendable, Equatable {
++    public let applicationBytes: Int64
++    public let wiredBytes: Int64
++    public let compressedBytes: Int64
++    public let cachedBytes: Int64
++    public let usedBytes: Int64
++    public let availableBytes: Int64
++
++    public static func calculate(
++        totalBytes: Int64,
++        pageSize: Int64,
++        pages: MemoryPageCounts
++    ) -> Self {
++        let applicationPages = max(0, pages.internalPages - pages.purgeablePages)
++        let cachedPages = pages.externalPages + pages.purgeablePages
++        let applicationBytes = applicationPages * pageSize
++        let wiredBytes = pages.wiredPages * pageSize
++        let compressedBytes = pages.compressorPages * pageSize
++        let cachedBytes = cachedPages * pageSize
++        let usedBytes = applicationBytes + wiredBytes + compressedBytes
++
++        return Self(
++            applicationBytes: applicationBytes,
++            wiredBytes: wiredBytes,
++            compressedBytes: compressedBytes,
++            cachedBytes: cachedBytes,
++            usedBytes: usedBytes,
++            availableBytes: max(0, totalBytes - usedBytes)
++        )
++    }
++}
++
++public enum MemoryPressureIndex {
++    public static func score(
++        kernelAvailableLevel: Int?,
++        pressureState: Int,
++        availableFraction: Double,
++        compressedFraction: Double,
++        swapFraction: Double
++    ) -> Double {
++        let clamp: (Double) -> Double = { min(1, max(0, $0)) }
++        let kernel = kernelAvailableLevel.map { 1 - clamp(Double($0) / 100) } ?? 0
++        let stateFloor: Double = pressureState == 4 ? 0.85 : (pressureState == 2 ? 0.60 : 0)
++        let availability = clamp((0.20 - availableFraction) / 0.20) * 0.55
++        let compression = clamp(compressedFraction / 0.35) * 0.25
++        let swap = clamp(swapFraction) * 0.20
++        return clamp(max(kernel, stateFloor, availability + compression + swap))
++    }
++}
+diff --git a/Sources/XicoApp/MenuBarController.swift b/Sources/XicoApp/MenuBarController.swift
+index eecdb3d..4e95123 100644
+--- a/Sources/XicoApp/MenuBarController.swift
++++ b/Sources/XicoApp/MenuBarController.swift
+@@ -202,24 +202,24 @@ final class MenuBarController: NSObject {
+     private func image(for id: String, snapshot s: SystemSnapshot?) -> NSImage? {
+         let style = style(for: id)
+         let colored = colored(for: id)
+         switch id {
+         case "cpu":      return MenuBarGlyph.cpu(fraction: s?.cpuUsage ?? 0,
+                                                  history: model.cpuHistory, style: style, colored: colored,
+                                                  load: s.map { ($0.load1, $0.load5, $0.load15) },
+                                                  memFraction: s?.memoryUsedFraction,
+                                                  perCore: s?.perCore ?? [])
+         case "memory":
+-            // 口径（P8）：默认「压力」（kern.memorystatus_level 连续值，与 iStat 菜单栏一致）；
+-            // 可在设置切回「占用」。压力读不到时自动退回占用。
++            // 默认显示明确命名的 Xico 压力指数；可在设置切回物理占用。
++            // 指数采样不可用时退回占用，避免把三态标签伪装成精确百分比。
+             let usePressure = UserDefaults.standard.string(forKey: "xico.mb.memory.metric") != "used"
+-            let memFraction = usePressure ? (s?.memoryPressurePercent ?? s?.memoryUsedFraction ?? 0)
++            let memFraction = usePressure ? (s?.memoryPressureIndex ?? s?.memoryUsedFraction ?? 0)
+                                           : (s?.memoryUsedFraction ?? 0)
+             return MenuBarGlyph.memory(fraction: memFraction,
+                                        history: model.memHistory, style: style, colored: colored)
+         case "network":
+             let hist = netHistories()
+             return MenuBarGlyph.network(down: s?.netDownBytesPerSec ?? 0,
+                                         up: s?.netUpBytesPerSec ?? 0,
+                                         history: hist.down, upHistory: hist.up,
+                                         style: style, colored: colored,
+                                         interfaceName: style == .interface ? Self.primaryInterfaceName() : nil)
+diff --git a/Tests/IntegrationTests/MemoryMetricsTests.swift b/Tests/IntegrationTests/MemoryMetricsTests.swift
+new file mode 100644
+index 0000000..08668f0
+--- /dev/null
++++ b/Tests/IntegrationTests/MemoryMetricsTests.swift
+@@ -0,0 +1,105 @@
++import XCTest
++@testable import Infrastructure
++
++final class MemoryMetricsTests: XCTestCase {
++    func testBreakdownKeepsCacheInsideAvailableMemory() {
++        let pages = MemoryPageCounts(
++            internalPages: 500,
++            purgeablePages: 50,
++            externalPages: 100,
++            wiredPages: 200,
++            compressorPages: 100
++        )
++
++        let value = MemoryBreakdown.calculate(
++            totalBytes: 1_000 * 4096,
++            pageSize: 4096,
++            pages: pages
++        )
++
++        XCTAssertEqual(value.applicationBytes, 450 * 4096)
++        XCTAssertEqual(value.wiredBytes, 200 * 4096)
++        XCTAssertEqual(value.compressedBytes, 100 * 4096)
++        XCTAssertEqual(value.cachedBytes, 150 * 4096)
++        XCTAssertEqual(value.usedBytes, 750 * 4096)
++        XCTAssertEqual(value.availableBytes, 250 * 4096)
++    }
++
++    func testPressureIndexUsesKernelPressureAndStateFloor() {
++        XCTAssertEqual(
++            MemoryPressureIndex.score(
++                kernelAvailableLevel: 35,
++                pressureState: 1,
++                availableFraction: 0.3,
++                compressedFraction: 0.1,
++                swapFraction: 0
++            ),
++            0.65,
++            accuracy: 0.001
++        )
++        XCTAssertGreaterThanOrEqual(
++            MemoryPressureIndex.score(
++                kernelAvailableLevel: 90,
++                pressureState: 4,
++                availableFraction: 0.5,
++                compressedFraction: 0,
++                swapFraction: 0
++            ),
++            0.85
++        )
++    }
++
++    func testPressureIndexIsBoundedForOutOfRangeInputs() {
++        XCTAssertEqual(
++            MemoryPressureIndex.score(
++                kernelAvailableLevel: -50,
++                pressureState: 1,
++                availableFraction: -1,
++                compressedFraction: 2,
++                swapFraction: 2
++            ),
++            1
++        )
++        XCTAssertEqual(
++            MemoryPressureIndex.score(
++                kernelAvailableLevel: 200,
++                pressureState: 1,
++                availableFraction: 1,
++                compressedFraction: -1,
++                swapFraction: -1
++            ),
++            0
++        )
++    }
++
++    func testSwapSamplingIsGatedByVisibleOrPressureConsumer() {
++        XCTAssertTrue(
++            LiveMetricsSampler.shouldSampleSwap(
++                consumerVisible: true,
++                memoryGlyphEnabled: false,
++                memoryMetric: "used"
++            )
++        )
++        XCTAssertTrue(
++            LiveMetricsSampler.shouldSampleSwap(
++                consumerVisible: false,
++                memoryGlyphEnabled: true,
++                memoryMetric: nil
++            )
++        )
++        XCTAssertFalse(
++            LiveMetricsSampler.shouldSampleSwap(
++                consumerVisible: false,
++                memoryGlyphEnabled: true,
++                memoryMetric: "used"
++            )
++        )
++        XCTAssertFalse(
++            LiveMetricsSampler.shouldSampleSwap(
++                consumerVisible: false,
++                memoryGlyphEnabled: false,
++                memoryMetric: nil
++            )
++        )
++    }
++}

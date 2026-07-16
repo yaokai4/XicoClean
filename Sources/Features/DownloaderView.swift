@@ -13,15 +13,16 @@ public struct DownloaderView: View {
     @State private var kind: DownloadKind = .video
     @State private var mode: DlMode = .queue
     @State private var showingPrefs = false
+    @State private var inputError: String?
     @FocusState private var urlFocused: Bool
 
     enum DlMode: String, CaseIterable, Hashable { case queue, browse
         var title: String { self == .queue ? xLoc("队列") : xLoc("浏览抓取") }
     }
 
-    public init(model: AppModel) {
+    public init(model: AppModel, engine: DownloadManager? = nil) {
         self.model = model
-        self.engine = model.env.downloadManager
+        self.engine = engine ?? model.env.downloadManager
     }
 
     public var body: some View {
@@ -34,6 +35,7 @@ public struct DownloaderView: View {
                     }
                     Button { showingPrefs = true } label: { Image(systemName: "gearshape") }
                         .buttonStyle(XSecondaryButtonStyle()).help(xLoc("下载偏好"))
+                        .accessibilityLabel(xLoc("下载偏好"))
                 }
             }
             Divider().opacity(0.25)
@@ -51,6 +53,13 @@ public struct DownloaderView: View {
                         engineBanner
                         if let pending = engine.pendingClipboardURL { clipboardBanner(pending) }
                         addBar
+                        if let inputError {
+                            Label(inputError, systemImage: "exclamationmark.circle.fill")
+                                .font(XFont.caption)
+                                .foregroundStyle(XColor.danger)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityLabel(inputError)
+                        }
                         if engine.jobs.isEmpty {
                             XEmptyState(systemImage: "arrow.down.circle",
                                         title: xLoc("粘贴一个链接开始下载"),
@@ -81,6 +90,9 @@ public struct DownloaderView: View {
             Button(xLoc("下载")) { gate { engine.add(urlString: url, kind: kind) } }.buttonStyle(XPrimaryButtonStyle())
             Button { engine.dismissClipboardSuggestion() } label: { Image(systemName: "xmark") }
                 .buttonStyle(.plain).foregroundStyle(XColor.textTertiary)
+                .frame(minWidth: 28, minHeight: 28)
+                .contentShape(Rectangle())
+                .accessibilityLabel(xLoc("关闭剪贴板建议"))
         }
         .padding(XSpacing.m)
         .background(XColor.brand.opacity(0.08), in: RoundedRectangle(cornerRadius: XRadius.card, style: .continuous))
@@ -154,8 +166,10 @@ public struct DownloaderView: View {
             .frame(width: 220)
             XCapsuleTextField(placeholder: xLoc("粘贴链接或磁力 magnet: …"), text: $urlText, onSubmit: addAction)
                 .focused($urlFocused)
+                .onChange(of: urlText) { inputError = nil }
             Button { pasteAndAdd() } label: { Image(systemName: "doc.on.clipboard") }
                 .buttonStyle(XSecondaryButtonStyle()).help(xLoc("从剪贴板粘贴并添加"))
+                .accessibilityLabel(xLoc("从剪贴板粘贴并添加"))
             Button(action: addAction) { Label(xLoc("添加"), systemImage: "plus") }
                 .buttonStyle(XPrimaryButtonStyle())
                 .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -166,9 +180,13 @@ public struct DownloaderView: View {
         let url = urlText
         guard !url.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         gate {
-            engine.add(urlString: url, kind: kind)
-            urlText = ""
-            urlFocused = true
+            if engine.add(urlString: url, kind: kind) {
+                urlText = ""
+                inputError = nil
+                urlFocused = true
+            } else {
+                inputError = xLoc("请输入有效的 HTTP、HTTPS 或磁力链接")
+            }
         }
     }
 
@@ -207,12 +225,30 @@ private struct DownloaderPreferencesView: View {
                             ForEach(["mp3", "m4a", "opus", "flac", "best"], id: \.self) { Text($0).tag($0) }
                         }.labelsHidden().pickerStyle(.menu).frame(width: 140)
                     }
+                    row(xLoc("同时下载数")) {
+                        Stepper(value: $engine.preferences.maxConcurrent, in: 1...8) {
+                            Text("\(engine.preferences.maxConcurrent)").font(XFont.bodyEmphasis).monospacedDigit()
+                        }.frame(width: 140)
+                    }
+                    Divider().opacity(0.3)
+                    // Cookies —— 下载 X(Twitter)/需登录站点的关键开关。
+                    VStack(alignment: .leading, spacing: XSpacing.xs) {
+                        row(xLoc("从浏览器读取 Cookies")) {
+                            Picker("", selection: $engine.preferences.cookiesBrowser) {
+                                ForEach(DownloadPreferences.cookieBrowserOptions, id: \.self) { b in
+                                    Text(b == "none" ? xLoc("不使用") : b.capitalized).tag(b)
+                                }
+                            }.labelsHidden().pickerStyle(.menu).frame(width: 140)
+                        }
+                        Text(xLoc("下载 X(Twitter)、私密或需登录的视频时开启，用所选浏览器的登录态。"))
+                            .font(XFont.micro).foregroundStyle(XColor.textTertiary)
+                    }
                     Divider().opacity(0.3)
                     toggle(xLoc("嵌入字幕"), xLoc("下载并嵌入字幕（需 ffmpeg）"), $engine.preferences.embedSubtitles)
                     if engine.preferences.embedSubtitles {
                         row(xLoc("字幕语言")) {
-                            TextField("en.*,zh.*", text: $engine.preferences.subtitleLangs)
-                                .textFieldStyle(.roundedBorder).frame(width: 160)
+                            XCapsuleTextField(placeholder: "en.*,zh.*", text: $engine.preferences.subtitleLangs)
+                                .frame(width: 180)
                         }
                     }
                     toggle(xLoc("嵌入元数据"), xLoc("标题 / 作者 / 章节（需 ffmpeg）"), $engine.preferences.embedMetadata)
@@ -253,7 +289,7 @@ private struct DownloaderPreferencesView: View {
     }
     private func toggle(_ title: String, _ subtitle: String, _ binding: Binding<Bool>) -> some View {
         HStack(spacing: XSpacing.m) {
-            Toggle(isOn: binding) { EmptyView() }.toggleStyle(.switch).labelsHidden()
+            Toggle(isOn: binding) { EmptyView() }.toggleStyle(XThemeSwitchStyle()).labelsHidden()
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
                 Text(subtitle).font(XFont.micro).foregroundStyle(XColor.textTertiary)
@@ -274,15 +310,12 @@ private struct DownloadRow: View {
     let job: DownloadJob
     @ObservedObject var engine: DownloadManager
 
+    private var isTorrent: Bool { DownloadManager.isTorrentURL(job.sourceURL) }
+
     var body: some View {
         HStack(spacing: XSpacing.m) {
-            Image(systemName: DownloadManager.isTorrentURL(job.sourceURL) ? "point.3.connected.trianglepath.dotted" : job.kind.symbol)
-                .font(.system(size: 16))
-                .foregroundStyle(XColor.brand)
-                .frame(width: 34, height: 34)
-                .background(XColor.surfaceAlt, in: RoundedRectangle(cornerRadius: XRadius.control))
-
-            VStack(alignment: .leading, spacing: 4) {
+            thumbnail
+            VStack(alignment: .leading, spacing: 5) {
                 Text(job.title).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary).lineLimit(1)
                 HStack(spacing: XSpacing.s) {
                     stateBadge
@@ -292,10 +325,15 @@ private struct DownloadRow: View {
                     if let m = job.manifest, let up = m.uploader {
                         Text(up).font(XFont.micro).foregroundStyle(XColor.textTertiary).lineLimit(1)
                     }
+                    Spacer(minLength: 0)
+                    if case .downloading(_, let speed, let eta) = job.state {
+                        if !speed.isEmpty {
+                            Text(eta.isEmpty ? speed : "\(speed) · \(xLocF("剩 %@", eta))")
+                                .font(XFont.microMono).foregroundStyle(XColor.textSecondary).lineLimit(1)
+                        }
+                    }
                 }
-                if job.state.isActive || job.state.progressValue > 0 {
-                    XDiskBar(usedFraction: job.state.progressValue, label: "", height: 6)
-                }
+                progressBar
             }
             Spacer(minLength: XSpacing.s)
 
@@ -303,7 +341,7 @@ private struct DownloadRow: View {
             if job.kind == .video, let m = job.manifest, !m.videoFormats.isEmpty {
                 Menu {
                     ForEach(m.videoFormats.prefix(12)) { f in
-                        Button("\(f.qualityLabel) · \(f.ext)") { engine.chooseFormat(job.id, formatID: f.formatID); engine.start(job.id) }
+                        Button("\(f.qualityLabel) · \(f.ext)") { engine.chooseFormat(job.id, formatID: f.formatID); engine.startOrQueue(job.id) }
                     }
                 } label: {
                     Image(systemName: "slider.horizontal.3")
@@ -317,34 +355,84 @@ private struct DownloadRow: View {
         .overlay(RoundedRectangle(cornerRadius: XRadius.card).strokeBorder(XColor.border))
     }
 
+    @ViewBuilder private var thumbnail: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: XRadius.control, style: .continuous).fill(XColor.surfaceAlt)
+            if let t = job.thumbnailURL, let url = URL(string: t) {
+                AsyncImage(url: url) { phase in
+                    if let img = phase.image {
+                        img.resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        Image(systemName: iconName).font(.system(size: 15)).foregroundStyle(XColor.brand)
+                    }
+                }
+            } else {
+                Image(systemName: iconName).font(.system(size: 15)).foregroundStyle(XColor.brand)
+            }
+        }
+        .frame(width: 46, height: 34)
+        .clipShape(RoundedRectangle(cornerRadius: XRadius.control, style: .continuous))
+    }
+
+    private var iconName: String {
+        isTorrent ? "point.3.connected.trianglepath.dotted" : job.kind.symbol
+    }
+
+    @ViewBuilder private var progressBar: some View {
+        switch job.state {
+        case .probing:
+            XProgressBar(progress: 0, height: 5, indeterminate: true)
+        case .downloading(let p, _, _):
+            XProgressBar(progress: p, height: 5)
+        case .postprocessing:
+            XProgressBar(progress: 0.985, height: 5, colors: [XColor.info, XColor.brand])
+        default:
+            EmptyView()
+        }
+    }
+
     private var stateBadge: some View {
         let (color, text): (Color, String) = {
             switch job.state {
             case .completed: return (XColor.success, xLoc("已完成"))
             case .failed: return (XColor.danger, job.state.label)
+            case .quarantined: return (XColor.warning, job.state.label)
             case .canceled: return (XColor.idle, xLoc("已取消"))
-            case .downloading(let p, _, _): return (XColor.info, "\(Int(p * 100))% · \(job.state.label)")
+            case .paused: return (XColor.warning, xLoc("已暂停 · 可继续"))
+            case .queued: return (XColor.textSecondary, xLoc("排队中"))
+            case .downloading(let p, _, _): return (XColor.info, "\(Int(p * 100))%")
+            case .postprocessing: return (XColor.brand, xLoc("后处理中…"))
             default: return (XColor.textSecondary, job.state.label)
             }
         }()
-        return Text(text).font(XFont.micro).foregroundStyle(color).lineLimit(1)
+        return Text(text).font(XFont.micro.weight(.medium)).foregroundStyle(color).lineLimit(1)
     }
 
     @ViewBuilder private var actions: some View {
         switch job.state {
-        case .downloading, .probing, .postprocessing:
-            Button { engine.cancel(job.id) } label: { Image(systemName: "stop.circle") }
-                .buttonStyle(.plain).foregroundStyle(XColor.textSecondary).help(xLoc("取消"))
+        case .downloading, .postprocessing:
+            iconButton("pause.circle", XColor.textSecondary, xLoc("暂停")) { engine.pause(job.id) }
+            iconButton("stop.circle", XColor.textSecondary, xLoc("取消")) { engine.cancel(job.id) }
+        case .probing, .queued:
+            iconButton("stop.circle", XColor.textSecondary, xLoc("取消")) { engine.cancel(job.id) }
+        case .paused:
+            iconButton("play.circle.fill", XColor.brand, xLoc("继续")) { engine.resume(job.id) }
         case .completed:
-            Button { engine.revealInFinder(job) } label: { Image(systemName: "magnifyingglass.circle") }
-                .buttonStyle(.plain).foregroundStyle(XColor.brand).help(xLoc("在访达中显示"))
+            iconButton("magnifyingglass.circle", XColor.brand, xLoc("在访达中显示")) { engine.revealInFinder(job) }
         case .failed, .canceled:
-            Button { engine.retry(job.id) } label: { Image(systemName: "arrow.clockwise.circle") }
-                .buttonStyle(.plain).foregroundStyle(XColor.brand).help(xLoc("重试"))
+            iconButton("arrow.clockwise.circle", XColor.brand, xLoc("重试")) { engine.retry(job.id) }
+        case .quarantined:
+            Image(systemName: "shield.lefthalf.filled")
+                .font(.system(size: 17)).foregroundStyle(XColor.warning)
+                .help(xLoc("隔离：未交给下载引擎执行"))
         default:
             EmptyView()
         }
-        Button { engine.remove(job.id) } label: { Image(systemName: "xmark.circle") }
-            .buttonStyle(.plain).foregroundStyle(XColor.textTertiary).help(xLoc("移除"))
+        iconButton("xmark.circle", XColor.textTertiary, xLoc("移除")) { engine.remove(job.id) }
+    }
+
+    private func iconButton(_ symbol: String, _ color: Color, _ help: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: symbol).font(.system(size: 17)) }
+            .buttonStyle(.plain).foregroundStyle(color).help(help)
     }
 }

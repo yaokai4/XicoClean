@@ -61,7 +61,7 @@ final class ServerFilesModel: ObservableObject {
     }
 
     func open(_ entry: SFTPEntry) async {
-        guard entry.isDirectory else { return }
+        guard entry.isDirectory, requireSafe(entry) else { return }
         components.append(entry.name)
         await reload()
     }
@@ -75,30 +75,57 @@ final class ServerFilesModel: ObservableObject {
     func goRoot() async { components.removeAll(); await reload() }
 
     func download(_ entry: SFTPEntry) async {
-        guard let b = browser, !entry.isDirectory else { return }
+        guard let b = browser, !entry.isDirectory, requireSafe(entry) else { return }
         busyName = entry.name
         let remote = queryPath + "/" + entry.name
         let dest = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Downloads").appendingPathComponent(entry.name)
-        do { try await b.download(remotePath: remote, to: dest); error = nil }
+        let uniqueDest = uniqueDownloadURL(dest)
+        do { try await b.download(remotePath: remote, to: uniqueDest); error = nil }
         catch { self.error = xLocF("下载失败：%@", (error as? LocalizedError)?.errorDescription ?? "\(error)") }
         busyName = nil
     }
 
     func delete(_ entry: SFTPEntry) async {
-        guard let b = browser else { return }
+        guard let b = browser, requireSafe(entry) else { return }
         let remote = queryPath + "/" + entry.name
-        do { try await b.remove(remote); await reload() }
+        do { try await b.remove(remote, isDirectory: entry.isDirectory); await reload() }
         catch { self.error = xLocF("删除失败：%@", (error as? LocalizedError)?.errorDescription ?? "\(error)") }
     }
 
     func upload(_ localURL: URL) async {
         guard let b = browser else { return }
+        guard SSHInputValidator.isValidBatchPath(localURL.lastPathComponent) else {
+            error = xLoc("本地文件名包含 SFTP 批处理不支持的控制字符")
+            return
+        }
         let remote = queryPath + "/" + localURL.lastPathComponent
         busyName = localURL.lastPathComponent
         do { try await b.upload(localURL: localURL, toRemotePath: remote); await reload() }
         catch { self.error = xLocF("上传失败：%@", (error as? LocalizedError)?.errorDescription ?? "\(error)") }
         busyName = nil
+    }
+
+    private func requireSafe(_ entry: SFTPEntry) -> Bool {
+        guard entry.isOperationallySafe else {
+            error = xLoc("该文件名包含控制字符或无效编码：为防止误操作，仅展示，不执行打开、下载或删除")
+            return false
+        }
+        return true
+    }
+
+    private func uniqueDownloadURL(_ proposed: URL) -> URL {
+        guard FileManager.default.fileExists(atPath: proposed.path) else { return proposed }
+        let ext = proposed.pathExtension
+        let stem = proposed.deletingPathExtension().lastPathComponent
+        let dir = proposed.deletingLastPathComponent()
+        var n = 2
+        while true {
+            let name = ext.isEmpty ? "\(stem) \(n)" : "\(stem) \(n).\(ext)"
+            let candidate = dir.appendingPathComponent(name)
+            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            n += 1
+        }
     }
 }
 
@@ -119,15 +146,19 @@ struct ServerFilesView: View {
             HStack(spacing: XSpacing.s) {
                 Button { Task { await model.goUp() } } label: { Image(systemName: "chevron.up") }
                     .buttonStyle(XSecondaryButtonStyle()).disabled(model.components.isEmpty || !model.connected)
+                    .accessibilityLabel(xLoc("返回上级目录"))
                 Button { Task { await model.goRoot() } } label: { Image(systemName: "house") }
                     .buttonStyle(XSecondaryButtonStyle()).disabled(!model.connected)
+                    .accessibilityLabel(xLoc("返回主目录"))
                 Text(model.displayPath).font(XFont.captionMono).foregroundStyle(XColor.textSecondary).lineLimit(1)
                 Spacer()
                 if model.loading { XSpinner(size: 14) }
                 Button { uploadPanel() } label: { Image(systemName: "arrow.up.doc") }
                     .buttonStyle(XSecondaryButtonStyle()).disabled(!model.connected).help(xLoc("上传文件"))
+                    .accessibilityLabel(xLoc("上传文件"))
                 Button { Task { await model.reload() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(XSecondaryButtonStyle()).disabled(!model.connected)
+                    .accessibilityLabel(xLoc("刷新远端目录"))
             }
 
             if let err = model.error {
@@ -162,7 +193,8 @@ struct ServerFilesView: View {
                 .font(.system(size: 14))
                 .foregroundStyle(entry.isDirectory ? XColor.brand : XColor.textSecondary)
                 .frame(width: 20)
-            Text(entry.name).font(XFont.captionMono).foregroundStyle(XColor.textPrimary).lineLimit(1)
+            Text(entry.displayName).font(XFont.captionMono).foregroundStyle(XColor.textPrimary).lineLimit(1)
+            if !entry.isOperationallySafe { XBadge(xLoc("仅展示"), color: XColor.warning) }
             Spacer()
             if model.busyName == entry.name { XSpinner(size: 12) }
             if !entry.isDirectory {
@@ -172,15 +204,27 @@ struct ServerFilesView: View {
             if !entry.isDirectory {
                 Button { Task { await model.download(entry) } } label: { Image(systemName: "arrow.down.circle") }
                     .buttonStyle(.plain).foregroundStyle(XColor.brand).help(xLoc("下载到「下载」文件夹"))
+                    .disabled(!entry.isOperationallySafe)
+                    .frame(minWidth: 28, minHeight: 28).contentShape(Rectangle())
+                    .accessibilityLabel(xLoc("下载") + " " + entry.displayName)
             }
             Menu {
-                if !entry.isDirectory { Button(xLoc("下载")) { Task { await model.download(entry) } } }
+                if !entry.isDirectory {
+                    Button(xLoc("下载")) { Task { await model.download(entry) } }.disabled(!entry.isOperationallySafe)
+                }
                 Button(xLoc("删除"), role: .destructive) { Task { await model.delete(entry) } }
+                    .disabled(!entry.isOperationallySafe)
             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 22)
+                .accessibilityLabel(xLoc("更多文件操作") + " " + entry.displayName)
         }
         .padding(.vertical, 5).padding(.horizontal, XSpacing.s)
         .contentShape(Rectangle())
         .onTapGesture { if entry.isDirectory { Task { await model.open(entry) } } }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(entry.isDirectory && entry.isOperationallySafe ? .isButton : [])
+        .accessibilityAction(named: xLoc("打开目录")) {
+            if entry.isDirectory && entry.isOperationallySafe { Task { await model.open(entry) } }
+        }
         .background(XColor.surface, in: RoundedRectangle(cornerRadius: XRadius.control, style: .continuous))
     }
 

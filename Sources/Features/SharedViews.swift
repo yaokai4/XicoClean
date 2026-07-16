@@ -39,6 +39,7 @@ struct ItemRowView: View {
     /// 「报告误报」（P5 安全库）：匿名上报规则 id + 本地立即忽略。nil = 该列表不支持上报。
     var onReport: (() -> Void)? = nil
     @State private var hover = false
+    @State private var showEvidence = false
 
     var body: some View {
         HStack(spacing: XSpacing.m) {
@@ -78,6 +79,22 @@ struct ItemRowView: View {
             if item.safety != .safe {
                 XBadge(item.safety.label, color: item.safety.tint)
             }
+            Button { showEvidence.toggle() } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "checkmark.shield")
+                    Text("\(Int((item.assessment.confidence * 100).rounded()))%")
+                        .monospacedDigit()
+                }
+                .font(XFont.nano)
+                .foregroundStyle(confidenceColor)
+            }
+            .buttonStyle(.plain)
+            .help(xLoc("查看判断依据"))
+            .accessibilityLabel(xLocF("判断置信度 %d%%，查看依据",
+                                      Int((item.assessment.confidence * 100).rounded())))
+            .popover(isPresented: $showEvidence, arrowEdge: .bottom) {
+                FindingEvidenceView(item: item)
+            }
             Text(item.size.formattedBytes)
                 .font(XFont.mono).foregroundStyle(XColor.textSecondary)
                 .frame(minWidth: 76, alignment: .trailing)
@@ -90,6 +107,7 @@ struct ItemRowView: View {
         .contextMenu {
             Button(xLoc("快速查看")) { quickLook(item.url) }
             Button(xLoc("在 Finder 中显示")) { revealInFinder(item.url) }
+            Button(xLoc("查看判断依据")) { showEvidence = true }
             if onIgnore != nil || onReport != nil { Divider() }
             if let onIgnore {
                 Button(xLoc("永不清理此项")) { onIgnore() }
@@ -99,6 +117,58 @@ struct ItemRowView: View {
                 Button(xLoc("报告误报并忽略")) { onReport() }
             }
         }
+    }
+
+    private var confidenceColor: Color {
+        if item.assessment.confidence >= 0.95 { return XColor.success }
+        if item.assessment.confidence >= 0.8 { return XColor.warning }
+        return XColor.danger
+    }
+}
+
+private struct FindingEvidenceView: View {
+    let item: CleanableItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
+            HStack(spacing: XSpacing.s) {
+                Image(systemName: "checkmark.shield.fill").foregroundStyle(confidenceColor)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(xLoc("判断依据")).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                    Text(xLocF("置信度 %d%%", Int((item.assessment.confidence * 100).rounded())))
+                        .font(XFont.caption).foregroundStyle(confidenceColor).monospacedDigit()
+                }
+            }
+            Divider()
+            ForEach(item.assessment.evidence) { evidence in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(xLoc(evidence.title)).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
+                    if !evidence.detail.isEmpty {
+                        Text(xLoc(evidence.detail)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            Divider()
+            Label(xLoc(item.assessment.recovery.label), systemImage: "arrow.uturn.backward.circle")
+                .font(XFont.caption).foregroundStyle(XColor.textSecondary)
+            if let owner = item.assessment.ownerBundleID {
+                Label(owner, systemImage: "app.badge")
+                    .font(XFont.captionMono).foregroundStyle(XColor.textSecondary)
+            }
+            if let impact = item.assessment.impact {
+                Text(xLoc(impact)).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(XSpacing.m)
+        .frame(width: 340)
+    }
+
+    private var confidenceColor: Color {
+        if item.assessment.confidence >= 0.95 { return XColor.success }
+        if item.assessment.confidence >= 0.8 { return XColor.warning }
+        return XColor.danger
     }
 }
 
@@ -131,6 +201,7 @@ struct ResultGroupCard: View {
     @State private var appeared = false
     @State private var showAll = false
     @State private var showInfo = false
+    @State private var evidenceItem: CleanableItem?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// 结果项按大小降序，最能省空间的排在最前，信息层级更清晰。
@@ -195,6 +266,7 @@ struct ResultGroupCard: View {
         .contextMenu {
             Button(xLoc("快速查看")) { quickLook(item.url) }
             Button(xLoc("在 Finder 中显示")) { revealInFinder(item.url) }
+            Button(xLoc("查看判断依据")) { evidenceItem = item }
             if let onIgnoreItem {
                 Divider()
                 Button(xLoc("永不清理此项")) { onIgnoreItem(item.id) }
@@ -316,6 +388,9 @@ struct ResultGroupCard: View {
             }
         }
         .hoverLift(2)
+        .popover(item: $evidenceItem, arrowEdge: .bottom) { item in
+            FindingEvidenceView(item: item)
+        }
         .opacity(appeared ? 1 : 0)
         .offset(y: (appeared || reduceMotion) ? 0 : 16)
         .onAppear {

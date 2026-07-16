@@ -303,12 +303,99 @@ private func renderMonitoringPage(
     window.orderOut(nil)
 }
 
+/// 本轮产品审计的精简证据集：只渲染发生视觉/交互改动的下载器、状态栏与主题页，
+/// 避免为一次回归确认等待整套实时页面。输出到 /tmp/xico-audit-after。
+@MainActor
+func renderAuditShots() {
+    let env = XicoEnvironment.live()
+    let model = AppModel(env: env)
+    let dir = URL(fileURLWithPath: "/tmp/xico-audit-after")
+    try? FileManager.default.removeItem(at: dir)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    // 保持一个离屏锚点窗口，避免逐页快照窗口释放后 AppKit 将“最后窗口关闭”解释为退出。
+    let anchor = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: 1, height: 1),
+                          styleMask: [.borderless], backing: .buffered, defer: false)
+    anchor.orderFront(nil)
+    defer { anchor.orderOut(nil) }
+
+    let auditState = FileManager.default.temporaryDirectory.appendingPathComponent("xico-audit-state-\(UUID().uuidString)")
+    let auditDefaultsName = "xico.audit.\(UUID().uuidString)"
+    let auditDefaults = UserDefaults(suiteName: auditDefaultsName)!
+    let auditDownloader = DownloadManager(defaults: auditDefaults, persistenceDirectory: auditState)
+    defer {
+        auditDownloader.prepareForTermination()
+        auditDefaults.removePersistentDomain(forName: auditDefaultsName)
+        try? FileManager.default.removeItem(at: auditState)
+    }
+    let downloader = AnyView(DownloaderView(model: model, engine: auditDownloader))
+    for scheme in [ColorScheme.dark, .light] {
+        renderPage(name: "downloader-empty", view: downloader, size: CGSize(width: 1080, height: 760),
+                   dir: dir, scheme: scheme, settle: 0.8)
+    }
+
+    // 用户要求“不拒绝危险输入”：快照固定验证危险协议会进入可见隔离队列，且不会启动执行。
+    _ = auditDownloader.add(urlString: "javascript:alert('audit')", kind: .video)
+    for scheme in [ColorScheme.dark, .light] {
+        renderPage(name: "downloader-quarantine", view: downloader, size: CGSize(width: 1080, height: 760),
+                   dir: dir, scheme: scheme, settle: 0.8)
+    }
+
+    let hostKeyData = "AAAAC3NzaC1lZDI1NTE5AAAAIF7Ek4ZPOf+GJCGmOpCq0EqEFtaigoVc/lF7Ybbzn146"
+    let hostKey = SSHHostKey.parse("prod.example.com ssh-ed25519 \(hostKeyData)",
+                                   hostname: "prod.example.com", port: 22)!
+    let trustHost = ServerHost(name: "Production API", hostname: "prod.example.com", username: "deploy",
+                               authKind: .privateKey)
+    let trustRequest = HostTrustRequest(host: trustHost, keys: [hostKey], reconnectHostID: trustHost.id,
+                                        replacesExistingKeys: false)
+
+    // 原生 Picker 等 AppKit 控件必须挂进窗口才会正确渲染；先单独完成两套状态栏快照。
+    for scheme in [ColorScheme.dark, .light] {
+        renderPage(name: "menu-settings", view: AnyView(MenuBarSettingsView(model: model, poster: true)),
+                   size: CGSize(width: 940, height: 1080), dir: dir, scheme: scheme, settle: 0.8)
+    }
+
+    let pages: [(String, AnyView, CGSize)] = [
+        ("theme-settings", AnyView(ThemePickerCard(selectedID: .constant("aurora")).padding(XSpacing.xl)), CGSize(width: 940, height: 560)),
+        ("smart-scan", AnyView(SmartScanView(model: model)), CGSize(width: 940, height: 760)),
+        ("system-junk", AnyView(ModuleScanView(model: model, moduleID: .systemJunk, intent: .trash)), CGSize(width: 940, height: 760)),
+        ("space-lens", AnyView(SpaceLensView(env: env)), CGSize(width: 940, height: 760)),
+        ("server-host-trust", AnyView(HostTrustSheet(request: trustRequest, onCancel: {}, onTrust: {})), CGSize(width: 680, height: 620)),
+    ]
+    for scheme in [ColorScheme.dark, .light] {
+        for (name, view, size) in pages {
+            FileHandle.standardError.write("rendering \(name)-\(scheme == .dark ? "dark" : "light")\n".data(using: .utf8)!)
+            renderStaticPage(name: name, view: view, size: size, dir: dir, scheme: scheme)
+        }
+    }
+    FileHandle.standardError.write("rendered audit shots to \(dir.path)\n".data(using: .utf8)!)
+}
+
+/// 不依赖 onAppear 的审计页走 ImageRenderer，避免设置页的系统服务探针干扰离屏 AppKit 生命周期。
+@MainActor
+private func renderStaticPage(name: String, view: AnyView, size: CGSize, dir: URL, scheme: ColorScheme) {
+    let wrapped = ZStack { AppBackground(); view }
+        .frame(width: size.width, height: size.height)
+        .environment(\.colorScheme, scheme)
+        .tint(XColor.brand)
+        .accentColor(XColor.brand)
+    let renderer = ImageRenderer(content: wrapped)
+    renderer.scale = 2
+    guard let image = renderer.nsImage,
+          let tiff = image.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiff),
+          let png = bitmap.representation(using: .png, properties: [:]) else { return }
+    try? png.write(to: dir.appendingPathComponent("\(name)-\(scheme == .dark ? "dark" : "light").png"))
+}
+
 /// 渲染单页（供主题验证等临时快照复用）。
 @MainActor
-private func renderPage(name: String, view: AnyView, size: CGSize, dir: URL, scheme: ColorScheme) {
+private func renderPage(name: String, view: AnyView, size: CGSize, dir: URL, scheme: ColorScheme,
+                        settle: TimeInterval = 3.0) {
     let root = ZStack { AppBackground(); view }
         .frame(width: size.width, height: size.height)
         .environment(\.colorScheme, scheme)
+        .tint(XColor.brand)
+        .accentColor(XColor.brand)
     let hosting = NSHostingView(rootView: root)
     hosting.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
     let window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -316,7 +403,7 @@ private func renderPage(name: String, view: AnyView, size: CGSize, dir: URL, sch
     window.contentView = hosting
     window.orderFront(nil)
     window.setFrameOrigin(NSPoint(x: -3000, y: -3000))
-    let deadline = Date().addingTimeInterval(3.0)
+    let deadline = Date().addingTimeInterval(settle)
     while Date() < deadline { RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1)) }
     if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
         hosting.cacheDisplay(in: hosting.bounds, to: rep)

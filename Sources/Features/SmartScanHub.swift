@@ -88,6 +88,7 @@ public final class SmartScanHubViewModel: ObservableObject {
         public var included = true
         public var bytesFound: Int64 = 0
         public var message: String = ""
+        public var coverage: ScanCoverage?
     }
 
     @Published public private(set) var phase: Phase = .idle
@@ -160,7 +161,9 @@ public final class SmartScanHubViewModel: ObservableObject {
         return st.groups.flatMap { $0.items.filter(\.isSelected) }
     }
     public var selectedSize: Int64 {
-        SmartCategory.allCases.reduce(0) { $0 + selectedItems($1).reduce(0) { $0 + $1.size } }
+        SmartCategory.allCases.reduce(0) {
+            $0 + selectedItems($1).reduce(0) { $0 + $1.estimatedReclaimableBytes }
+        }
     }
     public var selectedCount: Int {
         SmartCategory.allCases.reduce(0) { $0 + selectedItems($1).count }
@@ -171,7 +174,30 @@ public final class SmartScanHubViewModel: ObservableObject {
             SmartCategory.allCases.contains { selectedItems($0).contains(where: \.requiresHelper) }
     }
     /// 结果是否为「全类目扫完且一无所获」。
-    public var isSpotless: Bool { allDone && totalItemCount == 0 }
+    public var isSpotless: Bool {
+        allDone && totalItemCount == 0 && !permissionIssue && !hasIncompleteCoverage
+    }
+
+    public var mergedCoverage: ScanCoverage? {
+        ScanCoverage.merged(SmartCategory.allCases.compactMap { state($0).coverage })
+    }
+
+    public var hasIncompleteCoverage: Bool {
+        SmartCategory.allCases.compactMap { state($0).coverage }.contains { !$0.isComplete }
+    }
+
+    public var coverageWarning: String? {
+        guard let coverage = mergedCoverage else { return nil }
+        var parts: [String] = []
+        if coverage.deniedDirectories > 0 {
+            parts.append(xLocF("有 %d 个目录因权限不足未读取。", coverage.deniedDirectories))
+        }
+        if coverage.cloudPlaceholdersSkipped > 0 {
+            parts.append(xLocF("跳过 %d 个仅在云端的占位目录，未触发下载。", coverage.cloudPlaceholdersSkipped))
+        }
+        if coverage.cancelled { parts.append(xLoc("文件索引未完成。")) }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
 
     /// ⌘⏎ 全局快捷键的清理请求（终审 P1 修正：此前 guard phase == .finished 写反——结果审阅页
     /// 是 .active+allDone，快捷键在唯一有意义的页面上失灵；庆祝页反而可绕过确认对话框直调 clean）。
@@ -193,6 +219,9 @@ public final class SmartScanHubViewModel: ObservableObject {
     public func start() {
         refreshPurchaseGate()
         cancelTasks()
+        // 三个个人文件类目共享这一份家目录快照；先安装任务再启动类目，避免调度顺序造成重复遍历。
+        env.scanIndex.invalidate()
+        env.scanIndex.prewarm(FileManager.default.homeDirectoryForCurrentUser)
         phase = .active
         reviewing = nil
         lastReport = nil
@@ -205,6 +234,7 @@ public final class SmartScanHubViewModel: ObservableObject {
             st.groups = []
             st.bytesFound = 0
             st.message = ""
+            st.coverage = nil
             states[c] = st
         }
         for c in SmartCategory.allCases {
@@ -215,17 +245,24 @@ public final class SmartScanHubViewModel: ObservableObject {
     /// 单类目重扫（失败卡重试 / 重复文件换根后）。
     public func rescan(_ c: SmartCategory) {
         guard phase == .active, !cleaning else { return }
+        let otherCategoryScanning = SmartCategory.allCases.contains { $0 != c && state($0).status == .scanning }
+        if !otherCategoryScanning {
+            env.scanIndex.invalidate()
+            env.scanIndex.prewarm(FileManager.default.homeDirectoryForCurrentUser)
+        }
         tasks[c]?.cancel()
         var st = states[c] ?? CategoryState()
         st.status = .scanning
         st.groups = []
         st.bytesFound = 0
+        st.coverage = nil
         states[c] = st
         tasks[c] = Task { [weak self] in await self?.run(c) }
     }
 
     public func cancel() {
         cancelTasks()
+        env.scanIndex.invalidate()
         // 已有任何结果就停在结果页（把「先到」的类目标 done、未完的标失败-取消），否则回 idle。
         if totalItemCount > 0 || allDone {
             for c in SmartCategory.allCases where state(c).status == .scanning {
@@ -266,6 +303,7 @@ public final class SmartScanHubViewModel: ObservableObject {
                 }
             }
             states[c]?.groups = merged
+            states[c]?.coverage = ScanCoverage.merged(results.compactMap(\.coverage))
             states[c]?.status = .done
             if c == .junk { junkWarning = junkFailures.summary() }
             applyCrossDedup()
@@ -433,6 +471,7 @@ public final class SmartScanHubViewModel: ObservableObject {
                 failures: reports.flatMap(\.failures),
                 restorable: trashRestorables)   // 撤销仅覆盖 .trash 部分（废纸篓清空/特权删除不可逆，诚实）
             self.lastReport = merged
+            self.env.scanIndex.invalidate()
             self.lastHistoryID = self.env.history.record(module: xLoc("智能扫描"),
                                                          reclaimedBytes: merged.reclaimedBytes,
                                                          removedCount: merged.removedCount,
@@ -495,6 +534,7 @@ public final class SmartScanHubViewModel: ObservableObject {
 
     public func reset() {
         cancelTasks()
+        env.scanIndex.invalidate()
         phase = .idle
         reviewing = nil
         lastReport = nil
@@ -659,6 +699,13 @@ public struct SmartScanHubActiveView: View {
                 }
                 Text(hub.totalFound.formattedBytes).xLargeTitle().foregroundStyle(XColor.textPrimary)
                     .contentTransition(.numericText())
+                if let coverage = hub.mergedCoverage, !hub.anyScanning {
+                    Text(xLocF("已检查 %d 个文件 · %d 个目录 · %.1f 秒",
+                               coverage.filesVisited, coverage.directoriesVisited,
+                               coverage.elapsedSeconds))
+                        .font(XFont.nano).foregroundStyle(XColor.textTertiary)
+                        .monospacedDigit()
+                }
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
@@ -684,6 +731,7 @@ public struct SmartScanHubActiveView: View {
     private var warningText: String? {
         var parts: [String] = []
         if let junk = hub.junkWarning { parts.append(junk) }
+        if let coverage = hub.coverageWarning { parts.append(coverage) }
         if hub.permissionIssue {
             parts.append(xLoc("未获完全磁盘访问权限，部分位置无法扫描。授权后可发现更多可清理项。"))
         }
@@ -833,9 +881,11 @@ private struct CategoryTile: View {
     @State private var wave = false
 
     private var st: SmartScanHubViewModel.CategoryState { hub.state(category) }
-    private var totalSize: Int64 { st.groups.reduce(0) { $0 + $1.totalSize } }
+    private var totalSize: Int64 { st.groups.reduce(0) { $0 + $1.reclaimableSize } }
     private var itemCount: Int { st.groups.reduce(0) { $0 + $1.items.count } }
-    private var selectedSize: Int64 { hub.selectedItems(category).reduce(0) { $0 + $1.size } }
+    private var selectedSize: Int64 {
+        hub.selectedItems(category).reduce(0) { $0 + $1.estimatedReclaimableBytes }
+    }
     private var isScanning: Bool { st.status == .scanning || st.status == .pending }
 
     var body: some View {
@@ -979,7 +1029,7 @@ private struct CategoryReviewView: View {
     let category: SmartCategory
 
     private var st: SmartScanHubViewModel.CategoryState { hub.state(category) }
-    private var totalSize: Int64 { st.groups.reduce(0) { $0 + $1.totalSize } }
+    private var totalSize: Int64 { st.groups.reduce(0) { $0 + $1.reclaimableSize } }
 
     var body: some View {
         VStack(spacing: 0) {

@@ -3,10 +3,12 @@ import DesignSystem
 
 /// 主题选择器：横向卡片轮播，每张卡是主题的真实迷你预览（仪表 + 图表 + 渐变按钮）。
 /// 选中即时应用到全局配色。
-struct ThemePickerCard: View {
+public struct ThemePickerCard: View {
     @Binding var selectedID: String
 
-    var body: some View {
+    public init(selectedID: Binding<String>) { _selectedID = selectedID }
+
+    public var body: some View {
         XCard {
             VStack(alignment: .leading, spacing: XSpacing.m) {
                 HStack(spacing: XSpacing.m) {

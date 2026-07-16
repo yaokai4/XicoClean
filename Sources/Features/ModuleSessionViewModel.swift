@@ -38,6 +38,7 @@ public final class ModuleSessionViewModel: ObservableObject {
     @Published public var licenseIssue = false
     /// 部分模块失败时的降级提示（非空即在结果页顶部显示横幅）
     @Published public var scanWarning: String?
+    @Published public private(set) var coverage: ScanCoverage?
     /// 扫描完成后计算降级提示（如智能扫描的失败模块清单）
     public var postScanWarning: (@Sendable () -> String?)?
     /// 撤销部分失败时的提示（非空即弹窗）；保留 lastReport 以便重试。
@@ -95,7 +96,7 @@ public final class ModuleSessionViewModel: ObservableObject {
         groups.flatMap { $0.items.filter(\.isSelected) }
     }
     public var selectedRequiresHelper: Bool { selectedItems.contains(where: \.requiresHelper) }
-    public var selectedSize: Int64 { selectedItems.reduce(0) { $0 + $1.size } }
+    public var selectedSize: Int64 { selectedItems.reduce(0) { $0 + $1.estimatedReclaimableBytes } }
     public var selectedCount: Int { selectedItems.count }
     public var totalReclaimable: Int64 { groups.reduce(0) { $0 + $1.reclaimableSize } }   // 剔除「仅提示」字节（终审 P1）
     public var totalItemCount: Int { groups.reduce(0) { $0 + $1.items.count } }
@@ -130,12 +131,14 @@ public final class ModuleSessionViewModel: ObservableObject {
         permissionIssue = false
         licenseIssue = false
         scanWarning = nil
+        coverage = nil
 
         let handler = makeHandler()
         scanTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let results = try await self.scanProvider(handler)
+                let coverage = ScanCoverage.merged(results.compactMap(\.coverage))
                 var merged = results.flatMap { $0.groups }.sorted { $0.totalSize > $1.totalSize }
                 // 应用用户忽略清单：被排除的项不出现在结果里（对标 CleanMyMac 排除列表）
                 let ignore = self.env.ignoreList
@@ -143,6 +146,7 @@ public final class ModuleSessionViewModel: ObservableObject {
                 merged.removeAll { $0.items.isEmpty }
                 if Task.isCancelled { return }
                 self.groups = merged
+                self.coverage = coverage
                 self.refreshPurchaseGate()   // 落到 .results/.empty 前刷新缓存的购买闸门（审计 P2）
                 let fdaOK = self.env.permissions.hasFullDiskAccess()
                 if !merged.isEmpty {
@@ -155,12 +159,23 @@ public final class ModuleSessionViewModel: ObservableObject {
                     if !fdaOK {
                         warnings.append(xLoc("未获完全磁盘访问权限，部分位置无法扫描。授权后可发现更多可清理项。"))
                     }
+                    if let coverage, coverage.deniedDirectories > 0 {
+                        warnings.append(xLocF("有 %d 个目录因权限不足未读取。", coverage.deniedDirectories))
+                    }
+                    if let coverage, coverage.cloudPlaceholdersSkipped > 0 {
+                        warnings.append(xLocF("跳过 %d 个仅在云端的占位目录，未触发下载。",
+                                              coverage.cloudPlaceholdersSkipped))
+                    }
                     self.scanWarning = warnings.isEmpty ? nil : warnings.joined(separator: "\n")
                     self.permissionIssue = !fdaOK
-                } else if !fdaOK {
+                } else if !fdaOK || coverage?.isComplete == false {
                     // 空结果可能只是没权限——绝不伪装成「很干净」
                     self.permissionIssue = true
-                    self.phase = .failed(xLoc("未获完全磁盘访问权限，部分位置无法扫描。授权后可发现更多可清理项。"))
+                    if !fdaOK {
+                        self.phase = .failed(xLoc("未获完全磁盘访问权限，部分位置无法扫描。授权后可发现更多可清理项。"))
+                    } else {
+                        self.phase = .failed(xLoc("扫描覆盖不完整，不能据此判断为很干净。请检查权限后重试。"))
+                    }
                 } else {
                     self.scanWarning = self.postScanWarning?()
                     self.phase = .empty
@@ -183,6 +198,7 @@ public final class ModuleSessionViewModel: ObservableObject {
 
     public func cancel() {
         scanTask?.cancel()
+        env.scanIndex.invalidate()
         phase = groups.isEmpty ? .idle : .results
     }
 
@@ -249,6 +265,7 @@ public final class ModuleSessionViewModel: ObservableObject {
             }
             let report = Self.merge(reports)
             self.lastReport = report
+            self.env.scanIndex.invalidate()
             self.removeCleaned(report)
             // 记入持久化清理历史（可追溯：累计释放 / 最近记录跨会话留存）；
             // 同时持久化 restorable 映射，使「撤销」在离开完成页甚至重启后仍可用。

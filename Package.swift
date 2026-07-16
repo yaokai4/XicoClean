@@ -14,17 +14,14 @@ let package = Package(
         .executable(name: "XicoHelper", targets: ["XicoHelper"])
     ],
     dependencies: [
-        // —— 服务器套件（反超 ServerCat）首次引入的外部依赖。此前本包零外部依赖。
-        // Citadel：纯 Swift SSH 客户端（基于 Apple swift-nio-ssh 的维护者 Joannis 分支），
-        // 提供 exec/PTY/SFTP/端口转发/跳板；无 C 依赖 → 沙盒 + Hardened Runtime + 公证干净。
-        // 精确锁 0.12.0：0.12.1 起把传递依赖 swift-nio-ssh 从维护者本人的 Joannis/ 分支
-        // 切到第三方 Wellz26/ 分支——为供应链可信，钉在 0.12.0（用 Joannis/swift-nio-ssh 0.3.5）。
-        .package(url: "https://github.com/orlandos-nl/Citadel.git", exact: "0.12.0"),
-        // NIOSSH（Citadel 用的同一分支）：直接依赖以便构造 PTY 请求（SSHChannelRequestEvent.PseudoTerminalRequest
-        // / SSHTerminalModes）——Citadel 未 re-export 这些类型。与 Citadel 0.12.0 的约束一致，SPM 去重到同一版本。
-        .package(url: "https://github.com/Joannis/swift-nio-ssh.git", "0.3.4" ..< "0.4.0"),
-        // SwiftTerm：交互式 PTY 终端仿真器（MIT）。输入走 Sendable AsyncStream、非 Sendable 的
-        // TTYStdinWriter/TTYOutput 用 @unchecked Sendable box 桥接，绕开严格并发限制；withPTY 需 macOS 15+。
+        // —— 服务器套件（反超 ServerCat）。
+        // SSH 传输改走系统 `/usr/bin/ssh` · `/usr/bin/sftp`（见 Infrastructure/SystemSSH.swift）：
+        // 原生支持 rsa-sha2、任意 `.pem`（PKCS#1 / PKCS#8 / OpenSSH / 加密 / PuTTY）与现代密钥交换。
+        // 由此彻底移除 Citadel（其 RSA 只签 SHA-1、被现代 OpenSSH 拒绝，是 .pem 连接失败的根因）
+        // 及其传递依赖（swift-nio-ssh / SwiftNIO / BigInt / swift-crypto）——本包除 SwiftTerm 外回到零 SSH 依赖，
+        // 供应链、签名与公证更干净。加解密仍用系统 CryptoKit（无需外部包）。
+        // SwiftTerm：交互式终端仿真器（MIT）。用其 `LocalProcessTerminalView` 直接托管本地 `ssh -tt` 进程，
+        // 不再依赖 Citadel 的 withPTY，因而真正的交互式终端在 macOS 14 上也可用。
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.14.0")
     ],
     targets: [
@@ -54,9 +51,7 @@ let package = Package(
         .target(
             name: "Infrastructure",
             dependencies: [
-                "Domain", "Shared", "CSensors", "DesignSystem",
-                .product(name: "Citadel", package: "Citadel"),
-                .product(name: "NIOSSH", package: "swift-nio-ssh")
+                "Domain", "Shared", "CSensors", "DesignSystem"
             ]
         ),
         // 特权助手守护进程（root；需正式签名 + SMAppService 注册）

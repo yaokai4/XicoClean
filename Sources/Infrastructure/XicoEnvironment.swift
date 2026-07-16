@@ -11,6 +11,10 @@ public final class XicoEnvironment: @unchecked Sendable {
     public let metrics: MetricsSampler
     public let permissions: PermissionsManager
     public let diskTreeScanner: DiskTreeScanner
+    /// 大文件/重复文件/相似图片共享的会话级文件索引，避免多次遍历同一目录树。
+    public let scanIndex: ScanSnapshotStore
+    /// 哈希与图片指纹共享的 CPU/IO 并发预算。
+    public let scanWorkLimiter: ScanWorkLimiter
     public let uninstaller: UninstallerService
     public let optimization: OptimizationService
     public let maintenanceRunner: MaintenanceRunner
@@ -62,6 +66,8 @@ public final class XicoEnvironment: @unchecked Sendable {
         self.metrics = MetricsSampler(fs: fs)
         self.permissions = PermissionsManager()
         self.diskTreeScanner = DiskTreeScanner(fs: fs)
+        self.scanIndex = ScanSnapshotStore()
+        self.scanWorkLimiter = ScanWorkLimiter()
         self.uninstaller = UninstallerService(fs: fs, safety: safety)
         self.optimization = OptimizationService()
         self.maintenanceRunner = MaintenanceRunner()
@@ -76,14 +82,14 @@ public final class XicoEnvironment: @unchecked Sendable {
         self.alertRuleStore = AlertRuleStore()
 
         var map: [ModuleID: ScannerModule] = [:]
-        map[.largeFiles] = LargeFilesScanner(fs: fs, safety: safety)
+        map[.largeFiles] = LargeFilesScanner(fs: fs, safety: safety, snapshotStore: scanIndex)
         map[.trash] = TrashScanner(fs: fs)
         self.scanners = map   // 非定义驱动的扫描器（无需随规则库更新而变）
     }
 
     /// 当前生效的清理定义（优先已签名缓存，否则内置）——每次取，规则库在线更新后免重启即生效。
     private func currentDefinitions() -> [CleanupDefinition] {
-        definitionsUpdater.currentLibrary().definitions
+        definitionsUpdater.currentLibrary().activeDefinitions
     }
 
     /// 默认线上环境
@@ -114,11 +120,13 @@ public final class XicoEnvironment: @unchecked Sendable {
     }
 
     public func duplicatesScanner(root: URL) -> DuplicatesScanner {
-        DuplicatesScanner(fs: fs, safety: safety, root: root)
+        DuplicatesScanner(fs: fs, safety: safety, root: root,
+                          snapshotStore: scanIndex, workLimiter: scanWorkLimiter)
     }
 
     public func similarImagesScanner() -> SimilarImagesScanner {
-        SimilarImagesScanner(fs: fs, safety: safety)
+        SimilarImagesScanner(fs: fs, safety: safety,
+                             snapshotStore: scanIndex, workLimiter: scanWorkLimiter)
     }
 
     public func appUpdateService() -> AppUpdateService {
@@ -151,7 +159,7 @@ public final class XicoEnvironment: @unchecked Sendable {
                               includeLeftovers: false, includePrivacy: false),
         ]
         if let privacy = scanner(for: .privacy) { modules.append(privacy) }
-        modules.append(DeepScanner(fs: fs, safety: safety))
+        modules.append(DeepScanner(fs: fs, safety: safety, snapshotStore: scanIndex))
         modules.append(OrphanScanner(fs: fs, safety: safety))
         // 微信专清（docs/15 P0-e 中国区破局）：4.0/3.x 双路径动态枚举、6 粒度、
         // 聊天媒体 90 天档默认不勾、聊天数据库仅提示——CMM 没有、比柠檬更克制。

@@ -1,0 +1,1150 @@
+# Review package: 835aaad..HEAD
+
+## Commits
+6bc8457 fix: validate monitoring refresh intervals
+2555d99 feat: configure application monitoring presentation
+
+## Files changed
+ .../Resources/de.lproj/Localizable.strings         |  14 +++
+ .../Resources/en.lproj/Localizable.strings         |  14 +++
+ .../Resources/es.lproj/Localizable.strings         |  14 +++
+ .../Resources/fr.lproj/Localizable.strings         |  14 +++
+ .../Resources/it.lproj/Localizable.strings         |  14 +++
+ .../Resources/ja.lproj/Localizable.strings         |  14 +++
+ .../Resources/ko.lproj/Localizable.strings         |  14 +++
+ .../Resources/pt-BR.lproj/Localizable.strings      |  14 +++
+ .../Resources/ru.lproj/Localizable.strings         |  14 +++
+ .../Resources/zh-Hans.lproj/Localizable.strings    |  14 +++
+ .../Resources/zh-Hant.lproj/Localizable.strings    |  14 +++
+ Sources/Domain/Models.swift                        |  21 ++++
+ Sources/Features/AppModel.swift                    |   7 +-
+ Sources/Features/ApplicationUsageViews.swift       |  45 ++++++++
+ Sources/Features/MenuBarSettingsView.swift         |  95 +++++++++++++++--
+ Sources/Features/MonitoringPreferences.swift       |  63 +++++++++--
+ .../Infrastructure/MonitoringRefreshInterval.swift |  39 +++++++
+ Sources/Infrastructure/SensorReader.swift          |   3 +-
+ .../ApplicationUsagePresentationTests.swift        | 105 +++++++++++++++++++
+ Tests/FeatureTests/MetricsGatingTests.swift        | 116 ++++++++++++++++-----
+ 20 files changed, 602 insertions(+), 46 deletions(-)
+
+## Diff
+diff --git a/Sources/DesignSystem/Resources/de.lproj/Localizable.strings b/Sources/DesignSystem/Resources/de.lproj/Localizable.strings
+index b43afb9..de20fe8 100644
+--- a/Sources/DesignSystem/Resources/de.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/de.lproj/Localizable.strings
+@@ -1522,10 +1522,24 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
++"CPU · 口径" = "CPU · 口径";
++"二进制 GiB / MiB" = "二进制 GiB / MiB";
++"内存单位" = "内存单位";
++"十进制 GB / MB" = "十进制 GB / MB";
++"合并应用进程" = "合并应用进程";
++"均衡" = "均衡";
++"密度" = "密度";
++"归一化 0–100%" = "归一化 0–100%";
++"总核心 0–N×100%" = "总核心 0–N×100%";
++"排行数量" = "排行数量";
++"省电（5 秒）" = "省电（5 秒）";
++"紧凑" = "紧凑";
++"详细" = "详细";
++"采样中" = "采样中";
+diff --git a/Sources/DesignSystem/Resources/en.lproj/Localizable.strings b/Sources/DesignSystem/Resources/en.lproj/Localizable.strings
+index 1bbcec6..cc8d065 100644
+--- a/Sources/DesignSystem/Resources/en.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/en.lproj/Localizable.strings
+@@ -1522,10 +1522,24 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
++"CPU · 口径" = "CPU · 口径";
++"二进制 GiB / MiB" = "二进制 GiB / MiB";
++"内存单位" = "内存单位";
++"十进制 GB / MB" = "十进制 GB / MB";
++"合并应用进程" = "合并应用进程";
++"均衡" = "均衡";
++"密度" = "密度";
++"归一化 0–100%" = "归一化 0–100%";
++"总核心 0–N×100%" = "总核心 0–N×100%";
++"排行数量" = "排行数量";
++"省电（5 秒）" = "省电（5 秒）";
++"紧凑" = "紧凑";
++"详细" = "详细";
++"采样中" = "采样中";
+diff --git a/Sources/DesignSystem/Resources/es.lproj/Localizable.strings b/Sources/DesignSystem/Resources/es.lproj/Localizable.strings
+index b6266ef..1720b31 100644
+--- a/Sources/DesignSystem/Resources/es.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/es.lproj/Localizable.strings
+@@ -1522,10 +1522,24 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
++"CPU · 口径" = "CPU · 口径";
++"二进制 GiB / MiB" = "二进制 GiB / MiB";
++"内存单位" = "内存单位";
++"十进制 GB / MB" = "十进制 GB / MB";
++"合并应用进程" = "合并应用进程";
++"均衡" = "均衡";
++"密度" = "密度";
++"归一化 0–100%" = "归一化 0–100%";
++"总核心 0–N×100%" = "总核心 0–N×100%";
++"排行数量" = "排行数量";
++"省电（5 秒）" = "省电（5 秒）";
++"紧凑" = "紧凑";
++"详细" = "详细";
++"采样中" = "采样中";
+diff --git a/Sources/DesignSystem/Resources/fr.lproj/Localizable.strings b/Sources/DesignSystem/Resources/fr.lproj/Localizable.strings
+index 8d3ced6..5f74f10 100644
+--- a/Sources/DesignSystem/Resources/fr.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/fr.lproj/Localizable.strings
+@@ -1522,10 +1522,24 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
++"CPU · 口径" = "CPU · 口径";
++"二进制 GiB / MiB" = "二进制 GiB / MiB";
++"内存单位" = "内存单位";
++"十进制 GB / MB" = "十进制 GB / MB";
++"合并应用进程" = "合并应用进程";
++"均衡" = "均衡";
++"密度" = "密度";
++"归一化 0–100%" = "归一化 0–100%";
++"总核心 0–N×100%" = "总核心 0–N×100%";
++"排行数量" = "排行数量";
++"省电（5 秒）" = "省电（5 秒）";
++"紧凑" = "紧凑";
++"详细" = "详细";
++"采样中" = "采样中";
+diff --git a/Sources/DesignSystem/Resources/it.lproj/Localizable.strings b/Sources/DesignSystem/Resources/it.lproj/Localizable.strings
+index aeda897..3a48f7a 100644
+--- a/Sources/DesignSystem/Resources/it.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/it.lproj/Localizable.strings
+@@ -1522,10 +1522,24 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
++"CPU · 口径" = "CPU · 口径";
++"二进制 GiB / MiB" = "二进制 GiB / MiB";
++"内存单位" = "内存单位";
++"十进制 GB / MB" = "十进制 GB / MB";
++"合并应用进程" = "合并应用进程";
++"均衡" = "均衡";
++"密度" = "密度";
++"归一化 0–100%" = "归一化 0–100%";
++"总核心 0–N×100%" = "总核心 0–N×100%";
++"排行数量" = "排行数量";
++"省电（5 秒）" = "省电（5 秒）";
++"紧凑" = "紧凑";
++"详细" = "详细";
++"采样中" = "采样中";
+diff --git a/Sources/DesignSystem/Resources/ja.lproj/Localizable.strings b/Sources/DesignSystem/Resources/ja.lproj/Localizable.strings
+index 5752cc8..9871a81 100644
+--- a/Sources/DesignSystem/Resources/ja.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/ja.lproj/Localizable.strings
+@@ -1522,10 +1522,24 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
++"CPU · 口径" = "CPU · 口径";
++"二进制 GiB / MiB" = "二进制 GiB / MiB";
++"内存单位" = "内存单位";
++"十进制 GB / MB" = "十进制 GB / MB";
++"合并应用进程" = "合并应用进程";
++"均衡" = "均衡";
++"密度" = "密度";
++"归一化 0–100%" = "归一化 0–100%";
++"总核心 0–N×100%" = "总核心 0–N×100%";
++"排行数量" = "排行数量";
++"省电（5 秒）" = "省电（5 秒）";
++"紧凑" = "紧凑";
++"详细" = "详细";
++"采样中" = "采样中";
+diff --git a/Sources/DesignSystem/Resources/ko.lproj/Localizable.strings b/Sources/DesignSystem/Resources/ko.lproj/Localizable.strings
+index 769def4..29ee133 100644
+--- a/Sources/DesignSystem/Resources/ko.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/ko.lproj/Localizable.strings
+@@ -1522,10 +1522,24 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
++"CPU · 口径" = "CPU · 口径";
++"二进制 GiB / MiB" = "二进制 GiB / MiB";
++"内存单位" = "内存单位";
++"十进制 GB / MB" = "十进制 GB / MB";
++"合并应用进程" = "合并应用进程";
++"均衡" = "均衡";
++"密度" = "密度";
++"归一化 0–100%" = "归一化 0–100%";
++"总核心 0–N×100%" = "总核心 0–N×100%";
++"排行数量" = "排行数量";
++"省电（5 秒）" = "省电（5 秒）";
++"紧凑" = "紧凑";
++"详细" = "详细";
++"采样中" = "采样中";
+diff --git a/Sources/DesignSystem/Resources/pt-BR.lproj/Localizable.strings b/Sources/DesignSystem/Resources/pt-BR.lproj/Localizable.strings
+index e826278..3d9bf6f 100644
+--- a/Sources/DesignSystem/Resources/pt-BR.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/pt-BR.lproj/Localizable.strings
+@@ -1522,10 +1522,24 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
++"CPU · 口径" = "CPU · 口径";
++"二进制 GiB / MiB" = "二进制 GiB / MiB";
++"内存单位" = "内存单位";
++"十进制 GB / MB" = "十进制 GB / MB";
++"合并应用进程" = "合并应用进程";
++"均衡" = "均衡";
++"密度" = "密度";
++"归一化 0–100%" = "归一化 0–100%";
++"总核心 0–N×100%" = "总核心 0–N×100%";
++"排行数量" = "排行数量";
++"省电（5 秒）" = "省电（5 秒）";
++"紧凑" = "紧凑";
++"详细" = "详细";
++"采样中" = "采样中";
+diff --git a/Sources/DesignSystem/Resources/ru.lproj/Localizable.strings b/Sources/DesignSystem/Resources/ru.lproj/Localizable.strings
+index 37e5a82..8b428ed 100644
+--- a/Sources/DesignSystem/Resources/ru.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/ru.lproj/Localizable.strings
+@@ -1522,10 +1522,24 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "Hosts · %d";
+ "准备中…" = "Preparing…";
+ "合并 / 音频组件" = "Merge / audio component";
+ "告警" = "Alerts";
+ "实时监控" = "Live monitor";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "Monitor CPU / memory / disk / network / processes in real time over SSH — no agent on the server — plus a built-in terminal, SFTP, alerts, and port forwarding.";
+ "连接你的第一台服务器" = "Connect your first server";
++"CPU · 口径" = "CPU · 口径";
++"二进制 GiB / MiB" = "二进制 GiB / MiB";
++"内存单位" = "内存单位";
++"十进制 GB / MB" = "十进制 GB / MB";
++"合并应用进程" = "合并应用进程";
++"均衡" = "均衡";
++"密度" = "密度";
++"归一化 0–100%" = "归一化 0–100%";
++"总核心 0–N×100%" = "总核心 0–N×100%";
++"排行数量" = "排行数量";
++"省电（5 秒）" = "省电（5 秒）";
++"紧凑" = "紧凑";
++"详细" = "详细";
++"采样中" = "采样中";
+diff --git a/Sources/DesignSystem/Resources/zh-Hans.lproj/Localizable.strings b/Sources/DesignSystem/Resources/zh-Hans.lproj/Localizable.strings
+index 932612c..775c445 100644
+--- a/Sources/DesignSystem/Resources/zh-Hans.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/zh-Hans.lproj/Localizable.strings
+@@ -1521,10 +1521,24 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "主机 · %d";
+ "准备中…" = "准备中…";
+ "合并 / 音频组件" = "合并 / 音频组件";
+ "告警" = "告警";
+ "实时监控" = "实时监控";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。";
+ "连接你的第一台服务器" = "连接你的第一台服务器";
++"CPU · 口径" = "CPU · 口径";
++"二进制 GiB / MiB" = "二进制 GiB / MiB";
++"内存单位" = "内存单位";
++"十进制 GB / MB" = "十进制 GB / MB";
++"合并应用进程" = "合并应用进程";
++"均衡" = "均衡";
++"密度" = "密度";
++"归一化 0–100%" = "归一化 0–100%";
++"总核心 0–N×100%" = "总核心 0–N×100%";
++"排行数量" = "排行数量";
++"省电（5 秒）" = "省电（5 秒）";
++"紧凑" = "紧凑";
++"详细" = "详细";
++"采样中" = "采样中";
+diff --git a/Sources/DesignSystem/Resources/zh-Hant.lproj/Localizable.strings b/Sources/DesignSystem/Resources/zh-Hant.lproj/Localizable.strings
+index 1b4152d..908978c 100644
+--- a/Sources/DesignSystem/Resources/zh-Hant.lproj/Localizable.strings
++++ b/Sources/DesignSystem/Resources/zh-Hant.lproj/Localizable.strings
+@@ -1521,10 +1521,24 @@
+ 
+ /* 服务器套件 + 下载器（新增，2026-07-13） */
+ "SFTP" = "SFTP";
+ "主机 · %d" = "主机 · %d";
+ "准备中…" = "准备中…";
+ "合并 / 音频组件" = "合并 / 音频组件";
+ "告警" = "告警";
+ "实时监控" = "实时监控";
+ "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。" = "用 SSH 无需在服务器装任何 agent，即可实时监控 CPU / 内存 / 磁盘 / 网络与进程，并内置终端、SFTP、告警与端口转发。";
+ "连接你的第一台服务器" = "连接你的第一台服务器";
++"CPU · 口径" = "CPU · 口径";
++"二进制 GiB / MiB" = "二进制 GiB / MiB";
++"内存单位" = "内存单位";
++"十进制 GB / MB" = "十进制 GB / MB";
++"合并应用进程" = "合并应用进程";
++"均衡" = "均衡";
++"密度" = "密度";
++"归一化 0–100%" = "归一化 0–100%";
++"总核心 0–N×100%" = "总核心 0–N×100%";
++"排行数量" = "排行数量";
++"省电（5 秒）" = "省电（5 秒）";
++"紧凑" = "紧凑";
++"详细" = "详细";
++"采样中" = "采样中";
+diff --git a/Sources/Domain/Models.swift b/Sources/Domain/Models.swift
+index 665161a..efdd757 100644
+--- a/Sources/Domain/Models.swift
++++ b/Sources/Domain/Models.swift
+@@ -293,20 +293,25 @@ public struct VolumeCapacity: Sendable {
+         self.total = total
+         self.available = available
+         self.used = max(0, total - available)
+     }
+ 
+     public var usedFraction: Double { total > 0 ? Double(used) / Double(total) : 0 }
+ }
+ 
+ // MARK: - 字节格式化
+ 
++public enum MemoryUnitStyle: String, CaseIterable, Sendable {
++    case decimal
++    case binary
++}
++
+ public extension Int64 {
+     /// 友好的容量字符串，如 "1.2 GB"（0 显示为 "0 B"，不出现 "Zero bytes"）。
+     /// 磁盘/文件用十进制口径（对齐 Finder）。
+     var formattedBytes: String {
+         if self <= 0 { return "0 B" }
+         let f = ByteCountFormatter()
+         f.countStyle = .file
+         f.allowsNonnumericFormatting = false
+         f.allowedUnits = [.useBytes, .useKB, .useMB, .useGB, .useTB]
+         return f.string(fromByteCount: self)
+@@ -314,11 +319,27 @@ public extension Int64 {
+ 
+     /// 内存容量字符串（二进制口径，对齐活动监视器：16 GiB → "16 GB"）。
+     var formattedMemory: String {
+         if self <= 0 { return "0 B" }
+         let f = ByteCountFormatter()
+         f.countStyle = .memory   // 1024 基
+         f.allowsNonnumericFormatting = false
+         f.allowedUnits = [.useMB, .useGB]
+         return f.string(fromByteCount: self)
+     }
++
++    func formattedMemory(style: MemoryUnitStyle) -> String {
++        guard self > 0 else { return "0 B" }
++        let base = style == .decimal ? 1_000.0 : 1_024.0
++        let gigabyte = base * base * base
++        let value: Double
++        let unit: String
++        if Double(self) >= gigabyte {
++            value = Double(self) / gigabyte
++            unit = style == .decimal ? "GB" : "GiB"
++        } else {
++            value = Double(self) / (base * base)
++            unit = style == .decimal ? "MB" : "MiB"
++        }
++        return String(format: "%.2f %@", value, unit)
++    }
+ }
+diff --git a/Sources/Features/AppModel.swift b/Sources/Features/AppModel.swift
+index 20b8f46..6e33aec 100644
+--- a/Sources/Features/AppModel.swift
++++ b/Sources/Features/AppModel.swift
+@@ -801,43 +801,42 @@ public final class AppModel: ObservableObject {
+     private func push(_ arr: inout [Double], _ v: Double) {
+         arr.append(v)
+         if arr.count > historyCap { arr.removeFirst(arr.count - historyCap) }
+     }
+ 
+     public func startMetricsTimer() {
+         timer?.invalidate()
+         // 预热 system_profiler（2026-07 卡死修复）：把首次 storageHealth()/gpu() 的 1–3 秒冷启动
+         // 阻塞从「用户点开监视/状态栏面板」的关键路径挪到启动空闲期后台跑掉，避免点开瞬间冻结。
+         hardwareProfiler.prewarmProfiler()
+-        let stored = UserDefaults.standard.double(forKey: "xico.mb.interval")
+-        var interval = stored > 0 ? stored : 2.0   // 默认标准 2 秒
++        var interval = MonitoringPreferences.refreshInterval().rawValue
+         // 独立刷新率真驱动（P1）：某启用项设了比全局更快的刷新率 → 采样节拍提速到该项频率。
+         // 此前 updateImages 只能降频跳拍、无法超过全局节拍，「1 秒」设置形同虚设。
+         let d = UserDefaults.standard
+         for id in ["cpu", "memory", "network", "disk", "temp", "battery", "gpu", "combined"] {
+             let enabled = d.object(forKey: "xico.mb.\(id)") == nil
+                 ? ["cpu", "memory", "network"].contains(id) : d.bool(forKey: "xico.mb.\(id)")
+             let itemInterval = d.double(forKey: "xico.mb.\(id).interval")
+             if enabled, itemInterval > 0 { interval = min(interval, itemInterval) }
+         }
+         // runloop `.common`（P0 修复）：默认 mode 下菜单跟踪/窗口实时缩放会挂起定时器，
+         // 图标停止刷新——in-app 引擎（MetricsEngine）早已用 .common，对齐之。
+         let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+             Task { @MainActor in self?.refreshMetrics() }
+         }
+         RunLoop.main.add(t, forMode: .common)
+         timer = t
+     }
+ 
+     /// 应用新的刷新频率（设置页「更新频率」），立即重启菜单栏采样定时器。
+-    public func applyRefreshInterval(_ seconds: Double) {
+-        UserDefaults.standard.set(seconds, forKey: "xico.mb.interval")
++    public func applyRefreshInterval(_ interval: MonitoringRefreshInterval) {
++        MonitoringPreferences.setRefreshInterval(interval)
+         if timer != nil { startMetricsTimer() }
+     }
+ 
+     public func openFullDiskAccessSettings() {
+         env.permissions.openFullDiskAccessSettings()
+     }
+ 
+     /// 真实首启会话标记（init 捕获，一次性消费）。
+     private var isFirstLaunchSession = false
+ 
+diff --git a/Sources/Features/ApplicationUsageViews.swift b/Sources/Features/ApplicationUsageViews.swift
+new file mode 100644
+index 0000000..a663b93
+--- /dev/null
++++ b/Sources/Features/ApplicationUsageViews.swift
+@@ -0,0 +1,45 @@
++import Foundation
++import Domain
++import Infrastructure
++import DesignSystem
++
++public enum ApplicationUsageFocus: Equatable, Sendable {
++    case cpu
++    case memory
++}
++
++public struct ApplicationUsageRowPresentation: Equatable, Sendable {
++    public let primaryText: String
++    public let secondaryText: String
++    public let fillFraction: Double
++
++    public static func make(
++        usage: ApplicationUsage,
++        focus: ApplicationUsageFocus,
++        cpuMode: CPUDisplayMode,
++        memoryStyle: MemoryUnitStyle,
++        largestMemory: Int64 = 1
++    ) -> Self {
++        let cpu = usage.cpuPercent(mode: cpuMode)
++        let cpuText = cpu.map { String(format: "%.1f%%", $0) } ?? xLoc("采样中")
++        let memoryText = usage.physicalFootprintBytes.formattedMemory(style: memoryStyle)
++        let unboundedFill: Double
++        switch focus {
++        case .cpu:
++            let maximum = cpuMode == .normalized
++                ? 100
++                : 100 * Double(ProcessInfo.processInfo.activeProcessorCount)
++            unboundedFill = (cpu ?? 0) / maximum
++        case .memory:
++            unboundedFill = Double(usage.physicalFootprintBytes) / Double(max(1, largestMemory))
++        }
++        let fill = min(1, max(0, unboundedFill))
++
++        switch focus {
++        case .cpu:
++            return Self(primaryText: cpuText, secondaryText: memoryText, fillFraction: fill)
++        case .memory:
++            return Self(primaryText: memoryText, secondaryText: cpuText, fillFraction: fill)
++        }
++    }
++}
+diff --git a/Sources/Features/MenuBarSettingsView.swift b/Sources/Features/MenuBarSettingsView.swift
+index 47694c1..62ae191 100644
+--- a/Sources/Features/MenuBarSettingsView.swift
++++ b/Sources/Features/MenuBarSettingsView.swift
+@@ -5,25 +5,36 @@ import Infrastructure
+ import DesignSystem
+ 
+ // MARK: - 状态栏（独立页，P0 IA 重组：原设置页「菜单栏状态项」卡整体迁出）
+ // 四层渐进披露不变：预设 → 项目列表（排序+开关）→ 逐项详情 → 全局。
+ // 所有状态外化在 xico.mb.* UserDefaults；MenuBarController 经 defaults 快照比对自动重建，
+ // 本页零控制器耦合（仅 applyRefreshInterval 走 AppModel 重启采样节拍）。
+ 
+ public struct MenuBarSettingsView: View {
+     @ObservedObject var model: AppModel
+     // 僵尸键清理沿革见 SettingsView 旧注：全局 xico.mb.style 与逐项 .border 键已废除。
+-    @AppStorage("xico.mb.interval") private var mbInterval = 2.0
++    @AppStorage(MonitoringPreferences.refreshIntervalKey)
++    private var mbIntervalRaw = MonitoringPreferences.refreshInterval().rawValue
+     // 默认单色（模板图，随菜单栏深浅自动黑/白）——克制、像 Sensei/iStat 默认那样不刺眼。
+     @AppStorage("xico.mb.colored") private var mbColored = false
+     @AppStorage("xico.mb.order") private var mbOrderCSV = ""
+     @AppStorage("xico.mb.combined.values") private var mbCombinedValues = false
++    @AppStorage(MonitoringPreferences.cpuModeKey)
++    private var monitoringCPUMode = MonitoringPreferences.cpuMode().rawValue
++    @AppStorage(MonitoringPreferences.combinesProcessesKey)
++    private var monitoringCombinesProcesses = MonitoringPreferences.combinesProcesses()
++    @AppStorage(MonitoringPreferences.processLimitKey)
++    private var monitoringProcessLimit = MonitoringPreferences.processLimit()
++    @AppStorage(MonitoringPreferences.densityKey)
++    private var monitoringDensity = MonitoringPreferences.density().rawValue
++    @AppStorage(MonitoringPreferences.memoryUnitKey)
++    private var monitoringMemoryUnit = MonitoringPreferences.memoryUnit().rawValue
+     /// 展开逐项详情的条目（同一时间只展开一个——渐进披露，防设置迷宫）。
+     @State private var mbExpanded: String?
+ 
+     /// true = 官网离屏截图（ImageRenderer 画不出 ScrollView 内容）：非滚动海报态。
+     private let poster: Bool
+ 
+     public init(model: AppModel) { self.model = model; self.poster = false }
+     #if DEBUG
+     public init(model: AppModel, poster: Bool) { self.model = model; self.poster = poster }
+     #endif
+@@ -139,20 +150,29 @@ public struct MenuBarSettingsView: View {
+     /// 每项独立刷新率：0 = 跟随全局节拍。
+     private func mbIntervalBinding(_ id: String) -> Binding<Double> {
+         let key = "xico.mb.\(id).interval"
+         return Binding(get: { UserDefaults.standard.double(forKey: key) },
+                        set: { v in
+                            if v <= 0 { UserDefaults.standard.removeObject(forKey: key) }
+                            else { UserDefaults.standard.set(v, forKey: key) }
+                        })
+     }
+ 
++    private var globalRefreshIntervalBinding: Binding<MonitoringRefreshInterval> {
++        Binding(
++            get: { MonitoringPreferences.refreshInterval() },
++            set: { interval in
++                mbIntervalRaw = interval.rawValue
++                model.applyRefreshInterval(interval)
++            })
++    }
++
+     // MARK: 第一层：一键预设（真实字形缩影预览）
+ 
+     private var presetsCard: some View {
+         XCard {
+             VStack(alignment: .leading, spacing: XSpacing.s) {
+                 HStack(spacing: XSpacing.m) {
+                     XIconTile(systemImage: "menubar.rectangle", colors: XColor.metricCPU, size: 36)
+                     VStack(alignment: .leading, spacing: 2) {
+                         Text(xLoc("菜单栏状态项")).xHeadline().foregroundStyle(XColor.textPrimary)
+                         Text(xLoc("一键预设开箱即好看；想细调再逐项展开")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+@@ -192,28 +212,27 @@ public struct MenuBarSettingsView: View {
+         XCard {
+             VStack(alignment: .leading, spacing: XSpacing.s) {
+                 VStack(alignment: .leading, spacing: 3) {
+                     toggleRow(xLoc("彩色图标"), $mbColored)
+                     Text(xLoc("关：随菜单栏深浅自动黑白（推荐，克制）；开：每指标按代表色着色"))
+                         .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                 }
+                 HStack {
+                     Text(xLoc("更新频率")).font(XFont.bodyEmphasis).foregroundStyle(XColor.textPrimary)
+                     Spacer()
+-                    Picker("", selection: $mbInterval) {
+-                        Text(xLoc("快速（1 秒）")).tag(1.0)
+-                        Text(xLoc("标准（2 秒）")).tag(2.0)
+-                        Text(xLoc("省电（3 秒）")).tag(3.0)
++                    Picker("", selection: globalRefreshIntervalBinding) {
++                        Text(xLoc("快速（1 秒）")).tag(MonitoringRefreshInterval.oneSecond)
++                        Text(xLoc("标准（2 秒）")).tag(MonitoringRefreshInterval.twoSeconds)
++                        Text(xLoc("省电（5 秒）")).tag(MonitoringRefreshInterval.fiveSeconds)
+                     }
+                     .labelsHidden().pickerStyle(.menu).frame(width: 150)
+                     .accessibilityLabel(xLoc("更新频率"))
+-                    .onChange(of: mbInterval) { model.applyRefreshInterval(mbInterval) }
+                 }
+                 Divider().padding(.vertical, XSpacing.xxs)
+                 // 交互与口径（P1）：悬停预览 / 全局快捷键 / 彩色垫底 / VPN 计入。
+                 VStack(alignment: .leading, spacing: 3) {
+                     toggleRow(xLoc("悬停展开面板"), mbBool("xico.mb.hover", default: false))
+                     Text(xLoc("鼠标悬停状态项 0.35 秒即展开详情，无需点击"))
+                         .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                 }
+                 VStack(alignment: .leading, spacing: 3) {
+                     toggleRow(xLoc("全局快捷键 ⌃⌥M"), mbBool("xico.mb.hotkey", default: false))
+@@ -451,20 +470,23 @@ public struct MenuBarSettingsView: View {
+                             Text(xLoc(MemoryPressureDisplayCopy.indexLabel)).tag("pressure")
+                             Text(xLoc("占用")).tag("used")
+                         }
+                         .labelsHidden().pickerStyle(.menu).fixedSize()
+                         .accessibilityLabel(xLoc("口径"))
+                     }
+                     Text(xLoc(MemoryPressureDisplayCopy.explanation))
+                         .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                 }
+             }
++            if item.id == "cpu" || item.id == "memory" {
++                monitoringPresentationControls
++            }
+             if item.id != "combined" {
+                 HStack(spacing: XSpacing.l) {
+                     HStack(spacing: XSpacing.xs) {
+                         Text(xLoc("颜色")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                         Picker("", selection: mbColorBinding(item.id)) {
+                             Text(xLoc("跟随全局")).tag("global")
+                             Text(xLoc("单色")).tag("mono")
+                             Text(xLoc("彩色")).tag("colored")
+                         }
+                         .labelsHidden().pickerStyle(.menu).fixedSize()
+@@ -481,20 +503,81 @@ public struct MenuBarSettingsView: View {
+                         }
+                         .labelsHidden().pickerStyle(.menu).fixedSize()
+                         .accessibilityLabel(xLoc("刷新"))
+                     }
+                     Spacer()
+                 }
+             }
+         }
+     }
+ 
++    private var monitoringPresentationControls: some View {
++        VStack(alignment: .leading, spacing: XSpacing.s) {
++            Divider()
++            HStack(spacing: XSpacing.xs) {
++                Text(xLoc("CPU · 口径")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
++                Picker("", selection: $monitoringCPUMode) {
++                    Text(xLoc("归一化 0–100%")).tag(CPUDisplayMode.normalized.rawValue)
++                    Text(xLoc("总核心 0–N×100%")).tag(CPUDisplayMode.totalCore.rawValue)
++                }
++                .labelsHidden().pickerStyle(.menu).fixedSize()
++                .accessibilityLabel(xLoc("CPU · 口径"))
++                Spacer()
++            }
++            HStack {
++                Text(xLoc("合并应用进程")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
++                Spacer()
++                Toggle("", isOn: $monitoringCombinesProcesses)
++                    .toggleStyle(.switch)
++                    .controlSize(.mini)
++                    .labelsHidden()
++                    .accessibilityLabel(xLoc("合并应用进程"))
++                    .onChange(of: monitoringCombinesProcesses) {
++                        model.prepareApplicationSampling()
++                    }
++            }
++            HStack(spacing: XSpacing.l) {
++                HStack(spacing: XSpacing.xs) {
++                    Text(xLoc("排行数量")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
++                    Picker("", selection: $monitoringProcessLimit) {
++                        ForEach([4, 6, 10, 20], id: \.self) { limit in
++                            Text("\(limit)").tag(limit)
++                        }
++                    }
++                    .labelsHidden().pickerStyle(.menu).fixedSize()
++                    .accessibilityLabel(xLoc("排行数量"))
++                }
++                HStack(spacing: XSpacing.xs) {
++                    Text(xLoc("密度")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
++                    Picker("", selection: $monitoringDensity) {
++                        Text(xLoc("紧凑")).tag(MonitoringPanelDensity.compact.rawValue)
++                        Text(xLoc("均衡")).tag(MonitoringPanelDensity.balanced.rawValue)
++                        Text(xLoc("详细")).tag(MonitoringPanelDensity.detailed.rawValue)
++                    }
++                    .labelsHidden().pickerStyle(.menu).fixedSize()
++                    .accessibilityLabel(xLoc("密度"))
++                }
++                Spacer()
++            }
++            HStack(spacing: XSpacing.xs) {
++                Text(xLoc("内存单位")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
++                Picker("", selection: $monitoringMemoryUnit) {
++                    Text(xLoc("十进制 GB / MB")).tag(MemoryUnitStyle.decimal.rawValue)
++                    Text(xLoc("二进制 GiB / MiB")).tag(MemoryUnitStyle.binary.rawValue)
++                }
++                .labelsHidden().pickerStyle(.menu).fixedSize()
++                .accessibilityLabel(xLoc("内存单位"))
++                Spacer()
++            }
++        }
++    }
++
+     /// 已挂载的可写数据卷路径（/Volumes 下 + 根卷），供磁盘项卷选择器。
+     private func mountedVolumePaths() -> [String] {
+         let keys: [URLResourceKey] = [.volumeIsBrowsableKey, .volumeIsLocalKey]
+         let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys,
+                                                          options: [.skipHiddenVolumes]) ?? []
+         return urls.compactMap { url in
+             guard let rv = try? url.resourceValues(forKeys: Set(keys)),
+                   rv.volumeIsBrowsable == true else { return nil }
+             return url.path
+         }
+diff --git a/Sources/Features/MonitoringPreferences.swift b/Sources/Features/MonitoringPreferences.swift
+index a83a5ff..e5468dc 100644
+--- a/Sources/Features/MonitoringPreferences.swift
++++ b/Sources/Features/MonitoringPreferences.swift
+@@ -1,18 +1,65 @@
+ import Foundation
++import Domain
++import Infrastructure
++
++public enum MonitoringPanelDensity: String, CaseIterable, Sendable {
++    case compact
++    case balanced
++    case detailed
++}
+ 
+ public enum MonitoringPreferences {
+-    private static let processLimitKey = "xico.monitoring.processLimit"
+-    private static let combinesProcessesKey = "xico.monitoring.combinesProcesses"
++    public static let cpuModeKey = "xico.monitor.cpuMode"
++    public static let combinesProcessesKey = "xico.monitor.combinesProcesses"
++    public static let processLimitKey = "xico.monitor.processLimit"
++    public static let densityKey = "xico.monitor.density"
++    public static let memoryUnitKey = "xico.monitor.memoryUnit"
++    public static let refreshIntervalKey = MonitoringRefreshIntervalStore.key
++
++    private static let legacyCombinesProcessesKey = "xico.monitoring.combinesProcesses"
++    private static let legacyProcessLimitKey = "xico.monitoring.processLimit"
+     private static let supportedProcessLimits = Set([4, 6, 10, 20])
+ 
+-    public static func processLimit() -> Int {
+-        let value = UserDefaults.standard.integer(forKey: processLimitKey)
++    public static func cpuMode(_ defaults: UserDefaults = .standard) -> CPUDisplayMode {
++        CPUDisplayMode(rawValue: defaults.string(forKey: cpuModeKey) ?? "normalized") ?? .normalized
++    }
++
++    public static func combinesProcesses(_ defaults: UserDefaults = .standard) -> Bool {
++        if defaults.object(forKey: combinesProcessesKey) != nil {
++            return defaults.bool(forKey: combinesProcessesKey)
++        }
++        if defaults.object(forKey: legacyCombinesProcessesKey) != nil {
++            return defaults.bool(forKey: legacyCombinesProcessesKey)
++        }
++        return true
++    }
++
++    public static func processLimit(_ defaults: UserDefaults = .standard) -> Int {
++        let key = defaults.object(forKey: processLimitKey) == nil
++            ? legacyProcessLimitKey
++            : processLimitKey
++        let value = defaults.integer(forKey: key)
+         return supportedProcessLimits.contains(value) ? value : 6
+     }
+ 
+-    public static func combinesProcesses() -> Bool {
+-        let defaults = UserDefaults.standard
+-        guard defaults.object(forKey: combinesProcessesKey) != nil else { return true }
+-        return defaults.bool(forKey: combinesProcessesKey)
++    public static func density(_ defaults: UserDefaults = .standard) -> MonitoringPanelDensity {
++        MonitoringPanelDensity(rawValue: defaults.string(forKey: densityKey) ?? "balanced") ?? .balanced
++    }
++
++    public static func memoryUnit(_ defaults: UserDefaults = .standard) -> MemoryUnitStyle {
++        MemoryUnitStyle(rawValue: defaults.string(forKey: memoryUnitKey) ?? "binary") ?? .binary
++    }
++
++    public static func refreshInterval(
++        _ defaults: UserDefaults = .standard
++    ) -> MonitoringRefreshInterval {
++        MonitoringRefreshIntervalStore.read(defaults)
++    }
++
++    public static func setRefreshInterval(
++        _ interval: MonitoringRefreshInterval,
++        _ defaults: UserDefaults = .standard
++    ) {
++        MonitoringRefreshIntervalStore.write(interval, defaults)
+     }
+ }
+diff --git a/Sources/Infrastructure/MonitoringRefreshInterval.swift b/Sources/Infrastructure/MonitoringRefreshInterval.swift
+new file mode 100644
+index 0000000..b7754c3
+--- /dev/null
++++ b/Sources/Infrastructure/MonitoringRefreshInterval.swift
+@@ -0,0 +1,39 @@
++import Foundation
++
++public enum MonitoringRefreshInterval: Double, CaseIterable, Sendable {
++    case oneSecond = 1
++    case twoSeconds = 2
++    case fiveSeconds = 5
++
++    fileprivate static func closestSupported(to value: Double) -> Self {
++        guard value.isFinite else { return .oneSecond }
++        return allCases.min { lhs, rhs in
++            let lhsDistance = abs(lhs.rawValue - value)
++            let rhsDistance = abs(rhs.rawValue - value)
++            if lhsDistance == rhsDistance { return lhs.rawValue < rhs.rawValue }
++            return lhsDistance < rhsDistance
++        } ?? .oneSecond
++    }
++}
++
++public enum MonitoringRefreshIntervalStore {
++    public static let key = "xico.mb.interval"
++
++    public static func read(
++        _ defaults: UserDefaults = .standard
++    ) -> MonitoringRefreshInterval {
++        guard defaults.object(forKey: key) != nil else { return .oneSecond }
++        let stored = defaults.double(forKey: key)
++        if let supported = MonitoringRefreshInterval(rawValue: stored) { return supported }
++        let migrated = MonitoringRefreshInterval.closestSupported(to: stored)
++        defaults.set(migrated.rawValue, forKey: key)
++        return migrated
++    }
++
++    public static func write(
++        _ interval: MonitoringRefreshInterval,
++        _ defaults: UserDefaults = .standard
++    ) {
++        defaults.set(interval.rawValue, forKey: key)
++    }
++}
+diff --git a/Sources/Infrastructure/SensorReader.swift b/Sources/Infrastructure/SensorReader.swift
+index 9bb7e32..e19e113 100644
+--- a/Sources/Infrastructure/SensorReader.swift
++++ b/Sources/Infrastructure/SensorReader.swift
+@@ -44,22 +44,21 @@ public final class SensorReader: @unchecked Sendable {
+ 
+     /// 一个采样周期内复用同一次全量枚举：HID 热传感器枚举 + 字符串归类不便宜，
+     /// 而同一 tick 里 summary() 与 temperatures() 常被相继调用。
+     private let cacheLock = NSLock()
+     private var cachedTemps: [TempReading]?
+     private var cachedAt: Date?
+     /// TTL 跟随菜单栏采样节奏：固定 0.5s 在 2s 常驻节奏下**永不命中**，等于每 tick 都重新枚举 HID
+     /// 热传感器（审计 P3）。改为读 `xico.mb.interval`（默认 2s）并下探 0.1s——既覆盖同一采样周期内
+     /// summary()/temperatures() 的相继调用、也让相邻 tick 复用同一次枚举，下限 0.5s 兜底。
+     private var cacheTTL: TimeInterval {
+-        let configured = UserDefaults.standard.double(forKey: "xico.mb.interval")
+-        let interval = configured > 0 ? configured : 2.0
++        let interval = MonitoringRefreshIntervalStore.read().rawValue
+         return max(0.5, interval - 0.1)
+     }
+ 
+     public init() {}
+ 
+     /// 全部温度传感器（已归类、按类别聚合的代表值另见 summary()）。
+     public func temperatures() -> [TempReading] {
+         cachedTemperatures()
+     }
+ 
+diff --git a/Tests/FeatureTests/ApplicationUsagePresentationTests.swift b/Tests/FeatureTests/ApplicationUsagePresentationTests.swift
+new file mode 100644
+index 0000000..e78a194
+--- /dev/null
++++ b/Tests/FeatureTests/ApplicationUsagePresentationTests.swift
+@@ -0,0 +1,105 @@
++import XCTest
++@testable import Features
++@testable import Infrastructure
++import Domain
++
++final class ApplicationUsagePresentationTests: XCTestCase {
++    func testCPURowShowsCPUPrimaryAndMemorySecondary() {
++        let row = ApplicationUsageRowPresentation.make(
++            usage: .fixture(cpuRaw: 80, cpuNormalized: 10, memory: 1_073_741_824),
++            focus: .cpu,
++            cpuMode: .normalized,
++            memoryStyle: .binary)
++
++        XCTAssertEqual(row.primaryText, "10.0%")
++        XCTAssertEqual(row.secondaryText, "1.00 GiB")
++        XCTAssertEqual(row.fillFraction, 0.1, accuracy: 0.000_001)
++    }
++
++    func testMemoryRowShowsMemoryPrimaryAndCPUSecondary() {
++        let row = ApplicationUsageRowPresentation.make(
++            usage: .fixture(cpuRaw: 80, cpuNormalized: 10, memory: 1_073_741_824),
++            focus: .memory,
++            cpuMode: .normalized,
++            memoryStyle: .binary,
++            largestMemory: 2_147_483_648)
++
++        XCTAssertEqual(row.primaryText, "1.00 GiB")
++        XCTAssertEqual(row.secondaryText, "10.0%")
++        XCTAssertEqual(row.fillFraction, 0.5, accuracy: 0.000_001)
++    }
++
++    func testUnknownCPUIsSamplingNotZero() {
++        let row = ApplicationUsageRowPresentation.make(
++            usage: .fixture(cpuRaw: nil, cpuNormalized: nil, memory: 1_000_000),
++            focus: .memory,
++            cpuMode: .normalized,
++            memoryStyle: .decimal)
++
++        XCTAssertEqual(row.secondaryText, "采样中")
++    }
++
++    func testTotalCoreModeUsesRawCPUAndCoreScaledFill() {
++        let coreCount = Double(ProcessInfo.processInfo.activeProcessorCount)
++        let row = ApplicationUsageRowPresentation.make(
++            usage: .fixture(
++                cpuRaw: coreCount * 50,
++                cpuNormalized: 50,
++                memory: 1_000_000),
++            focus: .cpu,
++            cpuMode: .totalCore,
++            memoryStyle: .decimal)
++
++        XCTAssertEqual(row.primaryText, String(format: "%.1f%%", coreCount * 50))
++        XCTAssertEqual(row.fillFraction, 0.5, accuracy: 0.000_001)
++    }
++
++    func testFillFractionIsClampedToUnitRange() {
++        let overflowing = ApplicationUsageRowPresentation.make(
++            usage: .fixture(cpuRaw: 1_000_000, cpuNormalized: 150, memory: 10),
++            focus: .cpu,
++            cpuMode: .normalized,
++            memoryStyle: .decimal)
++        let negative = ApplicationUsageRowPresentation.make(
++            usage: .fixture(cpuRaw: -10, cpuNormalized: -10, memory: -10),
++            focus: .memory,
++            cpuMode: .normalized,
++            memoryStyle: .decimal,
++            largestMemory: 100)
++
++        XCTAssertEqual(overflowing.fillFraction, 1)
++        XCTAssertEqual(negative.fillFraction, 0)
++    }
++
++    func testExplicitMemoryStylesUseDistinctUnitsAndBases() {
++        XCTAssertEqual(Int64(1_000_000_000).formattedMemory(style: .decimal), "1.00 GB")
++        XCTAssertEqual(Int64(500_000_000).formattedMemory(style: .decimal), "500.00 MB")
++        XCTAssertEqual(Int64(1_073_741_824).formattedMemory(style: .binary), "1.00 GiB")
++        XCTAssertEqual(Int64(524_288_000).formattedMemory(style: .binary), "500.00 MiB")
++        XCTAssertEqual(Int64(0).formattedMemory(style: .binary), "0 B")
++    }
++}
++
++private extension ApplicationUsage {
++    static func fixture(cpuRaw: Double?, cpuNormalized: Double?, memory: Int64) -> Self {
++        let identity = ProcessIdentity(pid: 7, startTimeNanoseconds: 1)
++        return ApplicationUsage(
++            id: ApplicationIdentity(rawValue: "bundle:com.example.fixture"),
++            displayName: "Fixture",
++            bundleIdentifier: "com.example.fixture",
++            bundlePath: "/Applications/Fixture.app",
++            representativePID: 7,
++            members: [
++                ApplicationMemberUsage(
++                    identity: identity,
++                    name: "Fixture",
++                    cpuRawPercent: cpuRaw,
++                    physicalFootprintBytes: memory)
++            ],
++            cpuRawPercent: cpuRaw,
++            cpuNormalizedPercent: cpuNormalized,
++            physicalFootprintBytes: memory,
++            peakFootprintBytes: memory,
++            trend: ApplicationUsageTrend(cpuRaw: [], memoryBytes: []))
++    }
++}
+diff --git a/Tests/FeatureTests/MetricsGatingTests.swift b/Tests/FeatureTests/MetricsGatingTests.swift
+index 422bcc4..fdbb226 100644
+--- a/Tests/FeatureTests/MetricsGatingTests.swift
++++ b/Tests/FeatureTests/MetricsGatingTests.swift
+@@ -2,20 +2,27 @@ import XCTest
+ @testable import Features
+ @testable import Infrastructure
+ 
+ /// 菜单栏详情采样门禁的回归测试（审计 P1 回归：`metricsDetailConsumerVisible` 无人置位，
+ /// 导致主窗口未在前台时菜单栏弹窗里的温度/风扇/GPU 详情停采）。
+ ///
+ /// 纯判定 `AppModel.detailConsumerVisible(consumerVisible:hasVisibleMainWindow:)` 是 `refreshMetrics`
+ /// 里 `hasVisibleMetricsConsumer` 的唯一来源；`wantDetail = consumer && …` 又以它为前置，
+ /// 因此断言这一判定即等价于断言「详情采样是否会跑」。
+ final class MetricsGatingTests: XCTestCase {
++    private func withMonitoringDefaults(_ body: (UserDefaults) -> Void) {
++        let suiteName = "MetricsGatingTests.\(UUID().uuidString)"
++        let defaults = UserDefaults(suiteName: suiteName)!
++        defaults.removePersistentDomain(forName: suiteName)
++        defer { defaults.removePersistentDomain(forName: suiteName) }
++        body(defaults)
++    }
+ 
+     func testMemoryPressureCopyNamesCompositeIndexHonestly() {
+         XCTAssertEqual(MemoryPressureDisplayCopy.indexLabel, "Xico 压力指数")
+         XCTAssertEqual(MemoryPressureDisplayCopy.stateLabel, "内存压力")
+         XCTAssertEqual(MemoryPressureDisplayCopy.percentage(0.654), "65%")
+         XCTAssertEqual(MemoryPressureDisplayCopy.percentage(nil), "—")
+         XCTAssertTrue(MemoryPressureDisplayCopy.explanation.contains("可用内存"))
+         XCTAssertTrue(MemoryPressureDisplayCopy.explanation.contains("压缩"))
+         XCTAssertTrue(MemoryPressureDisplayCopy.explanation.contains("交换区"))
+         XCTAssertTrue(MemoryPressureDisplayCopy.explanation.contains("不是 macOS 提供的百分比"))
+@@ -165,52 +172,109 @@ final class MetricsGatingTests: XCTestCase {
+     func testSnapshotBecomesStaleAfterTwoRefreshIntervals() {
+         let snapshot = ApplicationUsageSnapshot.liveFixture(
+             sampledAt: Date(timeIntervalSince1970: 100))
+         XCTAssertEqual(
+             snapshot.effectiveStatus(
+                 now: Date(timeIntervalSince1970: 103),
+                 refreshInterval: 1),
+             .stale)
+     }
+ 
+-    func testMonitoringPreferencesUseValidatedDefaults() {
+-        let defaults = UserDefaults.standard
+-        let processLimitKey = "xico.monitoring.processLimit"
+-        let combinesProcessesKey = "xico.monitoring.combinesProcesses"
+-        let previousLimit = defaults.object(forKey: processLimitKey)
+-        let previousCombining = defaults.object(forKey: combinesProcessesKey)
+-        defer {
+-            if let previousLimit {
+-                defaults.set(previousLimit, forKey: processLimitKey)
+-            } else {
+-                defaults.removeObject(forKey: processLimitKey)
++    func testMonitoringPreferencesUseTypedValidatedDefaults() {
++        withMonitoringDefaults { defaults in
++            XCTAssertEqual(MonitoringPreferences.cpuMode(defaults), .normalized)
++            XCTAssertTrue(MonitoringPreferences.combinesProcesses(defaults))
++            XCTAssertEqual(MonitoringPreferences.processLimit(defaults), 6)
++            XCTAssertEqual(MonitoringPreferences.density(defaults), .balanced)
++            XCTAssertEqual(MonitoringPreferences.memoryUnit(defaults), .binary)
++
++            for allowedLimit in [4, 6, 10, 20] {
++                defaults.set(allowedLimit, forKey: MonitoringPreferences.processLimitKey)
++                XCTAssertEqual(MonitoringPreferences.processLimit(defaults), allowedLimit)
+             }
+-            if let previousCombining {
+-                defaults.set(previousCombining, forKey: combinesProcessesKey)
+-            } else {
+-                defaults.removeObject(forKey: combinesProcessesKey)
++            defaults.set(12, forKey: MonitoringPreferences.processLimitKey)
++            XCTAssertEqual(MonitoringPreferences.processLimit(defaults), 6)
++        }
++    }
++
++    func testGlobalRefreshDefaultsToOneSecondWhenMissing() {
++        withMonitoringDefaults { defaults in
++            XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), .oneSecond)
++            XCTAssertNil(defaults.object(forKey: MonitoringPreferences.refreshIntervalKey))
++        }
++    }
++
++    func testGlobalRefreshPreservesEverySupportedChoice() {
++        withMonitoringDefaults { defaults in
++            for interval in MonitoringRefreshInterval.allCases {
++                defaults.set(interval.rawValue, forKey: MonitoringPreferences.refreshIntervalKey)
++
++                XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), interval)
++                XCTAssertEqual(
++                    defaults.double(forKey: MonitoringPreferences.refreshIntervalKey),
++                    interval.rawValue)
+             }
+         }
++    }
+ 
+-        defaults.removeObject(forKey: processLimitKey)
+-        defaults.removeObject(forKey: combinesProcessesKey)
+-        XCTAssertEqual(MonitoringPreferences.processLimit(), 6)
+-        XCTAssertTrue(MonitoringPreferences.combinesProcesses())
++    func testGlobalRefreshMigratesLegacyThreeSecondsToTwoSeconds() {
++        withMonitoringDefaults { defaults in
++            defaults.set(3.0, forKey: MonitoringPreferences.refreshIntervalKey)
+ 
+-        for allowedLimit in [4, 6, 10, 20] {
+-            defaults.set(allowedLimit, forKey: processLimitKey)
+-            XCTAssertEqual(MonitoringPreferences.processLimit(), allowedLimit)
++            XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), .twoSeconds)
++            XCTAssertEqual(defaults.double(forKey: MonitoringPreferences.refreshIntervalKey), 2.0)
+         }
+-        defaults.set(12, forKey: processLimitKey)
+-        defaults.set(false, forKey: combinesProcessesKey)
+-        XCTAssertEqual(MonitoringPreferences.processLimit(), 6)
+-        XCTAssertFalse(MonitoringPreferences.combinesProcesses())
++    }
++
++    func testGlobalRefreshMigratesInvalidValuesToClosestSupportedChoice() {
++        withMonitoringDefaults { defaults in
++            defaults.set(-4.0, forKey: MonitoringPreferences.refreshIntervalKey)
++            XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), .oneSecond)
++            XCTAssertEqual(defaults.double(forKey: MonitoringPreferences.refreshIntervalKey), 1.0)
++
++            defaults.set(99.0, forKey: MonitoringPreferences.refreshIntervalKey)
++            XCTAssertEqual(MonitoringPreferences.refreshInterval(defaults), .fiveSeconds)
++            XCTAssertEqual(defaults.double(forKey: MonitoringPreferences.refreshIntervalKey), 5.0)
++        }
++    }
++
++    func testCanonicalMonitoringKeysTakePrecedenceOverLegacyTaskFourKeys() {
++        withMonitoringDefaults { defaults in
++            defaults.set(false, forKey: "xico.monitoring.combinesProcesses")
++            defaults.set(4, forKey: "xico.monitoring.processLimit")
++            defaults.set(true, forKey: MonitoringPreferences.combinesProcessesKey)
++            defaults.set(20, forKey: MonitoringPreferences.processLimitKey)
++
++            XCTAssertTrue(MonitoringPreferences.combinesProcesses(defaults))
++            XCTAssertEqual(MonitoringPreferences.processLimit(defaults), 20)
++        }
++    }
++
++    func testLegacyTaskFourKeysAreReadWhenCanonicalKeysAreAbsent() {
++        withMonitoringDefaults { defaults in
++            defaults.set(false, forKey: "xico.monitoring.combinesProcesses")
++            defaults.set(10, forKey: "xico.monitoring.processLimit")
++
++            XCTAssertFalse(MonitoringPreferences.combinesProcesses(defaults))
++            XCTAssertEqual(MonitoringPreferences.processLimit(defaults), 10)
++            XCTAssertNil(defaults.object(forKey: MonitoringPreferences.combinesProcessesKey))
++            XCTAssertNil(defaults.object(forKey: MonitoringPreferences.processLimitKey))
++        }
++    }
++
++    func testCanonicalMonitoringPreferenceKeysAreStable() {
++        XCTAssertEqual(MonitoringPreferences.cpuModeKey, "xico.monitor.cpuMode")
++        XCTAssertEqual(MonitoringPreferences.combinesProcessesKey, "xico.monitor.combinesProcesses")
++        XCTAssertEqual(MonitoringPreferences.processLimitKey, "xico.monitor.processLimit")
++        XCTAssertEqual(MonitoringPreferences.densityKey, "xico.monitor.density")
++        XCTAssertEqual(MonitoringPreferences.memoryUnitKey, "xico.monitor.memoryUnit")
++        XCTAssertEqual(MonitoringPreferences.refreshIntervalKey, "xico.mb.interval")
+     }
+ 
+     /// 回归核心：弹窗打开(consumerVisible=true) 时，即便无可见主窗口，也必须触发详情采样。
+     /// MenuBarController 已在 showPopover 置位、popoverDidClose 复位该标志。
+     func testPopoverVisibleForcesDetailSamplingWithoutMainWindow() {
+         XCTAssertTrue(
+             AppModel.detailConsumerVisible(consumerVisible: true, hasVisibleMainWindow: false),
+             "弹窗打开即应视为详情消费者可见，纵无前台主窗口——否则温度/风扇/GPU 详情停采")
+     }
+ 

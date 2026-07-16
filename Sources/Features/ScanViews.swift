@@ -386,8 +386,8 @@ public struct SmartScanView: View {
     @State private var showHealthDetail = false
     /// S-B 阈值跃迁的一次性辉光脉冲。
     @State private var healthGlow = false
-    /// S-B phaseAnimator 登场触发器（每次跨过 ≥85 自增，驱动 seed→overshoot→settle 三阶段）。
-    @State private var healthPop = 0
+    /// 健康分跨阈值的一次性缩放。显式回到 1，避免 PhaseAnimator 在隐藏窗口仍维持显示周期。
+    @State private var healthScale: CGFloat = 1
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(model: AppModel) {
@@ -587,22 +587,23 @@ public struct SmartScanView: View {
                 }
                 .buttonStyle(.plain)
                 // S-B「健康分登场」（docs/16）：跨过优秀阈值（≥85）那一刻——
-                // 一次 .levelChange 触感 + 品牌辉光脉冲 + phaseAnimator 三阶段登场
+                // 一次 .levelChange 触感 + 品牌辉光脉冲 + 三阶段登场
                 // （seed 0.96 → overshoot 1.06 → settle 1.0），把「跨过一道坎」物理化。
                 // 环色同帧从中性阶跃迁为品牌极光（healthColors 的 ≥85 分支），声触光色同刻发生。
                 .xGlow(XColor.brand, radius: healthGlow ? 22 : 0, opacity: healthGlow ? 0.5 : 0)
-                .phaseAnimator([1.0, 0.96, 1.06], trigger: healthPop) { view, scale in
-                    view.scaleEffect(reduceMotion ? 1 : scale)
-                } animation: { phase in
-                    phase == 1.06 ? XMotion.celebrateSoft : XMotion.settle
-                }
+                .scaleEffect(reduceMotion ? 1 : healthScale)
                 .onChange(of: health >= 85) { _, excellent in
                     guard excellent else { return }
                     XHaptic.perform(.levelChange)
-                    healthPop += 1
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { healthScale = 0.96 }
+                    withAnimation(XMotion.celebrateSoft) { healthScale = 1.06 }
                     withAnimation(XMotion.celebrateSoft) { healthGlow = true }
                     Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 900_000_000)
+                        try? await Task.sleep(nanoseconds: 220_000_000)
+                        withAnimation(XMotion.settle) { healthScale = 1 }
+                        try? await Task.sleep(nanoseconds: 680_000_000)
                         withAnimation(XMotion.crossfade) { healthGlow = false }
                     }
                 }
