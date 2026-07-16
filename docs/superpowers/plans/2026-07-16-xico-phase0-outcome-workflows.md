@@ -4,7 +4,7 @@
 
 **Goal:** 让每一个会删除、退出、驱逐、安装、联网检查、远端变更或触发“完成”反馈的用户工作流，都只消费 `OperationOutcomeReducer` 生成的事实；partial / failure / cancelled 必须保留真实成功项、失败上下文、receipt 与精确重试选择，任何页面都不能再用聚合计数、循环次数或漂亮完成页自行声明成功。
 
-**Architecture:** 每个执行器到 Feature 的终态载体必须且只能包含一个 reducer-backed `OperationOutcome`：新的一般工作流使用 `OperationResult<Payload>`，其 payload 禁止再嵌套 outcome/result；清理、Space Trash 与卸载共享逐项清理事实时使用专用 `CleaningReport`（它自身就是唯一终态载体），不得再包一层 `OperationResult`。`OperationOutcome` 决定状态、计数和 reducer-owned `OperationMutationFact`，强类型 payload 保留 URL、远端身份、候选版本、恢复 receipt 和逐项 disposition。`OutcomeSideEffectPolicy` 按 operation kind 与 `OutcomeWorkflowProfile` 分别批准 history、用户通知、庆祝、声触和内部 invalidation。沿用 operation-facts Task 3 的同一个 bounded `OutcomeFeedbackGate`：长期 ViewModel owner 只保存一个 `currentOperationID` 和有限 `consumedChannels`，同 ID 重注册不重置，新 ID 原子淘汰旧 ID，storage 恒定。`TaskOutcomeView` 只接收 reducer outcome 和强类型 presentation context。历史、通知、内部刷新各有 fail-closed 的验证边界，业务页不能直接调用原始 sink。
+**Architecture:** 每个执行器到 Feature 的终态载体必须且只能包含一个 reducer-backed `OperationOutcome`：新的一般工作流使用 `OperationResult<Payload>`，其 payload 禁止再嵌套 outcome/result；清理、Space Trash 与卸载共享逐项清理事实时使用专用 `CleaningReport`（它自身就是唯一终态载体），不得再包一层 `OperationResult`。复合清理仍遵守单 outcome：临时 deletion/remediation child outcomes 在 Domain merge 边界被验证后展平成带角色的 deletion 与 auxiliary facts，最终 `CleaningReport` 不保留任何嵌套 outcome/result。`OperationOutcome` 决定状态、计数和 reducer-owned `OperationMutationFact`，强类型 payload 保留 URL、远端身份、候选版本、恢复 receipt 和逐项 disposition。`OutcomeSideEffectPolicy` 按 operation kind 与 `OutcomeWorkflowProfile` 分别批准 history、用户通知、庆祝、声触和内部 invalidation。沿用 operation-facts Task 3 的同一个 bounded `OutcomeFeedbackGate`：长期 ViewModel owner 只保存一个 `currentOperationID` 和有限 `consumedChannels`，同 ID 重注册不重置，新 ID 原子淘汰旧 ID，storage 恒定。`TaskOutcomeView` 只接收 reducer outcome 和强类型 presentation context。历史、通知、内部刷新各有 fail-closed 的验证边界，业务页不能直接调用原始 sink。
 
 **Tech Stack:** Swift 6、SwiftPM、SwiftUI、AppKit、Foundation、XCTest、现有 `Domain` / `Infrastructure` / `Features` / `DesignSystem` targets。
 
@@ -754,15 +754,25 @@ git commit -m "feat: present honest operation outcomes"
 **Files:**
 - Modify: `Sources/Domain/Models.swift`
 - Modify: `Sources/Domain/CleaningEngine.swift`
+- Modify: `Sources/Domain/OperationConsumerFacts.swift`
 - Modify: `Sources/Infrastructure/ThreatRemediation.swift`
+- Modify: `Sources/Infrastructure/HistoryStore.swift`
+- Modify: `Sources/Infrastructure/Notifier.swift`
+- Modify: `Sources/Infrastructure/XicoEnvironment.swift`
+- Create: `Sources/Features/CleaningOutcomeConsumer.swift`
 - Modify: `Sources/Features/ModuleSessionViewModel.swift`
 - Modify: `Sources/Features/SmartScanHub.swift`
 - Modify: `Sources/Features/ScanViews.swift`
+- Modify: `Sources/Features/SharedViews.swift`
 - Modify: `Sources/Features/SettingsView.swift`
 - Modify: `Sources/Features/AppModel.swift`
+- Modify: `Tests/DomainTests/CleaningEngineTests.swift`
+- Modify: `Tests/DomainTests/OperationConsumerFactsTests.swift`
 - Create: `Tests/FeatureTests/CleaningOutcomeConsumerTests.swift`
 - Create: `Tests/IntegrationTests/ThreatRemediationOutcomeTests.swift`
 - Modify: `Tests/IntegrationTests/CleaningRoundTripTests.swift`
+- Modify: `Tests/IntegrationTests/HistoryStoreTests.swift`
+- Modify: `Tests/IntegrationTests/OutcomeSinkBoundaryTests.swift`
 
 - [ ] **Step 1: Write RED consumer tests**
 
@@ -776,6 +786,10 @@ func testMixedIntentSmartScanMergesEveryRequestOccurrenceExactlyOnce() async
 func testReportMergeRejectsPurposeMismatchAndCannotRelabelFacts() throws
 func testCrossChildDuplicateNormalizedPathsFailBeforeAnyDependency() async
 func testRepeatedCallerItemIDsRemainDistinctRequestOccurrences() async
+func testDeletedPlistWithFailedBootoutIsDurablePartialAndKeepsReceipt() async
+func testSuccessfulBootoutNeverInflatesRemovedOrNotificationCount() async
+func testCompoundFactRolesRoundTripWithoutPersistingPaths() throws
+func testMergeRejectionCarriesReducerBackedFailClosedReport() throws
 func testPartialUndoRetainsOnlyFailedReceiptsWithoutFabricatingReport() async
 func testHistoricalUndoPassesRestorableItemsDirectly() async
 func testFullChangedSuccessConsumesEachApprovedChannelExactlyOnce() async
@@ -787,31 +801,37 @@ Run: `swift test --filter CleaningOutcomeConsumerTests --disable-automatic-resol
 
 Expected: FAIL because consumers still sum aggregates, set `.finished` unconditionally and call raw sinks.
 
-- [ ] **Step 3: Implement reducer-backed report merge and undo**
+- [ ] **Step 3: Implement parent-wide preparation, reducer-backed compound merge and undo**
 
-Before starting any child execution, Module/Smart builds one parent-wide request inventory. Caller `itemID` may repeat and is never reducer identity. Group by `url.standardizedFileURL.path`; every occurrence in a duplicate-path group receives the reviewed nonretryable `cleaning.request.duplicateTarget` failure before safety, filesystem, helper or remediation calls. Only the remaining unique paths may be partitioned into child executions.
+Before starting any child execution, `CleaningEngine` builds and owns one parent-wide request inventory across every mixed-intent plan. Feature supplies ordered plans and prerequisite roles but cannot manufacture reducer IDs or duplicate results. Caller `itemID` may repeat and is never reducer identity. Group by `url.standardizedFileURL.path`; every occurrence in a duplicate-path group receives the reviewed nonretryable `cleaning.request.duplicateTarget` failure before safety, filesystem, helper or remediation calls. Only the remaining unique paths may enter a dependency. This Domain-owned preflight also prevents a Feature from booting out a duplicate plist before the deletion engine notices it.
 
-`CleaningReport.merging(_:purpose:parentID:)` accepts only the closed `CleaningOperationPurpose`, requires every child `report.operation.kind == purpose.operationKind`, then concatenates every child `CleaningItemResult` in request order and calls the reducer with per-occurrence request IDs. Module/Smart use `.standard`. The merge rejects a purpose mismatch, duplicate **request IDs** and fact/report inconsistencies, permits repeated caller item IDs, and never collapses occurrences by item ID. It cannot relabel standard cleaning as Space Trash/uninstall (or the reverse) to acquire different registry capabilities. Merge is fact aggregation, not authorization: it must not be used to approve a duplicate target after execution. No count or failure array is accepted as input truth.
+`CleaningReport.merging(_:supplemental:purpose:id:parentID:)` accepts only the closed `CleaningOperationPurpose`, requires every deletion child `report.operation.kind == purpose.operationKind` and every supplemental child to use its exact registered kind, then validates each child against its payload before flattening it. The final report stores ordered `CleaningItemResult` deletion facts plus typed `CleaningAuxiliaryItemResult` facts (initially `.threatRemediation`) and exactly one new parent outcome; it never stores a child outcome/result. Deletion and auxiliary facts have distinct reducer request IDs, while `relatedCleaningRequestID` provides exact correlation without URL or caller-ID guessing. Parent fact order is stable per occurrence—deletion `D`, then its optional remediation `R`—and every remediation relation must resolve to exactly one deletion occurrence.
+
+The parent reducer consumes every deletion and auxiliary fact, so deletion success plus remediation failure is truly `.partial`, including after persistence. `removedCount`, reclaimed bytes and receipts are derived only from successful deletion facts; auxiliary successes can affect parent status/mutation but never inflate cleaning metrics. Extend typed history with an explicit fact role and a schema-2 compound record: schema 0/1 remain readable unchanged, schema 2 persists enough non-path facts to reconstruct the parent outcome, and all receipt/count/privacy invariants remain closed. `ValidatedCleaningNotification` validates the parent but derives `changedCount` from `report.removedCount`, never `operation.counts.succeeded`.
+
+The merge rejects a purpose mismatch, duplicate **request IDs**, broken correlation and fact/report inconsistencies, permits repeated caller item IDs, and never collapses occurrences by item ID. It cannot relabel standard cleaning as Space Trash/uninstall (or the reverse) to acquire different registry capabilities. Merge is fact aggregation, not authorization: it must not be used to approve a duplicate target after execution. No count or failure array is accepted as input truth. A rejection carries a reducer-backed fail-closed report with an unregistered internal kind, so UI can present the failure while every history/notification/celebration/invalidation sink remains structurally unavailable.
 
 Add `CleaningEngine.undo(_ items: [RestorableItem], parentID: UUID?) async -> OperationResult<UndoReport>`; keep the old report overload only as a delegating convenience until all callers migrate. A partial undo stores the remaining receipts directly; it does not construct a new `CleaningReport`.
 
 - [ ] **Step 4: Make threat bootout a child operation instead of a swallowed pre-side-effect**
 
-Change `ThreatRemediation.bootoutUserAgents` to return `OperationResult<ThreatRemediationReport>` with one requested subject per eligible plist. Invalid label/path is `.skipped(safetyPolicy/validation)`; confirmed not loaded is `.unchanged`; successful bootout is `.succeeded`; launchctl failure is `.failed` with an issue code, never a raw command/path.
+Replace the static best-effort call with an injected `ThreatRemediationExecuting` implementation used by `CleaningEngine`. It returns `OperationResult<ThreatRemediationReport>` with one requested subject per eligible plist and receives only Domain-prepared request IDs/correlation. Its filesystem roots, UID, typed plist-label reader, typed launch-agent controller and postcondition probe are injected in tests; production is the only owner of `/bin/launchctl` and the real user LaunchAgents root. Eligibility is a direct, nonsymlink regular `.plist` child of the injected root; there is no filename fallback when `Label` is absent. Invalid label/path is `.skipped(safetyPolicy/validation)`; confirmed not loaded is `.unchanged`; successful bootout with confirmed unloaded postcondition is `.succeeded`; invoked-but-unknown postcondition is `.failed(.possiblyChanged)` with a stable issue code, never a raw command/path/error. A generic command runner is not exposed through the public protocol.
 
-Module and Smart Scan merge remediation and deletion as children of one parent operation. A deleted plist with failed bootout is partial and explains that the live agent may remain active. It never triggers full-success notification.
+The engine verifies and flattens remediation and deletion children into one parent report. A deleted plist with failed bootout is partial, retains its deletion receipt and explains that the live agent may remain active. It never triggers full-success notification. Cancellation still produces every unexecuted fact in the same stable per-occurrence `D → R` order; completed changed/possibly-changed facts remain visible in the cancelled parent.
 
 - [ ] **Step 5: Apply typed side effects and exact selection mutation**
 
 For Module and Smart Scan:
 
 - retain the terminal result for all nonempty outcomes;
-- remove only `.succeeded` / `.unchanged` requested items;
+- remove only deletion occurrences whose facts are `.succeeded` / `.unchanged`, using their original occurrence positions rather than `itemID` or path sets;
 - preserve failed/skipped/cancelled items and their selected state;
-- build retry input from payload item outcomes with `retryable == true` and a new child operation ID;
+- build retry input from deletion and auxiliary payload facts with `retryable == true`, preserve occurrence order, bind the new operation's `parentID` to the prior terminal ID and never re-run an already successful child;
 - write cleaning history only through injected `OutcomeHistoryWriting.record(module:report:date:)` and handle every `HistoryRecordResult`;
 - construct `ValidatedCleaningNotification(report:)` and send it only after policy `.successNotification == .allowed` and bounded `.successNotification` channel consumption;
 - publish typed invalidation when any child is `.changed` or `.possiblyChanged`; the latter is a conservative refresh and still cannot enable success feedback;
+- register the terminal ID before any sink or presentation authorization, consume each sink channel once, and expose the report only after sink decisions and the atomic presentation authorization are frozen;
+- store Smart Scan's cleaning `Task`, expose a cancellation action while cleaning, and await the reducer-backed cancelled terminal rather than dropping the task;
 - show `TaskOutcomeView` for success, partial, failure and cancelled rather than entering a success-only `.finished` branch.
 
 - [ ] **Step 6: Remove all six legacy aggregate expressions**
@@ -828,6 +848,9 @@ swift test --filter CleaningOutcomeConsumerTests --disable-automatic-resolution 
 swift test --filter ThreatRemediationOutcomeTests --disable-automatic-resolution --skip-update
 swift test --filter CleaningRoundTripTests --disable-automatic-resolution --skip-update
 swift test --filter HistoryStoreTests --disable-automatic-resolution --skip-update
+swift test --filter OutcomeSinkBoundaryTests --disable-automatic-resolution --skip-update
+swift test --filter CleaningEngineTests --disable-automatic-resolution --skip-update
+swift test --filter OperationConsumerFactsTests --disable-automatic-resolution --skip-update
 ```
 
 Expected: `rg` has no output; all tests PASS.
@@ -835,7 +858,7 @@ Expected: `rg` has no output; all tests PASS.
 - [ ] **Step 8: Commit when executing**
 
 ```bash
-git add Sources/Domain/Models.swift Sources/Domain/CleaningEngine.swift Sources/Infrastructure/ThreatRemediation.swift Sources/Features/ModuleSessionViewModel.swift Sources/Features/SmartScanHub.swift Sources/Features/ScanViews.swift Sources/Features/SettingsView.swift Sources/Features/AppModel.swift Tests/FeatureTests/CleaningOutcomeConsumerTests.swift Tests/IntegrationTests/ThreatRemediationOutcomeTests.swift Tests/IntegrationTests/CleaningRoundTripTests.swift
+git add Sources/Domain/Models.swift Sources/Domain/CleaningEngine.swift Sources/Domain/OperationConsumerFacts.swift Sources/Infrastructure/ThreatRemediation.swift Sources/Infrastructure/HistoryStore.swift Sources/Infrastructure/Notifier.swift Sources/Infrastructure/XicoEnvironment.swift Sources/Features/CleaningOutcomeConsumer.swift Sources/Features/ModuleSessionViewModel.swift Sources/Features/SmartScanHub.swift Sources/Features/ScanViews.swift Sources/Features/SharedViews.swift Sources/Features/SettingsView.swift Sources/Features/AppModel.swift Tests/DomainTests/CleaningEngineTests.swift Tests/DomainTests/OperationConsumerFactsTests.swift Tests/FeatureTests/CleaningOutcomeConsumerTests.swift Tests/IntegrationTests/ThreatRemediationOutcomeTests.swift Tests/IntegrationTests/CleaningRoundTripTests.swift Tests/IntegrationTests/HistoryStoreTests.swift Tests/IntegrationTests/OutcomeSinkBoundaryTests.swift
 git commit -m "fix: consume truthful cleaning outcomes"
 ```
 
