@@ -646,12 +646,13 @@ git commit -m "feat: validate outcome side effect sinks"
 **Files:**
 - Create: `Sources/Features/TaskOutcomePresentation.swift`
 - Create: `Sources/Features/OutcomePresentationEffects.swift`
+- Modify: `Sources/Features/OutcomeSideEffectPolicy.swift`
 - Modify: `Sources/Features/SharedViews.swift`
 - Create: `Tests/FeatureTests/TaskOutcomePresentationTests.swift`
 - Create: `Tests/FeatureTests/TaskOutcomeAccessibilityTests.swift`
 - Modify: all `Sources/DesignSystem/Resources/*.lproj/Localizable.strings`
 
-- [ ] **Step 1: Write RED presentation tests for every terminal state**
+- [x] **Step 1: Write RED presentation tests for every terminal state**
 
 Tests build outcomes through the reducer and assert icon, semantic role, title key, count summary, available actions, announcement and effect permissions for:
 
@@ -666,13 +667,13 @@ func testIrreversibleSuccessUsesStaticShieldAndNoCelebration() throws
 
 Assert partial/failure/cancelled are distinguishable without color and never use a success checkmark alone.
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run: `swift test --filter TaskOutcomePresentationTests --disable-automatic-resolution --skip-update`
 
 Expected: FAIL because the five-state presentation model and action model do not exist.
 
-- [ ] **Step 3: Implement a pure presentation model**
+- [x] **Step 3: Implement a pure presentation model**
 
 Create:
 
@@ -697,15 +698,15 @@ struct TaskOutcomeActions {
 
 `TaskOutcomePresentation.make(context:semantics:)` derives all state text and symbols from the reducer outcome. Payload supplies only domain detail and available action capability; it cannot override status or counts.
 
-- [ ] **Step 4: Add `TaskOutcomeView`, retain a fail-closed compatibility shim and centralize effects**
+- [x] **Step 4: Add `TaskOutcomeView`, retain a fail-closed compatibility shim and centralize effects**
 
 Add `TaskOutcomeView` without deleting the still-referenced `TaskCompletionView` declaration: seven production call sites remain until later consumer tasks. Convert `TaskCompletionView` into a compile-only compatibility shim that delegates layout to a private `LegacyTaskOutcomeCompatibilityView`, always renders a static neutral “migration pending” result, offers only the existing dismissal action, and never constructs an `OperationOutcome`, registers a gate, starts count-up, or instantiates success effects. Tasks 4–13 remove every invocation; Task 14 owns deletion of the shim declaration after its zero-call test turns RED. Put `XAnnihilationBurst`, `XCelebrationBurst`, `XSound.cleanDone` and `XHaptic.levelChange` only in `OutcomePresentationEffects.swift`. That owner requires policy `.celebration == .allowed` plus one-time `.celebration` / `.successSoundHaptic` consumption from the owning ViewModel's bounded gate.
 
 For a kind registered with `.neutral` profile and irreversible presentation semantics, render a static shield confirmation. Other `.neutral` kinds render a static status. Only `.celebratory + success + mutation == .changed` without an invariant may instantiate an effect layer.
 
-The live ViewModel calls `registerTerminal` before exposing the new terminal result. `TaskOutcomeView`, `OutcomePresentationEffects`, `onAppear`, re-rendering and historical presentation never register or reset the gate; a historical result receives no live gate and therefore cannot replay effects.
+The live ViewModel calls `registerTerminal` before exposing the new terminal result. `TaskOutcomeView`, `OutcomePresentationEffects`, `onAppear`, re-rendering and historical presentation never register or reset the gate; a historical result receives no live gate and therefore cannot replay effects. The gate exposes one atomic batch-consume operation for the six canonical presentation channels (history, notification, invalidation, celebration, sound/haptic and accessibility announcement), so a view cannot mix authorization from different operation IDs or partially consume a presentation grant.
 
-- [ ] **Step 5: Make Reduce Motion a construction-time gate**
+- [x] **Step 5: Make Reduce Motion a construction-time gate**
 
 With `accessibilityReduceMotion == true`:
 
@@ -717,13 +718,13 @@ With `accessibilityReduceMotion == true`:
 
 Add a pure `OutcomeMotionPlan` test so this is verifiable without timing or screenshots.
 
-- [ ] **Step 6: Add accessibility and localization RED/GREEN coverage**
+- [x] **Step 6: Add accessibility and localization RED/GREEN coverage**
 
 Add keys for all five presentation variants, six counts, retry failed items, retry remaining items, details, undo changed items, recovery actions and irreversible completion. Add them to all 11 locale files with exact placeholder parity.
 
 `TaskOutcomeAccessibilityTests` asserts a nonempty label, status phrase, count summary, deterministic action order, no color-only state and no duplicate announcement per operation.
 
-- [ ] **Step 7: Run focused regressions**
+- [x] **Step 7: Run focused regressions**
 
 ```bash
 swift test --filter TaskOutcomePresentationTests --disable-automatic-resolution --skip-update
@@ -735,10 +736,10 @@ swift test --filter TypeScaleTokenGuardTests --disable-automatic-resolution --sk
 
 Expected: PASS, with no timing sleeps.
 
-- [ ] **Step 8: Commit when executing**
+- [x] **Step 8: Commit when executing**
 
 ```bash
-git add Sources/Features/TaskOutcomePresentation.swift Sources/Features/OutcomePresentationEffects.swift Sources/Features/SharedViews.swift Tests/FeatureTests/TaskOutcomePresentationTests.swift Tests/FeatureTests/TaskOutcomeAccessibilityTests.swift Sources/DesignSystem/Resources
+git add Sources/Features/TaskOutcomePresentation.swift Sources/Features/OutcomePresentationEffects.swift Sources/Features/OutcomeSideEffectPolicy.swift Sources/Features/SharedViews.swift Tests/FeatureTests/TaskOutcomePresentationTests.swift Tests/FeatureTests/TaskOutcomeAccessibilityTests.swift Sources/DesignSystem/Resources
 git commit -m "feat: present honest operation outcomes"
 ```
 
