@@ -1067,7 +1067,7 @@ Accepted evidence on commit `456bb23`: Reducer 32/32 including 6 normal-import c
 - Modify: `Sources/Infrastructure/HistoryStore.swift`
 - Modify: `Tests/IntegrationTests/HistoryStoreTests.swift`
 
-- [ ] **Step 1: Add failing schema/load-state and preservation tests**
+- [x] **Step 1: Add failing schema/load-state and preservation tests**
 
 Keep the existing no-`restorable` legacy fixture and add these exact RED tests before production edits:
 
@@ -1094,7 +1094,7 @@ Schema 1 is per record, not a single unvalidated top-level flag. `schemaVersion 
 
 Decode is explicitly bounded before allocating untrusted collections: the live implementation defines named maximum archive bytes, top-level records, item facts per record, issues per operation and UTF-8 lengths for module/kind/code/subject fields. Exceeding any bound is a stable degraded read-only condition, preserves the source archive, and cannot be bypassed by a scalar compatibility write. The bounds are production constants visible to `@testable` tests; tests exercise the boundary and one-over cases without allocating pathological real-world payloads.
 
-- [ ] **Step 2: Add failing transaction, idempotency, aggregate and privacy tests**
+- [x] **Step 2: Add failing transaction, idempotency, aggregate and privacy tests**
 
 Add these exact RED tests:
 
@@ -1132,13 +1132,13 @@ func testDuplicateOrConflictingReceiptsAndUnboundIssueSubjectsAreRejected() thro
 
 Use injected persistence doubles for deterministic load failure, failed-write, indeterminate parent-fsync, compare-and-swap conflict and migration-failure tests. The scripted conflict-budget double returns a verified conflict for every attempt and asserts exactly 8 total `commit` calls including the initial call, `history.persistence.conflictExhausted`, and no candidate publication in memory or a fresh store. Tests must inspect both the current instance and a freshly loaded store. The symlink-alias test creates only a disposable temporary parent plus alias and proves canonical coordination rather than merely passing the same URL spelling twice. Never depend on timing sleeps or the real Application Support history.
 
-- [ ] **Step 3: Confirm RED**
+- [x] **Step 3: Confirm RED**
 
 Run: `swift test --filter HistoryStoreTests --disable-automatic-resolution --skip-update`
 
 Expected: FAIL for missing schema/load-state/transaction/idempotency APIs and assertions, not because the fixture or persistence double is malformed. Capture exact failures before implementation.
 
-- [ ] **Step 4: Define per-record DTOs and fail-closed load states**
+- [x] **Step 4: Define per-record DTOs and fail-closed load states**
 
 Add:
 
@@ -1195,7 +1195,7 @@ Schema 0 uses `schemaVersion == 0`, `.legacyUnknown`, and nil operation/mutation
 
 Define a public read-only `HistoryItemFact: Sendable, Equatable` for the validated per-item request ID, delete intent, disposition, mutation, affected bytes and optional receipt. Its initializer remains internal; `CleaningRecord.itemFacts` exposes `[HistoryItemFact]`, never the private DTO type.
 
-- [ ] **Step 5: Implement injected durable persistence and serialized transactions**
+- [x] **Step 5: Implement injected durable persistence and serialized transactions**
 
 Create `Sources/Infrastructure/HistoryPersistence.swift` with an injected protocol and a live same-directory atomic implementation:
 
@@ -1237,7 +1237,7 @@ Coordinate by canonical archive URL, not by `HistoryStore` object identity or ca
 
 Every mutation follows one transaction: derive candidate from the latest revision → validate/encode → persist/fsync candidate → publish candidate to in-memory state. Never publish the candidate or return a committed ID before `.committed`. `HistoryCommitResult.failed` is legal only after the expected CAS revision was positively matched and a pre-rename encode/open/write/fsync/rename preparation step failed; inability to read/verify current CAS state is `.conflict(latest: .failed(...))` and immediately degrades. On a verified revision conflict, reload, reapply the operation-ID-aware mutation and perform at most **8 total commit attempts including the initial attempt**; exhaustion returns `history.persistence.conflictExhausted` without changing memory. On `.indeterminate`, never retry or report success: if the returned `.loaded` snapshot validates, replace the read model with that exact observed disk snapshot (not the unverified candidate); if it is positively `.missing`, use the observed empty read model; otherwise retain the prior read model. In every case transition the store to `degradedReadOnly(code: "history.persistence.durabilityUnknown")`, reject the mutation without a committed ID, and block later writes until the explicit validated reload API below succeeds. This makes current reads honest without pretending crash durability or rollback that POSIX cannot guarantee.
 
-- [ ] **Step 6: Add explicit mutation results and operation-ID idempotency**
+- [x] **Step 6: Add explicit mutation results and operation-ID idempotency**
 
 Use exact result types rather than nullable UUID/void ambiguity:
 
@@ -1304,7 +1304,7 @@ It returns `.notRecordedNoChanges` only for reducer mutation `.none`; zero-byte 
 
 `remove(id:)`, `updateRestorable(id:to:)`, `clearRestorable(id:)` and `clear()` return `HistoryUpdateResult` and use the same durable transaction. `updateRestorable` is remove-only. For schema 1, every supplied receipt must exactly equal one receipt already attached to that record's validated succeeded-trash+changed item fact. For temporary schema-0 compatibility, every supplied receipt must exactly equal one pair in that record's existing top-level legacy receipt set; the record remains `.legacyUnknown` with nil operation facts and never counts as trusted success. Both branches reject duplicates, additions and changed URL pairs and may only retain a subset or clear it. No public full-record initializer or generic `insert` is allowed.
 
-- [ ] **Step 7: Split aggregates and preserve immutable facts during receipt updates**
+- [x] **Step 7: Split aggregates and preserve immutable facts during receipt updates**
 
 Expose distinct APIs:
 
@@ -1316,7 +1316,7 @@ An all-unchanged decoded “success” cannot increment successful cleanup count
 
 Implement one internal `CleaningRecord.updatingRestorable(_:)` copy method that copies every schema/operation/status/mutation/count/item field and changes only the exact schema-1 item-bound or schema-0 legacy remove-only receipt subset described above. Both explicit update and `firstUndoable` pruning must call it; reconstructing records through a shorter initializer is forbidden because it drops newly added facts. `firstUndoable` evaluates filesystem existence outside the read-model lock, revalidates the source revision before commit, and publishes/returns the pruned record only after the same synchronous transaction returns `.committed`. On failed/conflict-exhausted/indeterminate persistence it returns no transient pruned candidate, preserves or reloads the honest read model according to the transaction result, and never promises an undo state that was not committed.
 
-- [ ] **Step 8: Run focused, full and build gates**
+- [x] **Step 8: Run focused, full and build gates**
 
 Run:
 
@@ -1333,7 +1333,7 @@ Expected: focused, full, debug and release builds pass with zero failures and ze
 
 Task 4 remains a non-releasable persistence checkpoint. Do not package/install/deploy/notarize/publish, and do not call a partial Task 4 GREEN a completed Phase while scalar consumers or direct outcome UI remain.
 
-- [ ] **Step 9: Commit the complete history transaction**
+- [x] **Step 9: Commit the complete history transaction**
 
 ```bash
 git add Sources/Infrastructure/HistoryPersistence.swift Sources/Infrastructure/HistoryStore.swift Tests/IntegrationTests/HistoryStoreTests.swift
