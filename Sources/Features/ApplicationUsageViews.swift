@@ -53,10 +53,11 @@ public enum ApplicationUsageListPresentation {
     ) -> CGFloat {
         let rowHeight: CGFloat
         let maximum: CGFloat
+        // 行高对齐收紧后的真实行（双行内容 ≈ 33pt），视口不再为空白留高。
         switch density {
-        case .compact: (rowHeight, maximum) = (34, 220)
-        case .balanced: (rowHeight, maximum) = (42, 294)
-        case .detailed: (rowHeight, maximum) = (48, 336)
+        case .compact: (rowHeight, maximum) = (32, 208)
+        case .balanced: (rowHeight, maximum) = (36, 252)
+        case .detailed: (rowHeight, maximum) = (44, 308)
         }
         let boundedCount = min(max(0, rowCount), rowLimit(configuredLimit: configuredLimit))
         return min(maximum, CGFloat(boundedCount) * rowHeight)
@@ -389,7 +390,7 @@ public struct ApplicationUsageList: View {
                 } else {
                     columnHeader
                     ScrollView(.vertical) {
-                        LazyVStack(spacing: 3) {
+                        LazyVStack(spacing: 2) {
                             ForEach(usages) { usage in
                                 usageRow(usage)
                             }
@@ -414,6 +415,8 @@ public struct ApplicationUsageList: View {
                 .frame(width: 66, alignment: .trailing)
         }
         .font(XFont.nano)
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)   // de "Arbeitsspeicher" 在 66pt 定宽列里缩放而非折行
         .foregroundStyle(XColor.textTertiary)
         .padding(.horizontal, 6)
         .accessibilityHidden(true)
@@ -467,7 +470,7 @@ public struct ApplicationUsageList: View {
                     .frame(width: 66, alignment: .trailing)
             }
             .padding(.horizontal, 6)
-            .padding(.vertical, 4)
+            .padding(.vertical, 3)
             .contentShape(Rectangle())
             .background(alignment: .leading) {
                 GeometryReader { proxy in

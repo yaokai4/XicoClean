@@ -130,8 +130,16 @@ public struct MenuBarSettingsView: View {
                 set: { UserDefaults.standard.set($0, forKey: key) })
     }
     private func mbStyleBinding(_ item: MBItem) -> Binding<String> {
-        Binding(get: { UserDefaults.standard.string(forKey: "xico.mb.\(item.id).style") ?? item.defStyle.rawValue },
-                set: { UserDefaults.standard.set($0, forKey: "xico.mb.\(item.id).style") })
+        Binding(get: {
+            let raw = UserDefaults.standard.string(forKey: "xico.mb.\(item.id).style") ?? item.defStyle.rawValue
+            // 旧版本可能残留已下架的样式（网络的 graph/rich/interface）：不在可选清单里
+            // 视为默认，避免样式选择器出现「无一选中」的幽灵态（渲染侧 MenuBarController 同口径兜底）。
+            guard item.styles.isEmpty || item.styles.contains(where: { $0.rawValue == raw }) else {
+                return item.defStyle.rawValue
+            }
+            return raw
+        },
+        set: { UserDefaults.standard.set($0, forKey: "xico.mb.\(item.id).style") })
     }
     /// 三态彩色：global（跟随全局开关）/ mono / colored。
     private func mbColorBinding(_ id: String) -> Binding<String> {

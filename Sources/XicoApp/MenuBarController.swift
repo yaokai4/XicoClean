@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import Combine
 import Carbon.HIToolbox
-import SystemConfiguration
 import Features
 import Infrastructure
 import DesignSystem
@@ -179,14 +178,18 @@ final class MenuBarController: NSObject {
     private func defaultStyle(for id: String) -> MenuBarStyle {
         switch id {
         case "cpu", "memory", "gpu": return .rich
-        case "network":              return .graph
-        case "diskio":               return .valueOnly
+        case "network", "diskio":    return .valueOnly   // 网络默认纯数值（2026-07 拍板：不要迷你图）
         default:                     return .iconValue   // temp / disk / battery
         }
     }
     private func style(for id: String) -> MenuBarStyle {
         if let s = UserDefaults.standard.string(forKey: "xico.mb.\(id).style"),
-           let st = MenuBarStyle(rawValue: s) { return st }
+           let st = MenuBarStyle(rawValue: s) {
+            // 网络可选样式已收窄为 纯数值/图标+数值（与设置页一致）；旧版本残留的
+            // graph/rich/interface 落回默认，否则启动仍会画出已下架的迷你图。
+            if id == "network", st != .valueOnly, st != .iconValue { return defaultStyle(for: id) }
+            return st
+        }
         return defaultStyle(for: id)
     }
     /// 每项独立的彩色开关。优先级：逐项 `xico.mb.<id>.colored` > 全局 `xico.mb.colored` >
@@ -223,11 +226,12 @@ final class MenuBarController: NSObject {
                                        style: style, colored: colored)
         case "network":
             let hist = netHistories()
+            // 接口样式已随网络样式收窄一并下架（style(for:) 兜底后此处永远拿不到 .interface）。
             return MenuBarGlyph.network(down: s?.netDownBytesPerSec ?? 0,
                                         up: s?.netUpBytesPerSec ?? 0,
                                         history: hist.down, upHistory: hist.up,
                                         style: style, colored: colored,
-                                        interfaceName: style == .interface ? Self.primaryInterfaceName() : nil)
+                                        interfaceName: nil)
         case "temp":
             // 传感器源（P1 多传感器）：CPU（默认）/ GPU / SSD，破除此前 s.cpuTemp 硬编码。
             let source = UserDefaults.standard.string(forKey: "xico.mb.temp.source") ?? "cpu"
@@ -270,15 +274,6 @@ final class MenuBarController: NSObject {
         let write = model.diskWriteHistory
         let maxV = max((read + write).max() ?? 1, 1)
         return (read.map { $0 / maxV }, write.map { $0 / maxV })
-    }
-
-    /// 主网络接口 BSD 名（en0 等）：SCDynamicStore 单键查询，微秒级，无权限门槛
-    ///（Wi-Fi SSID 在 macOS 14+ 需定位权限，刻意不做——接口名诚实且零权限）。
-    static func primaryInterfaceName() -> String? {
-        guard let store = SCDynamicStoreCreate(nil, "xico.mb" as CFString, nil, nil),
-              let value = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any]
-        else { return nil }
-        return value["PrimaryInterface"] as? String
     }
 
     /// 真 · 合并项（P3·M1）：按 `xico.mb.combined.<id>` 勾选构建槽位（默认 cpu+memory+network）。

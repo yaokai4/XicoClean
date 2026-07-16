@@ -18,6 +18,26 @@ enum MemoryPressureDisplayCopy {
     }
 }
 
+/// 已用/总量的单行展示（"11.15 / 16.00 GiB"）：单位相同只在总量标注一次；
+/// 已用不足 1 GiB 等单位不同的场合，已用侧带上自己的单位，避免误读成同单位。
+struct MemoryUsedOfTotalDisplay: Equatable {
+    let used: String    // 与总量同单位时不带单位（"11.15"），否则完整（"512.00 MiB"）
+    let total: String   // 恒带单位（"16.00 GiB"）
+
+    init(usedBytes: Int64, totalBytes: Int64, style: MemoryUnitStyle) {
+        let usedText = usedBytes.formattedMemory(style: style)
+        let totalText = totalBytes.formattedMemory(style: style)
+        total = totalText
+        let usedParts = usedText.split(separator: " ")
+        if usedParts.count == 2, let totalUnit = totalText.split(separator: " ").last,
+           usedParts[1] == totalUnit {
+            used = String(usedParts[0])
+        } else {
+            used = usedText
+        }
+    }
+}
+
 /// 每进程网络流量区块（面板可见期间每 ~3s 后台采样一轮；nettop 不可用时整块消失）。
 private struct NetTopSection: View {
     @State private var usages: [ProcessNetUsage]?
@@ -27,16 +47,17 @@ private struct NetTopSection: View {
     var body: some View {
         Group {
             if let usages, !usages.isEmpty {
-                VStack(alignment: .leading, spacing: XSpacing.xs) {
-                    Divider().padding(.vertical, 1)
-                    Text(xLoc("流量排行")).font(XFont.nano).foregroundStyle(XColor.textTertiary).tracking(0.4)
-                    ForEach(usages) { u in
-                        HStack(spacing: XSpacing.s) {
-                            Text(u.name).font(XFont.caption).foregroundStyle(XColor.textPrimary)
-                                .lineLimit(1).truncationMode(.middle)
-                            Spacer(minLength: XSpacing.s)
-                            Text("↓" + u.bytesInPerSec.compactRate).font(XFont.microMono).foregroundStyle(XColor.netDown)
-                            Text("↑" + u.bytesOutPerSec.compactRate).font(XFont.microMono).foregroundStyle(XColor.netUp)
+                XMonitoringSection {
+                    VStack(alignment: .leading, spacing: XSpacing.xs + 2) {
+                        Text(xLoc("流量排行")).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
+                        ForEach(usages) { u in
+                            HStack(spacing: XSpacing.s) {
+                                Text(u.name).font(XFont.caption).foregroundStyle(XColor.textPrimary)
+                                    .lineLimit(1).truncationMode(.middle)
+                                Spacer(minLength: XSpacing.s)
+                                Text("↓" + u.bytesInPerSec.compactRate).font(XFont.microMono).foregroundStyle(XColor.netDown)
+                                Text("↑" + u.bytesOutPerSec.compactRate).font(XFont.microMono).foregroundStyle(XColor.netUp)
+                            }
                         }
                     }
                 }
@@ -63,17 +84,20 @@ private struct NetTopSection: View {
 private struct StackedCPUBars: View {
     let user: [Double]
     let system: [Double]
+    /// 槽位固定 60、右对齐：条宽不随样本数变化，冷启动前几秒不会渲染成几块巨大的色板。
+    private static let slots = 60
     var body: some View {
         Canvas { ctx, size in
-            let u = Array(user.suffix(60))
-            let sys = Array(system.suffix(60))
+            let u = Array(user.suffix(Self.slots))
+            let sys = Array(system.suffix(Self.slots))
             let n = min(u.count, sys.count)
             guard n > 0 else { return }
             let gap: CGFloat = 1
-            let barW = max(1, (size.width - CGFloat(n - 1) * gap) / CGFloat(n))
+            let barW = max(1, (size.width - CGFloat(Self.slots - 1) * gap) / CGFloat(Self.slots))
             let userColor = XColor.auroraBlue, sysColor = XColor.accentPink
             for i in 0..<n {
-                let x = CGFloat(i) * (barW + gap)
+                let slot = Self.slots - n + i   // 最新样本贴右缘，历史向左生长
+                let x = CGFloat(slot) * (barW + gap)
                 let uh = size.height * CGFloat(min(max(u[u.count - n + i], 0), 1))
                 let sh = size.height * CGFloat(min(max(sys[sys.count - n + i], 0), 1))
                 // 用户段（底）
@@ -85,6 +109,30 @@ private struct StackedCPUBars: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// 图表区头：标题（含可选图例）+ 时间窗选择器。选择器的布局宽度不可压缩（scaleEffect 只缩
+/// 渲染不缩布局），de/fr/ru 等长文案语种一行放不下时，优雅折成「标题行 + 右对齐选择器行」。
+private struct ChartSectionHeader<Leading: View, Trailing: View>: View {
+    private let leading: Leading
+    private let trailing: Trailing
+    init(@ViewBuilder leading: () -> Leading, @ViewBuilder trailing: () -> Trailing) {
+        self.leading = leading()
+        self.trailing = trailing()
+    }
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: XSpacing.s) {
+                leading
+                Spacer(minLength: XSpacing.s)
+                trailing
+            }
+            VStack(alignment: .leading, spacing: XSpacing.xs) {
+                HStack(spacing: XSpacing.s) { leading }
+                HStack { Spacer(minLength: 0); trailing }
+            }
+        }
     }
 }
 
@@ -168,6 +216,10 @@ public struct MenuMetricPanel: View {
     @State private var selectedApplication: ApplicationIdentity?
     @State private var memoryHistoryMetricRaw = MemoryPanelHistoryMetric.pressure.rawValue
     @State private var memoryHistory = MemoryPanelHistoryAccumulator()
+    /// 图例字号的动态字体档位（与 XFont.caption / XFont.mono 的默认磅值对齐），
+    /// 供 legendColumnCount 用真实字宽预检双列是否放得下。
+    @ScaledMetric(relativeTo: .subheadline) private var legendLabelFontSize: CGFloat = 11
+    @ScaledMetric(relativeTo: .body) private var legendValueFontSize: CGFloat = 13
 
     private var window: HistoryWindow { HistoryWindow(rawValue: windowRaw) ?? .live }
     private var cpuMode: CPUDisplayMode { CPUDisplayMode(rawValue: cpuModeRaw) ?? .normalized }
@@ -386,25 +438,26 @@ public struct MenuMetricPanel: View {
     // MARK: - CPU 面板（CPU 单一主叙事 + 应用双指标排行）
 
     @ViewBuilder private func cpuContent(_ s: SystemSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: XSpacing.m) {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
             XMonitoringSection {
-                VStack(alignment: .leading, spacing: XSpacing.m) {
+                VStack(alignment: .leading, spacing: XSpacing.s) {
                     HStack(spacing: XSpacing.m) {
                         semanticGauge(s.cpuUsage, color: XColor.auroraBlue)
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel(xLoc("处理器"))
                             .accessibilityValue("\(Int((s.cpuUsage * 100).rounded()))%")
                         VStack(alignment: .leading, spacing: XSpacing.s) {
-                            HStack(spacing: XSpacing.l) {
+                            // 间距用 m：三芯片并排时给长标签语种（Temperature/Température）留满格宽。
+                            HStack(spacing: XSpacing.m) {
                                 metricChip(xLoc("用户"), "\(Int(s.cpuUser * 100))%")
                                 metricChip(xLoc("系统"), "\(Int(s.cpuSystem * 100))%")
-                            }
-                            HStack(spacing: XSpacing.l) {
-                                metricChip(xLoc("平均负载"), loadTriple(s))
                                 if let t = s.cpuTemp {
                                     metricChip(xLoc("温度"), String(format: "%.0f°C", t))
                                 }
                             }
+                            // 三个采样值并排会把它挤到折行——平均负载独占整行
+                            //（高负载三元组如 173.43 · 224.24 · 146.20 需要 ~140pt）。
+                            metricChip(xLoc("平均负载"), loadTriple(s))
                         }
                         Spacer(minLength: 0)
                     }
@@ -412,21 +465,42 @@ public struct MenuMetricPanel: View {
                     if !s.perCore.isEmpty {
                         Divider().padding(.vertical, 1)
                         perCoreRings(s.perCore)
-                        Text(coreCaption).font(XFont.caption).foregroundStyle(XColor.textTertiary)
                     }
-                    HStack(spacing: XSpacing.l) {
-                        metricChip(xLoc("已运行"), model.macInfo?.uptime ?? "—")
-                        Spacer(minLength: 0)
+                    // 核构成与已运行同为静态元数据，合并成一行安静的注脚；
+                    // 长文案语种（en/de/fr）一行放不下时折成两行，不截断。
+                    if model.macInfo != nil {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: XSpacing.s) {
+                                cpuMetaCaption(s)
+                                Spacer(minLength: XSpacing.s)
+                                cpuUptimeCaption
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                cpuMetaCaption(s)
+                                cpuUptimeCaption
+                            }
+                        }
                     }
                 }
             }
             XMonitoringSection {
                 VStack(alignment: .leading, spacing: XSpacing.s) {
-                    HStack {
-                        Text("CPU · \(xLoc(window.title))")
-                            .font(XFont.captionEmphasis)
-                            .foregroundStyle(XColor.textPrimary)
-                        Spacer()
+                    ChartSectionHeader {
+                        // 实时窗：图例并入标题行，窗名后缀让位（选中的「实时」分段片已在同一行，
+                        // 不省则 标题+图例+选择器 三者挤爆折行）；长窗单线无图例，保留窗名。
+                        if window == .live, feed.cpuUserHistory.count > 1 {
+                            Text("CPU")
+                                .font(XFont.captionEmphasis)
+                                .foregroundStyle(XColor.textPrimary)
+                            chartLegendDot(XColor.auroraBlue, xLoc("用户"))
+                            chartLegendDot(XColor.accentPink, xLoc("系统"))
+                        } else {
+                            Text("CPU · \(xLoc(window.title))")
+                                .font(XFont.captionEmphasis)
+                                .foregroundStyle(XColor.textPrimary)
+                                .lineLimit(1)
+                        }
+                    } trailing: {
                         windowPicker
                     }
                     // 实时窗保留用户/系统拆分；长窗使用单一 CPU 蓝总占用线。
@@ -441,17 +515,6 @@ public struct MenuMetricPanel: View {
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel(xLoc("处理器占用历史曲线"))
                             .accessibilityValue("\(Int((s.cpuUsage * 100).rounded()))%")
-                    }
-                    HStack(spacing: XSpacing.m) {
-                        HStack(spacing: 3) {
-                            Circle().fill(XColor.auroraBlue).frame(width: 6, height: 6)
-                            Text(xLoc("用户")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
-                        }
-                        HStack(spacing: 3) {
-                            Circle().fill(XColor.accentPink).frame(width: 6, height: 6)
-                            Text(xLoc("系统")).font(XFont.nano).foregroundStyle(XColor.textTertiary)
-                        }
-                        Spacer()
                     }
                 }
             }
@@ -502,8 +565,34 @@ public struct MenuMetricPanel: View {
         .accessibilityValue(xLocF("平均 %d%%", Int((cores.reduce(0, +) / Double(max(cores.count, 1))) * 100)))
     }
 
+    /// 核构成注脚（有每核数据才显示，与环形网格呼应）。
+    @ViewBuilder private func cpuMetaCaption(_ s: SystemSnapshot) -> some View {
+        if !s.perCore.isEmpty {
+            Text(coreCaption).font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                .lineLimit(1)
+        }
+    }
+
+    /// 已运行注脚。
+    @ViewBuilder private var cpuUptimeCaption: some View {
+        if let uptime = model.macInfo?.uptime {
+            Text("\(xLoc("已运行")) \(uptime)")
+                .font(XFont.caption).foregroundStyle(XColor.textTertiary)
+                .lineLimit(1)
+        }
+    }
+
+    /// 历史图图例小点（标题行内联，不再独占一行）。
+    private func chartLegendDot(_ color: Color, _ label: String) -> some View {
+        HStack(spacing: 3) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(label).font(XFont.nano).foregroundStyle(XColor.textTertiary)
+        }
+        .accessibilityHidden(true)
+    }
+
     private func loadTriple(_ s: SystemSnapshot) -> String {
-        String(format: "%.2f  %.2f  %.2f", s.load1, s.load5, s.load15)
+        String(format: "%.2f · %.2f · %.2f", s.load1, s.load5, s.load15)
     }
     private func freqText(_ mhz: Double) -> String {
         mhz >= 1000 ? String(format: "%.2f GHz", mhz / 1000) : String(format: "%.0f MHz", mhz)
@@ -522,62 +611,63 @@ public struct MenuMetricPanel: View {
     @ViewBuilder private func memoryContent(_ s: SystemSnapshot) -> some View {
         let pressureIndexText = MemoryPressureDisplayCopy.percentage(s.memoryPressureIndex)
         let pressureGauge = XicoPressureGaugePresentation(index: s.memoryPressureIndex)
-        VStack(alignment: .leading, spacing: XSpacing.m) {
+        let usedOfTotal = MemoryUsedOfTotalDisplay(
+            usedBytes: s.memoryUsed, totalBytes: s.memoryTotal, style: memoryStyle)
+        let usedPercentText = "\(Int((s.memoryUsedFraction * 100).rounded()))%"
+        VStack(alignment: .leading, spacing: XSpacing.s) {
             XMonitoringSection {
-                VStack(alignment: .leading, spacing: XSpacing.m) {
-                    HStack(spacing: XSpacing.m) {
-                        VStack(spacing: 2) {
-                            XSemanticGauge(
-                                fraction: pressureGauge.fraction,
-                                color: pressureGauge.hasValue ? XColor.auroraViolet : XColor.textTertiary,
-                                size: 62,
-                                lineWidth: 7) {
-                                Text(pressureIndexText).font(XFont.monoMini)
-                                    .foregroundStyle(XColor.textPrimary)
-                            }
-                            Text(xLoc(MemoryPressureDisplayCopy.indexLabel)).font(XFont.nano)
-                                .foregroundStyle(XColor.textTertiary)
-                                .lineLimit(1).minimumScaleFactor(0.7)
-                        }
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.indexLabel))
-                        .accessibilityValue(pressureIndexText)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(xLoc(MemoryPressureDisplayCopy.stateLabel)).font(XFont.nano)
-                                .foregroundStyle(XColor.textTertiary)
-                            Text(xLoc(s.memoryPressureLabel)).font(XFont.captionEmphasis)
-                                .foregroundStyle(pressureColor(s))
-                        }
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.stateLabel))
-                        .accessibilityValue(xLoc(s.memoryPressureLabel))
-                        semanticGauge(s.memoryUsedFraction, color: XColor.auroraViolet)
+                VStack(alignment: .leading, spacing: XSpacing.s) {
+                    // 两只同规格仪表 + 一列文字：压力/用量各归其位，
+                    // 「已用 / 总量」同一基线一行排完（此前总量折到第二行，像换行事故）。
+                    HStack(alignment: .top, spacing: XSpacing.m) {
+                        gaugeColumn(
+                            fraction: pressureGauge.fraction,
+                            color: pressureGauge.hasValue ? XColor.auroraViolet : XColor.textTertiary,
+                            center: pressureIndexText,
+                            label: xLoc(MemoryPressureDisplayCopy.indexLabel))
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.indexLabel))
+                            .accessibilityValue(pressureIndexText)
+                        gaugeColumn(
+                            fraction: s.memoryUsedFraction,
+                            color: XColor.auroraViolet,
+                            center: usedPercentText,
+                            label: xLoc("已用"))
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel(xLoc("内存"))
-                            .accessibilityValue("\(Int((s.memoryUsedFraction * 100).rounded()))%")
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(s.memoryUsed.formattedMemory(style: memoryStyle))
-                                .font(XFont.monoLarge)
-                                .monospacedDigit()
-                                .foregroundStyle(XColor.textPrimary)
-                            Text(xLocF("/ %@", s.memoryTotal.formattedMemory(style: memoryStyle)))
-                                .font(XFont.caption)
-                                .monospacedDigit()
-                                .foregroundStyle(XColor.textSecondary)
+                            .accessibilityValue(usedPercentText)
+                        VStack(alignment: .leading, spacing: XSpacing.m) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(xLoc(MemoryPressureDisplayCopy.stateLabel)).font(XFont.nano)
+                                    .foregroundStyle(XColor.textTertiary)
+                                Text(xLoc(s.memoryPressureLabel)).font(XFont.captionEmphasis)
+                                    .foregroundStyle(pressureColor(s))
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(xLoc(MemoryPressureDisplayCopy.stateLabel))
+                            .accessibilityValue(xLoc(s.memoryPressureLabel))
+                            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                                Text(usedOfTotal.used)
+                                    .font(XFont.monoLarge)
+                                    .foregroundStyle(XColor.textPrimary)
+                                Text(xLocF("/ %@", usedOfTotal.total))
+                                    .font(XFont.caption)
+                                    .foregroundStyle(XColor.textSecondary)
+                            }
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(xLoc("已用"))
+                            .accessibilityValue("\(usedOfTotal.used) / \(usedOfTotal.total)")
                         }
+                        .padding(.top, 2)
+                        .layoutPriority(1)   // 数值列优先拿宽：128 GiB 机型的大数字不许截断
                         Spacer(minLength: 0)
                     }
                     memSegmentBar(s)
-                    memLegendRow(xLoc("应用内存"), s.memoryApp, XColor.memApp)
-                    memLegendRow(xLoc("联动内存"), s.memoryWired, XColor.memWired)
-                    memLegendRow(xLoc("已压缩"), s.memoryCompressed, XColor.memCompressed)
-                    memLegendRow(xLoc("缓存文件"), s.memoryCached, XColor.memCached)
-                    memLegendRow(xLoc("可用"), s.memoryAvailable, XColor.memFree)
-                }
-            }
-
-            XMonitoringSection {
-                VStack(alignment: .leading, spacing: XSpacing.s) {
+                    memLegendGrid(s)
+                    Divider().padding(.vertical, 1)
                     HStack(spacing: XSpacing.l) {
                         metricChip(xLoc("换入分页"), feed.pageInRate.map(\.formattedRate) ?? "—")
                         metricChip(xLoc("换出分页"), feed.pageOutRate.map(\.formattedRate) ?? "—")
@@ -599,6 +689,63 @@ public struct MenuMetricPanel: View {
         }
     }
 
+    /// 仪表 + 底部小标签的一列（内存面板双仪表统一规格：同尺寸、同字号——此前两环大小/字号各异）。
+    /// 定宽 64：长文案语种的标签在列内缩放/截断消化（悬停见全文），绝不挤压右侧数值列。
+    private func gaugeColumn(fraction: Double, color: Color, center: String, label: String) -> some View {
+        VStack(spacing: 3) {
+            XSemanticGauge(fraction: fraction, color: color, size: 54, lineWidth: 6) {
+                Text(center).font(XFont.monoMid)
+                    .foregroundStyle(XColor.textPrimary)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+            }
+            Text(label).font(XFont.nano)
+                .foregroundStyle(XColor.textTertiary)
+                .lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .frame(width: 64)
+        .help(label)
+    }
+
+    /// 物理组成图例：双列网格（5 行压成 3 行，面板显著变短，内容一条不少）。
+    /// 列数按真实字宽预检：CJK 标签双列绰绰有余；de/fr/ru 长标签或辅助大字号下
+    /// 「最长标签 + 最宽值」放不下双列格时退回单列——绝不截断数据。
+    private func memLegendGrid(_ s: SystemSnapshot) -> some View {
+        let items: [(label: String, bytes: Int64, color: Color)] = [
+            (xLoc("应用内存"), s.memoryApp, XColor.memApp),
+            (xLoc("联动内存"), s.memoryWired, XColor.memWired),
+            (xLoc("已压缩"), s.memoryCompressed, XColor.memCompressed),
+            (xLoc("缓存文件"), s.memoryCached, XColor.memCached),
+            (xLoc("可用"), s.memoryAvailable, XColor.memFree),
+        ]
+        return LazyVGrid(
+            columns: Array(
+                repeating: GridItem(.flexible(), spacing: XSpacing.l),
+                count: legendColumnCount(items)),
+            alignment: .leading,
+            spacing: XSpacing.xs + 2) {
+            ForEach(items, id: \.label) { item in
+                memLegendRow(item.label, item.bytes, item.color)
+            }
+        }
+    }
+
+    private func legendColumnCount(_ items: [(label: String, bytes: Int64, color: Color)]) -> Int {
+        // 内容宽 = 面板宽 − 面板留白（m×2）− 卡片留白（s×2）；双列格宽再减列距 l 对半。
+        let contentWidth = panelWidth - XSpacing.m * 2 - XSpacing.s * 2
+        let cellWidth = (contentWidth - XSpacing.l) / 2
+        let labelFont = NSFont.systemFont(ofSize: legendLabelFontSize)
+        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: legendValueFontSize, weight: .semibold)
+        let maxLabel = items
+            .map { ($0.label as NSString).size(withAttributes: [.font: labelFont]).width }
+            .max() ?? 0
+        let maxValue = items
+            .map { ($0.bytes.formattedMemory(style: memoryStyle) as NSString)
+                .size(withAttributes: [.font: valueFont]).width }
+            .max() ?? 0
+        let dotAndGaps = 7 + XSpacing.s * 2   // 圆点 + 点距 + 标签值最小间隔
+        return maxLabel + maxValue + dotAndGaps <= cellWidth ? 2 : 1
+    }
+
     private func memSegmentBar(_ s: SystemSnapshot) -> some View {
         let total = max(1.0, Double(s.memoryTotal))
         // Available already includes cached files. Only mutually exclusive used categories become
@@ -615,9 +762,11 @@ public struct MenuMetricPanel: View {
         HStack(spacing: XSpacing.s) {
             Circle().fill(color).frame(width: 7, height: 7)
             Text(label).font(XFont.caption).foregroundStyle(XColor.textSecondary)
-            Spacer()
+                .lineLimit(1)
+            Spacer(minLength: XSpacing.s)
             Text(bytes.formattedMemory(style: memoryStyle)).font(XFont.mono).foregroundStyle(XColor.textPrimary)
                 .monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.8)
         }
     }
 
@@ -659,11 +808,12 @@ public struct MenuMetricPanel: View {
     private var memoryHistorySection: some View {
         XMonitoringSection {
             VStack(alignment: .leading, spacing: XSpacing.s) {
-                HStack {
+                ChartSectionHeader {
                     Text("\(xLoc("内存")) · 60 s")
                         .font(XFont.captionEmphasis)
                         .foregroundStyle(XColor.textPrimary)
-                    Spacer()
+                        .lineLimit(1)
+                } trailing: {
                     XSegmentedControl(
                         selection: $memoryHistoryMetricRaw,
                         options: MemoryPanelHistoryMetric.allCases.map {
@@ -682,7 +832,7 @@ public struct MenuMetricPanel: View {
                             guard selectedMemoryHistory.indices.contains(index) else { return "" }
                             return "\(Int((selectedMemoryHistory[index] * 100).rounded()))%"
                         })
-                    .frame(height: 44)
+                    .frame(height: 40)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(memoryHistoryMetric.title)
                     .accessibilityValue("\(Int(((selectedMemoryHistory.last ?? 0) * 100).rounded()))%")
@@ -690,7 +840,7 @@ public struct MenuMetricPanel: View {
                     Text(xLoc("采样中"))
                         .font(XFont.caption)
                         .foregroundStyle(XColor.textTertiary)
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
+                        .frame(maxWidth: .infinity, minHeight: 40, alignment: .center)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel(memoryHistoryMetric.title)
                         .accessibilityValue(xLoc("采样中"))
@@ -711,19 +861,40 @@ public struct MenuMetricPanel: View {
     // MARK: - 网络面板（大数字 + 会话峰值/累计 + 双线折线 + 接口清单）
 
     @ViewBuilder private func networkContent(_ s: SystemSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: XSpacing.m) {
-            HStack(spacing: XSpacing.xl) {
-                rateColumn("arrow.down", XColor.netDown, xLoc("下载"), s.netDownBytesPerSec)
-                rateColumn("arrow.up", XColor.netUp, xLoc("上传"), s.netUpBytesPerSec)
-                Spacer()
+        VStack(alignment: .leading, spacing: XSpacing.s) {
+            // 与 CPU/内存同一套卡片语言：实时速率、历史曲线、流量排行、接口各归其卡。
+            XMonitoringSection {
+                VStack(alignment: .leading, spacing: XSpacing.s) {
+                    HStack(spacing: XSpacing.xl) {
+                        rateColumn("arrow.down", XColor.netDown, xLoc("下载"), s.netDownBytesPerSec)
+                        rateColumn("arrow.up", XColor.netUp, xLoc("上传"), s.netUpBytesPerSec)
+                        Spacer()
+                    }
+                    Divider().padding(.vertical, 1)
+                    sessionRow
+                }
             }
-            sessionRow
-            networkChart.frame(height: 48)
+            XMonitoringSection {
+                VStack(alignment: .leading, spacing: XSpacing.s) {
+                    ChartSectionHeader {
+                        Text("\(xLoc("网络")) · \(xLoc(window.title))")
+                            .font(XFont.captionEmphasis)
+                            .foregroundStyle(XColor.textPrimary)
+                            .lineLimit(1)
+                    } trailing: {
+                        windowPicker
+                    }
+                    networkChart.frame(height: 44)
+                }
+            }
             // 每进程流量（P6·3，iStat 支柱内容）：nettop 差分采样；不可用时整块隐藏（诚实降级）。
             NetTopSection()
             if !activeInterfaces.isEmpty {
-                Divider().padding(.vertical, 1)
-                ForEach(activeInterfaces) { interfaceRow($0) }
+                XMonitoringSection {
+                    VStack(alignment: .leading, spacing: XSpacing.s) {
+                        ForEach(activeInterfaces) { interfaceRow($0) }
+                    }
+                }
             }
         }
     }
@@ -784,24 +955,22 @@ public struct MenuMetricPanel: View {
 
     private var networkChart: some View {
         // 分层时间窗（P3·M4）：按当前挡位取序列，双线同基准归一；悬停给出「↓ 下行 · ↑ 上行」真实速率。
+        // 时间窗选择器已上移到区块标题行（与 CPU/内存历史区同构），这里只画图。
         let downRaw = window.series(from: feed.rings.netDown)
         let upRaw = window.series(from: feed.rings.netUp)
         let maxV = max((downRaw + upRaw).max() ?? 1, 1)
         let down = downRaw.map { $0 / maxV }
         let up = upRaw.map { $0 / maxV }
-        return VStack(alignment: .trailing, spacing: XSpacing.xs) {
-            windowPicker
-            ZStack {
-                XLineChart(values: down, colors: [XColor.netDown, XColor.ring(2)], showDot: false, showGrid: true,
-                           updateCadence: .realtime,
-                           hoverLabel: { i in
-                               guard i >= 0, i < downRaw.count else { return "" }
-                               let u = i < upRaw.count ? upRaw[i] : 0
-                               return "↓\(downRaw[i].compactRate) ↑\(u.compactRate)"
-                           })
-                XLineChart(values: up, colors: [XColor.netUp, XColor.ring(1)], showFill: false, showDot: false,
-                           updateCadence: .realtime)
-            }
+        return ZStack {
+            XLineChart(values: down, colors: [XColor.netDown, XColor.ring(2)], showDot: false, showGrid: true,
+                       updateCadence: .realtime,
+                       hoverLabel: { i in
+                           guard i >= 0, i < downRaw.count else { return "" }
+                           let u = i < upRaw.count ? upRaw[i] : 0
+                           return "↓\(downRaw[i].compactRate) ↑\(u.compactRate)"
+                       })
+            XLineChart(values: up, colors: [XColor.netUp, XColor.ring(1)], showFill: false, showDot: false,
+                       updateCadence: .realtime)
         }
     }
 
@@ -818,9 +987,10 @@ public struct MenuMetricPanel: View {
     private func metricChip(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(label).font(XFont.caption).foregroundStyle(XColor.textTertiary)
-                .lineLimit(1).minimumScaleFactor(0.85)
+                .lineLimit(1).minimumScaleFactor(0.75)  // ru/fr 长标签在窄格里缩放而非截断
             Text(value).font(XFont.captionEmphasis).foregroundStyle(XColor.textPrimary)
                 .monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.8)   // 数值宁可微缩不许折行（平均负载三元组等）
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -831,7 +1001,7 @@ public struct MenuMetricPanel: View {
         // 每帧只排一次序、SSD 均值只算一次（此前在 body 内重复排序/过滤，审计 P3 MenuPanels:472）。
         let sortedSensors = model.sensorTemps.sorted { $0.celsius > $1.celsius }
         let ssdAvg = avgTemp(.ssd)
-        VStack(alignment: .leading, spacing: XSpacing.m) {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
             // 三大代表温度：CPU / GPU / SSD（读不到的自动隐藏）
             HStack(spacing: XSpacing.l) {
                 if let c = s.cpuTemp { tempHero(xLoc("处理器"), c) }
@@ -964,7 +1134,7 @@ public struct MenuMetricPanel: View {
     // MARK: - GPU 面板（利用率环 + 显存/核心/温度 + 历史曲线）
 
     @ViewBuilder private func gpuContent(_ s: SystemSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: XSpacing.m) {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
             HStack(spacing: XSpacing.l) {
                 ringGauge(s.gpuUsage ?? 0)
                 VStack(alignment: .leading, spacing: 3) {
@@ -984,11 +1154,15 @@ public struct MenuMetricPanel: View {
                 metricChip(xLoc("利用率"), "\(Int(((s.gpuUsage ?? 0) * 100).rounded()))%")
                 Spacer(minLength: 0)
             }
-            HStack {
-                Spacer()
+            ChartSectionHeader {
+                Text("GPU · \(xLoc(window.title))")
+                    .font(XFont.captionEmphasis)
+                    .foregroundStyle(XColor.textPrimary)
+                    .lineLimit(1)
+            } trailing: {
                 windowPicker
             }
-            historyChart(feed.rings.gpu, colors: XColor.metricGPU, height: 44)
+            historyChart(feed.rings.gpu, colors: XColor.metricGPU, height: 40)
         }
     }
 
@@ -1040,7 +1214,7 @@ public struct MenuMetricPanel: View {
     // MARK: - 磁盘面板（读写大数字 + 双线图 + 每卷用量 + 健康，对标 iStat Disks）
 
     @ViewBuilder private func diskContent(_ s: SystemSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: XSpacing.m) {
+        VStack(alignment: .leading, spacing: XSpacing.s) {
             HStack(spacing: XSpacing.xl) {
                 rateColumn("arrow.down.doc", XColor.netDown, xLoc("读取"), s.diskReadBytesPerSec)
                 rateColumn("arrow.up.doc", XColor.netUp, xLoc("写入"), s.diskWriteBytesPerSec)

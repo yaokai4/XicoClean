@@ -68,6 +68,27 @@ final class MetricsGatingTests: XCTestCase {
         XCTAssertTrue(MemoryPressureDisplayCopy.explanation.contains("不是 macOS 提供的百分比"))
     }
 
+    func testMemoryUsedOfTotalMarksUnitOnceOnlyWhenUnitsMatch() {
+        let matched = MemoryUsedOfTotalDisplay(
+            usedBytes: 11 << 30, totalBytes: 16 << 30, style: .binary)
+        XCTAssertEqual(matched.used, "11.00")
+        XCTAssertEqual(matched.total, "16.00 GiB")
+
+        // 已用不足 1 GiB：单位不同必须各自标注，否则"512.00 / 16.00 GiB"会被误读。
+        let mixed = MemoryUsedOfTotalDisplay(
+            usedBytes: 512 << 20, totalBytes: 16 << 30, style: .binary)
+        XCTAssertEqual(mixed.used, "512.00 MiB")
+        XCTAssertEqual(mixed.total, "16.00 GiB")
+
+        let zero = MemoryUsedOfTotalDisplay(usedBytes: 0, totalBytes: 16 << 30, style: .binary)
+        XCTAssertEqual(zero.used, "0 B")
+
+        let decimal = MemoryUsedOfTotalDisplay(
+            usedBytes: 12_000_000_000, totalBytes: 17_179_869_184, style: .decimal)
+        XCTAssertEqual(decimal.used, "12.00")
+        XCTAssertEqual(decimal.total, "17.18 GB")
+    }
+
     @MainActor
     func testMemoryHistorySelectionMatchesConfiguredMetric() {
         let feed = MetricsFeed()
