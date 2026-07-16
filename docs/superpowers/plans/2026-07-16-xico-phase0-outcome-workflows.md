@@ -471,7 +471,7 @@ git commit -m "feat: define outcome consumer contracts"
 - Modify: `Tests/IntegrationTests/HistoryStoreTests.swift`
 - Create: `Tests/IntegrationTests/OutcomeSinkBoundaryTests.swift`
 
-- [ ] **Step 1: Write RED tests for validated requests**
+- [x] **Step 1: Write RED tests for validated requests**
 
 Test these exact boundaries:
 
@@ -490,13 +490,13 @@ func testInvalidationEventDoesNotMasqueradeAsUserNotification() throws
 
 Legacy JSON remains decodable as `legacyUnknown`; it never counts as success.
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run: `swift test --filter OutcomeSinkBoundaryTests --disable-automatic-resolution --skip-update`
 
 Expected: FAIL because injected sink protocols, validated notification delivery and invalidation center do not exist; Task 4 history persistence tests are already GREEN.
 
-- [ ] **Step 3: Use the approved history writer and validated notification types**
+- [x] **Step 3: Use the approved history writer and validated notification types**
 
 Use the exact operation-facts contracts; do not add `OutcomeHistoryRequest`, `CleaningDoneNotificationRequest` or a generic caller-forgeable record:
 
@@ -596,17 +596,17 @@ Payload initializers remain Infrastructure-internal; Features can read but canno
 
 Cleaning/uninstall/Space history is written from read-only reducer-backed `CleaningReport`; shred history uses the dedicated read-only `OperationResult<ShredderPayload>` overload. Mark both `HistoryStore` protocol witnesses `public` so the public Infrastructure protocol is usable from Features. Both typed adapters convert to one internal `ValidatedHistoryRecordCandidate` and call operation-facts Task 4's single candidate→persist→publish transaction. The shred conversion supplies permanent intent and never persists `ShredderItemResult.url`; only successful Trash `CleaningReport` facts may persist a protected receipt. Never add a generic public initializer that accepts caller-supplied status/counts/bytes.
 
-- [ ] **Step 4: Reuse, do not redefine, operation-facts Task 4 history semantics**
+- [x] **Step 4: Reuse, do not redefine, operation-facts Task 4 history semantics**
 
 `CleaningRecord` already persists operation ID, parent ID, operation kind, `HistoryOutcomeStatus`, mutation, all six counts, item facts and receipts. `HistoryStore.record(module:report:)` returns `HistoryRecordResult`, is idempotent by operation ID and never duplicates totals. Consumers handle `.inserted`, `.alreadyRecorded`, `.notRecordedNoChanges` and `.rejected` explicitly. `totalSuccessfulCleanups` counts only trusted `.success + .changed`; display record count is `totalHistoryRecords`, never mislabeled success.
 
 Keep Task 4's degraded read-only and legacy preservation behavior intact. The old scalar overload may remain only during migration; Tasks 4, 6 and 7 remove all callers, and Task 14 proves both calls **and the overload declaration** are gone.
 
-- [ ] **Step 5: Replace `.xicoDidClean` with typed invalidation**
+- [x] **Step 5: Replace `.xicoDidClean` with typed invalidation**
 
 Use the Domain `OutcomeInvalidationDomain` and `OutcomeOperationRegistry` defined in Task 1; do not define a second enum or capability map in Infrastructure. `OutcomeInvalidationCenter` publicly conforms to `OutcomeInvalidationPublishing`; its witness accepts only `ValidatedOutcomeInvalidation`, then publishes an `OutcomeInvalidationEvent` containing operation ID, kind, status, mutation and domains—never localized messages, paths, remote commands, endpoints, credentials or raw errors. Unknown kinds and empty/out-of-registry domains fail request construction. Update `AppModel`, Settings history and scan observers to filter domains instead of subscribing to `.xicoDidClean`.
 
-- [ ] **Step 6: Inject sinks for deterministic consumer tests**
+- [x] **Step 6: Inject sinks for deterministic consumer tests**
 
 Add protocol-backed history/notifier/invalidation dependencies to `XicoEnvironment` with live defaults and fake injection. Because Features is a separate SwiftPM target, the environment's sink properties, initializer parameters, protocols and protocol witnesses must all be public; implementation-only candidate/DTO types remain internal/private:
 
@@ -621,7 +621,7 @@ Live construction injects `OutcomeInvalidationCenter` as the protocol witness; e
 
 At a new live terminal transition the long-lived owner first calls `registerTerminal`, then independently consumes `.history`, `.successNotification` and `.internalInvalidation` immediately before each approved sink. Sink-level operation-ID idempotency remains a durable backstop. A repeated render/appearance and a loaded history record neither register nor consume any channel.
 
-- [ ] **Step 7: Run focused tests**
+- [x] **Step 7: Run focused tests**
 
 ```bash
 swift test --filter OutcomeSinkBoundaryTests --disable-automatic-resolution --skip-update
@@ -630,7 +630,7 @@ swift test --filter HistoryStoreTests --disable-automatic-resolution --skip-upda
 
 Expected: PASS; repeated operation IDs do not duplicate history or notifications, and partial/cancelled internal refresh remains independent of user success notification.
 
-- [ ] **Step 8: Commit when executing**
+- [x] **Step 8: Commit when executing**
 
 ```bash
 git add Sources/Infrastructure/ShredderPayload.swift Sources/Infrastructure/HistoryStore.swift Sources/Infrastructure/Notifier.swift Sources/Infrastructure/OutcomeInvalidationCenter.swift Sources/Infrastructure/XicoEnvironment.swift Sources/Features/AppModel.swift Tests/IntegrationTests/HistoryStoreTests.swift Tests/IntegrationTests/OutcomeSinkBoundaryTests.swift
