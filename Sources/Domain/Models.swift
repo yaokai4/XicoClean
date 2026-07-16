@@ -430,19 +430,82 @@ public struct CleaningFailure: Sendable {
     }
 }
 
-public struct CleaningReport: Sendable {
-    public let removedCount: Int
+public struct CleaningItemResult: Sendable {
+    public let requestID: UUID
+    public let itemID: UUID
+    public let url: URL
+    public let disposition: OperationDisposition
     public let reclaimedBytes: Int64
-    public let failures: [CleaningFailure]
-    /// 已移入废纸篓的项：原路径 -> 废纸篓中的新路径（用于撤销）
-    public let restorable: [RestorableItem]
-
-    public init(removedCount: Int, reclaimedBytes: Int64, failures: [CleaningFailure], restorable: [RestorableItem]) {
-        self.removedCount = removedCount
-        self.reclaimedBytes = reclaimedBytes
-        self.failures = failures
+    public let restorable: RestorableItem?
+    public init(requestID: UUID, itemID: UUID, url: URL, disposition: OperationDisposition,
+                reclaimedBytes: Int64, restorable: RestorableItem?) {
+        self.requestID = requestID
+        self.itemID = itemID
+        self.url = url
+        self.disposition = disposition
+        self.reclaimedBytes = max(0, reclaimedBytes)
         self.restorable = restorable
     }
+}
+
+public struct CleaningReport: Sendable {
+    public let operation: OperationOutcome
+    public let items: [CleaningItemResult]
+    private let legacy: LegacyCleaningCompatibility?
+
+    public init(operation: OperationOutcome, items: [CleaningItemResult]) {
+        self.operation = operation
+        self.items = items
+        self.legacy = nil
+    }
+
+    public var removedCount: Int { legacy?.removedCount ?? operation.counts.succeeded }
+    public var reclaimedBytes: Int64 {
+        if let legacy { return legacy.reclaimedBytes }
+        return items.reduce(0) { $0 + ($1.disposition == .succeeded ? $1.reclaimedBytes : 0) }
+    }
+    public var failures: [CleaningFailure] {
+        if let legacy { return legacy.failures }
+        return items.compactMap { item in
+            switch item.disposition {
+            case let .failed(issue), let .skipped(issue):
+                return CleaningFailure(url: item.url, reason: issue.code)
+            default: return nil
+            }
+        }
+    }
+    public var restorable: [RestorableItem] {
+        if let legacy { return legacy.restorable }
+        return items.compactMap { $0.disposition == .succeeded ? $0.restorable : nil }
+    }
+
+    // Transitional only; remove in Task 5 after every production constructor is migrated.
+    public init(removedCount: Int, reclaimedBytes: Int64,
+                failures: [CleaningFailure], restorable: [RestorableItem]) {
+        let startedAt = Date()
+        let countFromFacts = max(max(0, removedCount) + failures.count, restorable.count)
+        let requested = max(countFromFacts, reclaimedBytes > 0 ? 1 : 0)
+        let subjectIDs = (0..<requested).map { "legacy-\($0)" }
+        self.operation = OperationOutcomeReducer.internalFailure(
+            kind: OperationKind("cleaning.legacyAggregate"),
+            requestedSubjectIDs: subjectIDs,
+            code: "operation.legacy.unknown",
+            startedAt: startedAt,
+            finishedAt: startedAt)
+        self.items = []
+        self.legacy = LegacyCleaningCompatibility(
+            removedCount: max(0, removedCount),
+            reclaimedBytes: max(0, reclaimedBytes),
+            failures: failures,
+            restorable: restorable)
+    }
+}
+
+private struct LegacyCleaningCompatibility: Sendable {
+    let removedCount: Int
+    let reclaimedBytes: Int64
+    let failures: [CleaningFailure]
+    let restorable: [RestorableItem]
 }
 
 public struct RestorableItem: Sendable, Codable, Equatable {

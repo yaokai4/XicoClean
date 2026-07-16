@@ -112,4 +112,77 @@ final class OperationOutcomeReducerTests: XCTestCase {
         XCTAssertNotEqual(outcome.id, parent)
         XCTAssertEqual(outcome.parentID, parent)
     }
+
+    func testInternalFailureWithZeroRequestsIsFailure() {
+        let outcome = OperationOutcomeReducer.internalFailure(
+            kind: kind,
+            requestedSubjectIDs: [],
+            code: "cleaning.request.empty",
+            startedAt: start,
+            finishedAt: finish)
+
+        XCTAssertEqual(outcome.status, .failure)
+        XCTAssertEqual(outcome.counts, OperationCounts(requested: 0, succeeded: 0,
+                                                       unchanged: 0, skipped: 0,
+                                                       failed: 0, cancelled: 0))
+        XCTAssertTrue(outcome.issues.contains {
+            $0.code == "cleaning.request.empty" && $0.category == .internalInvariant
+        })
+    }
+
+    func testInternalFailurePreservesCompletedFactsAndAddsInvariantIssue() {
+        let originalIssue = OperationIssue(code: "cleaning.filesystem.operationFailed",
+                                           category: .io,
+                                           subjectID: "c",
+                                           recovery: .retry,
+                                           retryable: true)
+        let outcome = OperationOutcomeReducer.internalFailure(
+            kind: kind,
+            requestedSubjectIDs: ["a", "b", "c"],
+            itemOutcomes: [
+                item("a", .succeeded, bytes: 10),
+                item("b", .unchanged),
+                item("c", .failed(originalIssue))
+            ],
+            code: "cleaning.reducer.invariant",
+            startedAt: start,
+            finishedAt: finish)
+
+        XCTAssertEqual(outcome.status, .partial)
+        XCTAssertEqual(outcome.counts, OperationCounts(requested: 3, succeeded: 1,
+                                                       unchanged: 1, skipped: 0,
+                                                       failed: 1, cancelled: 0))
+        XCTAssertTrue(outcome.issues.contains { $0 == originalIssue })
+        XCTAssertTrue(outcome.issues.contains {
+            $0.code == "cleaning.reducer.invariant" && $0.category == .internalInvariant
+        })
+    }
+
+    func testInternalFailureAcceptedCancellationWinsAndPreservesCompletedFacts() {
+        let outcome = OperationOutcomeReducer.internalFailure(
+            kind: kind,
+            requestedSubjectIDs: ["a", "b"],
+            itemOutcomes: [item("a", .succeeded, bytes: 10)],
+            cancellationAccepted: true,
+            code: "cleaning.reducer.invariant",
+            startedAt: start,
+            finishedAt: finish)
+
+        XCTAssertEqual(outcome.status, .cancelled)
+        XCTAssertEqual(outcome.counts.succeeded, 1)
+        XCTAssertEqual(outcome.counts.cancelled, 1)
+    }
+
+    func testInternalFailureClampsFinishedAtToStartedAt() {
+        let outcome = OperationOutcomeReducer.internalFailure(
+            kind: kind,
+            requestedSubjectIDs: ["a"],
+            itemOutcomes: [item("a", .succeeded)],
+            code: "cleaning.reducer.invariant",
+            startedAt: finish,
+            finishedAt: start)
+
+        XCTAssertEqual(outcome.startedAt, finish)
+        XCTAssertEqual(outcome.finishedAt, finish)
+    }
 }

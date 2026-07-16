@@ -5,144 +5,274 @@ import os
 /// 默认所有删除走废纸篓（可恢复）；每一项删除前都经过 SafetyEngine 校验。
 public actor CleaningEngine {
     private static let log = Logger(subsystem: "com.xico.app", category: "clean")
+
+    private struct CleaningRequest: Sendable {
+        let requestID: UUID
+        let item: CleanableItem
+    }
+
     private let safety: SafetyEngine
     private let fs: FileSystemService
     private let privileged: PrivilegedCleaningService?
 
-    public init(safety: SafetyEngine, fs: FileSystemService, privileged: PrivilegedCleaningService? = nil) {
+    public init(safety: SafetyEngine,
+                fs: FileSystemService,
+                privileged: PrivilegedCleaningService? = nil) {
         self.safety = safety
         self.fs = fs
         self.privileged = privileged
     }
 
-    public func execute(_ plan: CleaningPlan, progress: @escaping ProgressHandler = { _ in }) async -> CleaningReport {
-        var reclaimed: Int64 = 0
-        var removed = 0
-        var failures: [CleaningFailure] = []
-        var restorable: [RestorableItem] = []
-
-        let total = plan.items.count
-        for (index, item) in plan.items.enumerated() {
-            if Task.isCancelled { break }
-
-            // 「仅提示」项引擎级拒删（三层闸的最后一层）：Docker 虚拟磁盘 / 模拟器设备 /
-            // Go 模块缓存 / 休眠镜像 / 微信聊天库等只陈述体量、指路官方处置方式——
-            // 无论上游 UI 如何把它勾进计划，这里一律拒绝并说明。
-            if item.isInformational {
-                failures.append(CleaningFailure(url: item.url, reason: "仅提示项：请按其说明用官方方式处置，Xico 不代删"))
-                continue
-            }
-
-            // 清空废纸篓的特例（对抗复核 P3）：废纸篓内的叶子符号链接（含悬空链）——直接删链接本身，
-            // 绝不解析/跟随其目标。通用红线会先把软链解析到目标再判定，从而把「指向内容目录/红线区的
-            // 废纸篓软链」误拒，导致废纸篓清不空；而删链接本身（removeItem 不跟随）从不触及目标，是安全的。
-            // 授权门槛：路径字面量确实位于 .Trash/.Trashes 之内（未解析，不可被软链伪造）——这本就是
-            // 家目录 .permanent 白名单区。仅此特例，普通清理/卸载的叶子软链仍走下方从严红线。
-            if plan.intent == .permanent, Self.isInsideTrash(item.url), Self.isSymlink(item.url) {
-                do {
-                    try fs.remove(item.url)   // removeItem 删软链本身，不跟随目标
-                    reclaimed += item.estimatedReclaimableBytes
-                    removed += 1
-                } catch {
-                    Self.log.error("清空废纸篓删除软链失败 \(item.url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                    failures.append(CleaningFailure(url: item.url, reason: error.localizedDescription))
-                }
-                progress(ScanProgress(
-                    fraction: total > 0 ? Double(index + 1) / Double(total) : nil,
-                    message: item.displayName,
-                    bytesFound: reclaimed
-                ))
-                continue
-            }
-
-            // 安全闸门：任何删除前必过
-            let verdict = safety.verify(item.url, intent: plan.intent)
-            guard verdict.isAllowed else {
-                if case let .deny(reason) = verdict {
-                    failures.append(CleaningFailure(url: item.url, reason: reason))
-                }
-                continue
-            }
-
-            guard fs.exists(item.url) else { continue }
-
-            if item.requiresHelper {
-                guard let privileged else {
-                    failures.append(CleaningFailure(url: item.url, reason: "需要安装并批准特权助手"))
-                    continue
-                }
-                guard plan.intent == .permanent else {
-                    failures.append(CleaningFailure(url: item.url, reason: "管理员权限项目当前仅支持明确确认后的彻底删除"))
-                    continue
-                }
-                let report = await privileged.removeProtected([item.url])
-                // 按 path 字符串比较，避免目录尾斜杠/directory-hint 差异导致 URL== 失配、
-                // 把"部分成功但已消失"的失败误记为成功。
-                let failedPaths = Set(report.failures.map { $0.standardizedFileURL.path })
-                if failedPaths.contains(item.url.standardizedFileURL.path) {
-                    failures.append(CleaningFailure(url: item.url, reason: "特权助手拒绝或删除失败"))
-                } else {
-                    // 直接采用助手实测释放字节，避免用扫描期估算 max() 虚高统计。
-                    reclaimed += report.freedBytes > 0 ? report.freedBytes : item.estimatedReclaimableBytes
-                    removed += 1
-                }
-                progress(ScanProgress(
-                    fraction: total > 0 ? Double(index + 1) / Double(total) : nil,
-                    message: item.displayName,
-                    bytesFound: reclaimed
-                ))
-                continue
-            }
-
-            // TOCTOU 收窄：扫描→清理可能间隔数分钟，删除前紧邻再校一次红线，
-            // 若期间该路径变成受保护目标（如中途被换成指向红线区的链接）即拒绝。
-            //
-            // 与 HelperFileRemover 的非对称说明：root 助手用 openat(O_NOFOLLOW) 从白名单根
-            // 逐级锚定下钻、unlinkat 锚定删除，内核级杜绝「把父目录换成软链」的 TOCTOU 穿透；
-            // 用户级删除经 FileSystemService（NSFileManager / trash API）执行，拿不到父目录 fd
-            // 做锚定。故这里以「紧邻复校 + 解析符号链接后再校一次 + 叶子若已变成软链则拒绝彻底删除」
-            // 把窗口收到最小——宁可漏删，也绝不顺链误删链外目标（fail-closed）。
-            let resolved = item.url.resolvingSymlinksInPath()
-            guard safety.verify(item.url, intent: plan.intent).isAllowed,
-                  safety.verify(resolved, intent: plan.intent).isAllowed else {
-                Self.log.error("清理前复校被拒（路径已变化）: \(item.url.path, privacy: .public)")
-                failures.append(CleaningFailure(url: item.url, reason: "删除前安全复校未通过（路径可能已变化）"))
-                continue
-            }
-            // 彻底删除额外从严：叶子在复校后若已是符号链接（可能是刚被换入的换链攻击），一律拒绝。
-            if plan.intent == .permanent, Self.isSymlink(item.url) {
-                Self.log.error("彻底删除前检测到路径已变为符号链接，拒绝: \(item.url.path, privacy: .public)")
-                failures.append(CleaningFailure(url: item.url, reason: "删除前检测到路径已变为符号链接，已拒绝彻底删除"))
-                continue
-            }
-            do {
-                switch plan.intent {
-                case .trash:
-                    let trashed = try fs.trash(item.url)
-                    restorable.append(RestorableItem(originalURL: item.url, trashedURL: trashed))
-                case .permanent:
-                    try fs.remove(item.url)
-                }
-                reclaimed += item.estimatedReclaimableBytes
-                removed += 1
-            } catch {
-                Self.log.error("删除失败 \(item.url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                failures.append(CleaningFailure(url: item.url, reason: error.localizedDescription))
-            }
-
-            progress(ScanProgress(
-                fraction: total > 0 ? Double(index + 1) / Double(total) : nil,
-                message: item.displayName,
-                bytesFound: reclaimed
-            ))
+    public func execute(
+        _ plan: CleaningPlan,
+        progress: @escaping ProgressHandler = { _ in }
+    ) async -> CleaningReport {
+        let startedAt = Date()
+        guard !plan.items.isEmpty else {
+            let operation = OperationOutcomeReducer.internalFailure(
+                kind: OperationKind("cleaning.execute"),
+                requestedSubjectIDs: [],
+                code: "cleaning.request.empty",
+                startedAt: startedAt,
+                finishedAt: Date())
+            return CleaningReport(operation: operation, items: [])
         }
 
-        return CleaningReport(removedCount: removed, reclaimedBytes: reclaimed, failures: failures, restorable: restorable)
+        let requests = Self.makeRequests(for: plan.items)
+        let duplicateRequestIDs = Self.duplicateRequestIDs(in: requests)
+        var results: [CleaningItemResult] = []
+        results.reserveCapacity(requests.count)
+        var cancellationAccepted = false
+        var reclaimedForProgress: Int64 = 0
+
+        for (index, request) in requests.enumerated() {
+            if cancellationAccepted || Task.isCancelled {
+                cancellationAccepted = true
+                results.append(Self.result(for: request, disposition: .cancelled(nil)))
+                continue
+            }
+
+            let result: CleaningItemResult
+            if duplicateRequestIDs.contains(request.requestID) {
+                let issue = Self.issue(
+                    code: "cleaning.request.duplicateTarget",
+                    category: .internalInvariant,
+                    requestID: request.requestID,
+                    recovery: .chooseAnotherTarget,
+                    retryable: false)
+                result = Self.result(for: request, disposition: .failed(issue))
+            } else {
+                result = await executeItem(request, intent: plan.intent)
+            }
+            results.append(result)
+
+            if result.disposition == .succeeded {
+                reclaimedForProgress += result.reclaimedBytes
+            }
+            progress(ScanProgress(
+                fraction: Double(index + 1) / Double(requests.count),
+                message: request.item.displayName,
+                bytesFound: reclaimedForProgress))
+        }
+
+        let operationItems = results.map {
+            OperationItemOutcome(subjectID: $0.requestID.uuidString,
+                                 disposition: $0.disposition,
+                                 affectedBytes: $0.reclaimedBytes)
+        }
+        let requestIDs = requests.map { $0.requestID.uuidString }
+        let finishedAt = Date()
+        let operation: OperationOutcome
+        do {
+            operation = try OperationOutcomeReducer.reduce(
+                kind: OperationKind("cleaning.execute"),
+                requestedSubjectIDs: requestIDs,
+                itemOutcomes: operationItems,
+                cancellationAccepted: cancellationAccepted,
+                startedAt: startedAt,
+                finishedAt: finishedAt)
+        } catch {
+            operation = OperationOutcomeReducer.internalFailure(
+                kind: OperationKind("cleaning.execute"),
+                requestedSubjectIDs: requestIDs,
+                itemOutcomes: operationItems,
+                cancellationAccepted: cancellationAccepted,
+                code: "cleaning.reducer.invariant",
+                startedAt: startedAt,
+                finishedAt: finishedAt)
+        }
+        return CleaningReport(operation: operation, items: results)
     }
 
-    /// 撤销上一次清理：把废纸篓中的项移回原位。
-    /// 返回已恢复数与**未能恢复的清单**——废纸篓被清空 / 文件被移动 / 卷已卸载时，
-    /// 上层据此保留可重试入口并如实告知用户，绝不静默假装成功。
+    private func executeItem(
+        _ request: CleaningRequest,
+        intent: DeleteIntent
+    ) async -> CleaningItemResult {
+        let item = request.item
+
+        // 仅提示项只提供官方处置指引，任何清理计划都不能把它变成删除请求。
+        if item.isInformational {
+            let issue = Self.issue(
+                code: "cleaning.item.informational",
+                category: .safetyPolicy,
+                requestID: request.requestID,
+                recovery: .manualAction,
+                retryable: false)
+            return Self.result(for: request, disposition: .skipped(issue))
+        }
+
+        // 废纸篓内叶子软链的永久删除只删除链接本身，不解析或跟随目标。
+        if intent == .permanent, Self.isInsideTrash(item.url), Self.isSymlink(item.url) {
+            do {
+                try fs.remove(item.url)
+                return Self.result(for: request,
+                                   disposition: .succeeded,
+                                   reclaimedBytes: item.estimatedReclaimableBytes)
+            } catch {
+                Self.log.error("cleaning.filesystem.operationFailed count=1")
+                let issue = Self.issue(
+                    code: "cleaning.filesystem.operationFailed",
+                    category: .io,
+                    requestID: request.requestID,
+                    recovery: .retry,
+                    retryable: true)
+                return Self.result(for: request, disposition: .failed(issue))
+            }
+        }
+
+        guard safety.verify(item.url, intent: intent).isAllowed else {
+            let issue = Self.issue(
+                code: "cleaning.safety.denied",
+                category: .safetyPolicy,
+                requestID: request.requestID,
+                recovery: .chooseAnotherTarget,
+                retryable: false)
+            return Self.result(for: request, disposition: .skipped(issue))
+        }
+
+        guard fs.exists(item.url) else {
+            return Self.result(for: request, disposition: .unchanged)
+        }
+
+        if item.requiresHelper {
+            return await executePrivilegedItem(request, intent: intent)
+        }
+
+        let resolved = item.url.resolvingSymlinksInPath()
+        guard safety.verify(item.url, intent: intent).isAllowed,
+              safety.verify(resolved, intent: intent).isAllowed else {
+            Self.log.error("cleaning.safety.identityChanged count=1")
+            let issue = Self.issue(
+                code: "cleaning.safety.identityChanged",
+                category: .identityChanged,
+                requestID: request.requestID,
+                recovery: .retry,
+                retryable: true)
+            return Self.result(for: request, disposition: .failed(issue))
+        }
+
+        if intent == .permanent, Self.isSymlink(item.url) {
+            Self.log.error("cleaning.safety.identityChanged count=1")
+            let issue = Self.issue(
+                code: "cleaning.safety.identityChanged",
+                category: .identityChanged,
+                requestID: request.requestID,
+                recovery: .retry,
+                retryable: true)
+            return Self.result(for: request, disposition: .failed(issue))
+        }
+
+        do {
+            switch intent {
+            case .trash:
+                let trashedURL = try fs.trash(item.url)
+                let receipt = RestorableItem(originalURL: item.url, trashedURL: trashedURL)
+                return Self.result(for: request,
+                                   disposition: .succeeded,
+                                   reclaimedBytes: item.estimatedReclaimableBytes,
+                                   restorable: receipt)
+            case .permanent:
+                try fs.remove(item.url)
+                return Self.result(for: request,
+                                   disposition: .succeeded,
+                                   reclaimedBytes: item.estimatedReclaimableBytes)
+            }
+        } catch {
+            Self.log.error("cleaning.filesystem.operationFailed count=1")
+            let issue = Self.issue(
+                code: "cleaning.filesystem.operationFailed",
+                category: .io,
+                requestID: request.requestID,
+                recovery: .retry,
+                retryable: true)
+            return Self.result(for: request, disposition: .failed(issue))
+        }
+    }
+
+    private func executePrivilegedItem(
+        _ request: CleaningRequest,
+        intent: DeleteIntent
+    ) async -> CleaningItemResult {
+        guard let privileged else {
+            let issue = Self.issue(
+                code: "cleaning.helper.unavailable",
+                category: .unavailable,
+                requestID: request.requestID,
+                recovery: .installHelper,
+                retryable: true)
+            return Self.result(for: request, disposition: .failed(issue))
+        }
+        guard intent == .permanent else {
+            let issue = Self.issue(
+                code: "cleaning.helper.intentMismatch",
+                category: .validation,
+                requestID: request.requestID,
+                recovery: .chooseAnotherTarget,
+                retryable: false)
+            return Self.result(for: request, disposition: .failed(issue))
+        }
+
+        let report = await privileged.removeProtected([request.item.url])
+        let requestedPath = request.item.url.standardizedFileURL.path
+        let failedPaths = report.failures.map { $0.standardizedFileURL.path }
+
+        if failedPaths.contains(where: { $0 != requestedPath }) {
+            Self.log.error("cleaning.helper.unexpectedFailurePath count=1")
+            let issue = Self.issue(
+                code: "cleaning.helper.unexpectedFailurePath",
+                category: .internalInvariant,
+                requestID: request.requestID,
+                recovery: .retry,
+                retryable: true)
+            return Self.result(for: request, disposition: .failed(issue))
+        }
+        if failedPaths.contains(requestedPath) {
+            Self.log.error("cleaning.helper.removalFailed count=1")
+            let issue = Self.issue(
+                code: "cleaning.helper.removalFailed",
+                category: .io,
+                requestID: request.requestID,
+                recovery: .retry,
+                retryable: true)
+            return Self.result(for: request, disposition: .failed(issue))
+        }
+        if fs.exists(request.item.url) {
+            Self.log.error("cleaning.helper.targetStillExists count=1")
+            let issue = Self.issue(
+                code: "cleaning.helper.targetStillExists",
+                category: .io,
+                requestID: request.requestID,
+                recovery: .retry,
+                retryable: true)
+            return Self.result(for: request, disposition: .failed(issue))
+        }
+
+        return Self.result(for: request,
+                           disposition: .succeeded,
+                           reclaimedBytes: report.freedBytes)
+    }
+
+    /// 撤销上一次清理：把 sandbox/废纸篓收据中的项移回原位，并保留所有失败收据。
     public func undo(_ report: CleaningReport) async -> UndoResult {
         var restored = 0
         var failed: [RestorableItem] = []
@@ -151,11 +281,65 @@ public actor CleaningEngine {
                 try fs.restore(item)
                 restored += 1
             } catch {
-                Self.log.error("撤销恢复失败 \(item.originalURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                Self.log.error("cleaning.undo.restoreFailed count=1")
                 failed.append(item)
             }
         }
         return UndoResult(restored: restored, failed: failed)
+    }
+
+    private static func makeRequests(for items: [CleanableItem]) -> [CleaningRequest] {
+        var generated = Set<UUID>()
+        return items.map { item in
+            var requestID = UUID()
+            while !generated.insert(requestID).inserted {
+                requestID = UUID()
+            }
+            return CleaningRequest(requestID: requestID, item: item)
+        }
+    }
+
+    private static func duplicateRequestIDs(
+        in requests: [CleaningRequest]
+    ) -> Set<UUID> {
+        let ids = Dictionary(grouping: requests, by: { $0.item.id })
+        let paths = Dictionary(grouping: requests, by: { $0.item.url.standardizedFileURL.path })
+        let duplicateItemIDs = Set(ids.compactMap { $0.value.count > 1 ? $0.key : nil })
+        let duplicatePaths = Set(paths.compactMap { $0.value.count > 1 ? $0.key : nil })
+        return Set(requests.compactMap { request in
+            duplicateItemIDs.contains(request.item.id)
+                || duplicatePaths.contains(request.item.url.standardizedFileURL.path)
+                ? request.requestID
+                : nil
+        })
+    }
+
+    private static func result(
+        for request: CleaningRequest,
+        disposition: OperationDisposition,
+        reclaimedBytes: Int64 = 0,
+        restorable: RestorableItem? = nil
+    ) -> CleaningItemResult {
+        CleaningItemResult(requestID: request.requestID,
+                           itemID: request.item.id,
+                           url: request.item.url,
+                           disposition: disposition,
+                           reclaimedBytes: reclaimedBytes,
+                           restorable: restorable)
+    }
+
+    private static func issue(
+        code: String,
+        category: OperationIssueCategory,
+        requestID: UUID,
+        recovery: OperationRecoveryHint,
+        retryable: Bool
+    ) -> OperationIssue {
+        OperationIssue(code: code,
+                       category: category,
+                       subjectID: requestID.uuidString,
+                       recovery: recovery,
+                       retryable: retryable)
     }
 
     /// 叶子自身是否为符号链接（lstat 语义，不跟随）。
@@ -163,16 +347,9 @@ public actor CleaningEngine {
         (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink ?? false
     }
 
-    /// 路径字面量是否**锚定**于真正的废纸篓根内：家目录 `~/.Trash`，或卷级 `/Volumes/<卷>/.Trashes/<uid>`，
-    /// 或启动卷根 `/.Trashes/<uid>`。**刻意不解析符号链接**——用未解析的字面分量判定「这一项本身住在
-    /// 废纸篓里」，软链无法把自身字面路径伪造成锚定于这些根之下。
-    ///
-    /// 收紧（对抗复核 P3）：此前仅要求分量中**含**任一名为 `.trash`/`.trashes` 的段，于是任意位置一个
-    /// 自造的 `.Trash/` 目录即可命中，从而触达上方「废纸篓软链直接删链接」的 verify 豁免分支。现改为要求
-    /// 路径锚定于上述真实废纸篓根之下，杜绝该豁免被任意命名目录触发（fail-closed，宁可漏删不误开豁免）。
+    /// 路径字面量是否锚定于真实废纸篓根内；刻意不解析符号链接。
     private static func isInsideTrash(_ url: URL) -> Bool {
         let comps = url.standardizedFileURL.pathComponents.map { $0.lowercased() }
-        // 家目录废纸篓：<home>/.Trash/<项> —— home 之后紧邻的分量必须是 .trash。
         let home = FileManager.default.homeDirectoryForCurrentUser
             .standardizedFileURL.pathComponents.map { $0.lowercased() }
         if comps.count > home.count,
@@ -180,12 +357,10 @@ public actor CleaningEngine {
            comps[home.count] == ".trash" {
             return true
         }
-        // 卷级废纸篓：/Volumes/<卷>/.Trashes/<uid>/<项>，或启动卷 /.Trashes/<uid>/<项>。
-        // .trashes 必须紧邻卷根（/Volumes/<卷> 之后，即 index 3）或文件系统根（index 1），
-        // 且其后至少还有一段 uid，方才认定——防止 a/b/.trashes/... 这类任意深度的自造目录命中。
-        if let ti = comps.firstIndex(of: ".trashes") {
-            let validAnchor = (ti == 1) || (ti == 3 && comps[1] == "volumes")
-            if validAnchor && comps.count > ti + 1 { return true }
+        if let trashIndex = comps.firstIndex(of: ".trashes") {
+            let validAnchor = trashIndex == 1
+                || (trashIndex == 3 && comps.count > 1 && comps[1] == "volumes")
+            if validAnchor && comps.count > trashIndex + 1 { return true }
         }
         return false
     }

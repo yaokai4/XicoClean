@@ -132,6 +132,12 @@ public enum OperationReductionError: Error, Equatable, Sendable {
 }
 
 public enum OperationOutcomeReducer {
+    private struct Normalization {
+        let dispositions: [OperationDisposition]
+        let invariantIssues: [OperationIssue]
+        let hasInvariantViolation: Bool
+    }
+
     public static func reduce(
         id: UUID = UUID(), parentID: UUID? = nil, kind: OperationKind,
         requestedSubjectIDs: [String], itemOutcomes: [OperationItemOutcome],
@@ -147,9 +153,70 @@ public enum OperationOutcomeReducer {
             }
         }
 
+        let normalization = normalize(
+            requestedSubjectIDs: requestedSubjectIDs,
+            requestedSet: requestedSet,
+            itemOutcomes: itemOutcomes,
+            cancellationAccepted: cancellationAccepted)
+        let counts = counts(requested: requestedSubjectIDs.count,
+                            dispositions: normalization.dispositions)
+        let issues = collectIssues(dispositions: normalization.dispositions,
+                                   additional: normalization.invariantIssues)
+        let status = reducedStatus(counts: counts,
+                                   cancellationAccepted: cancellationAccepted,
+                                   hasInvariantViolation: normalization.hasInvariantViolation)
+
+        return OperationOutcome(id: id, parentID: parentID, kind: kind, status: status,
+                                counts: counts, startedAt: startedAt, finishedAt: finishedAt,
+                                issues: issues)
+    }
+
+    static func internalFailure(
+        id: UUID = UUID(), parentID: UUID? = nil, kind: OperationKind,
+        requestedSubjectIDs: [String], itemOutcomes: [OperationItemOutcome] = [],
+        cancellationAccepted: Bool = false, code: String,
+        startedAt: Date, finishedAt: Date
+    ) -> OperationOutcome {
+        let requestedSet = Set(requestedSubjectIDs)
+        let normalization = normalize(
+            requestedSubjectIDs: requestedSubjectIDs,
+            requestedSet: requestedSet,
+            itemOutcomes: itemOutcomes,
+            cancellationAccepted: cancellationAccepted)
+        let counts = counts(requested: requestedSubjectIDs.count,
+                            dispositions: normalization.dispositions)
+        let invariantIssue = OperationIssue(code: code,
+                                            category: .internalInvariant,
+                                            subjectID: nil,
+                                            recovery: .retry,
+                                            retryable: true)
+        let issues = collectIssues(
+            dispositions: normalization.dispositions,
+            additional: normalization.invariantIssues + [invariantIssue])
+        let status: OperationTerminalStatus
+        if cancellationAccepted {
+            status = .cancelled
+        } else if counts.succeeded + counts.unchanged > 0 {
+            status = .partial
+        } else {
+            status = .failure
+        }
+        let clampedFinishedAt = max(startedAt, finishedAt)
+
+        return OperationOutcome(id: id, parentID: parentID, kind: kind, status: status,
+                                counts: counts, startedAt: startedAt,
+                                finishedAt: clampedFinishedAt, issues: issues)
+    }
+
+    private static func normalize(
+        requestedSubjectIDs: [String],
+        requestedSet: Set<String>,
+        itemOutcomes: [OperationItemOutcome],
+        cancellationAccepted: Bool
+    ) -> Normalization {
         let grouped = Dictionary(grouping: itemOutcomes, by: \.subjectID)
         var normalized: [OperationDisposition] = []
-        var issues: [OperationIssue] = []
+        var invariantIssues: [OperationIssue] = []
         var hasInvariantViolation = false
 
         for subjectID in requestedSubjectIDs {
@@ -163,7 +230,6 @@ public enum OperationOutcomeReducer {
                                                subjectID: subjectID,
                                                recovery: .retry, retryable: true)
                     normalized.append(.failed(issue))
-                    issues.append(issue)
                     hasInvariantViolation = true
                 }
             } else if values.count > 1 {
@@ -172,52 +238,82 @@ public enum OperationOutcomeReducer {
                                            subjectID: subjectID,
                                            recovery: .retry, retryable: true)
                 normalized.append(.failed(issue))
-                issues.append(issue)
                 hasInvariantViolation = true
-            } else {
-                normalized.append(values[0].disposition)
+            } else if let value = values.first {
+                normalized.append(value.disposition)
             }
         }
 
         for subjectID in grouped.keys where !requestedSet.contains(subjectID) {
-            issues.append(OperationIssue(code: "operation.result.unexpected",
-                                         category: .internalInvariant,
-                                         subjectID: subjectID,
-                                         recovery: .none, retryable: false))
+            invariantIssues.append(OperationIssue(code: "operation.result.unexpected",
+                                                  category: .internalInvariant,
+                                                  subjectID: subjectID,
+                                                  recovery: .none, retryable: false))
             hasInvariantViolation = true
         }
 
+        return Normalization(dispositions: normalized,
+                             invariantIssues: invariantIssues,
+                             hasInvariantViolation: hasInvariantViolation)
+    }
+
+    private static func counts(
+        requested: Int,
+        dispositions: [OperationDisposition]
+    ) -> OperationCounts {
         var succeeded = 0, unchanged = 0, skipped = 0, failed = 0, cancelled = 0
-        for disposition in normalized {
+        for disposition in dispositions {
             switch disposition {
             case .succeeded: succeeded += 1
             case .unchanged: unchanged += 1
-            case let .skipped(issue): skipped += 1; issues.append(issue)
-            case let .failed(issue): failed += 1; issues.append(issue)
-            case let .cancelled(issue): cancelled += 1; if let issue { issues.append(issue) }
+            case .skipped: skipped += 1
+            case .failed: failed += 1
+            case .cancelled: cancelled += 1
             }
         }
 
-        let counts = OperationCounts(requested: requestedSubjectIDs.count,
-                                     succeeded: succeeded, unchanged: unchanged,
-                                     skipped: skipped, failed: failed, cancelled: cancelled)
+        return OperationCounts(requested: requested,
+                               succeeded: succeeded, unchanged: unchanged,
+                               skipped: skipped, failed: failed, cancelled: cancelled)
+    }
+
+    private static func collectIssues(
+        dispositions: [OperationDisposition],
+        additional: [OperationIssue]
+    ) -> [OperationIssue] {
+        var issues = additional
+        for disposition in dispositions {
+            switch disposition {
+            case let .skipped(issue), let .failed(issue):
+                issues.append(issue)
+            case let .cancelled(issue):
+                if let issue { issues.append(issue) }
+            case .succeeded, .unchanged:
+                break
+            }
+        }
+        return Array(Set(issues)).sorted {
+            ($0.subjectID ?? "", $0.code) < ($1.subjectID ?? "", $1.code)
+        }
+    }
+
+    private static func reducedStatus(
+        counts: OperationCounts,
+        cancellationAccepted: Bool,
+        hasInvariantViolation: Bool
+    ) -> OperationTerminalStatus {
         let status: OperationTerminalStatus
         if cancellationAccepted {
             status = .cancelled
-        } else if hasInvariantViolation && succeeded + unchanged == requestedSubjectIDs.count {
+        } else if hasInvariantViolation && counts.succeeded + counts.unchanged == counts.requested {
             status = .partial
-        } else if failed + skipped + cancelled == 0 {
+        } else if counts.failed + counts.skipped + counts.cancelled == 0 {
             status = .success
-        } else if succeeded + unchanged > 0 {
+        } else if counts.succeeded + counts.unchanged > 0 {
             status = .partial
         } else {
             status = .failure
         }
-
-        return OperationOutcome(id: id, parentID: parentID, kind: kind, status: status,
-                                counts: counts, startedAt: startedAt, finishedAt: finishedAt,
-                                issues: Array(Set(issues)).sorted {
-                                    ($0.subjectID ?? "", $0.code) < ($1.subjectID ?? "", $1.code)
-                                })
+        return status
     }
 }
