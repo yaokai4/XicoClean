@@ -239,6 +239,19 @@ final class CleaningEngineTests: XCTestCase {
         let firstReport = await firstTask.value
         XCTAssertEqual(firstReport.operation.status, .success)
         XCTAssertEqual(firstReport.operation.counts.succeeded, 1)
+
+        let helperCallsAfterFirst = await helper.callCount
+        let afterReleaseReport = await engine.execute(CleaningPlan(items: [
+            CleanableItem(url: url,
+                          displayName: "after-release",
+                          size: 10,
+                          requiresHelper: true)
+        ], intent: .permanent))
+        XCTAssertEqual(afterReleaseReport.operation.status, .success)
+        XCTAssertEqual(afterReleaseReport.operation.counts.unchanged, 1)
+        XCTAssertEqual(afterReleaseReport.items.single?.disposition, .unchanged)
+        let helperCallsAfterRelease = await helper.callCount
+        XCTAssertEqual(helperCallsAfterRelease, helperCallsAfterFirst)
     }
 
     func testLocalDuplicatePrecedesCrossExecutionInFlightWithoutDependencies() async {

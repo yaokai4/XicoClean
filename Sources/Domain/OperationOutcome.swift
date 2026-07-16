@@ -308,9 +308,13 @@ public enum OperationOutcomeReducer {
         _ lhs: OperationIssue,
         _ rhs: OperationIssue
     ) -> Bool {
-        let lhsSubject = lhs.subjectID ?? ""
-        let rhsSubject = rhs.subjectID ?? ""
-        if lhsSubject != rhsSubject { return lhsSubject < rhsSubject }
+        switch (lhs.subjectID, rhs.subjectID) {
+        case (nil, .some): return true
+        case (.some, nil): return false
+        case let (.some(lhsSubject), .some(rhsSubject)) where lhsSubject != rhsSubject:
+            return lhsSubject < rhsSubject
+        default: break
+        }
         if lhs.code != rhs.code { return lhs.code < rhs.code }
         if lhs.category.rawValue != rhs.category.rawValue {
             return lhs.category.rawValue < rhs.category.rawValue

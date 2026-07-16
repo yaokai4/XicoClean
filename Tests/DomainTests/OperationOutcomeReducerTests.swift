@@ -2,6 +2,17 @@ import XCTest
 @testable import Domain
 
 final class OperationOutcomeReducerTests: XCTestCase {
+    private enum SourceGate {
+        static let publicCleaningItemResultInitializer = #"(?s)(?:\bpublic\s+(?:nonisolated\s+)?init\s*\(\s*requestID\s*:\s*UUID\b|\bpublic\s+extension\s+CleaningItemResult\b[^\{]*\{.*?\binit\s*\(\s*requestID\s*:\s*UUID\b)"#
+        static let publicFactBackedReportInitializer = #"(?s)(?:\bpublic\s+(?:nonisolated\s+)?init\s*\(\s*operation\s*:\s*OperationOutcome\b|\bpublic\s+extension\s+CleaningReport\b[^\{]*\{.*?\binit\s*\(\s*operation\s*:\s*OperationOutcome\b)"#
+        static let cleaningItemResultInitializer = #"(?s)\binit\s*\(\s*requestID\s*:\s*UUID\b"#
+        static let factBackedReportInitializer = #"(?s)\binit\s*\(\s*operation\s*:\s*OperationOutcome\b"#
+        static let publicLegacyInitializer = #"(?s)\bpublic\s+init\s*\(\s*removedCount\s*:\s*Int\b"#
+        static let fixedLegacySentinelFlow = #"(?s)\blet\s+subjectIDs\s*=\s*hasAggregateFacts\s*\?\s*\[\s*\"legacy-aggregate\"\s*\]\s*:\s*\[\s*\].*?\brequestedSubjectIDs\s*:\s*subjectIDs\b"#
+        static let forbiddenOutcomeDecodingConformance = #"(?s)(?:\bstruct\s+OperationOutcome\s*:[^\{]*\b(?:Codable|Decodable)\b|\bextension\s+OperationOutcome\s*:[^\{]*\b(?:Codable|Decodable)\b)"#
+        static let outcomeEncodableDeclaration = #"(?s)\bstruct\s+OperationOutcome\s*:[^\{]*\bEncodable\b"#
+    }
+
     private let kind = OperationKind("test.operation")
     private let start = Date(timeIntervalSince1970: 100)
     private let finish = Date(timeIntervalSince1970: 101)
@@ -239,19 +250,44 @@ final class OperationOutcomeReducerTests: XCTestCase {
         XCTAssertEqual(outcome.issues, expected)
     }
 
+    func testIssueOrderingDistinguishesNilSubjectFromEmptySubject() throws {
+        func issue(_ code: String, subjectID: String?) -> OperationIssue {
+            OperationIssue(code: code,
+                           category: .validation,
+                           subjectID: subjectID,
+                           recovery: .retry,
+                           retryable: true)
+        }
+        let nilA = issue("a.code", subjectID: nil)
+        let nilB = issue("b.code", subjectID: nil)
+        let emptyA = issue("a.code", subjectID: "")
+        let emptyB = issue("b.code", subjectID: "")
+        let requested = ["requested-0", "requested-1", "requested-2", "requested-3"]
+        let outcome = try reduce(requested, [
+            item(requested[0], .failed(emptyB)),
+            item(requested[1], .failed(nilA)),
+            item(requested[2], .failed(emptyA)),
+            item(requested[3], .failed(nilB))
+        ])
+
+        XCTAssertEqual(outcome.issues, [nilA, nilB, emptyA, emptyB],
+                       "nil subject IDs must sort before present-but-empty subject IDs")
+    }
+
     func testCleaningFactConstructorsStayDomainInternal() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let modelsURL = repositoryRoot.appendingPathComponent("Sources/Domain/Models.swift")
-        let source = try String(contentsOf: modelsURL, encoding: .utf8)
+        let source = try domainSource(repositoryRoot: repositoryRoot)
 
-        XCTAssertFalse(source.contains("public init(requestID: UUID"),
+        XCTAssertFalse(try matches(SourceGate.publicCleaningItemResultInitializer, in: source),
                        "CleaningItemResult construction must remain inside Domain")
-        XCTAssertFalse(source.contains("public init(operation: OperationOutcome"),
+        XCTAssertFalse(try matches(SourceGate.publicFactBackedReportInitializer, in: source),
                        "Fact-backed CleaningReport construction must remain inside Domain")
-        XCTAssertTrue(source.contains("public init(removedCount: Int"),
+        XCTAssertTrue(try matches(SourceGate.cleaningItemResultInitializer, in: source))
+        XCTAssertTrue(try matches(SourceGate.factBackedReportInitializer, in: source))
+        XCTAssertTrue(try matches(SourceGate.publicLegacyInitializer, in: source),
                       "The temporary fail-closed legacy boundary remains public until Task 5")
     }
 
@@ -265,19 +301,18 @@ final class OperationOutcomeReducerTests: XCTestCase {
         let failure = CleaningFailure(url: URL(fileURLWithPath: "/tmp/legacy-failure"),
                                       reason: "legacy")
 
-        XCTAssertFalse(source.contains("let countFromFacts"))
-        XCTAssertFalse(source.contains("(0..<requested).map"),
-                       "Legacy aggregates must never synthesize one ID per aggregate count")
+        XCTAssertTrue(try matches(SourceGate.fixedLegacySentinelFlow, in: source),
+                      "Legacy facts must flow through exactly one fixed sentinel subject")
 
-        let report = CleaningReport(removedCount: 3,
-                                    reclaimedBytes: 7,
+        let report = CleaningReport(removedCount: 4_097,
+                                    reclaimedBytes: 4_097,
                                     failures: [failure],
                                     restorable: [])
 
         XCTAssertEqual(report.operation.status, .failure)
         XCTAssertEqual(report.operation.counts.requested, 1)
-        XCTAssertEqual(report.removedCount, 3)
-        XCTAssertEqual(report.reclaimedBytes, 7)
+        XCTAssertEqual(report.removedCount, 4_097)
+        XCTAssertEqual(report.reclaimedBytes, 4_097)
         XCTAssertEqual(report.failures.count, 1)
         XCTAssertTrue(report.items.isEmpty)
     }
@@ -287,20 +322,56 @@ final class OperationOutcomeReducerTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let outcomeURL = repositoryRoot
-            .appendingPathComponent("Sources/Domain/OperationOutcome.swift")
-        let source = try String(contentsOf: outcomeURL, encoding: .utf8)
+        let source = try domainSource(repositoryRoot: repositoryRoot)
 
-        XCTAssertFalse(source.contains("struct OperationOutcome: Codable"))
-        XCTAssertFalse(source.contains("struct OperationOutcome: Decodable"))
-        XCTAssertTrue(source.contains("struct OperationOutcome: Encodable"),
+        XCTAssertFalse(try matches(SourceGate.forbiddenOutcomeDecodingConformance, in: source))
+        XCTAssertTrue(try matches(SourceGate.outcomeEncodableDeclaration, in: source),
                       "Persistence must encode through the trusted fact and decode through a DTO")
     }
 
+    func testSourceGateRegexesRejectMultilineAndExtensionEvasions() throws {
+        XCTAssertTrue(try matches(SourceGate.publicCleaningItemResultInitializer, in: """
+        public
+        init(
+            requestID: UUID, itemID: UUID
+        ) {}
+        """))
+        XCTAssertTrue(try matches(SourceGate.publicCleaningItemResultInitializer, in: """
+        public extension CleaningItemResult {
+            init(
+                requestID: UUID, itemID: UUID
+            ) {}
+        }
+        """))
+        XCTAssertTrue(try matches(SourceGate.publicFactBackedReportInitializer, in: """
+        public extension CleaningReport {
+            init(
+                operation: OperationOutcome, items: [CleaningItemResult]
+            ) {}
+        }
+        """))
+        XCTAssertTrue(try matches(SourceGate.forbiddenOutcomeDecodingConformance, in: """
+        public struct OperationOutcome:
+            Encodable,
+            Decodable,
+            Sendable {
+        }
+        """))
+        XCTAssertTrue(try matches(SourceGate.forbiddenOutcomeDecodingConformance, in: """
+        extension OperationOutcome:
+            Decodable {
+        }
+        """))
+    }
+
     private func issueComesBefore(_ lhs: OperationIssue, _ rhs: OperationIssue) -> Bool {
-        let lhsSubject = lhs.subjectID ?? ""
-        let rhsSubject = rhs.subjectID ?? ""
-        if lhsSubject != rhsSubject { return lhsSubject < rhsSubject }
+        switch (lhs.subjectID, rhs.subjectID) {
+        case (nil, .some): return true
+        case (.some, nil): return false
+        case let (.some(lhsSubject), .some(rhsSubject)) where lhsSubject != rhsSubject:
+            return lhsSubject < rhsSubject
+        default: break
+        }
         if lhs.code != rhs.code { return lhs.code < rhs.code }
         if lhs.category.rawValue != rhs.category.rawValue {
             return lhs.category.rawValue < rhs.category.rawValue
@@ -309,5 +380,23 @@ final class OperationOutcomeReducerTests: XCTestCase {
             return lhs.recovery.rawValue < rhs.recovery.rawValue
         }
         return !lhs.retryable && rhs.retryable
+    }
+
+    private func matches(_ pattern: String, in source: String) throws -> Bool {
+        let expression = try NSRegularExpression(pattern: pattern)
+        let range = NSRange(source.startIndex..<source.endIndex, in: source)
+        return expression.firstMatch(in: source, range: range) != nil
+    }
+
+    private func domainSource(repositoryRoot: URL) throws -> String {
+        let domainURL = repositoryRoot.appendingPathComponent("Sources/Domain")
+        let sourceURLs = try FileManager.default
+            .contentsOfDirectory(at: domainURL,
+                                 includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "swift" }
+            .sorted { $0.path < $1.path }
+        return try sourceURLs
+            .map { try String(contentsOf: $0, encoding: .utf8) }
+            .joined(separator: "\n")
     }
 }
