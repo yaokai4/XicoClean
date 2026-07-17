@@ -774,7 +774,7 @@ git commit -m "feat: present honest operation outcomes"
 - Modify: `Tests/IntegrationTests/HistoryStoreTests.swift`
 - Modify: `Tests/IntegrationTests/OutcomeSinkBoundaryTests.swift`
 
-- [ ] **Step 1: Write RED consumer tests**
+- [x] **Step 1: Write RED consumer tests**
 
 Use injected stateful filesystem/history/notifier/invalidation fakes and reducer outcomes. Required cases:
 
@@ -795,13 +795,13 @@ func testHistoricalUndoPassesRestorableItemsDirectly() async
 func testFullChangedSuccessConsumesEachApprovedChannelExactlyOnce() async
 ```
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run: `swift test --filter CleaningOutcomeConsumerTests --disable-automatic-resolution --skip-update`
 
 Expected: FAIL because consumers still sum aggregates, set `.finished` unconditionally and call raw sinks.
 
-- [ ] **Step 3: Implement parent-wide preparation, reducer-backed compound merge and undo**
+- [x] **Step 3: Implement parent-wide preparation, reducer-backed compound merge and undo**
 
 Before starting any child execution, `CleaningEngine` builds and owns one parent-wide request inventory across every mixed-intent plan. Feature supplies ordered plans and prerequisite roles but cannot manufacture reducer IDs or duplicate results. Caller `itemID` may repeat and is never reducer identity. Group by `url.standardizedFileURL.path`; every occurrence in a duplicate-path group receives the reviewed nonretryable `cleaning.request.duplicateTarget` failure before safety, filesystem, helper or remediation calls. Only the remaining unique paths may enter a dependency. This Domain-owned preflight also prevents a Feature from booting out a duplicate plist before the deletion engine notices it.
 
@@ -813,13 +813,13 @@ The merge rejects a purpose mismatch, duplicate **request IDs**, broken correlat
 
 Add `CleaningEngine.undo(_ items: [RestorableItem], parentID: UUID?) async -> OperationResult<UndoReport>`; keep the old report overload only as a delegating convenience until all callers migrate. A partial undo stores the remaining receipts directly; it does not construct a new `CleaningReport`.
 
-- [ ] **Step 4: Make threat bootout a child operation instead of a swallowed pre-side-effect**
+- [x] **Step 4: Make threat bootout a child operation instead of a swallowed pre-side-effect**
 
 Replace the static best-effort call with an injected `ThreatRemediationExecuting` implementation used by `CleaningEngine`. It returns `OperationResult<ThreatRemediationReport>` with one requested subject per eligible plist and receives only Domain-prepared request IDs/correlation. Its filesystem roots, UID, typed plist-label reader, typed launch-agent controller and postcondition probe are injected in tests; production is the only owner of `/bin/launchctl` and the real user LaunchAgents root. Eligibility is a direct, nonsymlink regular `.plist` child of the injected root; there is no filename fallback when `Label` is absent. Invalid label/path is `.skipped(safetyPolicy/validation)`; confirmed not loaded is `.unchanged`; successful bootout with confirmed unloaded postcondition is `.succeeded`; invoked-but-unknown postcondition is `.failed(.possiblyChanged)` with a stable issue code, never a raw command/path/error. A generic command runner is not exposed through the public protocol.
 
 The engine verifies and flattens remediation and deletion children into one parent report. A deleted plist with failed bootout is partial, retains its deletion receipt and explains that the live agent may remain active. It never triggers full-success notification. Cancellation still produces every unexecuted fact in the same stable per-occurrence `D → R` order; completed changed/possibly-changed facts remain visible in the cancelled parent.
 
-- [ ] **Step 5: Apply typed side effects and exact selection mutation**
+- [x] **Step 5: Apply typed side effects and exact selection mutation**
 
 For Module and Smart Scan:
 
@@ -834,11 +834,11 @@ For Module and Smart Scan:
 - store Smart Scan's cleaning `Task`, expose a cancellation action while cleaning, and await the reducer-backed cancelled terminal rather than dropping the task;
 - show `TaskOutcomeView` for success, partial, failure and cancelled rather than entering a success-only `.finished` branch.
 
-- [ ] **Step 6: Remove all six legacy aggregate expressions**
+- [x] **Step 6: Remove all six legacy aggregate expressions**
 
 `ScanViews` and `SettingsView` pass `CleaningRecord.restorable` to undo. Module and Smart keep remaining undo receipts in an undo payload, not a reconstructed cleaning report. Remove the legacy `CleaningReport(removedCount:reclaimedBytes:failures:restorable:)` initializer.
 
-- [ ] **Step 7: Confirm the multiline zero gate**
+- [x] **Step 7: Confirm the multiline zero gate**
 
 Run:
 
@@ -855,7 +855,7 @@ swift test --filter OperationConsumerFactsTests --disable-automatic-resolution -
 
 Expected: `rg` has no output; all tests PASS.
 
-- [ ] **Step 8: Commit when executing**
+- [x] **Step 8: Commit when executing**
 
 ```bash
 git add Sources/Domain/Models.swift Sources/Domain/CleaningEngine.swift Sources/Domain/OperationConsumerFacts.swift Sources/Infrastructure/ThreatRemediation.swift Sources/Infrastructure/HistoryStore.swift Sources/Infrastructure/Notifier.swift Sources/Infrastructure/XicoEnvironment.swift Sources/Features/CleaningOutcomeConsumer.swift Sources/Features/ModuleSessionViewModel.swift Sources/Features/SmartScanHub.swift Sources/Features/ScanViews.swift Sources/Features/SharedViews.swift Sources/Features/SettingsView.swift Sources/Features/AppModel.swift Tests/DomainTests/CleaningEngineTests.swift Tests/DomainTests/OperationConsumerFactsTests.swift Tests/FeatureTests/CleaningOutcomeConsumerTests.swift Tests/IntegrationTests/ThreatRemediationOutcomeTests.swift Tests/IntegrationTests/CleaningRoundTripTests.swift Tests/IntegrationTests/HistoryStoreTests.swift Tests/IntegrationTests/OutcomeSinkBoundaryTests.swift
