@@ -214,7 +214,7 @@ public enum OperationOutcomeReducer {
                                 issues: issues, mutation: mutation)
     }
 
-    static func internalFailure(
+    public static func internalFailure(
         id: UUID = UUID(), parentID: UUID? = nil, kind: OperationKind,
         requestedSubjectIDs: [String], itemOutcomes: [OperationItemOutcome] = [],
         cancellationAccepted: Bool = false, code: String,
@@ -251,6 +251,44 @@ public enum OperationOutcomeReducer {
                                 counts: counts, startedAt: startedAt,
                                 finishedAt: clampedFinishedAt, issues: issues,
                                 mutation: mutation)
+    }
+
+    /// Bounded aggregate terminal for rejecting an inventory before request IDs or item facts are
+    /// allocated. The truthful projected count remains visible without materializing one issue per
+    /// unexecuted fact. Only Domain-owned rejection metadata may make this terminal trusted.
+    public static func admissionFailure(
+        id: UUID = UUID(),
+        parentID: UUID? = nil,
+        kind: OperationKind,
+        requestedCount: Int,
+        code: String,
+        recovery: OperationRecoveryHint = .chooseAnotherTarget,
+        startedAt: Date,
+        finishedAt: Date
+    ) -> OperationOutcome {
+        let boundedRequestedCount = max(0, requestedCount)
+        let issue = OperationIssue(
+            code: code,
+            category: .validation,
+            subjectID: nil,
+            recovery: recovery,
+            retryable: false)
+        return OperationOutcome(
+            id: id,
+            parentID: parentID,
+            kind: kind,
+            status: .failure,
+            counts: OperationCounts(
+                requested: boundedRequestedCount,
+                succeeded: 0,
+                unchanged: 0,
+                skipped: 0,
+                failed: boundedRequestedCount,
+                cancelled: 0),
+            startedAt: startedAt,
+            finishedAt: max(startedAt, finishedAt),
+            issues: [issue],
+            mutation: .none)
     }
 
     private static func normalize(

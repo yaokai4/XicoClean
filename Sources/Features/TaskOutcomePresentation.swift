@@ -53,7 +53,7 @@ struct TaskOutcomeCountSummary: Equatable, Sendable {
     let failed: Int
     let cancelled: Int
 
-    fileprivate init(_ counts: OperationCounts) {
+    init(_ counts: OperationCounts) {
         requested = counts.requested
         succeeded = counts.succeeded
         unchanged = counts.unchanged
@@ -301,7 +301,11 @@ struct TaskOutcomePresentation: Equatable, Sendable {
         // The payload capability is backed by concrete restorable receipts.
         // An unrelated item's ambiguous mutation must not hide those confirmed
         // receipts merely because the aggregate becomes `.possiblyChanged`.
-        let canUndo = context.canUndoChangedItems && operation.mutation != .none
+        // Retry generations may carry a Domain-verified receipt owned by an earlier changed
+        // operation even when the current retry is unchanged or rejected before mutation.
+        // The consumer capability is therefore authoritative; current-generation mutation alone
+        // cannot erase a still-valid undo action.
+        let canUndo = context.canUndoChangedItems
         let hasRecovery = operation.issues.contains { issue in
             issue.recovery != .none && issue.recovery != .retry
         }

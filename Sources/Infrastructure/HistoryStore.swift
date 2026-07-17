@@ -27,8 +27,8 @@ enum HistoryArchiveState: Equatable, Sendable {
 enum HistoryArchiveLimits {
     static let maximumArchiveBytes = 1_048_576
     static let maximumRecords = 500
-    static let maximumItemFactsPerRecord = 256
-    static let maximumIssuesPerOperation = 128
+    static let maximumItemFactsPerRecord = CleaningOperationLimits.maximumFactCount
+    static let maximumIssuesPerOperation = CleaningOperationLimits.maximumFactCount
     static let maximumModuleUTF8Bytes = 256
     static let maximumKindUTF8Bytes = 256
     static let maximumCodeUTF8Bytes = 256
@@ -72,6 +72,83 @@ public struct HistoryItemFact: Sendable, Equatable {
     }
 }
 
+public enum HistoryFactRole: String, Sendable, Equatable {
+    case deletion
+    case threatRemediation
+}
+
+/// Path-free durable fact used by schema-2 compound cleaning records.
+/// Construction stays inside Infrastructure so Features can inspect but cannot forge history.
+public struct HistoryOperationFact: Sendable, Equatable {
+    public let requestID: UUID
+    public let role: HistoryFactRole
+    public let relatedCleaningRequestID: UUID?
+    public let intent: DeleteIntent?
+    public let disposition: OperationDisposition
+    public let mutation: OperationMutationFact
+    public let affectedBytes: Int64
+    public let receipt: RestorableItem?
+
+    init(
+        requestID: UUID,
+        role: HistoryFactRole,
+        relatedCleaningRequestID: UUID?,
+        intent: DeleteIntent?,
+        disposition: OperationDisposition,
+        mutation: OperationMutationFact,
+        affectedBytes: Int64,
+        receipt: RestorableItem?
+    ) {
+        self.requestID = requestID
+        self.role = role
+        self.relatedCleaningRequestID = relatedCleaningRequestID
+        self.intent = intent
+        self.disposition = disposition
+        self.mutation = mutation
+        self.affectedBytes = affectedBytes
+        self.receipt = receipt
+    }
+
+    init(deletion item: HistoryItemFact) {
+        self.init(
+            requestID: item.requestID,
+            role: .deletion,
+            relatedCleaningRequestID: nil,
+            intent: item.intent,
+            disposition: item.disposition,
+            mutation: item.mutation,
+            affectedBytes: item.affectedBytes,
+            receipt: item.receipt)
+    }
+
+    var deletionItemFact: HistoryItemFact? {
+        guard role == .deletion,
+              relatedCleaningRequestID == nil,
+              let intent else { return nil }
+        return HistoryItemFact(
+            requestID: requestID,
+            intent: intent,
+            disposition: disposition,
+            mutation: mutation,
+            affectedBytes: affectedBytes,
+            receipt: receipt)
+    }
+
+    func retainingReceipt(in allowed: Set<HistoryReceiptIdentity>) -> HistoryOperationFact {
+        guard let receipt,
+              !allowed.contains(HistoryReceiptIdentity(receipt)) else { return self }
+        return HistoryOperationFact(
+            requestID: requestID,
+            role: role,
+            relatedCleaningRequestID: relatedCleaningRequestID,
+            intent: intent,
+            disposition: disposition,
+            mutation: mutation,
+            affectedBytes: affectedBytes,
+            receipt: nil)
+    }
+}
+
 public struct CleaningRecord: Identifiable, Sendable, Equatable {
     public let id: UUID
     public let date: Date
@@ -87,6 +164,7 @@ public struct CleaningRecord: Identifiable, Sendable, Equatable {
     public let mutation: OperationMutationFact?
     public let counts: OperationCounts?
     public let itemFacts: [HistoryItemFact]
+    public let operationFacts: [HistoryOperationFact]
 
     let startedAt: Date?
     let finishedAt: Date?
@@ -108,6 +186,7 @@ public struct CleaningRecord: Identifiable, Sendable, Equatable {
         mutation: OperationMutationFact?,
         counts: OperationCounts?,
         itemFacts: [HistoryItemFact],
+        operationFacts: [HistoryOperationFact]? = nil,
         startedAt: Date? = nil,
         finishedAt: Date? = nil,
         issues: [OperationIssue] = [],
@@ -127,6 +206,8 @@ public struct CleaningRecord: Identifiable, Sendable, Equatable {
         self.mutation = mutation
         self.counts = counts
         self.itemFacts = itemFacts
+        self.operationFacts = operationFacts
+            ?? itemFacts.map(HistoryOperationFact.init(deletion:))
         self.startedAt = startedAt
         self.finishedAt = finishedAt
         self.issues = issues
@@ -135,15 +216,41 @@ public struct CleaningRecord: Identifiable, Sendable, Equatable {
 
     public var canUndo: Bool { !restorable.isEmpty }
 
+    /// 撤销 Trash 回执后仍必须保留的不可逆事实（永久删除或已执行的辅助处置）。
+    /// 历史消费者据此选择“只清空回执”而不是误删整条复合操作记录。
+    public var hasIrreversibleChanges: Bool {
+        operationFacts.contains { fact in
+            guard fact.mutation != .none else { return false }
+            switch fact.role {
+            case .deletion:
+                return !(fact.disposition == .succeeded
+                    && fact.mutation == .changed
+                    && fact.intent == .trash)
+            case .threatRemediation:
+                return true
+            }
+        }
+    }
+
     func updatingRestorable(_ receipts: [RestorableItem]) -> CleaningRecord {
         let updatedFacts: [HistoryItemFact]
+        let updatedOperationFacts: [HistoryOperationFact]
         let updatedRestorable: [RestorableItem]
         if schemaVersion == 1 {
             let allowed = Set(receipts.map(HistoryReceiptIdentity.init))
             updatedFacts = itemFacts.map { $0.retainingReceipt(in: allowed) }
+            updatedOperationFacts = updatedFacts.map(HistoryOperationFact.init(deletion:))
+            updatedRestorable = updatedFacts.compactMap(\.receipt)
+        } else if schemaVersion == 2 {
+            let allowed = Set(receipts.map(HistoryReceiptIdentity.init))
+            updatedOperationFacts = operationFacts.map {
+                $0.retainingReceipt(in: allowed)
+            }
+            updatedFacts = updatedOperationFacts.compactMap(\.deletionItemFact)
             updatedRestorable = updatedFacts.compactMap(\.receipt)
         } else {
             updatedFacts = itemFacts
+            updatedOperationFacts = operationFacts
             let allowed = Set(receipts.map(HistoryReceiptIdentity.init))
             updatedRestorable = restorable.filter {
                 allowed.contains(HistoryReceiptIdentity($0))
@@ -164,6 +271,7 @@ public struct CleaningRecord: Identifiable, Sendable, Equatable {
             mutation: mutation,
             counts: counts,
             itemFacts: updatedFacts,
+            operationFacts: updatedOperationFacts,
             startedAt: startedAt,
             finishedAt: finishedAt,
             issues: issues,
@@ -182,6 +290,7 @@ public struct CleaningRecord: Identifiable, Sendable, Equatable {
             && mutation == other.mutation
             && counts == other.counts
             && itemFacts == other.itemFacts
+            && operationFacts == other.operationFacts
             && startedAt == other.startedAt
             && finishedAt == other.finishedAt
             && issues == other.issues
@@ -203,6 +312,7 @@ public struct CleaningRecord: Identifiable, Sendable, Equatable {
             mutation: mutation,
             counts: counts,
             itemFacts: itemFacts,
+            operationFacts: operationFacts,
             startedAt: startedAt,
             finishedAt: finishedAt,
             issues: issues,
@@ -225,6 +335,7 @@ public struct CleaningRecord: Identifiable, Sendable, Equatable {
             mutation: mutation,
             counts: counts,
             itemFacts: itemFacts,
+            operationFacts: operationFacts,
             startedAt: startedAt,
             finishedAt: finishedAt,
             issues: issues,
@@ -331,6 +442,7 @@ private enum HistoryArchiveDecodeFailure: Error {
     case unsupportedSchema
     case limitExceeded
     case privacyPathMetadata
+    case ineligibleOperationKind
 
     var code: String {
         switch self {
@@ -338,6 +450,7 @@ private enum HistoryArchiveDecodeFailure: Error {
         case .unsupportedSchema: "history.archive.unsupportedSchema"
         case .limitExceeded: "history.archive.limitExceeded"
         case .privacyPathMetadata: "history.privacy.pathMetadata"
+        case .ineligibleOperationKind: "history.operation.ineligibleKind"
         }
     }
 }
@@ -532,6 +645,10 @@ private enum HistoryArchiveCodec {
         "schemaVersion", "id", "date", "module", "reclaimedBytes", "removedCount",
         "operation", "items"
     ]
+    private static let schema2Keys: Set<String> = [
+        "schemaVersion", "id", "date", "module", "reclaimedBytes", "removedCount",
+        "operation", "facts"
+    ]
     private static let operationKeys: Set<String> = [
         "id", "parentID", "kind", "status", "mutation", "counts", "issues",
         "startedAt", "finishedAt"
@@ -541,6 +658,10 @@ private enum HistoryArchiveCodec {
     ]
     private static let itemKeys: Set<String> = [
         "requestID", "intent", "disposition", "mutation", "affectedBytes", "receipt"
+    ]
+    private static let factKeys: Set<String> = [
+        "requestID", "role", "relatedCleaningRequestID", "intent", "disposition",
+        "mutation", "affectedBytes", "receipt"
     ]
     private static let dispositionKeys: Set<String> = ["kind", "issue"]
     private static let issueKeys: Set<String> = [
@@ -581,7 +702,7 @@ private enum HistoryArchiveCodec {
                 var record = try parseRecord(object, flags: &flags)
                 if flags.containsFutureData {
                     degradedCode = degradedCode ?? "history.archive.futureData"
-                    if record.schemaVersion == 1 {
+                    if record.schemaVersion == 1 || record.schemaVersion == 2 {
                         record = record.untrustedFutureDataCopy()
                     }
                 }
@@ -637,18 +758,26 @@ private enum HistoryArchiveCodec {
         flags: inout HistoryArchiveDecodeFlags
     ) throws -> CleaningRecord {
         if object["schemaVersion"] == nil {
-            guard object["operation"] == nil, object["items"] == nil else {
+            guard object["operation"] == nil,
+                  object["items"] == nil,
+                  object["facts"] == nil else {
                 throw HistoryArchiveDecodeFailure.corrupt
             }
             return try parseSchema0(object, flags: &flags)
         }
-        guard let version = integer(object["schemaVersion"]), version == 1 else {
-            if let version = integer(object["schemaVersion"]), version > 1 {
-                throw HistoryArchiveDecodeFailure.unsupportedSchema
-            }
+        guard let version = integer(object["schemaVersion"]) else {
             throw HistoryArchiveDecodeFailure.corrupt
         }
-        return try parseSchema1(object, flags: &flags)
+        switch version {
+        case 1:
+            return try parseSchema1(object, flags: &flags)
+        case 2:
+            return try parseSchema2(object, flags: &flags)
+        case 3...:
+            throw HistoryArchiveDecodeFailure.unsupportedSchema
+        default:
+            throw HistoryArchiveDecodeFailure.corrupt
+        }
     }
 
     private static func parseSchema0(
@@ -755,6 +884,65 @@ private enum HistoryArchiveCodec {
             isTrustedForAggregates: operation.hasKnownStatus)
     }
 
+    private static func parseSchema2(
+        _ object: [String: Any],
+        flags: inout HistoryArchiveDecodeFlags
+    ) throws -> CleaningRecord {
+        try validateKeys(
+            object,
+            allowed: schema2Keys,
+            required: schema2Keys,
+            flags: &flags)
+        guard let id = uuid(object["id"]),
+              let date = date(object["date"]),
+              let module = object["module"] as? String,
+              let reclaimedBytes = int64(object["reclaimedBytes"]), reclaimedBytes >= 0,
+              let removedCount = integer(object["removedCount"]), removedCount >= 0,
+              let operationObject = object["operation"] as? [String: Any],
+              let factObjects = object["facts"] as? [Any] else {
+            throw HistoryArchiveDecodeFailure.corrupt
+        }
+        try validateLength(module, maximum: HistoryArchiveLimits.maximumModuleUTF8Bytes)
+        try rejectPathMetadata(module)
+        guard factObjects.count <= HistoryArchiveLimits.maximumItemFactsPerRecord else {
+            throw HistoryArchiveDecodeFailure.limitExceeded
+        }
+        let operation = try parseOperation(operationObject, flags: &flags)
+        let operationFacts = try factObjects.map { raw -> HistoryOperationFact in
+            guard let fact = raw as? [String: Any] else {
+                throw HistoryArchiveDecodeFailure.corrupt
+            }
+            return try parseOperationFact(fact, flags: &flags)
+        }
+        try validateV2Facts(
+            operation: operation,
+            facts: operationFacts,
+            reclaimedBytes: reclaimedBytes,
+            removedCount: removedCount)
+        let itemFacts = operationFacts.compactMap(\.deletionItemFact)
+        let restorable = itemFacts.compactMap(\.receipt)
+        return CleaningRecord(
+            id: id,
+            date: date,
+            module: module,
+            reclaimedBytes: reclaimedBytes,
+            removedCount: removedCount,
+            restorable: restorable,
+            schemaVersion: 2,
+            operationID: operation.id,
+            parentOperationID: operation.parentID,
+            operationKind: operation.kind,
+            outcomeStatus: operation.hasKnownStatus ? operation.status : .legacyUnknown,
+            mutation: operation.mutation,
+            counts: operation.counts,
+            itemFacts: itemFacts,
+            operationFacts: operationFacts,
+            startedAt: operation.startedAt,
+            finishedAt: operation.finishedAt,
+            issues: operation.issues,
+            isTrustedForAggregates: operation.hasKnownStatus)
+    }
+
     private static func parseOperation(
         _ object: [String: Any],
         flags: inout HistoryArchiveDecodeFlags
@@ -781,6 +969,11 @@ private enum HistoryArchiveCodec {
         }
         try validateLength(kindValue, maximum: HistoryArchiveLimits.maximumKindUTF8Bytes)
         try rejectPathMetadata(kindValue)
+        let operationKind = OperationKind(kindValue)
+        guard OutcomeOperationRegistry.semantics(for: operationKind)?
+                .recordsHistory == true else {
+            throw HistoryArchiveDecodeFailure.ineligibleOperationKind
+        }
         guard issueObjects.count <= HistoryArchiveLimits.maximumIssuesPerOperation else {
             throw HistoryArchiveDecodeFailure.limitExceeded
         }
@@ -830,7 +1023,7 @@ private enum HistoryArchiveCodec {
         return ParsedHistoryOperation(
             id: id,
             parentID: parentID,
-            kind: OperationKind(kindValue),
+            kind: operationKind,
             status: status,
             hasKnownStatus: hasKnownStatus,
             mutation: mutation,
@@ -870,6 +1063,77 @@ private enum HistoryArchiveCodec {
         }
         return HistoryItemFact(
             requestID: requestID,
+            intent: intent,
+            disposition: disposition,
+            mutation: mutation,
+            affectedBytes: affectedBytes,
+            receipt: receipt)
+    }
+
+    private static func parseOperationFact(
+        _ object: [String: Any],
+        flags: inout HistoryArchiveDecodeFlags
+    ) throws -> HistoryOperationFact {
+        try validateKeys(
+            object,
+            allowed: factKeys,
+            required: ["requestID", "role", "disposition", "mutation", "affectedBytes"],
+            flags: &flags)
+        guard let requestID = uuid(object["requestID"]),
+              let roleValue = object["role"] as? String,
+              let role = HistoryFactRole(rawValue: roleValue),
+              let dispositionObject = object["disposition"] as? [String: Any],
+              let mutationValue = object["mutation"] as? String,
+              let mutation = OperationMutationFact(rawValue: mutationValue),
+              let affectedBytes = int64(object["affectedBytes"]), affectedBytes >= 0 else {
+            throw HistoryArchiveDecodeFailure.corrupt
+        }
+        let disposition = try parseDisposition(dispositionObject, flags: &flags)
+        let relatedCleaningRequestID: UUID?
+        if let rawRelated = object["relatedCleaningRequestID"] {
+            guard let related = uuid(rawRelated) else {
+                throw HistoryArchiveDecodeFailure.corrupt
+            }
+            relatedCleaningRequestID = related
+        } else {
+            relatedCleaningRequestID = nil
+        }
+        let intent: DeleteIntent?
+        if let rawIntent = object["intent"] {
+            guard let intentValue = rawIntent as? String,
+                  let parsed = deleteIntent(intentValue) else {
+                throw HistoryArchiveDecodeFailure.corrupt
+            }
+            intent = parsed
+        } else {
+            intent = nil
+        }
+        let receipt: RestorableItem?
+        if let rawReceipt = object["receipt"] {
+            guard let receiptObject = rawReceipt as? [String: Any] else {
+                throw HistoryArchiveDecodeFailure.corrupt
+            }
+            receipt = try parseReceipt(receiptObject, flags: &flags)
+        } else {
+            receipt = nil
+        }
+        switch role {
+        case .deletion:
+            guard relatedCleaningRequestID == nil, intent != nil else {
+                throw HistoryArchiveDecodeFailure.corrupt
+            }
+        case .threatRemediation:
+            guard relatedCleaningRequestID != nil,
+                  intent == nil,
+                  affectedBytes == 0,
+                  receipt == nil else {
+                throw HistoryArchiveDecodeFailure.corrupt
+            }
+        }
+        return HistoryOperationFact(
+            requestID: requestID,
+            role: role,
+            relatedCleaningRequestID: relatedCleaningRequestID,
             intent: intent,
             disposition: disposition,
             mutation: mutation,
@@ -1049,6 +1313,119 @@ private enum HistoryArchiveCodec {
         guard summed == reclaimedBytes else { throw HistoryArchiveDecodeFailure.corrupt }
     }
 
+    private static func validateV2Facts(
+        operation: ParsedHistoryOperation,
+        facts: [HistoryOperationFact],
+        reclaimedBytes: Int64,
+        removedCount: Int
+    ) throws {
+        guard !facts.isEmpty,
+              facts.contains(where: { $0.role == .deletion }),
+              facts.contains(where: { $0.role == .threatRemediation }),
+              operation.counts.requested == facts.count,
+              countsTotalMatchesRequested(operation.counts),
+              compoundFactOrderIsValid(facts) else {
+            throw HistoryArchiveDecodeFailure.corrupt
+        }
+        let requestStrings = facts.map { $0.requestID.uuidString }
+        guard Set(requestStrings).count == requestStrings.count else {
+            throw HistoryArchiveDecodeFailure.corrupt
+        }
+        let requestSet = Set(requestStrings)
+        for issue in operation.issues {
+            if let subject = issue.subjectID, !requestSet.contains(subject) {
+                throw HistoryArchiveDecodeFailure.corrupt
+            }
+        }
+        for fact in facts {
+            if let issue = dispositionIssue(fact.disposition),
+               let subject = issue.subjectID,
+               !requestSet.contains(subject) {
+                throw HistoryArchiveDecodeFailure.corrupt
+            }
+            if fact.role == .deletion {
+                guard fact.intent != nil, fact.relatedCleaningRequestID == nil else {
+                    throw HistoryArchiveDecodeFailure.corrupt
+                }
+                if fact.disposition != .succeeded, fact.affectedBytes != 0 {
+                    throw HistoryArchiveDecodeFailure.corrupt
+                }
+                if fact.receipt != nil,
+                   !(fact.intent == .trash
+                        && fact.disposition == .succeeded
+                        && fact.mutation == .changed) {
+                    throw HistoryArchiveDecodeFailure.corrupt
+                }
+            } else if fact.intent != nil
+                        || fact.relatedCleaningRequestID == nil
+                        || fact.affectedBytes != 0
+                        || fact.receipt != nil {
+                throw HistoryArchiveDecodeFailure.corrupt
+            }
+        }
+        try validateReceiptUniqueness(facts.compactMap(\.receipt))
+        let reduced: OperationOutcome
+        do {
+            reduced = try OperationOutcomeReducer.reduce(
+                id: operation.id,
+                parentID: operation.parentID,
+                kind: operation.kind,
+                requestedSubjectIDs: requestStrings,
+                itemOutcomes: facts.map {
+                    OperationItemOutcome(
+                        subjectID: $0.requestID.uuidString,
+                        disposition: $0.disposition,
+                        mutation: $0.mutation,
+                        affectedBytes: $0.affectedBytes)
+                },
+                cancellationAccepted: operation.status == .cancelled,
+                startedAt: operation.startedAt,
+                finishedAt: operation.finishedAt)
+        } catch {
+            throw HistoryArchiveDecodeFailure.corrupt
+        }
+        guard reduced.counts == operation.counts,
+              reduced.mutation == operation.mutation,
+              reduced.issues == operation.issues,
+              !operation.hasKnownStatus || HistoryOutcomeStatus(reduced.status) == operation.status else {
+            throw HistoryArchiveDecodeFailure.corrupt
+        }
+        let deletionFacts = facts.filter { $0.role == .deletion }
+        let factualRemovedCount = deletionFacts.reduce(into: 0) { count, fact in
+            if fact.disposition == .succeeded { count += 1 }
+        }
+        let factualReclaimedBytes = deletionFacts.reduce(Int64(0)) { total, fact in
+            guard fact.disposition == .succeeded else { return total }
+            return saturatingAdd(total, fact.affectedBytes)
+        }
+        guard removedCount == factualRemovedCount,
+              reclaimedBytes == factualReclaimedBytes else {
+            throw HistoryArchiveDecodeFailure.corrupt
+        }
+    }
+
+    private static func compoundFactOrderIsValid(
+        _ facts: [HistoryOperationFact]
+    ) -> Bool {
+        var deletionIDs = Set<UUID>()
+        var linkedDeletionIDs = Set<UUID>()
+        var lastDeletionID: UUID?
+        for fact in facts {
+            switch fact.role {
+            case .deletion:
+                guard deletionIDs.insert(fact.requestID).inserted else { return false }
+                lastDeletionID = fact.requestID
+            case .threatRemediation:
+                guard let related = fact.relatedCleaningRequestID,
+                      related == lastDeletionID,
+                      deletionIDs.contains(related),
+                      linkedDeletionIDs.insert(related).inserted else { return false }
+                lastDeletionID = nil
+            }
+        }
+        return true
+    }
+
     private static func encodeRecord(_ record: CleaningRecord) throws -> [String: Any] {
         if record.schemaVersion == 0 {
             var object: [String: Any] = [
@@ -1063,7 +1440,7 @@ private enum HistoryArchiveCodec {
             }
             return object
         }
-        guard record.schemaVersion == 1,
+        guard (record.schemaVersion == 1 || record.schemaVersion == 2),
               let operationID = record.operationID,
               let operationKind = record.operationKind,
               let mutation = record.mutation,
@@ -1091,16 +1468,26 @@ private enum HistoryArchiveCodec {
             "finishedAt": finishedAt.timeIntervalSinceReferenceDate
         ]
         if let parent = record.parentOperationID { operation["parentID"] = parent.uuidString }
-        return [
-            "schemaVersion": 1,
+        var encoded: [String: Any] = [
+            "schemaVersion": record.schemaVersion,
             "id": record.id.uuidString,
             "date": record.date.timeIntervalSinceReferenceDate,
             "module": record.module,
             "reclaimedBytes": record.reclaimedBytes,
             "removedCount": record.removedCount,
-            "operation": operation,
-            "items": record.itemFacts.map(encodeItem)
+            "operation": operation
         ]
+        if record.schemaVersion == 1 {
+            encoded["items"] = record.itemFacts.map(encodeItem)
+        } else {
+            guard record.operationFacts.contains(where: { $0.role == .deletion }),
+                  record.operationFacts.contains(where: { $0.role == .threatRemediation }),
+                  compoundFactOrderIsValid(record.operationFacts) else {
+                throw HistoryArchiveDecodeFailure.corrupt
+            }
+            encoded["facts"] = record.operationFacts.map(encodeOperationFact)
+        }
+        return encoded
     }
 
     private static func encodeItem(_ item: HistoryItemFact) -> [String: Any] {
@@ -1112,6 +1499,26 @@ private enum HistoryArchiveCodec {
             "affectedBytes": item.affectedBytes
         ]
         if let receipt = item.receipt { object["receipt"] = encodeReceipt(receipt) }
+        return object
+    }
+
+    private static func encodeOperationFact(
+        _ fact: HistoryOperationFact
+    ) -> [String: Any] {
+        var object: [String: Any] = [
+            "requestID": fact.requestID.uuidString,
+            "role": fact.role.rawValue,
+            "disposition": encodeDisposition(fact.disposition),
+            "mutation": fact.mutation.rawValue,
+            "affectedBytes": fact.affectedBytes
+        ]
+        if let related = fact.relatedCleaningRequestID {
+            object["relatedCleaningRequestID"] = related.uuidString
+        }
+        if let intent = fact.intent {
+            object["intent"] = intent == .trash ? "trash" : "permanent"
+        }
+        if let receipt = fact.receipt { object["receipt"] = encodeReceipt(receipt) }
         return object
     }
 
@@ -1419,11 +1826,12 @@ public final class HistoryStore: OutcomeHistoryWriting, @unchecked Sendable {
             guard candidate.record.mutation != OperationMutationFact.none else {
                 return .noCommit(value: HistoryRecordResult.notRecordedNoChanges)
             }
-            guard let updated = Self.insertingWithRetention(
-                candidate.record,
-                into: records
-            ) else {
-                return .rejected(code: "history.retention.tooOld")
+            let updated: [CleaningRecord]
+            switch Self.insertingWithRetention(candidate.record, into: records) {
+            case let .accepted(records):
+                updated = records
+            case let .rejected(code):
+                return .rejected(code: code)
             }
             return .candidate(
                 records: updated,
@@ -1467,8 +1875,12 @@ public final class HistoryStore: OutcomeHistoryWriting, @unchecked Sendable {
         let execution: HistoryMutationExecution<UUID> = executeMutation(
             kind: .record
         ) { records in
-            guard let updated = Self.insertingWithRetention(record, into: records) else {
-                return .rejected(code: "history.retention.tooOld")
+            let updated: [CleaningRecord]
+            switch Self.insertingWithRetention(record, into: records) {
+            case let .accepted(records):
+                updated = records
+            case let .rejected(code):
+                return .rejected(code: code)
             }
             return .candidate(records: updated, value: record.id)
         }
@@ -1570,14 +1982,24 @@ public final class HistoryStore: OutcomeHistoryWriting, @unchecked Sendable {
     public var totalSuccessfulCleanups: Int {
         withReadModel { model in
             model.records.reduce(into: 0) { total, record in
-                guard record.schemaVersion == 1,
+                guard record.schemaVersion == 1 || record.schemaVersion == 2,
                       record.isTrustedForAggregates,
                       record.outcomeStatus == .success,
                       record.mutation == .changed,
                       let counts = record.counts,
-                      counts.succeeded > 0,
-                      record.removedCount == counts.succeeded,
-                      counts.requested == record.itemFacts.count else { return }
+                      record.removedCount > 0 else { return }
+                if record.schemaVersion == 1 {
+                    guard record.removedCount == counts.succeeded,
+                          counts.requested == record.itemFacts.count else { return }
+                } else {
+                    let deleted = record.operationFacts.reduce(into: 0) { value, fact in
+                        if fact.role == .deletion, fact.disposition == .succeeded {
+                            value += 1
+                        }
+                    }
+                    guard record.removedCount == deleted,
+                          counts.requested == record.operationFacts.count else { return }
+                }
                 total += 1
             }
         }
@@ -1596,6 +2018,16 @@ public final class HistoryStore: OutcomeHistoryWriting, @unchecked Sendable {
                             return itemTotal
                         }
                         return Self.saturatingAdd(itemTotal, item.affectedBytes)
+                    }
+                } else if record.schemaVersion == 2, record.isTrustedForAggregates {
+                    factual = record.operationFacts.reduce(Int64(0)) { itemTotal, fact in
+                        guard fact.role == .deletion,
+                              fact.disposition == .succeeded,
+                              fact.mutation == .changed
+                                || fact.mutation == .possiblyChanged else {
+                            return itemTotal
+                        }
+                        return Self.saturatingAdd(itemTotal, fact.affectedBytes)
                     }
                 } else {
                     factual = 0
@@ -1794,8 +2226,50 @@ public final class HistoryStore: OutcomeHistoryWriting, @unchecked Sendable {
         report: CleaningReport,
         date: Date
     ) -> HistoryCodeResult<ValidatedHistoryRecordCandidate> {
-        guard report.items.count <= HistoryArchiveLimits.maximumItemFactsPerRecord else {
+        if containsPathMetadata(module)
+            || containsPathMetadata(report.operation.kind.rawValue)
+            || report.operation.issues.contains(where: issueContainsPathMetadata) {
+            return .failure("history.privacy.pathMetadata")
+        }
+        guard OutcomeOperationRegistry.semantics(for: report.operation.kind)?
+                .recordsHistory == true else {
+            return .failure("history.operation.ineligibleKind")
+        }
+        guard report.facts.count <= HistoryArchiveLimits.maximumItemFactsPerRecord else {
             return .failure("history.archive.limitExceeded")
+        }
+        if !report.auxiliaryItems.isEmpty {
+            let operationFacts = report.facts.map { fact -> HistoryOperationFact in
+                switch fact {
+                case let .deletion(item):
+                    return HistoryOperationFact(
+                        requestID: item.requestID,
+                        role: .deletion,
+                        relatedCleaningRequestID: nil,
+                        intent: item.intent,
+                        disposition: item.disposition,
+                        mutation: item.mutation,
+                        affectedBytes: item.reclaimedBytes,
+                        receipt: item.restorable)
+                case let .auxiliary(item):
+                    return HistoryOperationFact(
+                        requestID: item.requestID,
+                        role: .threatRemediation,
+                        relatedCleaningRequestID: item.relatedCleaningRequestID,
+                        intent: nil,
+                        disposition: item.disposition,
+                        mutation: item.mutation,
+                        affectedBytes: 0,
+                        receipt: nil)
+                }
+            }
+            return makeCompoundTypedCandidate(
+                module: module,
+                operation: report.operation,
+                facts: operationFacts,
+                reportedReclaimedBytes: report.reclaimedBytes,
+                reportedRemovedCount: report.removedCount,
+                date: date)
         }
         let facts = report.items.map {
             HistoryItemFact(
@@ -1813,6 +2287,183 @@ public final class HistoryStore: OutcomeHistoryWriting, @unchecked Sendable {
             reportedReclaimedBytes: report.reclaimedBytes,
             reportedRemovedCount: report.removedCount,
             date: date)
+    }
+
+    private static func makeCompoundTypedCandidate(
+        module: String,
+        operation: OperationOutcome,
+        facts: [HistoryOperationFact],
+        reportedReclaimedBytes: Int64,
+        reportedRemovedCount: Int,
+        date: Date
+    ) -> HistoryCodeResult<ValidatedHistoryRecordCandidate> {
+        guard module.utf8.count <= HistoryArchiveLimits.maximumModuleUTF8Bytes,
+              operation.kind.rawValue.utf8.count
+                <= HistoryArchiveLimits.maximumKindUTF8Bytes,
+              facts.count <= HistoryArchiveLimits.maximumItemFactsPerRecord,
+              operation.issues.count <= HistoryArchiveLimits.maximumIssuesPerOperation else {
+            return .failure("history.archive.limitExceeded")
+        }
+        if containsPathMetadata(module)
+            || containsPathMetadata(operation.kind.rawValue)
+            || operation.issues.contains(where: issueContainsPathMetadata) {
+            return .failure("history.privacy.pathMetadata")
+        }
+        guard facts.contains(where: { $0.role == .deletion }),
+              facts.contains(where: { $0.role == .threatRemediation }),
+              compoundFactOrderIsValid(facts) else {
+            return .failure("history.operation.invalidFacts")
+        }
+        let requestIDs = facts.map { $0.requestID.uuidString }
+        guard Set(requestIDs).count == requestIDs.count,
+              !requestIDs.isEmpty else {
+            return .failure("history.operation.invalidFacts")
+        }
+        let requestSet = Set(requestIDs)
+        let allIssues = operation.issues + facts.compactMap {
+            switch $0.disposition {
+            case let .skipped(issue), let .failed(issue): issue
+            case let .cancelled(issue): issue
+            case .succeeded, .unchanged: nil
+            }
+        }
+        if allIssues.contains(where: {
+            $0.code.utf8.count > HistoryArchiveLimits.maximumCodeUTF8Bytes
+                || ($0.subjectID?.utf8.count ?? 0) > HistoryArchiveLimits.maximumSubjectUTF8Bytes
+        }) {
+            return .failure("history.archive.limitExceeded")
+        }
+        if allIssues.contains(where: issueContainsPathMetadata) {
+            return .failure("history.privacy.pathMetadata")
+        }
+        if allIssues.contains(where: {
+            guard let subject = $0.subjectID else { return false }
+            return !requestSet.contains(subject)
+        }) {
+            return .failure("history.issue.unboundSubject")
+        }
+        for fact in facts {
+            guard fact.affectedBytes >= 0 else {
+                return .failure("history.operation.invalidFacts")
+            }
+            switch fact.role {
+            case .deletion:
+                guard fact.relatedCleaningRequestID == nil,
+                      fact.intent != nil,
+                      fact.disposition == .succeeded || fact.affectedBytes == 0 else {
+                    return .failure("history.operation.invalidFacts")
+                }
+                if let receipt = fact.receipt {
+                    guard HistoryReceiptValidation.isValid(receipt),
+                          fact.intent == .trash,
+                          fact.disposition == .succeeded,
+                          fact.mutation == .changed else {
+                        return .failure("history.receipt.invalidBinding")
+                    }
+                }
+            case .threatRemediation:
+                guard fact.relatedCleaningRequestID != nil,
+                      fact.intent == nil,
+                      fact.affectedBytes == 0,
+                      fact.receipt == nil else {
+                    return .failure("history.operation.invalidFacts")
+                }
+            }
+        }
+        let receipts = facts.compactMap(\.receipt)
+        guard receiptsAreUnique(receipts) else {
+            return .failure("history.receipt.invalidBinding")
+        }
+        let reduced: OperationOutcome
+        do {
+            reduced = try OperationOutcomeReducer.reduce(
+                id: operation.id,
+                parentID: operation.parentID,
+                kind: operation.kind,
+                requestedSubjectIDs: requestIDs,
+                itemOutcomes: facts.map {
+                    OperationItemOutcome(
+                        subjectID: $0.requestID.uuidString,
+                        disposition: $0.disposition,
+                        mutation: $0.mutation,
+                        affectedBytes: $0.affectedBytes)
+                },
+                cancellationAccepted: operation.status == .cancelled,
+                startedAt: operation.startedAt,
+                finishedAt: operation.finishedAt)
+        } catch {
+            return .failure("history.operation.invalidFacts")
+        }
+        guard reduced.id == operation.id,
+              reduced.parentID == operation.parentID,
+              reduced.kind == operation.kind,
+              reduced.status == operation.status,
+              reduced.counts == operation.counts,
+              reduced.startedAt == operation.startedAt,
+              reduced.finishedAt == operation.finishedAt,
+              reduced.issues == operation.issues,
+              reduced.mutation == operation.mutation else {
+            return .failure("history.operation.invalidFacts")
+        }
+        let deletionFacts = facts.filter { $0.role == .deletion }
+        let removedCount = deletionFacts.reduce(into: 0) { count, fact in
+            if fact.disposition == .succeeded { count += 1 }
+        }
+        let reclaimedBytes = deletionFacts.reduce(Int64(0)) { total, fact in
+            guard fact.disposition == .succeeded else { return total }
+            return saturatingAdd(total, fact.affectedBytes)
+        }
+        guard removedCount == reportedRemovedCount,
+              reclaimedBytes == reportedReclaimedBytes else {
+            return .failure("history.operation.invalidFacts")
+        }
+        let itemFacts = deletionFacts.compactMap(\.deletionItemFact)
+        guard itemFacts.count == deletionFacts.count else {
+            return .failure("history.operation.invalidFacts")
+        }
+        let record = CleaningRecord(
+            id: UUID(),
+            date: date,
+            module: module,
+            reclaimedBytes: reclaimedBytes,
+            removedCount: removedCount,
+            restorable: receipts,
+            schemaVersion: 2,
+            operationID: operation.id,
+            parentOperationID: operation.parentID,
+            operationKind: operation.kind,
+            outcomeStatus: HistoryOutcomeStatus(operation.status),
+            mutation: operation.mutation,
+            counts: operation.counts,
+            itemFacts: itemFacts,
+            operationFacts: facts,
+            startedAt: operation.startedAt,
+            finishedAt: operation.finishedAt,
+            issues: operation.issues,
+            isTrustedForAggregates: true)
+        return .success(ValidatedHistoryRecordCandidate(record: record))
+    }
+
+    private static func compoundFactOrderIsValid(
+        _ facts: [HistoryOperationFact]
+    ) -> Bool {
+        var deletionIDs = Set<UUID>()
+        var linkedDeletionIDs = Set<UUID>()
+        var lastDeletionID: UUID?
+        for fact in facts {
+            switch fact.role {
+            case .deletion:
+                guard deletionIDs.insert(fact.requestID).inserted else { return false }
+                lastDeletionID = fact.requestID
+            case .threatRemediation:
+                guard let related = fact.relatedCleaningRequestID,
+                      related == lastDeletionID,
+                      deletionIDs.contains(related),
+                      linkedDeletionIDs.insert(related).inserted else { return false }
+                lastDeletionID = nil
+            }
+        }
+        return true
     }
 
     private static func makeTypedCandidate(
@@ -1994,31 +2645,65 @@ public final class HistoryStore: OutcomeHistoryWriting, @unchecked Sendable {
         return true
     }
 
+    private enum HistoryRetentionInsertion {
+        case accepted([CleaningRecord])
+        case rejected(code: String)
+    }
+
+    /// Inserts newest-first and enforces both count and encoded-byte retention before CAS.
+    /// Oldest records are evicted atomically until the complete candidate archive is writable;
+    /// an incoming record is rejected only when it would itself be the evicted oldest record or
+    /// cannot fit in an otherwise empty archive.
     private static func insertingWithRetention(
         _ record: CleaningRecord,
         into records: [CleaningRecord]
-    ) -> [CleaningRecord]? {
-        if records.count >= HistoryArchiveLimits.maximumRecords,
-           let oldestDate = records.map(\.date).min(),
-           record.date < oldestDate {
-            return nil
-        }
-
+    ) -> HistoryRetentionInsertion {
         var updated = records
         let insertionIndex = updated.firstIndex { existing in
             existing.date <= record.date
         } ?? updated.endIndex
         updated.insert(record, at: insertionIndex)
-        guard updated.count > HistoryArchiveLimits.maximumRecords else { return updated }
+
+        while updated.count > HistoryArchiveLimits.maximumRecords {
+            let removed = removeOldest(from: &updated)
+            if removed.id == record.id {
+                return .rejected(code: "history.retention.tooOld")
+            }
+        }
+
+        while true {
+            do {
+                _ = try HistoryArchiveCodec.encode(updated)
+                return .accepted(updated)
+            } catch let failure as HistoryArchiveDecodeFailure {
+                guard case .limitExceeded = failure else {
+                    return .rejected(code: failure.code)
+                }
+                guard updated.count > 1 else {
+                    return .rejected(code: failure.code)
+                }
+                let removed = removeOldest(from: &updated)
+                if removed.id == record.id {
+                    return .rejected(code: "history.retention.tooOld")
+                }
+            } catch {
+                return .rejected(code: "history.archive.encodeFailed")
+            }
+        }
+    }
+
+    private static func removeOldest(
+        from records: inout [CleaningRecord]
+    ) -> CleaningRecord {
         var oldestIndex = 0
-        for index in updated.indices.dropFirst() {
-            if updated[index].date < updated[oldestIndex].date
-                || (updated[index].date == updated[oldestIndex].date && index > oldestIndex) {
+        for index in records.indices.dropFirst() {
+            if records[index].date < records[oldestIndex].date
+                || (records[index].date == records[oldestIndex].date
+                    && index > oldestIndex) {
                 oldestIndex = index
             }
         }
-        updated.remove(at: oldestIndex)
-        return updated
+        return records.remove(at: oldestIndex)
     }
 
     private static func failureRequiresDegradation(_ code: String) -> Bool {

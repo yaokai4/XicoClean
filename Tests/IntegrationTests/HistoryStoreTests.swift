@@ -117,7 +117,7 @@ final class HistoryStoreTests: XCTestCase {
 
     func testUnsupportedFutureSchemaIsReadOnlyAndPreserved() throws {
         var future = legacyRecordObject(module: "future-schema", reclaimedBytes: 20, removedCount: 1)
-        future["schemaVersion"] = 2
+        future["schemaVersion"] = 3
         let data = try archiveData([future])
         try writeArchive(data)
 
@@ -680,8 +680,8 @@ final class HistoryStoreTests: XCTestCase {
             itemOneOverData,
             name: "items-one-over")
 
-        XCTAssertLessThanOrEqual(HistoryArchiveLimits.maximumIssuesPerOperation,
-                                 HistoryArchiveLimits.maximumItemFactsPerRecord)
+        XCTAssertEqual(HistoryArchiveLimits.maximumIssuesPerOperation,
+                       HistoryArchiveLimits.maximumItemFactsPerRecord)
         let issueBoundaryFacts = (0..<HistoryArchiveLimits.maximumIssuesPerOperation).map { _ in
             failedItemObject()
         }
@@ -696,8 +696,8 @@ final class HistoryStoreTests: XCTestCase {
             items: issueBoundaryFacts + [failedItemObject()],
             reclaimedBytes: 0,
             removedCount: 0)])
-        XCTAssertLessThanOrEqual(issueBoundaryFacts.count + 1,
-                                 HistoryArchiveLimits.maximumItemFactsPerRecord)
+        XCTAssertEqual(issueBoundaryFacts.count + 1,
+                       HistoryArchiveLimits.maximumItemFactsPerRecord + 1)
         XCTAssertLessThanOrEqual(issueOneOverData.count,
                                  HistoryArchiveLimits.maximumArchiveBytes)
         try assertLimitRejected(
@@ -725,7 +725,8 @@ final class HistoryStoreTests: XCTestCase {
                                  HistoryArchiveLimits.maximumArchiveBytes)
         let (kindBoundaryStore, _) = try loadCase(
             kindBoundaryData, name: "kind-boundary")
-        XCTAssertEqual(kindBoundaryStore.archiveState, .writable)
+        assertDegraded(kindBoundaryStore)
+        XCTAssertEqual(kindBoundaryStore.totalReclaimedAllTime, 0)
         let kindOneOverData = try archiveData([v1RecordObject(kind: kindBoundary + "x")])
         XCTAssertLessThanOrEqual(kindOneOverData.count,
                                  HistoryArchiveLimits.maximumArchiveBytes)
@@ -1085,10 +1086,10 @@ final class HistoryStoreTests: XCTestCase {
         }
     }
 
-    func testNonDefaultParentKindAndItemFactsRoundTripCurrentAndFresh() throws {
+    func testRegisteredNonDefaultParentKindAndItemFactsRoundTripCurrentAndFresh() throws {
         let operationID = UUID()
         let parentID = UUID()
-        let kind = OperationKind("history.roundtrip.custom")
+        let kind = OperationKind.spaceTrash
         let succeededID = UUID()
         let unchangedID = UUID()
         let failedID = UUID()
@@ -1153,6 +1154,37 @@ final class HistoryStoreTests: XCTestCase {
         let fresh = try XCTUnwrap(
             HistoryStore(directory: tmpDir, persistence: persistence).recent(1).first)
         XCTAssertEqual(fresh, current)
+    }
+
+    func testCleaningHistoryRejectsUnknownAndRegisteredIneligibleKindsWithoutCommit() throws {
+        let ineligibleKinds = [
+            OperationKind("history.test.unknown"),
+            OperationKind.threatRemediation
+        ]
+
+        for kind in ineligibleKinds {
+            let persistence = ScriptedHistoryPersistence()
+            let store = HistoryStore(directory: tmpDir, persistence: persistence)
+            let report = try makeReport(
+                operationID: UUID(),
+                kind: kind,
+                specs: [ReportItemSpec(
+                    requestID: UUID(),
+                    itemID: UUID(),
+                    url: URL(fileURLWithPath: "/tmp/ineligible-history"),
+                    intent: .permanent,
+                    disposition: .succeeded,
+                    mutation: .changed,
+                    affectedBytes: 1,
+                    receipt: nil)],
+                cancellationAccepted: false)
+
+            XCTAssertEqual(
+                store.record(module: "Ineligible", report: report, date: fixedRecordDate),
+                .rejected(code: "history.operation.ineligibleKind"))
+            XCTAssertEqual(persistence.commitCount, 0)
+            XCTAssertTrue(store.recent(10).isEmpty)
+        }
     }
 
     func testAtomicMigrationFailureLeavesLegacyArchiveUnchanged() throws {
@@ -1238,7 +1270,7 @@ final class HistoryStoreTests: XCTestCase {
         let base = try makeReport(
             operationID: operationID,
             parentID: parentID,
-            kind: OperationKind("history.idempotency.base"),
+            kind: .cleaningExecute,
             specs: [baseSpec],
             cancellationAccepted: false)
         let changedReceipt = RestorableItem(
@@ -1251,25 +1283,25 @@ final class HistoryStoreTests: XCTestCase {
             ("parent", try makeReport(
                 operationID: operationID,
                 parentID: UUID(),
-                kind: OperationKind("history.idempotency.base"),
+                kind: .cleaningExecute,
                 specs: [baseSpec],
                 cancellationAccepted: false)),
             ("kind", try makeReport(
                 operationID: operationID,
                 parentID: parentID,
-                kind: OperationKind("history.idempotency.changed-kind"),
+                kind: .spaceTrash,
                 specs: [baseSpec],
                 cancellationAccepted: false)),
             ("status", try makeReport(
                 operationID: operationID,
                 parentID: parentID,
-                kind: OperationKind("history.idempotency.base"),
+                kind: .cleaningExecute,
                 specs: [baseSpec],
                 cancellationAccepted: true)),
             ("timestamps", try makeReport(
                 operationID: operationID,
                 parentID: parentID,
-                kind: OperationKind("history.idempotency.base"),
+                kind: .cleaningExecute,
                 specs: [baseSpec],
                 cancellationAccepted: false,
                 startedAt: Date(timeIntervalSinceReferenceDate: 99),
@@ -1277,7 +1309,7 @@ final class HistoryStoreTests: XCTestCase {
             ("finishedAt", try makeReport(
                 operationID: operationID,
                 parentID: parentID,
-                kind: OperationKind("history.idempotency.base"),
+                kind: .cleaningExecute,
                 specs: [baseSpec],
                 cancellationAccepted: false,
                 startedAt: Date(timeIntervalSinceReferenceDate: 100),
@@ -1285,7 +1317,7 @@ final class HistoryStoreTests: XCTestCase {
             ("request", try makeReport(
                 operationID: operationID,
                 parentID: parentID,
-                kind: OperationKind("history.idempotency.base"),
+                kind: .cleaningExecute,
                 specs: [ReportItemSpec(
                     requestID: UUID(), itemID: baseSpec.itemID, url: baseSpec.url,
                     intent: baseSpec.intent, disposition: baseSpec.disposition,
@@ -1295,7 +1327,7 @@ final class HistoryStoreTests: XCTestCase {
             ("disposition", try makeReport(
                 operationID: operationID,
                 parentID: parentID,
-                kind: OperationKind("history.idempotency.base"),
+                kind: .cleaningExecute,
                 specs: [ReportItemSpec(
                     requestID: requestID, itemID: baseSpec.itemID, url: baseSpec.url,
                     intent: baseSpec.intent, disposition: .unchanged,
@@ -1304,7 +1336,7 @@ final class HistoryStoreTests: XCTestCase {
             ("bytes", try makeReport(
                 operationID: operationID,
                 parentID: parentID,
-                kind: OperationKind("history.idempotency.base"),
+                kind: .cleaningExecute,
                 specs: [ReportItemSpec(
                     requestID: requestID, itemID: baseSpec.itemID, url: baseSpec.url,
                     intent: baseSpec.intent, disposition: baseSpec.disposition,
@@ -1314,7 +1346,7 @@ final class HistoryStoreTests: XCTestCase {
             ("receipt", try makeReport(
                 operationID: operationID,
                 parentID: parentID,
-                kind: OperationKind("history.idempotency.base"),
+                kind: .cleaningExecute,
                 specs: [ReportItemSpec(
                     requestID: requestID, itemID: baseSpec.itemID, url: baseSpec.url,
                     intent: baseSpec.intent, disposition: baseSpec.disposition,
@@ -1324,7 +1356,7 @@ final class HistoryStoreTests: XCTestCase {
             ("receipt-original", try makeReport(
                 operationID: operationID,
                 parentID: parentID,
-                kind: OperationKind("history.idempotency.base"),
+                kind: .cleaningExecute,
                 specs: [ReportItemSpec(
                     requestID: requestID, itemID: baseSpec.itemID, url: baseSpec.url,
                     intent: baseSpec.intent, disposition: baseSpec.disposition,
@@ -1365,13 +1397,13 @@ final class HistoryStoreTests: XCTestCase {
         let mutationBase = try makeReport(
             operationID: operationID,
             parentID: parentID,
-            kind: OperationKind("history.idempotency.mutation"),
+            kind: .cleaningExecute,
             specs: [mutationSpec],
             cancellationAccepted: false)
         let mutationVariant = try makeReport(
             operationID: operationID,
             parentID: parentID,
-            kind: OperationKind("history.idempotency.mutation"),
+            kind: .cleaningExecute,
             specs: [ReportItemSpec(
                 requestID: mutationSpec.requestID,
                 itemID: mutationSpec.itemID,
@@ -1433,13 +1465,13 @@ final class HistoryStoreTests: XCTestCase {
         let intentBase = try makeReport(
             operationID: operationID,
             parentID: parentID,
-            kind: OperationKind("history.idempotency.intent"),
+            kind: .cleaningExecute,
             specs: [intentSpec],
             cancellationAccepted: false)
         let intentVariant = try makeReport(
             operationID: operationID,
             parentID: parentID,
-            kind: OperationKind("history.idempotency.intent"),
+            kind: .cleaningExecute,
             specs: [ReportItemSpec(
                 requestID: intentSpec.requestID,
                 itemID: intentSpec.itemID,
@@ -1484,7 +1516,7 @@ final class HistoryStoreTests: XCTestCase {
         let issueBase = try makeReport(
             operationID: operationID,
             parentID: parentID,
-            kind: OperationKind("history.idempotency.issue"),
+            kind: .cleaningExecute,
             specs: [commonSucceededSpec, baseIssueSpec],
             cancellationAccepted: false)
         let issueVariants: [(String, OperationIssue)] = [
@@ -1526,7 +1558,7 @@ final class HistoryStoreTests: XCTestCase {
             let variant = try makeReport(
                 operationID: operationID,
                 parentID: parentID,
-                kind: OperationKind("history.idempotency.issue"),
+                kind: .cleaningExecute,
                 specs: [commonSucceededSpec, changedSpec],
                 cancellationAccepted: false)
             try assertAdditionalImmutableFactConflict(
@@ -1562,13 +1594,13 @@ final class HistoryStoreTests: XCTestCase {
         let dispositionBase = try makeReport(
             operationID: operationID,
             parentID: parentID,
-            kind: OperationKind("history.idempotency.disposition"),
+            kind: .cleaningExecute,
             specs: [commonSucceededSpec, failedSpec, skippedSpec],
             cancellationAccepted: false)
         let dispositionVariant = try makeReport(
             operationID: operationID,
             parentID: parentID,
-            kind: OperationKind("history.idempotency.disposition"),
+            kind: .cleaningExecute,
             specs: [
                 commonSucceededSpec,
                 ReportItemSpec(
@@ -2225,6 +2257,63 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(record.restorable.isEmpty)
     }
 
+    func testMaximumIssueTerminalWithReceiptRecordsAndReloads() throws {
+        XCTAssertEqual(
+            HistoryArchiveLimits.maximumIssuesPerOperation,
+            CleaningOperationLimits.maximumFactCount)
+        let receipt = RestorableItem(
+            originalURL: URL(fileURLWithPath: "/tmp/history-max-issues-original"),
+            trashedURL: URL(fileURLWithPath: "/tmp/history-max-issues-trash"))
+        var specs = [ReportItemSpec(
+            requestID: UUID(),
+            itemID: UUID(),
+            url: URL(fileURLWithPath: "/tmp/history-max-issues-success"),
+            intent: .trash,
+            disposition: .succeeded,
+            mutation: .changed,
+            affectedBytes: 7,
+            receipt: receipt)]
+        for index in 1..<CleaningOperationLimits.maximumFactCount {
+            let requestID = UUID()
+            specs.append(ReportItemSpec(
+                requestID: requestID,
+                itemID: UUID(),
+                url: URL(fileURLWithPath: "/tmp/history-max-issues-failed-\(index)"),
+                intent: .trash,
+                disposition: .failed(boundIssue(
+                    code: "history.boundary.failed",
+                    requestID: requestID)),
+                mutation: .none,
+                affectedBytes: 0,
+                receipt: nil))
+        }
+        let report = try makeReport(
+            specs: specs,
+            cancellationAccepted: false)
+        XCTAssertEqual(report.facts.count, CleaningOperationLimits.maximumFactCount)
+        XCTAssertEqual(
+            report.operation.issues.count,
+            CleaningOperationLimits.maximumFactCount - 1)
+        let store = HistoryStore(directory: tmpDir)
+
+        let recordID = try insertedRecordID(store.record(
+            module: "maximum issue terminal",
+            report: report,
+            date: fixedRecordDate))
+
+        let fresh = HistoryStore(directory: tmpDir)
+        XCTAssertEqual(fresh.archiveState, .writable)
+        let record = try XCTUnwrap(fresh.recent(1).first)
+        XCTAssertEqual(record.id, recordID)
+        XCTAssertEqual(record.itemFacts.count, CleaningOperationLimits.maximumFactCount)
+        XCTAssertEqual(record.counts?.succeeded, 1)
+        XCTAssertEqual(
+            record.counts?.failed,
+            CleaningOperationLimits.maximumFactCount - 1)
+        XCTAssertEqual(record.restorable, [receipt])
+        XCTAssertEqual(record.mutation, .changed)
+    }
+
     func testSkippedAndCancelledIssuesRoundTripFromTypedAndRawRecords() throws {
         for (label, specialDisposition, cancellationAccepted, expectedStatus) in [
             ("skipped",
@@ -2452,6 +2541,64 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(fresh.totalHistoryRecords, 500)
         XCTAssertEqual(fresh.recent(1).first?.id, insertedID)
         XCTAssertFalse(fresh.recent(1_000).contains { $0.module == "retention-0" })
+    }
+
+    func testByteRetentionEvictsOldestLargeTypedRecordsAndReloadsNewestReceipt() throws {
+        let store = HistoryStore(directory: tmpDir)
+        var insertedIDs: [UUID] = []
+        var newestReceipt: RestorableItem?
+
+        for batch in 0..<12 {
+            let receipt = RestorableItem(
+                originalURL: URL(fileURLWithPath: "/tmp/byte-retention-\(batch)-original"),
+                trashedURL: URL(fileURLWithPath: "/tmp/byte-retention-\(batch)-trash"))
+            newestReceipt = receipt
+            var specs = [ReportItemSpec(
+                requestID: UUID(),
+                itemID: UUID(),
+                url: URL(fileURLWithPath: "/tmp/byte-retention-\(batch)-success"),
+                intent: .trash,
+                disposition: .succeeded,
+                mutation: .changed,
+                affectedBytes: 1,
+                receipt: receipt)]
+            for index in 1..<CleaningOperationLimits.maximumFactCount {
+                let requestID = UUID()
+                specs.append(ReportItemSpec(
+                    requestID: requestID,
+                    itemID: UUID(),
+                    url: URL(fileURLWithPath: "/tmp/byte-retention-\(batch)-failed-\(index)"),
+                    intent: .trash,
+                    disposition: .failed(boundIssue(
+                        code: String(repeating: "x", count: 200),
+                        requestID: requestID)),
+                    mutation: .none,
+                    affectedBytes: 0,
+                    receipt: nil))
+            }
+            let report = try makeReport(
+                operationID: UUID(),
+                specs: specs,
+                cancellationAccepted: false)
+            insertedIDs.append(try insertedRecordID(store.record(
+                module: "byte-retention-\(batch)",
+                report: report,
+                date: Date(timeIntervalSinceReferenceDate: TimeInterval(1_000 + batch)))))
+        }
+
+        let current = store.recent(100)
+        XCTAssertLessThan(current.count, insertedIDs.count,
+                          "the byte ceiling must evict before the 500-record ceiling")
+        XCTAssertEqual(current.first?.id, insertedIDs.last)
+        XCTAssertEqual(current.first?.restorable, newestReceipt.map { [$0] } ?? [])
+        XCTAssertFalse(current.contains { $0.id == insertedIDs.first })
+        let archive = try Data(contentsOf: archiveURL)
+        XCTAssertLessThanOrEqual(archive.count, HistoryArchiveLimits.maximumArchiveBytes)
+
+        let fresh = HistoryStore(directory: tmpDir)
+        XCTAssertEqual(fresh.archiveState, .writable)
+        XCTAssertEqual(fresh.recent(100), current)
+        XCTAssertEqual(fresh.recent(1).first?.restorable, newestReceipt.map { [$0] } ?? [])
     }
 
     func testRetentionKeepsNewestFirstAndRejectsAnImmediatelyEvictedInsertion() throws {
@@ -2933,18 +3080,20 @@ final class HistoryStoreTests: XCTestCase {
             ])
             let store = HistoryStore(directory: tmpDir, persistence: persistence)
 
-            XCTAssertNil(store.record(
+            let insertedID = try XCTUnwrap(store.record(
                 module: "conflict-encode-candidate",
                 reclaimedBytes: 1,
                 removedCount: 1,
                 date: fixedRecordDate))
-            XCTAssertEqual(persistence.commitCount, 1,
-                           "The retry must fail during encode before a second CAS call")
+            XCTAssertEqual(persistence.commitCount, 2,
+                           "The retry must evict the oversized oldest record and commit once")
             XCTAssertEqual(store.archiveState, .writable)
-            XCTAssertEqual(store.recent(10).map(\.module), ["conflict-encode-base"])
+            XCTAssertEqual(store.recent(10).map(\.module), ["conflict-encode-candidate"])
+            XCTAssertEqual(store.recent(1).first?.id, insertedID)
             let fresh = HistoryStore(directory: tmpDir, persistence: persistence)
             XCTAssertEqual(fresh.totalHistoryRecords, 1)
-            XCTAssertEqual(fresh.recent(1).first?.module, "conflict-encode-base")
+            XCTAssertEqual(fresh.recent(1).first?.module, "conflict-encode-candidate")
+            XCTAssertEqual(fresh.recent(1).first?.id, insertedID)
         }
     }
 
@@ -4024,7 +4173,7 @@ final class HistoryStoreTests: XCTestCase {
         let safeStore = HistoryStore(directory: tmpDir, persistence: safePersistence)
         let safeReport = try makeReport(
             operationID: UUID(),
-            kind: OperationKind("profile.file: backup"),
+            kind: .cleaningExecute,
             specs: specs,
             cancellationAccepted: false)
         _ = try insertedRecordID(safeStore.record(
@@ -4202,6 +4351,17 @@ final class HistoryStoreTests: XCTestCase {
             _ = record.mutation
             _ = record.counts
             _ = record.itemFacts
+            _ = record.operationFacts
+            if let operationFact = record.operationFacts.first {
+                _ = operationFact.requestID
+                _ = operationFact.role
+                _ = operationFact.relatedCleaningRequestID
+                _ = operationFact.intent
+                _ = operationFact.disposition
+                _ = operationFact.mutation
+                _ = operationFact.affectedBytes
+                _ = operationFact.receipt
+            }
             _ = fact.requestID
             _ = fact.intent
             _ = fact.disposition
@@ -4254,6 +4414,12 @@ final class HistoryStoreTests: XCTestCase {
              func requireDecodable<T: Decodable>(_ type: T.Type) {}
              requireDecodable(HistoryItemFact.self)
              """),
+            ("operation-fact-decodable", "HistoryOperationFact", nonconformance, """
+             import Foundation
+             import Infrastructure
+             func requireDecodable<T: Decodable>(_ type: T.Type) {}
+             requireDecodable(HistoryOperationFact.self)
+             """),
             ("record-init", "CleaningRecord", inaccessibleOrUnavailable, """
              import Foundation
              import Infrastructure
@@ -4281,6 +4447,16 @@ final class HistoryStoreTests: XCTestCase {
              _ = HistoryItemFact(requestID: UUID(), intent: .trash,
                                  disposition: .succeeded, mutation: .changed,
                                  affectedBytes: 1, receipt: nil)
+             """),
+            ("operation-fact-init", "HistoryOperationFact", inaccessibleOrUnavailable, """
+             import Foundation
+             import Domain
+             import Infrastructure
+             _ = HistoryOperationFact(
+                 requestID: UUID(), role: .deletion,
+                 relatedCleaningRequestID: nil, intent: .trash,
+                 disposition: .succeeded, mutation: .changed,
+                 affectedBytes: 1, receipt: nil)
              """),
             ("shred-item-init", "ShredderItemResult", inaccessibleOrUnavailable, """
              import Foundation
@@ -4382,7 +4558,7 @@ final class HistoryStoreTests: XCTestCase {
         assertDegraded(store)
 
         var futureSchema = legacyRecordObject(module: "reload-future-schema")
-        futureSchema["schemaVersion"] = 2
+        futureSchema["schemaVersion"] = 3
         var futureStatus = v1RecordObject(module: "reload-future-status")
         futureStatus = changingOperation(futureStatus) {
             $0["status"] = "futureStatus"
@@ -4966,6 +5142,247 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertFalse(store.recent(1).first!.canUndo, "旧记录无 restorable，不可撤销")
     }
 
+    func testCompoundFactRolesRoundTripWithoutPersistingPathsOrLabels() throws {
+        let deletionID = UUID()
+        let remediationID = UUID()
+        let secretPath = "/Users/private/Library/LaunchAgents/com.secret.agent.plist"
+        let secretLabel = "com.secret.agent"
+        let receipt = RestorableItem(
+            originalURL: URL(fileURLWithPath: "/tmp/compound-original"),
+            trashedURL: URL(fileURLWithPath: "/tmp/compound-trash/item"))
+        let report = try makeCompoundReport(
+            deletionID: deletionID,
+            remediationID: remediationID,
+            deletionURL: URL(fileURLWithPath: secretPath),
+            deletionDisposition: .succeeded,
+            deletionMutation: .changed,
+            deletionBytes: 12,
+            receipt: receipt,
+            remediationDisposition: .failed(boundIssue(
+                code: "threat.remediation.postconditionUnknown",
+                requestID: remediationID)),
+            remediationMutation: .possiblyChanged)
+        let store = HistoryStore(directory: tmpDir)
+
+        _ = try insertedRecordID(store.record(
+            module: "Threat cleanup", report: report, date: fixedRecordDate))
+
+        let current = try XCTUnwrap(store.recent(1).first)
+        XCTAssertEqual(current.schemaVersion, 2)
+        XCTAssertEqual(current.outcomeStatus, .partial)
+        XCTAssertEqual(current.counts?.requested, 2)
+        XCTAssertEqual(current.removedCount, 1)
+        XCTAssertEqual(current.reclaimedBytes, 12)
+        XCTAssertEqual(current.restorable, [receipt])
+        XCTAssertEqual(current.itemFacts.map(\.requestID), [deletionID],
+                       "The compatibility item view remains deletion-only")
+        XCTAssertEqual(current.operationFacts.map(\.role),
+                       [.deletion, .threatRemediation])
+        XCTAssertEqual(current.operationFacts.map(\.requestID),
+                       [deletionID, remediationID])
+        XCTAssertEqual(current.operationFacts[1].relatedCleaningRequestID, deletionID)
+        XCTAssertTrue(current.hasIrreversibleChanges,
+                      "possiblyChanged remediation must survive Trash receipt undo")
+        XCTAssertEqual(HistoryStore(directory: tmpDir).recent(1).first, current)
+
+        let archive = String(decoding: try Data(contentsOf: archiveURL), as: UTF8.self)
+        XCTAssertFalse(archive.contains(secretPath))
+        XCTAssertFalse(archive.contains(secretLabel))
+    }
+
+    func testSuccessfulRemediationDoesNotInflateCleaningAggregates() throws {
+        let receipt = RestorableItem(
+            originalURL: URL(fileURLWithPath: "/tmp/remediation-original"),
+            trashedURL: URL(fileURLWithPath: "/tmp/remediation-trash/item"))
+        let report = try makeCompoundReport(
+            deletionDisposition: .succeeded,
+            deletionMutation: .changed,
+            deletionBytes: 80,
+            receipt: receipt,
+            remediationDisposition: .succeeded,
+            remediationMutation: .changed)
+        let store = HistoryStore(directory: tmpDir)
+
+        let recordID = try insertedRecordID(store.record(
+            module: "Compound success", report: report, date: fixedRecordDate))
+
+        let record = try XCTUnwrap(store.recent(1).first)
+        XCTAssertEqual(record.outcomeStatus, .success)
+        XCTAssertEqual(record.counts?.succeeded, 2)
+        XCTAssertEqual(record.removedCount, 1)
+        XCTAssertEqual(record.reclaimedBytes, 80)
+        XCTAssertEqual(store.totalSuccessfulCleanups, 1)
+        XCTAssertEqual(store.totalReclaimedAllTime, 80)
+        XCTAssertTrue(record.hasIrreversibleChanges,
+                      "A changed remediation must survive deletion-receipt undo")
+
+        XCTAssertEqual(store.updateRestorable(id: recordID, to: []), .committed)
+        let afterUndo = try XCTUnwrap(store.recent(1).first)
+        XCTAssertTrue(afterUndo.restorable.isEmpty)
+        XCTAssertTrue(afterUndo.hasIrreversibleChanges)
+        XCTAssertEqual(afterUndo.operationFacts.map(\.role),
+                       [.deletion, .threatRemediation])
+    }
+
+    func testSchema2ReceiptUpdatePrunesOnlyDeletionReceipt() throws {
+        let receipt = RestorableItem(
+            originalURL: URL(fileURLWithPath: "/tmp/schema2-update-original"),
+            trashedURL: URL(fileURLWithPath: "/tmp/schema2-update-trash/item"))
+        let report = try makeCompoundReport(
+            deletionDisposition: .succeeded,
+            deletionMutation: .changed,
+            deletionBytes: 16,
+            receipt: receipt,
+            remediationDisposition: .unchanged,
+            remediationMutation: .none)
+        let store = HistoryStore(directory: tmpDir)
+        let recordID = try insertedRecordID(store.record(
+            module: "Schema two receipt", report: report, date: fixedRecordDate))
+
+        XCTAssertEqual(store.updateRestorable(id: recordID, to: []), .committed)
+
+        let current = try XCTUnwrap(store.recent(1).first)
+        XCTAssertEqual(current.schemaVersion, 2)
+        XCTAssertTrue(current.restorable.isEmpty)
+        XCTAssertNil(current.itemFacts.first?.receipt)
+        XCTAssertEqual(current.operationFacts.map(\.role),
+                       [.deletion, .threatRemediation])
+        XCTAssertNil(current.operationFacts[0].receipt)
+        XCTAssertNil(current.operationFacts[1].receipt)
+        XCTAssertFalse(current.hasIrreversibleChanges)
+        XCTAssertEqual(HistoryStore(directory: tmpDir).recent(1).first, current)
+    }
+
+    func testSchema2RejectsCrossRoleDuplicateIDsBrokenLinksAndNonDRFactOrder() throws {
+        let report = try makeCompoundReport(
+            deletionDisposition: .succeeded,
+            deletionMutation: .changed,
+            deletionBytes: 5,
+            remediationDisposition: .succeeded,
+            remediationMutation: .changed)
+        let seed = HistoryStore(directory: tmpDir)
+        _ = try insertedRecordID(seed.record(
+            module: "Schema two seed", report: report, date: fixedRecordDate))
+        let validData = try Data(contentsOf: archiveURL)
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: validData) as? [[String: Any]])
+        let validRecord = try XCTUnwrap(root.first)
+
+        let variants: [(String, ([String: Any]) throws -> [String: Any])] = [
+            ("cross-role-duplicate", { record in
+                var copy = record
+                var facts = try XCTUnwrap(copy["facts"] as? [[String: Any]])
+                facts[1]["requestID"] = facts[0]["requestID"]
+                copy["facts"] = facts
+                return copy
+            }),
+            ("broken-link", { record in
+                var copy = record
+                var facts = try XCTUnwrap(copy["facts"] as? [[String: Any]])
+                facts[1]["relatedCleaningRequestID"] = UUID().uuidString
+                copy["facts"] = facts
+                return copy
+            }),
+            ("non-dr-order", { record in
+                var copy = record
+                let facts = try XCTUnwrap(copy["facts"] as? [[String: Any]])
+                copy["facts"] = Array(facts.reversed())
+                return copy
+            }),
+            ("auxiliary-receipt", { record in
+                var copy = record
+                var facts = try XCTUnwrap(copy["facts"] as? [[String: Any]])
+                facts[1]["receipt"] = self.receiptObject()
+                copy["facts"] = facts
+                return copy
+            })
+        ]
+
+        for (name, mutate) in variants {
+            let directory = tmpDir.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: false)
+            let data = try archiveData([mutate(validRecord)])
+            try data.write(to: directory.appendingPathComponent("history.json"))
+
+            let store = HistoryStore(directory: directory)
+            assertDegraded(store)
+            XCTAssertEqual(store.totalSuccessfulCleanups, 0, name)
+            XCTAssertEqual(store.totalReclaimedAllTime, 0, name)
+        }
+    }
+
+    func testSchemaOneAndTwoArchiveLoadRejectUnknownAndHistoryIneligibleKinds() throws {
+        let compound = try makeCompoundReport(
+            deletionDisposition: .succeeded,
+            deletionMutation: .changed,
+            deletionBytes: 7,
+            remediationDisposition: .unchanged,
+            remediationMutation: .none)
+        let seed = HistoryStore(directory: tmpDir)
+        _ = try insertedRecordID(seed.record(
+            module: "Schema two seed",
+            report: compound,
+            date: fixedRecordDate))
+        let schemaTwoRoot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: archiveURL))
+                as? [[String: Any]])
+        let schemaTwo = try XCTUnwrap(schemaTwoRoot.first)
+        let schemas: [(String, [String: Any])] = [
+            ("schema-one", v1RecordObject(module: "Schema one seed")),
+            ("schema-two", schemaTwo),
+        ]
+        let kinds = [
+            "history.test.unknown",
+            OperationKind.threatRemediation.rawValue,
+        ]
+
+        for (schemaName, record) in schemas {
+            for kind in kinds {
+                var mutated = record
+                var operation = try XCTUnwrap(mutated["operation"] as? [String: Any])
+                operation["kind"] = kind
+                mutated["operation"] = operation
+                let directory = tmpDir.appendingPathComponent(
+                    "\(schemaName)-\(UUID().uuidString)",
+                    isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: false)
+                try archiveData([mutated]).write(
+                    to: directory.appendingPathComponent("history.json"))
+
+                let store = HistoryStore(directory: directory)
+                assertDegraded(store)
+                XCTAssertEqual(store.totalSuccessfulCleanups, 0, schemaName)
+                XCTAssertEqual(store.totalReclaimedAllTime, 0, schemaName)
+            }
+        }
+    }
+
+    func testSchema1RemainsReadableWhenSchema2CompoundRecordIsAppended() throws {
+        let schema1 = v1RecordObject(module: "Schema one")
+        let original = try archiveData([schema1])
+        try writeArchive(original)
+        let store = HistoryStore(directory: tmpDir)
+        XCTAssertEqual(store.archiveState, .writable)
+        XCTAssertEqual(store.recent(1).first?.schemaVersion, 1)
+
+        let compound = try makeCompoundReport(
+            deletionDisposition: .succeeded,
+            deletionMutation: .changed,
+            deletionBytes: 9,
+            remediationDisposition: .unchanged,
+            remediationMutation: .none)
+        _ = try insertedRecordID(store.record(
+            module: "Schema two", report: compound, date: fixedRecordDate))
+
+        let fresh = HistoryStore(directory: tmpDir)
+        XCTAssertEqual(fresh.archiveState, .writable)
+        XCTAssertEqual(Set(fresh.recent(10).map(\.schemaVersion)), [1, 2])
+        XCTAssertEqual(Set(fresh.recent(10).map(\.module)), ["Schema one", "Schema two"])
+    }
+
     private var archiveURL: URL {
         tmpDir.appendingPathComponent("history.json")
     }
@@ -5127,6 +5544,52 @@ final class HistoryStoreTests: XCTestCase {
                                restorable: $0.receipt)
         }
         return CleaningReport(operation: outcome, items: items)
+    }
+
+    private func makeCompoundReport(
+        deletionID: UUID = UUID(),
+        remediationID: UUID = UUID(),
+        deletionURL: URL = URL(fileURLWithPath: "/tmp/private-compound-source"),
+        deletionDisposition: OperationDisposition,
+        deletionMutation: OperationMutationFact,
+        deletionBytes: Int64,
+        receipt: RestorableItem? = nil,
+        remediationDisposition: OperationDisposition,
+        remediationMutation: OperationMutationFact
+    ) throws -> CleaningReport {
+        let deletion = CleaningItemResult(
+            requestID: deletionID,
+            itemID: UUID(),
+            url: deletionURL,
+            intent: .trash,
+            disposition: deletionDisposition,
+            mutation: deletionMutation,
+            reclaimedBytes: deletionBytes,
+            restorable: receipt)
+        let remediation = CleaningAuxiliaryItemResult(
+            requestID: remediationID,
+            relatedCleaningRequestID: deletionID,
+            kind: .threatRemediation,
+            disposition: remediationDisposition,
+            mutation: remediationMutation)
+        let facts: [CleaningOperationFact] = [
+            .deletion(deletion),
+            .auxiliary(remediation)
+        ]
+        let outcome = try OperationOutcomeReducer.reduce(
+            kind: .cleaningExecute,
+            requestedSubjectIDs: facts.map { $0.requestID.uuidString },
+            itemOutcomes: facts.map {
+                OperationItemOutcome(
+                    subjectID: $0.requestID.uuidString,
+                    disposition: $0.disposition,
+                    mutation: $0.mutation,
+                    affectedBytes: $0.affectedBytes)
+            },
+            cancellationAccepted: false,
+            startedAt: Date(timeIntervalSinceReferenceDate: 100),
+            finishedAt: Date(timeIntervalSinceReferenceDate: 101))
+        return CleaningReport(operation: outcome, facts: facts)
     }
 
     private func insertedRecordID(

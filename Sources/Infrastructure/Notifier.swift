@@ -14,7 +14,8 @@ public struct ValidatedCleaningNotification: Sendable {
                 .allowsCleaningSuccessNotification == true,
               outcome.status == .success,
               outcome.mutation == .changed,
-              outcome.counts.succeeded > 0,
+              report.removedCount > 0,
+              Self.isReducerConsistent(report),
               !outcome.issues.contains(where: {
                   $0.category == .internalInvariant
               }) else {
@@ -22,7 +23,38 @@ public struct ValidatedCleaningNotification: Sendable {
         }
         operationID = outcome.id
         reclaimedBytes = report.reclaimedBytes
-        changedCount = outcome.counts.succeeded
+        changedCount = report.removedCount
+    }
+
+    private static func isReducerConsistent(_ report: CleaningReport) -> Bool {
+        let facts = report.facts
+        let subjectIDs = facts.map { $0.requestID.uuidString }
+        guard !facts.isEmpty,
+              Set(subjectIDs).count == subjectIDs.count else { return false }
+        let reduced: OperationOutcome
+        do {
+            reduced = try OperationOutcomeReducer.reduce(
+                id: report.operation.id,
+                parentID: report.operation.parentID,
+                kind: report.operation.kind,
+                requestedSubjectIDs: subjectIDs,
+                itemOutcomes: facts.map {
+                    OperationItemOutcome(
+                        subjectID: $0.requestID.uuidString,
+                        disposition: $0.disposition,
+                        mutation: $0.mutation,
+                        affectedBytes: $0.affectedBytes)
+                },
+                cancellationAccepted: false,
+                startedAt: report.operation.startedAt,
+                finishedAt: report.operation.finishedAt)
+        } catch {
+            return false
+        }
+        return reduced.status == report.operation.status
+            && reduced.counts == report.operation.counts
+            && reduced.mutation == report.operation.mutation
+            && reduced.issues == report.operation.issues
     }
 }
 

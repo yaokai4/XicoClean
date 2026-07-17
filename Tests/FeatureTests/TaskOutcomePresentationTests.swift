@@ -50,6 +50,24 @@ final class TaskOutcomePresentationTests: XCTestCase {
         assertAccessible(presentation)
     }
 
+    func testUnchangedRetryTerminalStillOffersUndoForRetainedPriorReceipt() throws {
+        let context = context(
+            operation: try outcome(
+                kind: .cleaningExecute,
+                requested: ["retry-context"],
+                items: [item("retry-context", .unchanged)]),
+            detailKey: "当前目标已经满足",
+            canUndo: true)
+
+        let presentation = makePresentation(context)
+
+        XCTAssertEqual(context.operation.mutation, .none)
+        XCTAssertEqual(presentation.semanticRole, .neutral)
+        XCTAssertEqual(presentation.actionOrder, [.undoChanged, .done])
+        XCTAssertFalse(presentation.allowsCelebration)
+        XCTAssertFalse(presentation.allowsSuccessSoundHaptic)
+    }
+
     func testPartialUsesWarningIconTextRetryDetailsAndUndo() throws {
         let retryable = issue(
             code: "test.io",
@@ -149,6 +167,28 @@ final class TaskOutcomePresentationTests: XCTestCase {
         XCTAssertFalse(presentation.allowsCelebration)
         XCTAssertFalse(presentation.allowsSuccessSoundHaptic)
         assertAccessible(presentation)
+    }
+
+    func testAdmissionRejectedRetryStillOffersUndoForRetainedPriorReceipt() {
+        let operation = OperationOutcomeReducer.admissionFailure(
+            kind: .cleaningExecute,
+            requestedCount: CleaningOperationLimits.maximumFactCount + 1,
+            code: "cleaning.request.inventoryLimitExceeded",
+            startedAt: startedAt,
+            finishedAt: finishedAt)
+        let context = context(
+            operation: operation,
+            detailKey: "请求项目过多，尚未执行",
+            canUndo: true)
+
+        let presentation = makePresentation(context)
+
+        XCTAssertEqual(presentation.semanticRole, .error)
+        XCTAssertEqual(
+            presentation.actionOrder,
+            [.recovery, .details, .undoChanged, .done])
+        XCTAssertFalse(presentation.allowsCelebration)
+        XCTAssertFalse(presentation.allowsSuccessSoundHaptic)
     }
 
     func testCancelledReportsCompletedBeforeCancelAndKeepsUndo() throws {

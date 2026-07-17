@@ -14,6 +14,17 @@ final class OperationConsumerFactsTests: XCTestCase {
     private let startedAt = Date(timeIntervalSince1970: 100)
     private let finishedAt = Date(timeIntervalSince1970: 101)
 
+    func testThreatRemediationRetryTokenAcceptsCaseInsensitivePlistExtension() throws {
+        let token = try XCTUnwrap(ThreatRemediationRetryToken(
+            validatedLabel: "com.xico.case-insensitive",
+            rootRelativeIdentity: "Agent.PLIST"))
+
+        XCTAssertEqual(token.rootRelativeIdentity, "Agent.PLIST")
+        XCTAssertNil(ThreatRemediationRetryToken(
+            validatedLabel: "com.xico.not-a-plist",
+            rootRelativeIdentity: "Agent.PLIST.backup"))
+    }
+
     func testCanonicalOperationKindsHaveStableUniqueRawValues() {
         let expected: [(OperationKind, String)] = [
             (.cleaningExecute, "cleaning.execute"),
@@ -102,6 +113,206 @@ final class OperationConsumerFactsTests: XCTestCase {
         XCTAssertEqual(OperationConsumerFacts.retryableSubjectIDs(from: items), [
             "duplicate", "middle", "duplicate"
         ])
+    }
+
+    func testCleaningRetrySelectionUsesTypedFactsAndPreservesDeletionAuxiliaryOrder() throws {
+        let firstDeletionID = UUID()
+        let remediationID = UUID()
+        let secondDeletionID = UUID()
+        let thirdDeletionID = UUID()
+        let url = URL(fileURLWithPath: "/tmp/retry-facts.plist")
+        let retryIssue = OperationIssue(
+            code: "test.retry", category: .io,
+            subjectID: remediationID.uuidString,
+            recovery: .retry, retryable: true)
+        let noRetryIssue = OperationIssue(
+            code: "test.manual", category: .safetyPolicy,
+            subjectID: thirdDeletionID.uuidString,
+            recovery: .manualAction, retryable: false)
+        let secondItem = CleanableItem(
+            id: UUID(), url: url, displayName: "second", size: 1)
+        let token = try XCTUnwrap(ThreatRemediationRetryToken(
+            validatedLabel: "com.xico.retry.facts",
+            rootRelativeIdentity: "retry-facts.plist"))
+        let facts: [CleaningOperationFact] = [
+            .deletion(CleaningItemResult(
+                requestID: firstDeletionID, itemID: UUID(), url: url,
+                intent: .trash, disposition: .succeeded, mutation: .changed,
+                reclaimedBytes: 1, restorable: nil)),
+            .auxiliary(CleaningAuxiliaryItemResult(
+                requestID: remediationID,
+                relatedCleaningRequestID: firstDeletionID,
+                kind: .threatRemediation,
+                disposition: .failed(retryIssue),
+                mutation: .possiblyChanged,
+                retryToken: token)),
+            .deletion(CleaningItemResult(
+                requestID: secondDeletionID, itemID: secondItem.id, url: url,
+                intent: .permanent,
+                retryAuthorization: CleaningRetryAuthorization(
+                    item: secondItem,
+                    intent: .permanent,
+                    prerequisite: .none),
+                disposition: .cancelled(nil), mutation: .none,
+                reclaimedBytes: 0, restorable: nil)),
+            .deletion(CleaningItemResult(
+                requestID: thirdDeletionID, itemID: UUID(), url: url,
+                intent: .permanent, disposition: .failed(noRetryIssue), mutation: .none,
+                reclaimedBytes: 0, restorable: nil))
+        ]
+        let outcome = try OperationOutcomeReducer.reduce(
+            kind: .cleaningExecute,
+            requestedSubjectIDs: facts.map { $0.requestID.uuidString },
+            itemOutcomes: facts.map {
+                OperationItemOutcome(
+                    subjectID: $0.requestID.uuidString,
+                    disposition: $0.disposition,
+                    mutation: $0.mutation,
+                    affectedBytes: $0.affectedBytes)
+            },
+            cancellationAccepted: true,
+            startedAt: startedAt,
+            finishedAt: finishedAt)
+        let report = CleaningReport(operation: outcome, facts: facts)
+
+        let selected = OperationConsumerFacts.retryableCleaningFacts(from: report)
+
+        XCTAssertEqual(selected.map(\.requestID), [remediationID, secondDeletionID])
+        guard case .auxiliary = selected.first else {
+            return XCTFail("Expected the retryable remediation fact first")
+        }
+        guard case .deletion = selected.last else {
+            return XCTFail("Expected the unattempted deletion fact second")
+        }
+    }
+
+    func testCleaningRetrySelectionRejectsRetryableLookingFactsWithoutAuthority() throws {
+        let deletionID = UUID()
+        let remediationID = UUID()
+        let issue = OperationIssue(
+            code: "test.retry",
+            category: .io,
+            subjectID: deletionID.uuidString,
+            recovery: .retry,
+            retryable: true)
+        let facts: [CleaningOperationFact] = [
+            .deletion(CleaningItemResult(
+                requestID: deletionID,
+                itemID: UUID(),
+                url: URL(fileURLWithPath: "/tmp/no-authority.plist"),
+                intent: .permanent,
+                disposition: .failed(issue),
+                mutation: .none,
+                reclaimedBytes: 0,
+                restorable: nil)),
+            .auxiliary(CleaningAuxiliaryItemResult(
+                requestID: remediationID,
+                relatedCleaningRequestID: deletionID,
+                kind: .threatRemediation,
+                disposition: .failed(OperationIssue(
+                    code: "test.retry.aux",
+                    category: .io,
+                    subjectID: remediationID.uuidString,
+                    recovery: .retry,
+                    retryable: true)),
+                mutation: .none))
+        ]
+        let outcome = try OperationOutcomeReducer.reduce(
+            kind: .cleaningExecute,
+            requestedSubjectIDs: facts.map { $0.requestID.uuidString },
+            itemOutcomes: facts.map {
+                OperationItemOutcome(
+                    subjectID: $0.requestID.uuidString,
+                    disposition: $0.disposition,
+                    mutation: $0.mutation)
+            },
+            cancellationAccepted: false,
+            startedAt: startedAt,
+            finishedAt: finishedAt)
+
+        XCTAssertTrue(OperationConsumerFacts.retryableCleaningFacts(
+            from: CleaningReport(operation: outcome, facts: facts)).isEmpty)
+    }
+
+    func testCleaningRetrySelectionRejectsMutatedDeletionButKeepsTokenAuxiliary() throws {
+        let changedID = UUID()
+        let uncertainID = UUID()
+        let contextID = UUID()
+        let auxiliaryID = UUID()
+        let issue: (UUID) -> OperationIssue = { requestID in
+            OperationIssue(
+                code: "test.retry.mutated",
+                category: .io,
+                subjectID: requestID.uuidString,
+                recovery: .retry,
+                retryable: true)
+        }
+        func deletion(
+            requestID: UUID,
+            mutation: OperationMutationFact
+        ) -> CleaningItemResult {
+            let item = CleanableItem(
+                id: UUID(),
+                url: URL(fileURLWithPath: "/tmp/mutated-\(requestID).plist"),
+                displayName: "mutated",
+                size: 1)
+            return CleaningItemResult(
+                requestID: requestID,
+                itemID: item.id,
+                url: item.url,
+                intent: .permanent,
+                retryAuthorization: CleaningRetryAuthorization(
+                    item: item,
+                    intent: .permanent,
+                    prerequisite: .none),
+                disposition: .failed(issue(requestID)),
+                mutation: mutation,
+                reclaimedBytes: 0,
+                restorable: nil)
+        }
+        let token = try XCTUnwrap(ThreatRemediationRetryToken(
+            validatedLabel: "com.xico.retry.auxiliary",
+            rootRelativeIdentity: "retry-auxiliary.plist"))
+        let facts: [CleaningOperationFact] = [
+            .deletion(deletion(requestID: changedID, mutation: .changed)),
+            .deletion(deletion(requestID: uncertainID, mutation: .possiblyChanged)),
+            .deletion(CleaningItemResult(
+                requestID: contextID,
+                itemID: UUID(),
+                url: URL(fileURLWithPath: "/tmp/retry-auxiliary.plist"),
+                intent: .permanent,
+                disposition: .succeeded,
+                mutation: .changed,
+                reclaimedBytes: 1,
+                restorable: nil)),
+            .auxiliary(CleaningAuxiliaryItemResult(
+                requestID: auxiliaryID,
+                relatedCleaningRequestID: contextID,
+                kind: .threatRemediation,
+                disposition: .failed(issue(auxiliaryID)),
+                mutation: .possiblyChanged,
+                retryToken: token))
+        ]
+        let outcome = try OperationOutcomeReducer.reduce(
+            kind: .cleaningExecute,
+            requestedSubjectIDs: facts.map { $0.requestID.uuidString },
+            itemOutcomes: facts.map {
+                OperationItemOutcome(
+                    subjectID: $0.requestID.uuidString,
+                    disposition: $0.disposition,
+                    mutation: $0.mutation,
+                    affectedBytes: $0.affectedBytes)
+            },
+            cancellationAccepted: false,
+            startedAt: startedAt,
+            finishedAt: finishedAt)
+        let selected = OperationConsumerFacts.retryableCleaningFacts(
+            from: CleaningReport(operation: outcome, facts: facts))
+
+        XCTAssertEqual(selected.map(\.requestID), [auxiliaryID])
+        guard let first = selected.first, case .auxiliary = first else {
+            return XCTFail("Only the token-backed auxiliary may remain retryable")
+        }
     }
 
     func testRetryCreatesNewIDAndPreservesParentID() throws {

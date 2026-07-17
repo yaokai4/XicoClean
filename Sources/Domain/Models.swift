@@ -409,13 +409,31 @@ public enum DeleteIntent: Sendable, Equatable {
     case permanent  // 彻底删除（需显式确认）
 }
 
+public enum CleaningPrerequisite: Sendable, Equatable {
+    case none
+    case threatRemediation
+}
+
+/// Maximum number of typed D/R facts a cleaning terminal may produce. This is shared by Domain,
+/// remediation authorization, and history so an admitted operation cannot mutate successfully and
+/// then become unpersistable or advertise a retry token that was evicted from a bounded store.
+public enum CleaningOperationLimits {
+    public static let maximumFactCount = 256
+}
+
 public struct CleaningPlan: Sendable {
     public let items: [CleanableItem]
     public let intent: DeleteIntent
+    public let prerequisite: CleaningPrerequisite
 
-    public init(items: [CleanableItem], intent: DeleteIntent = .trash) {
+    public init(
+        items: [CleanableItem],
+        intent: DeleteIntent = .trash,
+        prerequisite: CleaningPrerequisite = .none
+    ) {
         self.items = items
         self.intent = intent
+        self.prerequisite = prerequisite
     }
 
     public var totalSize: Int64 { items.reduce(0) { $0 + $1.estimatedReclaimableBytes } }
@@ -430,22 +448,47 @@ public struct CleaningFailure: Sendable {
     }
 }
 
+/// Opaque, in-memory authorization captured by Domain when the original request inventory is
+/// prepared. Retry executes this immutable copy; Feature cannot substitute a different route,
+/// size estimate, target or prerequisite.
+public struct CleaningRetryAuthorization: Sendable {
+    public let item: CleanableItem
+    public let intent: DeleteIntent
+    public let prerequisite: CleaningPrerequisite
+
+    init(
+        item: CleanableItem,
+        intent: DeleteIntent,
+        prerequisite: CleaningPrerequisite
+    ) {
+        self.item = item
+        self.intent = intent
+        self.prerequisite = prerequisite
+    }
+}
+
 public struct CleaningItemResult: Sendable {
     public let requestID: UUID
     public let itemID: UUID
     public let url: URL
     public let intent: DeleteIntent
+    public let prerequisite: CleaningPrerequisite
+    public let retryAuthorization: CleaningRetryAuthorization?
     public let disposition: OperationDisposition
     public let mutation: OperationMutationFact
     public let reclaimedBytes: Int64
     public let restorable: RestorableItem?
     init(requestID: UUID, itemID: UUID, url: URL, intent: DeleteIntent,
+         prerequisite: CleaningPrerequisite = .none,
+         retryAuthorization: CleaningRetryAuthorization? = nil,
          disposition: OperationDisposition, mutation: OperationMutationFact,
          reclaimedBytes: Int64, restorable: RestorableItem?) {
         self.requestID = requestID
         self.itemID = itemID
         self.url = url
         self.intent = intent
+        self.prerequisite = prerequisite
+        self.retryAuthorization = retryAuthorization
         self.disposition = disposition
         self.mutation = mutation
         self.reclaimedBytes = max(0, reclaimedBytes)
@@ -453,27 +496,256 @@ public struct CleaningItemResult: Sendable {
     }
 }
 
-public struct CleaningReport: Sendable {
-    public let operation: OperationOutcome
-    public let items: [CleaningItemResult]
-    private let legacy: LegacyCleaningCompatibility?
+/// Validated launch-agent identity retained only in memory so a later auxiliary-only retry never
+/// needs to reopen a plist that the successful deletion already moved or removed.
+public struct ThreatRemediationRetryToken: Equatable, Sendable {
+    public let validatedLabel: String
+    public let rootRelativeIdentity: String
 
-    init(operation: OperationOutcome, items: [CleaningItemResult]) {
-        self.operation = operation
+    public init?(validatedLabel: String, rootRelativeIdentity: String) {
+        guard !validatedLabel.isEmpty,
+              validatedLabel.utf8.count <= 512,
+              validatedLabel.utf8.allSatisfy({ byte in
+                  (65...90).contains(byte)
+                      || (97...122).contains(byte)
+                      || (48...57).contains(byte)
+                      || byte == 46 || byte == 95 || byte == 45
+              }),
+              !rootRelativeIdentity.isEmpty,
+              rootRelativeIdentity != ".",
+              rootRelativeIdentity != "..",
+              !rootRelativeIdentity.contains("/"),
+              !rootRelativeIdentity.contains("\\"),
+              rootRelativeIdentity.utf8.count <= 255,
+              URL(fileURLWithPath: rootRelativeIdentity).pathExtension
+                .caseInsensitiveCompare("plist") == .orderedSame else {
+            return nil
+        }
+        self.validatedLabel = validatedLabel
+        self.rootRelativeIdentity = rootRelativeIdentity
+    }
+}
+
+public struct ThreatRemediationRequest: Sendable {
+    public let requestID: UUID
+    public let relatedCleaningRequestID: UUID
+    public let url: URL
+    public let retryToken: ThreatRemediationRetryToken?
+
+    public init(
+        requestID: UUID,
+        relatedCleaningRequestID: UUID,
+        url: URL,
+        retryToken: ThreatRemediationRetryToken? = nil
+    ) {
+        self.requestID = requestID
+        self.relatedCleaningRequestID = relatedCleaningRequestID
+        self.url = url
+        self.retryToken = retryToken
+    }
+}
+
+public struct ThreatRemediationItemResult: Sendable {
+    public let requestID: UUID
+    public let relatedCleaningRequestID: UUID
+    public let url: URL
+    public let disposition: OperationDisposition
+    public let mutation: OperationMutationFact
+    public let retryToken: ThreatRemediationRetryToken?
+
+    public init(
+        requestID: UUID,
+        relatedCleaningRequestID: UUID,
+        url: URL,
+        disposition: OperationDisposition,
+        mutation: OperationMutationFact,
+        retryToken: ThreatRemediationRetryToken? = nil
+    ) {
+        self.requestID = requestID
+        self.relatedCleaningRequestID = relatedCleaningRequestID
+        self.url = url
+        self.disposition = disposition
+        self.mutation = mutation
+        self.retryToken = retryToken
+    }
+}
+
+public struct ThreatRemediationReport: Sendable {
+    public let items: [ThreatRemediationItemResult]
+
+    public init(items: [ThreatRemediationItemResult]) {
         self.items = items
-        self.legacy = nil
+    }
+}
+
+public protocol ThreatRemediationExecuting: Sendable {
+    func remediate(
+        _ requests: [ThreatRemediationRequest],
+        operationID: UUID,
+        parentID: UUID
+    ) async -> OperationResult<ThreatRemediationReport>
+}
+
+public enum CleaningAuxiliaryItemKind: String, Codable, Sendable {
+    case threatRemediation
+}
+
+public struct CleaningAuxiliaryItemResult: Sendable {
+    public let requestID: UUID
+    public let relatedCleaningRequestID: UUID
+    public let kind: CleaningAuxiliaryItemKind
+    public let disposition: OperationDisposition
+    public let mutation: OperationMutationFact
+    public let retryToken: ThreatRemediationRetryToken?
+
+    public init(
+        requestID: UUID,
+        relatedCleaningRequestID: UUID,
+        kind: CleaningAuxiliaryItemKind,
+        disposition: OperationDisposition,
+        mutation: OperationMutationFact,
+        retryToken: ThreatRemediationRetryToken? = nil
+    ) {
+        self.requestID = requestID
+        self.relatedCleaningRequestID = relatedCleaningRequestID
+        self.kind = kind
+        self.disposition = disposition
+        self.mutation = mutation
+        self.retryToken = retryToken
+    }
+}
+
+public enum CleaningOperationFact: Sendable {
+    case deletion(CleaningItemResult)
+    case auxiliary(CleaningAuxiliaryItemResult)
+
+    public var requestID: UUID {
+        switch self {
+        case let .deletion(item): item.requestID
+        case let .auxiliary(item): item.requestID
+        }
     }
 
-    public var removedCount: Int { legacy?.removedCount ?? operation.counts.succeeded }
+    public var disposition: OperationDisposition {
+        switch self {
+        case let .deletion(item): item.disposition
+        case let .auxiliary(item): item.disposition
+        }
+    }
+
+    public var mutation: OperationMutationFact {
+        switch self {
+        case let .deletion(item): item.mutation
+        case let .auxiliary(item): item.mutation
+        }
+    }
+
+    public var affectedBytes: Int64 {
+        switch self {
+        case let .deletion(item): item.reclaimedBytes
+        case .auxiliary: 0
+        }
+    }
+}
+
+public enum CleaningReportMergeFailure: String, Equatable, Sendable {
+    case empty
+    case purposeMismatch
+    case childCorrelationMismatch
+    case duplicateRequestID
+    case missingOccurrence
+    case invalidAuxiliaryLink
+    case factMismatch
+
+    var issueCode: String {
+        "cleaning.merge.\(rawValue)"
+    }
+}
+
+/// Domain-owned evidence required to reproduce an unregistered, fail-closed cleaning terminal.
+/// It is never inferred from `OperationOutcome.issues`; callers outside Domain cannot mint it.
+enum CleaningReportRejectionMetadata: Equatable, Sendable {
+    case merge(CleaningReportMergeFailure)
+    case unexpectedMerge
+    case inventoryLimit(projectedFactCount: Int)
+
+    var issueCode: String {
+        switch self {
+        case let .merge(failure): failure.issueCode
+        case .unexpectedMerge: "cleaning.merge.unexpected"
+        case .inventoryLimit: "cleaning.request.inventoryLimitExceeded"
+        }
+    }
+}
+
+public struct CleaningReportMergeError: Error, Sendable {
+    public let failure: CleaningReportMergeFailure
+    public let failClosedReport: CleaningReport
+
+    public var code: String { failure.issueCode }
+
+    init(failure: CleaningReportMergeFailure, failClosedReport: CleaningReport) {
+        self.failure = failure
+        self.failClosedReport = failClosedReport
+    }
+}
+
+public struct CleaningReport: Sendable {
+    public let operation: OperationOutcome
+    public let facts: [CleaningOperationFact]
+    private let retryReceiptLedger: [CleaningRetryReceipt]
+    let rejectionMetadata: CleaningReportRejectionMetadata?
+
+    init(
+        operation: OperationOutcome,
+        items: [CleaningItemResult],
+        auxiliaryItems: [CleaningAuxiliaryItemResult] = []
+    ) {
+        self.operation = operation
+        self.facts = items.map(CleaningOperationFact.deletion)
+            + auxiliaryItems.map(CleaningOperationFact.auxiliary)
+        self.retryReceiptLedger = []
+        self.rejectionMetadata = nil
+    }
+
+    init(
+        operation: OperationOutcome,
+        facts: [CleaningOperationFact],
+        retryReceiptLedger: [CleaningRetryReceipt] = [],
+        rejectionMetadata: CleaningReportRejectionMetadata? = nil
+    ) {
+        self.operation = operation
+        self.facts = facts
+        self.retryReceiptLedger = retryReceiptLedger
+        self.rejectionMetadata = rejectionMetadata
+    }
+
+    public var items: [CleaningItemResult] {
+        facts.compactMap { fact in
+            guard case let .deletion(item) = fact else { return nil }
+            return item
+        }
+    }
+
+    public var auxiliaryItems: [CleaningAuxiliaryItemResult] {
+        facts.compactMap { fact in
+            guard case let .auxiliary(item) = fact else { return nil }
+            return item
+        }
+    }
+
+    public var removedCount: Int {
+        return items.reduce(into: 0) { count, item in
+            if item.disposition == .succeeded { count += 1 }
+        }
+    }
     public var reclaimedBytes: Int64 {
-        if let legacy { return legacy.reclaimedBytes }
         return items.reduce(0) { total, item in
             guard item.disposition == .succeeded else { return total }
             return saturatedNonnegativeSum(total, item.reclaimedBytes)
         }
     }
     public var failures: [CleaningFailure] {
-        if let legacy { return legacy.failures }
         return items.compactMap { item in
             switch item.disposition {
             case let .failed(issue), let .skipped(issue):
@@ -483,44 +755,333 @@ public struct CleaningReport: Sendable {
         }
     }
     public var restorable: [RestorableItem] {
-        if let legacy { return legacy.restorable }
         return items.compactMap { $0.disposition == .succeeded ? $0.restorable : nil }
     }
 
-    // Transitional only; remove in outcome-workflows Task 4 after every production constructor is migrated.
-    public init(removedCount: Int, reclaimedBytes: Int64,
-                failures: [CleaningFailure], restorable: [RestorableItem]) {
-        let startedAt = Date()
-        let subjectIDs = Self.legacyAggregateSubjectIDs(
-            removedCount: removedCount,
-            reclaimedBytes: reclaimedBytes,
-            failureCount: failures.count,
-            restorableCount: restorable.count)
-        self.operation = OperationOutcomeReducer.internalFailure(
-            kind: OperationKind("cleaning.legacyAggregate"),
-            requestedSubjectIDs: subjectIDs,
-            code: "operation.legacy.unknown",
-            startedAt: startedAt,
-            finishedAt: startedAt)
-        self.items = []
-        self.legacy = LegacyCleaningCompatibility(
-            removedCount: max(0, removedCount),
-            reclaimedBytes: max(0, reclaimedBytes),
-            failures: failures,
-            restorable: restorable)
+    var retainedRetryReceipts: [CleaningRetryReceipt] { retryReceiptLedger }
+
+    /// True only when the terminal outcome can be reproduced exactly from the stored typed facts.
+    public var isReducerBacked: Bool {
+        Self.isReducerConsistent(self)
     }
 
-    static func legacyAggregateSubjectIDs(
-        removedCount: Int,
-        reclaimedBytes: Int64,
-        failureCount: Int,
-        restorableCount: Int
-    ) -> [String] {
-        guard removedCount > 0
-                || reclaimedBytes > 0
-                || failureCount > 0
-                || restorableCount > 0 else { return [] }
-        return ["legacy-aggregate"]
+    static func merging(
+        _ reports: [CleaningReport],
+        supplemental: [OperationResult<ThreatRemediationReport>],
+        purpose: CleaningOperationPurpose,
+        id: UUID,
+        parentID: UUID?,
+        occurrenceOrder: [UUID]
+    ) throws -> CleaningReport {
+        let deletionItems = reports.flatMap(\.items)
+        let auxiliaryItems = supplemental.flatMap { result in
+            result.payload.items.map {
+                CleaningAuxiliaryItemResult(
+                    requestID: $0.requestID,
+                    relatedCleaningRequestID: $0.relatedCleaningRequestID,
+                    kind: .threatRemediation,
+                    disposition: $0.disposition,
+                    mutation: $0.mutation,
+                    retryToken: $0.retryToken)
+            }
+        }
+        let fallbackFacts = orderedFactsFailClosed(
+            deletionItems: deletionItems,
+            auxiliaryItems: auxiliaryItems,
+            occurrenceOrder: occurrenceOrder)
+
+        func reject(_ failure: CleaningReportMergeFailure) throws -> Never {
+            throw CleaningReportMergeError(
+                failure: failure,
+                failClosedReport: failClosed(
+                    facts: fallbackFacts,
+                    parentID: parentID,
+                    failure: failure))
+        }
+
+        guard !reports.isEmpty, !deletionItems.isEmpty else {
+            try reject(.empty)
+        }
+        guard reports.allSatisfy({ $0.operation.kind == purpose.operationKind }),
+              supplemental.allSatisfy({ $0.outcome.kind == .threatRemediation }) else {
+            try reject(.purposeMismatch)
+        }
+        guard reports.allSatisfy({ $0.operation.parentID == id }),
+              supplemental.allSatisfy({ $0.outcome.parentID == id }) else {
+            try reject(.childCorrelationMismatch)
+        }
+        guard reports.allSatisfy(isReducerConsistent),
+              supplemental.allSatisfy(isReducerConsistent) else {
+            try reject(.factMismatch)
+        }
+
+        let deletionIDs = deletionItems.map(\.requestID)
+        guard occurrenceOrder.count == deletionIDs.count,
+              Set(occurrenceOrder) == Set(deletionIDs) else {
+            try reject(.missingOccurrence)
+        }
+        let allIDs = deletionIDs + auxiliaryItems.map(\.requestID)
+        guard Set(allIDs).count == allIDs.count else {
+            try reject(.duplicateRequestID)
+        }
+
+        let deletionSet = Set(deletionIDs)
+        var related = Set<UUID>()
+        for auxiliary in auxiliaryItems {
+            guard deletionSet.contains(auxiliary.relatedCleaningRequestID),
+                  related.insert(auxiliary.relatedCleaningRequestID).inserted else {
+                try reject(.invalidAuxiliaryLink)
+            }
+        }
+
+        let deletionByID = Dictionary(uniqueKeysWithValues: deletionItems.map {
+            ($0.requestID, $0)
+        })
+        let auxiliaryByRelated = Dictionary(uniqueKeysWithValues: auxiliaryItems.map {
+            ($0.relatedCleaningRequestID, $0)
+        })
+        var orderedFacts: [CleaningOperationFact] = []
+        orderedFacts.reserveCapacity(allIDs.count)
+        for requestID in occurrenceOrder {
+            guard let deletion = deletionByID[requestID] else {
+                try reject(.missingOccurrence)
+            }
+            orderedFacts.append(.deletion(deletion))
+            if let auxiliary = auxiliaryByRelated[requestID] {
+                orderedFacts.append(.auxiliary(auxiliary))
+            }
+        }
+
+        let childOutcomes = reports.map(\.operation) + supplemental.map(\.outcome)
+        guard let startedAt = childOutcomes.map(\.startedAt).min(),
+              let finishedAt = childOutcomes.map(\.finishedAt).max() else {
+            try reject(.empty)
+        }
+        let operation: OperationOutcome
+        do {
+            operation = try OperationOutcomeReducer.reduce(
+                id: id,
+                parentID: parentID,
+                kind: purpose.operationKind,
+                requestedSubjectIDs: orderedFacts.map { $0.requestID.uuidString },
+                itemOutcomes: orderedFacts.map(\.operationItemOutcome),
+                cancellationAccepted: childOutcomes.contains { $0.status == .cancelled },
+                startedAt: startedAt,
+                finishedAt: finishedAt)
+        } catch {
+            try reject(.factMismatch)
+        }
+        return CleaningReport(operation: operation, facts: orderedFacts)
+    }
+
+    private static func isReducerConsistent(_ report: CleaningReport) -> Bool {
+        if let rejection = report.rejectionMetadata {
+            if case let .inventoryLimit(projectedFactCount) = rejection {
+                guard report.facts.isEmpty,
+                      projectedFactCount > CleaningOperationLimits.maximumFactCount else {
+                    return false
+                }
+                let reproduced = OperationOutcomeReducer.admissionFailure(
+                    id: report.operation.id,
+                    parentID: report.operation.parentID,
+                    kind: report.operation.kind,
+                    requestedCount: projectedFactCount,
+                    code: rejection.issueCode,
+                    startedAt: report.operation.startedAt,
+                    finishedAt: report.operation.finishedAt)
+                return outcomesMatch(reproduced, report.operation)
+            }
+            guard !report.facts.isEmpty else { return false }
+            guard report.operation.kind == OperationKind("cleaning.merge.rejected") else {
+                return false
+            }
+            let reproduced = OperationOutcomeReducer.internalFailure(
+                id: report.operation.id,
+                parentID: report.operation.parentID,
+                kind: report.operation.kind,
+                requestedSubjectIDs: report.facts.map { $0.requestID.uuidString },
+                itemOutcomes: report.facts.map(\.operationItemOutcome),
+                cancellationAccepted: false,
+                code: rejection.issueCode,
+                startedAt: report.operation.startedAt,
+                finishedAt: report.operation.finishedAt)
+            return outcomesMatch(reproduced, report.operation)
+        }
+        guard !report.facts.isEmpty else { return false }
+        return outcomeMatchesFacts(
+            report.operation,
+            facts: report.facts)
+    }
+
+    static func isReducerConsistent(
+        _ result: OperationResult<ThreatRemediationReport>
+    ) -> Bool {
+        let facts = result.payload.items.map {
+            OperationItemOutcome(
+                subjectID: $0.requestID.uuidString,
+                disposition: $0.disposition,
+                mutation: $0.mutation)
+        }
+        return outcomeMatchesFacts(
+            result.outcome,
+            requestedSubjectIDs: result.payload.items.map { $0.requestID.uuidString },
+            itemOutcomes: facts)
+    }
+
+    private static func outcomeMatchesFacts(
+        _ outcome: OperationOutcome,
+        facts: [CleaningOperationFact]
+    ) -> Bool {
+        outcomeMatchesFacts(
+            outcome,
+            requestedSubjectIDs: facts.map { $0.requestID.uuidString },
+            itemOutcomes: facts.map(\.operationItemOutcome))
+    }
+
+    private static func outcomeMatchesFacts(
+        _ outcome: OperationOutcome,
+        requestedSubjectIDs: [String],
+        itemOutcomes: [OperationItemOutcome]
+    ) -> Bool {
+        let reduced: OperationOutcome
+        do {
+            reduced = try OperationOutcomeReducer.reduce(
+                id: outcome.id,
+                parentID: outcome.parentID,
+                kind: outcome.kind,
+                requestedSubjectIDs: requestedSubjectIDs,
+                itemOutcomes: itemOutcomes,
+                cancellationAccepted: outcome.status == .cancelled,
+                startedAt: outcome.startedAt,
+                finishedAt: outcome.finishedAt)
+        } catch {
+            return false
+        }
+        return outcomesMatch(reduced, outcome)
+    }
+
+    private static func outcomesMatch(
+        _ lhs: OperationOutcome,
+        _ rhs: OperationOutcome
+    ) -> Bool {
+        lhs.id == rhs.id
+            && lhs.parentID == rhs.parentID
+            && lhs.kind == rhs.kind
+            && lhs.status == rhs.status
+            && lhs.counts == rhs.counts
+            && lhs.startedAt == rhs.startedAt
+            && lhs.finishedAt == rhs.finishedAt
+            && lhs.issues == rhs.issues
+            && lhs.mutation == rhs.mutation
+    }
+
+    private static func orderedFactsFailClosed(
+        deletionItems: [CleaningItemResult],
+        auxiliaryItems: [CleaningAuxiliaryItemResult],
+        occurrenceOrder: [UUID]
+    ) -> [CleaningOperationFact] {
+        var remainingDeletions = deletionItems
+        var remainingAuxiliary = auxiliaryItems
+        var result: [CleaningOperationFact] = []
+        for requestID in occurrenceOrder {
+            if let index = remainingDeletions.firstIndex(where: {
+                $0.requestID == requestID
+            }) {
+                result.append(.deletion(remainingDeletions.remove(at: index)))
+            }
+            while let index = remainingAuxiliary.firstIndex(where: {
+                $0.relatedCleaningRequestID == requestID
+            }) {
+                result.append(.auxiliary(remainingAuxiliary.remove(at: index)))
+            }
+        }
+        result.append(contentsOf: remainingDeletions.map(CleaningOperationFact.deletion))
+        result.append(contentsOf: remainingAuxiliary.map(CleaningOperationFact.auxiliary))
+        return result
+    }
+
+    private static func failClosed(
+        facts: [CleaningOperationFact],
+        parentID: UUID?,
+        failure: CleaningReportMergeFailure
+    ) -> CleaningReport {
+        let now = Date()
+        let operation = OperationOutcomeReducer.internalFailure(
+            parentID: parentID,
+            kind: OperationKind("cleaning.merge.rejected"),
+            requestedSubjectIDs: facts.map { $0.requestID.uuidString },
+            itemOutcomes: facts.map(\.operationItemOutcome),
+            code: failure.issueCode,
+            startedAt: now,
+            finishedAt: now)
+        return CleaningReport(
+            operation: operation,
+            facts: facts,
+            rejectionMetadata: .merge(failure))
+    }
+}
+
+/// Domain-owned correlation between a retry's new deletion/context fact and the exact deletion
+/// occurrence in the prior terminal. Feature consumers must use this mapping instead of paths or
+/// caller item IDs; repeated caller IDs are intentionally valid.
+public struct CleaningRetryOccurrenceExecution: Sendable {
+    public let priorDeletionOccurrenceIndex: Int
+    public let deletionRequestID: UUID
+    public let performedDeletion: Bool
+
+    init(
+        priorDeletionOccurrenceIndex: Int,
+        deletionRequestID: UUID,
+        performedDeletion: Bool
+    ) {
+        self.priorDeletionOccurrenceIndex = priorDeletionOccurrenceIndex
+        self.deletionRequestID = deletionRequestID
+        self.performedDeletion = performedDeletion
+    }
+}
+
+/// Receipt ownership is retained across retry generations without adding old deletion facts to a
+/// new terminal or inflating that retry's removal metrics/history notification count.
+public struct CleaningRetryReceipt: Equatable, Sendable {
+    public let ownerOperationID: UUID
+    public let deletionRequestID: UUID
+    public let item: RestorableItem
+
+    init(
+        ownerOperationID: UUID,
+        deletionRequestID: UUID,
+        item: RestorableItem
+    ) {
+        self.ownerOperationID = ownerOperationID
+        self.deletionRequestID = deletionRequestID
+        self.item = item
+    }
+}
+
+/// Typed retry terminal plus its verified occurrence correlation.
+public struct CleaningRetryExecution: Sendable {
+    public let report: CleaningReport
+    public let occurrences: [CleaningRetryOccurrenceExecution]
+    public let retainedReceipts: [CleaningRetryReceipt]
+
+    init(
+        report: CleaningReport,
+        occurrences: [CleaningRetryOccurrenceExecution],
+        retainedReceipts: [CleaningRetryReceipt]
+    ) {
+        self.report = report
+        self.occurrences = occurrences
+        self.retainedReceipts = retainedReceipts
+    }
+}
+
+private extension CleaningOperationFact {
+    var operationItemOutcome: OperationItemOutcome {
+        OperationItemOutcome(
+            subjectID: requestID.uuidString,
+            disposition: disposition,
+            mutation: mutation,
+            affectedBytes: affectedBytes)
     }
 }
 
@@ -529,19 +1090,56 @@ func saturatedNonnegativeSum(_ lhs: Int64, _ rhs: Int64) -> Int64 {
     return overflow ? .max : sum
 }
 
-private struct LegacyCleaningCompatibility: Sendable {
-    let removedCount: Int
-    let reclaimedBytes: Int64
-    let failures: [CleaningFailure]
-    let restorable: [RestorableItem]
-}
-
 public struct RestorableItem: Sendable, Codable, Equatable {
     public let originalURL: URL
     public let trashedURL: URL
     public init(originalURL: URL, trashedURL: URL) {
         self.originalURL = originalURL
         self.trashedURL = trashedURL
+    }
+}
+
+public struct UndoItemResult: Sendable {
+    public let requestID: UUID
+    public let item: RestorableItem
+    public let disposition: OperationDisposition
+    public let mutation: OperationMutationFact
+
+    init(
+        requestID: UUID,
+        item: RestorableItem,
+        disposition: OperationDisposition,
+        mutation: OperationMutationFact
+    ) {
+        self.requestID = requestID
+        self.item = item
+        self.disposition = disposition
+        self.mutation = mutation
+    }
+}
+
+/// Reducer-backed undo payload. Failed, skipped and cancelled receipts remain available verbatim
+/// for a later retry; callers never need to manufacture a replacement cleaning report.
+public struct UndoReport: Sendable {
+    public let items: [UndoItemResult]
+    public let remaining: [RestorableItem]
+
+    init(items: [UndoItemResult]) {
+        self.items = items
+        self.remaining = items.compactMap { item in
+            switch item.disposition {
+            case .succeeded, .unchanged:
+                return nil
+            case .skipped, .failed, .cancelled:
+                return item.item
+            }
+        }
+    }
+
+    public var restoredCount: Int {
+        items.reduce(into: 0) { count, item in
+            if item.disposition == .succeeded { count += 1 }
+        }
     }
 }
 

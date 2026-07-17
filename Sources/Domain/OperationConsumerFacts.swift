@@ -1,6 +1,6 @@
 import Foundation
 
-public enum CleaningOperationPurpose: Sendable {
+enum CleaningOperationPurpose: Sendable {
     case standard
     case spaceTrash
     case uninstall
@@ -189,6 +189,33 @@ public enum OutcomeOperationRegistry {
 }
 
 public enum OperationConsumerFacts {
+    public static func isRetryable(_ disposition: OperationDisposition) -> Bool {
+        switch disposition {
+        case .succeeded, .unchanged:
+            return false
+        case let .skipped(issue), let .failed(issue):
+            return issue.retryable
+        case let .cancelled(issue):
+            return issue?.retryable != false
+        }
+    }
+
+    /// Cleaning retries additionally require Domain-owned, non-persisted execution authority.
+    /// A decoded/forged fact with a retryable-looking issue but no authorization/token is not an
+    /// executable retry candidate.
+    public static func isRetryable(_ fact: CleaningOperationFact) -> Bool {
+        guard isRetryable(fact.disposition) else { return false }
+        switch fact {
+        case let .deletion(item):
+            // Deletion is safe to repeat only when the prior executor proved that no mutation
+            // occurred. `.changed` and `.possiblyChanged` may mean the old object disappeared;
+            // retrying the same path could delete a newly-created replacement.
+            return item.mutation == .none && item.retryAuthorization != nil
+        case let .auxiliary(item):
+            return item.retryToken != nil
+        }
+    }
+
     public static func retryableSubjectIDs(
         from items: [OperationItemOutcome]
     ) -> [String] {
@@ -202,6 +229,15 @@ public enum OperationConsumerFacts {
                 return issue?.retryable != false ? item.subjectID : nil
             }
         }
+    }
+
+    /// Selects exact cleaning payload facts in their stored D/R occurrence order. Aggregate
+    /// counts and caller item IDs are deliberately ignored, so a remediation-only failure cannot
+    /// cause an already successful deletion to run again.
+    public static func retryableCleaningFacts(
+        from report: CleaningReport
+    ) -> [CleaningOperationFact] {
+        report.facts.filter(isRetryable)
     }
 
     public static func retryRequest(

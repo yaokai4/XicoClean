@@ -57,7 +57,8 @@ public final class XicoEnvironment: @unchecked Sendable {
         history: HistoryStore? = nil,
         historySink: (any OutcomeHistoryWriting)? = nil,
         cleaningNotifier: (any CleaningNotificationSending)? = nil,
-        invalidationSink: (any OutcomeInvalidationPublishing)? = nil
+        invalidationSink: (any OutcomeInvalidationPublishing)? = nil,
+        threatRemediation: (any ThreatRemediationExecuting)? = nil
     ) {
         self.fs = fs
         self.safety = safety
@@ -69,7 +70,11 @@ public final class XicoEnvironment: @unchecked Sendable {
         )
         let helper = HelperProxy()
         self.helper = helper
-        self.cleaningEngine = CleaningEngine(safety: safety, fs: fs, privileged: helper)
+        self.cleaningEngine = CleaningEngine(
+            safety: safety,
+            fs: fs,
+            privileged: helper,
+            threatRemediation: threatRemediation ?? ThreatRemediation())
         self.metrics = MetricsSampler(fs: fs)
         self.permissions = PermissionsManager()
         self.diskTreeScanner = DiskTreeScanner(fs: fs)

@@ -62,10 +62,12 @@ final class CleaningRoundTripTests: XCTestCase {
             fixture.trash.standardizedFileURL.path + "/"))
         XCTAssertFalse(fixture.fs.exists(file), "清理后原位置应不存在")
 
-        let undo = await fixture.engine.undo(report)
-        XCTAssertEqual(undo.restored, 1)
-        XCTAssertTrue(undo.allSucceeded)
-        XCTAssertTrue(undo.failed.isEmpty)
+        let undo = await fixture.engine.undo(
+            report.restorable,
+            parentID: report.operation.id)
+        XCTAssertEqual(undo.outcome.parentID, report.operation.id)
+        XCTAssertEqual(undo.payload.restoredCount, 1)
+        XCTAssertTrue(undo.payload.remaining.isEmpty)
         XCTAssertTrue(fixture.fs.exists(file), "撤销后文件应被还原")
     }
 
@@ -86,10 +88,13 @@ final class CleaningRoundTripTests: XCTestCase {
 
         try FileManager.default.removeItem(at: receipt.trashedURL)
 
-        let undo = await fixture.engine.undo(report)
-        XCTAssertEqual(undo.restored, 0)
-        XCTAssertFalse(undo.allSucceeded, "sandbox trash 已空时 undo 不能假装成功")
-        XCTAssertEqual(undo.failed.count, 1)
+        let undo = await fixture.engine.undo(
+            report.restorable,
+            parentID: report.operation.id)
+        XCTAssertEqual(undo.payload.restoredCount, 0)
+        XCTAssertEqual(undo.outcome.status, .failure,
+                       "sandbox trash 已空时 undo 不能假装成功")
+        XCTAssertEqual(undo.payload.remaining.count, 1)
     }
 
     /// 原位已存在同名项 → 恢复到不冲突的新名字，绝不覆盖用户既有文件。
@@ -106,9 +111,11 @@ final class CleaningRoundTripTests: XCTestCase {
 
         try Data("newer".utf8).write(to: file)
 
-        let undo = await fixture.engine.undo(report)
-        XCTAssertEqual(undo.restored, 1)
-        XCTAssertTrue(undo.allSucceeded)
+        let undo = await fixture.engine.undo(
+            report.restorable,
+            parentID: report.operation.id)
+        XCTAssertEqual(undo.payload.restoredCount, 1)
+        XCTAssertTrue(undo.payload.remaining.isEmpty)
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "newer")
         let restoredCopies = (try FileManager.default.contentsOfDirectory(atPath: fixture.content.path))
             .filter { $0.contains("恢复") }
@@ -125,11 +132,15 @@ final class CleaningRoundTripTests: XCTestCase {
         let item = CleanableItem(url: file, displayName: "junk.dat", size: 4096)
         let report = await fixture.engine.execute(CleaningPlan(items: [item], intent: .trash))
 
-        let first = await fixture.engine.undo(report)
-        XCTAssertTrue(first.allSucceeded)
-        let second = await fixture.engine.undo(report)
-        XCTAssertEqual(second.restored, 0)
-        XCTAssertEqual(second.failed.count, 1)
+        let first = await fixture.engine.undo(
+            report.restorable,
+            parentID: report.operation.id)
+        XCTAssertTrue(first.payload.remaining.isEmpty)
+        let second = await fixture.engine.undo(
+            report.restorable,
+            parentID: report.operation.id)
+        XCTAssertEqual(second.payload.restoredCount, 0)
+        XCTAssertEqual(second.payload.remaining.count, 1)
         XCTAssertTrue(fixture.fs.exists(file), "文件仍在原位（第一次已恢复）")
     }
 

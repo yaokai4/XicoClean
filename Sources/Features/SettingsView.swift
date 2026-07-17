@@ -71,12 +71,27 @@ public struct SettingsView: View {
             reloadHistory()
             reloadIgnored()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .xicoOutcomeInvalidated)) { notification in
+            guard let event = notification.object as? OutcomeInvalidationEvent,
+                  event.domains.contains(.cleaningHistory) else { return }
+            reloadHistory()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in reloadHistory() }
         .sheet(isPresented: $showingLicenses) { OpenSourceLicensesView { showingLicenses = false } }
         .alert(xLoc("操作未完成"), isPresented: Binding(get: { helperError != nil }, set: { if !$0 { helperError = nil } })) {
             Button(xLoc("好"), role: .cancel) {}
         } message: {
             Text(helperError ?? "")
+        }
+        .alert(
+            xLoc("历史记录未同步"),
+            isPresented: Binding(
+                get: { historyUndoWarning != nil },
+                set: { if !$0 { historyUndoWarning = nil } })
+        ) {
+            Button(xLoc("好"), role: .cancel) { historyUndoWarning = nil }
+        } message: {
+            Text(historyUndoWarning ?? "")
         }
         .confirmationDialog(xLoc("清空清理历史？"), isPresented: $confirmClearHistory, titleVisibility: .visible) {
             Button(xLoc("清空记录（不可恢复）"), role: .destructive) {
@@ -99,6 +114,7 @@ public struct SettingsView: View {
     }
 
     @State private var undoingID: UUID?
+    @State private var historyUndoWarning: String?
     @State private var confirmClearHistory = false
     @State private var confirmReset = false
 
@@ -112,19 +128,34 @@ public struct SettingsView: View {
     private func undoRecord(_ rec: CleaningRecord) {
         guard rec.canUndo, undoingID == nil else { return }
         undoingID = rec.id
-        let report = CleaningReport(removedCount: rec.removedCount, reclaimedBytes: rec.reclaimedBytes,
-                                    failures: [], restorable: rec.restorable)
         Task {
-            let result = await model.env.cleaningEngine.undo(report)
+            let result = await model.env.cleaningEngine.undo(
+                rec.restorable,
+                parentID: rec.operationID)
             // 全成功：移除记录并回滚累计释放。部分失败：仅保留仍未恢复的项为可撤销，可重试。
-            if result.allSucceeded {
-                model.env.history.remove(id: rec.id)
+            let historyResult: HistoryUpdateResult
+            if result.payload.remaining.isEmpty, !rec.hasIrreversibleChanges {
+                historyResult = model.env.historySink.remove(id: rec.id)
             } else {
-                model.env.history.updateRestorable(id: rec.id, to: result.failed)
+                historyResult = model.env.historySink.updateRestorable(
+                    id: rec.id,
+                    to: result.payload.remaining)
+            }
+            switch historyResult {
+            case .committed:
+                historyUndoWarning = nil
+            case .notFound:
+                historyUndoWarning = xLoc("撤销结果已生效，但对应的历史记录已不存在。")
+            case .rejected:
+                historyUndoWarning = xLoc("撤销结果已生效，但清理历史未能同步更新。")
+            }
+            if let invalidation = ValidatedOutcomeInvalidation(
+                outcome: result.outcome,
+                domains: [.diskCapacity, .scanIndex, .cleaningHistory]) {
+                _ = model.env.invalidationSink.publish(invalidation)
             }
             reloadHistory()
             undoingID = nil
-            NotificationCenter.default.post(name: .xicoDidClean, object: nil)
         }
     }
 

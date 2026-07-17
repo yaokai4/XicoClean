@@ -144,6 +144,46 @@ final class OutcomeSinkBoundaryTests: XCTestCase {
         XCTAssertEqual(request.changedCount, report.operation.counts.succeeded)
     }
 
+    func testCompoundCleaningNotificationCountsOnlySuccessfulDeletions() throws {
+        let report = try makeCompoundReport(
+            deletionDisposition: .succeeded,
+            deletionMutation: .changed,
+            deletionBytes: 64,
+            remediationDisposition: .succeeded,
+            remediationMutation: .changed)
+
+        XCTAssertEqual(report.operation.status, .success)
+        XCTAssertEqual(report.operation.counts.succeeded, 2,
+                       "The parent reducer must consume deletion and remediation facts")
+        XCTAssertEqual(report.removedCount, 1)
+        let request = try XCTUnwrap(ValidatedCleaningNotification(report: report))
+        XCTAssertEqual(request.changedCount, 1,
+                       "A successful bootout is not a removed filesystem item")
+        XCTAssertEqual(request.reclaimedBytes, 64)
+    }
+
+    func testCompoundPartialCleaningNeverProducesSuccessNotification() throws {
+        let remediationID = UUID()
+        let remediationIssue = OperationIssue(
+            code: "threat.remediation.postconditionUnknown",
+            category: .io,
+            subjectID: remediationID.uuidString,
+            recovery: .retry,
+            retryable: true)
+        let report = try makeCompoundReport(
+            remediationID: remediationID,
+            deletionDisposition: .succeeded,
+            deletionMutation: .changed,
+            deletionBytes: 64,
+            remediationDisposition: .failed(remediationIssue),
+            remediationMutation: .possiblyChanged)
+
+        XCTAssertEqual(report.operation.status, .partial)
+        XCTAssertEqual(report.removedCount, 1)
+        XCTAssertNil(ValidatedCleaningNotification(report: report),
+                     "A deleted plist whose live agent may remain active is not full success")
+    }
+
     func testCleaningNotifierFormatsInternallyAndSendsEachOperationIDOnce() throws {
         let report = try makeReport(facts: [succeededFact(bytes: 1_536)])
         let request = try XCTUnwrap(ValidatedCleaningNotification(report: report))
@@ -677,6 +717,50 @@ final class OutcomeSinkBoundaryTests: XCTestCase {
             cancellationAccepted: cancellationAccepted,
             startedAt: fixedDate,
             finishedAt: fixedDate.addingTimeInterval(1))
+    }
+
+    private func makeCompoundReport(
+        deletionID: UUID = UUID(),
+        remediationID: UUID = UUID(),
+        deletionDisposition: OperationDisposition,
+        deletionMutation: OperationMutationFact,
+        deletionBytes: Int64,
+        remediationDisposition: OperationDisposition,
+        remediationMutation: OperationMutationFact
+    ) throws -> CleaningReport {
+        let deletion = CleaningItemResult(
+            requestID: deletionID,
+            itemID: UUID(),
+            url: URL(fileURLWithPath: "/tmp/private-compound-plist"),
+            intent: .trash,
+            disposition: deletionDisposition,
+            mutation: deletionMutation,
+            reclaimedBytes: deletionBytes,
+            restorable: nil)
+        let remediation = CleaningAuxiliaryItemResult(
+            requestID: remediationID,
+            relatedCleaningRequestID: deletionID,
+            kind: .threatRemediation,
+            disposition: remediationDisposition,
+            mutation: remediationMutation)
+        let facts: [CleaningOperationFact] = [
+            .deletion(deletion),
+            .auxiliary(remediation)
+        ]
+        let outcome = try OperationOutcomeReducer.reduce(
+            kind: .cleaningExecute,
+            requestedSubjectIDs: facts.map { $0.requestID.uuidString },
+            itemOutcomes: facts.map {
+                OperationItemOutcome(
+                    subjectID: $0.requestID.uuidString,
+                    disposition: $0.disposition,
+                    mutation: $0.mutation,
+                    affectedBytes: $0.affectedBytes)
+            },
+            cancellationAccepted: false,
+            startedAt: fixedDate,
+            finishedAt: fixedDate.addingTimeInterval(1))
+        return CleaningReport(operation: outcome, facts: facts)
     }
 
     private func makeCaseDirectory(_ label: String) throws -> URL {

@@ -506,52 +506,6 @@ final class OperationOutcomeReducerTests: XCTestCase {
         assertNoModuleLoadFailure(result)
     }
 
-    func testLegacyCompatibilityUsesFixedSentinelRatherThanAggregateSizedIDs() {
-        let failure = CleaningFailure(url: URL(fileURLWithPath: "/tmp/legacy-failure"),
-                                      reason: "legacy")
-
-        let report = CleaningReport(removedCount: 4_097,
-                                    reclaimedBytes: 4_097,
-                                    failures: [failure],
-                                    restorable: [])
-
-        XCTAssertEqual(report.operation.status, .failure)
-        XCTAssertEqual(report.operation.counts.requested, 1)
-        XCTAssertEqual(report.removedCount, 4_097)
-        XCTAssertEqual(report.reclaimedBytes, 4_097)
-        XCTAssertEqual(report.failures.count, 1)
-        XCTAssertTrue(report.items.isEmpty)
-    }
-
-    func testLegacyAggregateSubjectIDsStayBoundedAtExtremeCounts() {
-        let extreme = CleaningReport.legacyAggregateSubjectIDs(
-            removedCount: Int.max,
-            reclaimedBytes: Int64.max,
-            failureCount: Int.max,
-            restorableCount: Int.max)
-        XCTAssertEqual(extreme, ["legacy-aggregate"])
-        XCTAssertEqual(extreme.count, 1)
-
-        XCTAssertTrue(CleaningReport.legacyAggregateSubjectIDs(
-            removedCount: 0,
-            reclaimedBytes: 0,
-            failureCount: 0,
-            restorableCount: 0).isEmpty)
-
-        XCTAssertEqual(CleaningReport.legacyAggregateSubjectIDs(
-            removedCount: 1, reclaimedBytes: 0, failureCount: 0, restorableCount: 0),
-                       ["legacy-aggregate"])
-        XCTAssertEqual(CleaningReport.legacyAggregateSubjectIDs(
-            removedCount: 0, reclaimedBytes: 1, failureCount: 0, restorableCount: 0),
-                       ["legacy-aggregate"])
-        XCTAssertEqual(CleaningReport.legacyAggregateSubjectIDs(
-            removedCount: 0, reclaimedBytes: 0, failureCount: 1, restorableCount: 0),
-                       ["legacy-aggregate"])
-        XCTAssertEqual(CleaningReport.legacyAggregateSubjectIDs(
-            removedCount: 0, reclaimedBytes: 0, failureCount: 0, restorableCount: 1),
-                       ["legacy-aggregate"])
-    }
-
     private func issueComesBefore(_ lhs: OperationIssue, _ rhs: OperationIssue) -> Bool {
         switch (lhs.subjectID, rhs.subjectID) {
         case (nil, .some): return true

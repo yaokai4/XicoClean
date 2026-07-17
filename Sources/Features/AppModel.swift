@@ -477,7 +477,10 @@ public final class AppModel: ObservableObject {
         if let existing = moduleSessions[moduleID] { return existing }
         let e = env
         let vm = ModuleSessionViewModel(
-            env: e, title: title, intent: intent,
+            env: e,
+            title: title,
+            intent: intent,
+            prerequisite: moduleID == .malware ? .threatRemediation : .none,
             scanProvider: { handler in
                 if moduleID == .largeFiles {
                     e.scanIndex.invalidate()
@@ -486,9 +489,6 @@ public final class AppModel: ObservableObject {
                 guard let scanner = e.scanner(for: moduleID) else { return [] }
                 return [try await scanner.scan(progress: handler)]
             })
-        if moduleID == .malware {
-            vm.beforeClean = { items in await ThreatRemediation.bootoutUserAgents(items.map(\.url)) }
-        }
         moduleSessions[moduleID] = vm
         return vm
     }
@@ -636,9 +636,16 @@ public final class AppModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let event = notification.object as? OutcomeInvalidationEvent,
-                  event.domains.contains(.diskCapacity) else { return }
-            Task { @MainActor in self?.refreshMetrics() }
+            guard let event = notification.object as? OutcomeInvalidationEvent else { return }
+            Task { @MainActor in
+                guard let self else { return }
+                if event.domains.contains(.scanIndex) {
+                    self.env.scanIndex.invalidate()
+                }
+                if event.domains.contains(.diskCapacity) {
+                    self.refreshMetrics()
+                }
+            }
         }
         // Task 4 migrates the remaining live producers to typed invalidation.
         // Keep this bridge until then so the intermediate checkpoint does not

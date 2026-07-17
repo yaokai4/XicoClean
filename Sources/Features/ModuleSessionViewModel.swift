@@ -31,7 +31,9 @@ public final class ModuleSessionViewModel: ObservableObject {
     @Published public var progressBytes: Int64 = 0
     @Published public var statusMessage: String = ""
     @Published public var groups: [ScanResultGroup] = []
-    @Published public var lastReport: CleaningReport?
+    @Published public private(set) var lastReport: CleaningReport?
+    /// 已经通过唯一 typed consumer 冻结 side effects 与展示授权的实时终态。
+    @Published var outcomeConsumption: CleaningOutcomeConsumption?
     /// 失败是否由缺少完全磁盘访问权限导致（用于在失败态给出「开启权限」入口）
     @Published public var permissionIssue = false
     /// 失败是否由试用结束或许可证无效导致
@@ -43,6 +45,7 @@ public final class ModuleSessionViewModel: ObservableObject {
     public var postScanWarning: (@Sendable () -> String?)?
     /// 撤销部分失败时的提示（非空即弹窗）；保留 lastReport 以便重试。
     @Published public var undoFailedItems: [RestorableItem] = []
+    @Published public var persistenceWarning: String?
     public var undoFailedAlert: Bool {
         get { !undoFailedItems.isEmpty }
         set { if !newValue { undoFailedItems = [] } }
@@ -51,42 +54,67 @@ public final class ModuleSessionViewModel: ObservableObject {
 
     public let title: String
     public let intent: DeleteIntent
+    public let prerequisite: CleaningPrerequisite
     private let env: XicoEnvironment
     private let scanProvider: @Sendable (@escaping ProgressHandler) async throws -> [ScanResult]
     private var scanTask: Task<Void, Never>?
     private var cleanTask: Task<Void, Never>?
     private let throttle = ProgressThrottle()
-    /// 本次清理写入历史的记录 id（撤销时据此回滚，避免累计释放虚高）
-    private var lastHistoryID: UUID?
-    /// 清理前的处置钩子（如威胁模块删 plist 前先 bootout 停用已加载 agent）
-    public var beforeClean: (@Sendable ([CleanableItem]) async -> Void)?
+    /// 仅保存 reducer 确认且由实际 Trash payload 支撑的回执；部分撤销不会伪造新清理报告。
+    private var undoReceipts: [RestorableItem] = []
+    private struct OwnedUndoReceipt: Sendable {
+        let ownerOperationID: UUID
+        let item: RestorableItem
+    }
+    private var receiptLedger: [OwnedUndoReceipt] = []
+    private var historyRecordIDsByOperation: [UUID: UUID] = [:]
+    private var operationHasIrreversibleChanges: [UUID: Bool] = [:]
+    private var reportOccurrenceSelectionMapping: [Int: Int] = [:]
+    private var retrySelectionInventory: [CleanableItem] = []
+    /// 撤销会改变 Domain 报告所代表的 receipt ledger；撤销后旧报告不得再作为 retry authority。
+    private var retryChainInvalidatedByUndo = false
+    private let outcomeGate: OutcomeFeedbackGate
+    private let cleaningOutcomeConsumer: CleaningOutcomeConsumer
 
-    /// 清理完成通知观察者：清理后许可闸门可能变化（例如首次清理触发的复验降级），据此重算缓存。
+    /// 类型化结果失效观察者：清理后许可闸门可能变化（例如首次清理触发的复验降级），据此重算缓存。
     /// `nonisolated(unsafe)`：仅在 init（@MainActor）赋值一次、在 nonisolated deinit 读取一次移除，
     /// 对象生命周期保证独占访问，Swift 6 下让 deinit 可安全触及此非 Sendable token。
-    nonisolated(unsafe) private var didCleanObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var outcomeInvalidationObserver: NSObjectProtocol?
     /// 授权变化观察者（激活/移除/复验后重算购买闸门）——刚激活的用户立刻可清理，无需切页重建会话。
     nonisolated(unsafe) private var licenseChangedObserver: NSObjectProtocol?
 
     public init(env: XicoEnvironment,
                 title: String,
                 intent: DeleteIntent,
+                prerequisite: CleaningPrerequisite = .none,
                 scanProvider: @escaping @Sendable (@escaping ProgressHandler) async throws -> [ScanResult]) {
+        let outcomeGate = OutcomeFeedbackGate()
         self.env = env
         self.title = title
         self.intent = intent
+        self.prerequisite = prerequisite
         self.scanProvider = scanProvider
-        let refresh: @Sendable (Notification) -> Void = { [weak self] _ in
+        self.outcomeGate = outcomeGate
+        self.cleaningOutcomeConsumer = CleaningOutcomeConsumer(
+            history: env.historySink,
+            notifier: env.cleaningNotifier,
+            invalidation: env.invalidationSink,
+            gate: outcomeGate)
+        let refresh: @Sendable (Notification) -> Void = { [weak self] notification in
+            guard let event = notification.object as? OutcomeInvalidationEvent,
+                  event.kind == .cleaningExecute else { return }
             Task { @MainActor in self?.refreshPurchaseGate() }
         }
-        didCleanObserver = NotificationCenter.default.addObserver(
-            forName: .xicoDidClean, object: nil, queue: nil, using: refresh)
+        outcomeInvalidationObserver = NotificationCenter.default.addObserver(
+            forName: .xicoOutcomeInvalidated, object: nil, queue: nil, using: refresh)
         licenseChangedObserver = NotificationCenter.default.addObserver(
             forName: .xicoLicenseChanged, object: nil, queue: nil, using: refresh)
     }
 
     deinit {
-        if let didCleanObserver { NotificationCenter.default.removeObserver(didCleanObserver) }
+        if let outcomeInvalidationObserver {
+            NotificationCenter.default.removeObserver(outcomeInvalidationObserver)
+        }
         if let licenseChangedObserver { NotificationCenter.default.removeObserver(licenseChangedObserver) }
     }
 
@@ -98,6 +126,11 @@ public final class ModuleSessionViewModel: ObservableObject {
     public var selectedRequiresHelper: Bool { selectedItems.contains(where: \.requiresHelper) }
     public var selectedSize: Int64 { selectedItems.reduce(0) { $0 + $1.estimatedReclaimableBytes } }
     public var selectedCount: Int { selectedItems.count }
+    var hasUndoReceipts: Bool { !undoReceipts.isEmpty }
+    var hasRetryableCleaningRemainder: Bool {
+        !retryChainInvalidatedByUndo
+            && outcomeConsumption?.retryableRemainder.isEmpty == false
+    }
     public var totalReclaimable: Int64 { groups.reduce(0) { $0 + $1.reclaimableSize } }   // 剔除「仅提示」字节（终审 P1）
     public var totalItemCount: Int { groups.reduce(0) { $0 + $1.items.count } }
 
@@ -107,7 +140,7 @@ public final class ModuleSessionViewModel: ObservableObject {
     /// （破坏性动作 clean/uninstall/shred 仍由 `ensureLicensed()` 严格拦截，见 clean()）。
     ///
     /// **缓存化（审计 P2）**：改为 @Published 存储属性，只在状态转移点重算（`start()`、扫描落到
-    /// `.results`/`.empty`、以及清理完成后的 `.xicoDidClean`），镜像 AppModel 缓存 licenseStatus 的做法。
+    /// `.results`/`.empty`、以及清理完成后的类型化失效事件），镜像 AppModel 缓存 licenseStatus 的做法。
     /// 绝不再从 body 里读取的计算属性触发 `env.license.status()`（每次重渲染都要磁盘读 + 验签 + 落盘）。
     @Published public private(set) var needsPurchaseToClean = false
 
@@ -117,6 +150,14 @@ public final class ModuleSessionViewModel: ObservableObject {
     }
 
     public func start() {
+        start(preservingHistoryOwnership: false)
+    }
+
+    /// 撤销已落盘但历史同步失败时仍需重扫 UI；此内部入口保留尚未同步的历史所有权，
+    /// 让持久化降级不会被一次自动重扫静默抹掉。普通用户发起的新扫描始终清空旧会话。
+    private func start(preservingHistoryOwnership: Bool) {
+        guard !isCleaning,
+              !isUndoing || preservingHistoryOwnership else { return }
         refreshPurchaseGate()
         // 扫描与结果预览对试用到期用户开放（只读、无破坏性）——不再在此拦截，
         // 许可校验只把守破坏性动作（见 clean()）。这样过期用户仍能看见「能清多少」，
@@ -128,6 +169,17 @@ public final class ModuleSessionViewModel: ObservableObject {
         statusMessage = xLoc("正在扫描…")
         groups = []
         lastReport = nil
+        outcomeConsumption = nil
+        undoReceipts = []
+        receiptLedger = []
+        reportOccurrenceSelectionMapping = [:]
+        retrySelectionInventory = []
+        retryChainInvalidatedByUndo = false
+        if !preservingHistoryOwnership {
+            historyRecordIDsByOperation = [:]
+            operationHasIrreversibleChanges = [:]
+        }
+        undoFailedItems = []
         permissionIssue = false
         licenseIssue = false
         scanWarning = nil
@@ -197,6 +249,11 @@ public final class ModuleSessionViewModel: ObservableObject {
     }
 
     public func cancel() {
+        guard !isUndoing else { return }
+        if isCleaning {
+            cancelCleaning()
+            return
+        }
         scanTask?.cancel()
         env.scanIndex.invalidate()
         phase = groups.isEmpty ? .idle : .results
@@ -205,6 +262,7 @@ public final class ModuleSessionViewModel: ObservableObject {
     // MARK: 选择
 
     public func toggleItem(groupID: String, itemID: UUID) {
+        guard phase == .results, !isCleaning else { return }
         guard let gi = groups.firstIndex(where: { $0.id == groupID }),
               let ii = groups[gi].items.firstIndex(where: { $0.id == itemID }) else { return }
         guard !groups[gi].items[ii].isInformational else { return }   // 「仅提示」项不可勾
@@ -212,6 +270,7 @@ public final class ModuleSessionViewModel: ObservableObject {
     }
 
     public func setGroup(_ groupID: String, selected: Bool) {
+        guard phase == .results, !isCleaning else { return }
         guard let gi = groups.firstIndex(where: { $0.id == groupID }) else { return }
         // 「仅提示」项不随组全选卷入（三层闸第一层；引擎侧仍会兜底拒删）。
         for i in groups[gi].items.indices where !groups[gi].items[i].isInformational {
@@ -221,6 +280,7 @@ public final class ModuleSessionViewModel: ObservableObject {
 
     /// 把某项加入「忽略清单」并从当前结果移除——它今后不再被扫描/清理。
     public func ignore(groupID: String, itemID: UUID) {
+        guard phase == .results, !isCleaning else { return }
         guard let gi = groups.firstIndex(where: { $0.id == groupID }),
               let item = groups[gi].items.first(where: { $0.id == itemID }) else { return }
         env.ignoreList.add(item.url)
@@ -235,79 +295,164 @@ public final class ModuleSessionViewModel: ObservableObject {
     // MARK: 清理
 
     public func clean() {
+        guard phase == .results else { return }
         guard ensureLicensed() else { return }
-        let items = selectedItems
-        guard !items.isEmpty, !isCleaning else { return }
+        let occurrences = selectedOccurrences()
+        guard !occurrences.isEmpty, !isCleaning else { return }
+        let plans = occurrences.map { occurrence in
+            CleaningPlan(
+                items: [occurrence.item],
+                intent: occurrence.item.requiresHelper ? .permanent : intent,
+                prerequisite: prerequisite)
+        }
         isCleaning = true
+        retryChainInvalidatedByUndo = false
         phase = .cleaning
         progress = 0
         statusMessage = xLoc("正在清理…")
+        outcomeConsumption = nil
+        persistenceWarning = nil
 
         let handler = makeHandler()
         cleanTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.isCleaning = false }
-            await self.beforeClean?(items)   // 例：威胁模块先 bootout 停用已加载 agent
-            let normalItems = items.filter { !$0.requiresHelper }
-            let privilegedItems = items.filter(\.requiresHelper)
-            var reports: [CleaningReport] = []
-            if !normalItems.isEmpty {
-                reports.append(await self.env.cleaningEngine.execute(
-                    CleaningPlan(items: normalItems, intent: self.intent),
-                    progress: handler
-                ))
+            defer {
+                self.isCleaning = false
+                self.cleanTask = nil
             }
-            if !privilegedItems.isEmpty {
-                reports.append(await env.cleaningEngine.execute(
-                    CleaningPlan(items: privilegedItems, intent: .permanent),
-                    progress: handler
-                ))
+            let report = await self.env.cleaningEngine.execute(
+                plans,
+                parentID: nil,
+                progress: handler)
+            let consumption = await self.cleaningOutcomeConsumer.consume(
+                module: self.title,
+                report: report,
+                selectionOccurrenceCount: occurrences.count,
+                detailKey: "已释放空间")
+
+            // consumer 完成历史、通知、失效和展示授权后，才一次性公开终态。
+            self.rememberHistory(
+                report: consumption.report,
+                result: consumption.historyResult)
+            self.applySelectionMutation(
+                consumption.selectionMutation,
+                to: occurrences)
+            self.reportOccurrenceSelectionMapping =
+                consumption.selectionMutation.retainedOccurrenceMapping
+            self.retrySelectionInventory = self.selectedOccurrences().map(\.item)
+            self.receiptLedger = consumption.undoReceipts.map {
+                OwnedUndoReceipt(
+                    ownerOperationID: consumption.report.operation.id,
+                    item: $0)
             }
-            let report = Self.merge(reports)
-            self.lastReport = report
-            self.env.scanIndex.invalidate()
-            self.removeCleaned(report)
-            // 记入持久化清理历史（可追溯：累计释放 / 最近记录跨会话留存）；
-            // 同时持久化 restorable 映射，使「撤销」在离开完成页甚至重启后仍可用。
-            self.lastHistoryID = env.history.record(module: self.title,
-                                                    reclaimedBytes: report.reclaimedBytes,
-                                                    removedCount: report.removedCount,
-                                                    restorable: self.intent == .trash ? report.restorable : [])
+            self.undoReceipts = consumption.undoReceipts
+            self.outcomeConsumption = consumption
+            self.lastReport = consumption.report
             self.phase = .finished
-            // 签名音效②改在完成页 S-A 幕2 闪光帧齐发（声/触/光同窗，docs/16）——此处不再播避免双响。
-            if report.reclaimedBytes > 0 {
-                Notifier.notifyCleaningDone(reclaimed: report.reclaimedBytes.formattedBytes,
-                                            count: report.removedCount)
+        }
+    }
+
+    /// 取消只向正在运行的任务发出协作式取消；终态必须由引擎 reducer 生成并经 consumer 展示。
+    public func cancelCleaning() {
+        cleanTask?.cancel()
+    }
+
+    /// 只重试 Domain 在上一终态中签发的剩余事实。Feature 不重建计划、不按路径推断身份；
+    /// 已成功的删除只作为 D 上下文出现，绝不会再次执行。
+    public func retryCleaning() {
+        guard phase == .finished,
+              let prior = lastReport,
+              hasRetryableCleaningRemainder,
+              !isCleaning,
+              !isUndoing else { return }
+        guard ensureLicensed() else { return }
+        let occurrences = selectedOccurrences()
+        guard occurrences.map(\.item) == retrySelectionInventory else {
+            retryChainInvalidatedByUndo = true
+            persistenceWarning = xLoc("当前结果已发生变化，已停止使用旧重试授权。请重新扫描后再试。")
+            return
+        }
+        let priorMapping = reportOccurrenceSelectionMapping
+        isCleaning = true
+        phase = .cleaning
+        progress = 0
+        statusMessage = xLoc("正在重试未完成项目…")
+
+        let handler = makeHandler()
+        cleanTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.isCleaning = false
+                self.cleanTask = nil
             }
-            NotificationCenter.default.post(name: .xicoDidClean, object: nil)
+            let execution = await self.env.cleaningEngine.retry(
+                prior,
+                progress: handler)
+            let consumption = await self.cleaningOutcomeConsumer.consumeRetry(
+                module: self.title,
+                execution: execution,
+                selectionOccurrenceCount: execution.report.items.count,
+                detailKey: "重试结果")
+            let transition = CleaningRetrySelectionTransition.make(
+                execution: execution,
+                priorReportOccurrenceMapping: priorMapping,
+                currentSelectionOccurrenceCount: occurrences.count)
+
+            self.applySelectionMutation(transition.mutation, to: occurrences)
+            self.reportOccurrenceSelectionMapping = transition.nextReportOccurrenceMapping
+            self.retrySelectionInventory = self.selectedOccurrences().map(\.item)
+            self.receiptLedger = execution.retainedReceipts.map {
+                OwnedUndoReceipt(ownerOperationID: $0.ownerOperationID, item: $0.item)
+            }
+            self.undoReceipts = consumption.undoReceipts
+            self.rememberHistory(
+                report: consumption.report,
+                result: consumption.historyResult)
+            self.outcomeConsumption = consumption
+            self.lastReport = consumption.report
+            self.phase = .finished
         }
     }
 
     private var isUndoing = false
 
     public func undo() {
-        guard let report = lastReport, !report.restorable.isEmpty, !isUndoing else { return }
+        guard !receiptLedger.isEmpty, !isUndoing, !isCleaning else { return }
+        let requestedLedger = receiptLedger
+        let receipts = requestedLedger.map(\.item)
+        let parentID = lastReport?.operation.id
         isUndoing = true
         Task {
             defer { self.isUndoing = false }
-            let result = await env.cleaningEngine.undo(report)
-            if result.allSucceeded {
-                // 全部恢复：回滚历史累计、清空报告后重扫
-                if let id = lastHistoryID { env.history.remove(id: id); lastHistoryID = nil }
+            let result = await env.cleaningEngine.undo(
+                receipts,
+                parentID: parentID)
+            let remaining = result.payload.remaining
+            self.retryChainInvalidatedByUndo = true
+            await self.publishUndoInvalidation(result.outcome)
+
+            guard let remainingLedger = self.ownedReceiptSubset(
+                remaining,
+                from: requestedLedger) else {
+                // Domain 返回了并非本次请求子集的回执时 fail closed：不丢所有权，也不改历史。
+                self.persistenceWarning = xLoc("撤销结果无法与原始回执核对，已保留原记录以避免错误更新。")
+                self.undoFailedItems = receipts
+                return
+            }
+            self.receiptLedger = remainingLedger
+            self.undoReceipts = remainingLedger.map(\.item)
+            let historyRejected = self.synchronizeHistoryAfterUndo(
+                requestedLedger: requestedLedger,
+                remainingLedger: remainingLedger)
+
+            if remainingLedger.isEmpty {
                 self.lastReport = nil
-                NotificationCenter.default.post(name: .xicoDidClean, object: nil)
-                self.start()
+                self.outcomeConsumption = nil
+                self.undoFailedItems = []
+                self.start(preservingHistoryOwnership: historyRejected)
             } else {
-                // 部分失败：保留报告与历史记录（把已恢复项摘掉，剩下的仍可重试），弹窗告知。
-                let remaining = report.restorable.filter { result.failed.contains($0) }
-                self.lastReport = CleaningReport(
-                    removedCount: report.removedCount, reclaimedBytes: report.reclaimedBytes,
-                    failures: report.failures, restorable: remaining)
-                // 同步收缩持久化历史的可恢复集，令落盘记录与内存报告一致（审计 P3）——
-                // 否则重启后历史仍以为已恢复项可再撤销，累计释放/可撤销状态虚高。
-                if let id = lastHistoryID { env.history.updateRestorable(id: id, to: remaining) }
-                self.undoFailedItems = result.failed
-                NotificationCenter.default.post(name: .xicoDidClean, object: nil)
+                // 部分失败：保留原始 reducer 报告，只缩减 payload-backed 回执，绝不伪造替代报告。
+                self.undoFailedItems = remaining
             }
         }
     }
@@ -318,30 +463,185 @@ public final class ModuleSessionViewModel: ObservableObject {
     }
 
     public func reset() {
+        guard !isUndoing else { return }
+        if isCleaning {
+            cancelCleaning()
+            return
+        }
+        scanTask?.cancel()
         phase = .idle
         groups = []
         lastReport = nil
+        outcomeConsumption = nil
+        undoReceipts = []
+        receiptLedger = []
+        historyRecordIDsByOperation = [:]
+        operationHasIrreversibleChanges = [:]
+        reportOccurrenceSelectionMapping = [:]
+        retrySelectionInventory = []
+        retryChainInvalidatedByUndo = false
+        undoFailedItems = []
+        persistenceWarning = nil
         progress = 0
         progressBytes = 0
     }
 
     // MARK: 私有
 
-    private func removeCleaned(_ report: CleaningReport) {
-        let failedPaths = Set(report.failures.map { $0.url.path })
-        for gi in groups.indices {
-            groups[gi].items.removeAll { $0.isSelected && !failedPaths.contains($0.url.path) }
+    private struct SelectedOccurrence {
+        let groupIndex: Int
+        let itemIndex: Int
+        let item: CleanableItem
+    }
+
+    /// 按 groups/items 的原始顺序建立 occurrence inventory；调用方 ID 与路径都不是删除身份。
+    private func selectedOccurrences() -> [SelectedOccurrence] {
+        groups.enumerated().flatMap { groupIndex, group in
+            group.items.enumerated().compactMap { itemIndex, item in
+                guard item.isSelected else { return nil }
+                return SelectedOccurrence(
+                    groupIndex: groupIndex,
+                    itemIndex: itemIndex,
+                    item: item)
+            }
+        }
+    }
+
+    private func applySelectionMutation(
+        _ selectionMutation: CleaningSelectionMutation,
+        to occurrences: [SelectedOccurrence]
+    ) {
+        guard selectionMutation.originalOccurrenceCount == occurrences.count else { return }
+        let indices = selectionMutation.removableOccurrenceIndices
+        guard Set(indices).count == indices.count,
+              indices.allSatisfy(occurrences.indices.contains) else { return }
+        let locations = indices.map { occurrences[$0] }
+        // 先完整验证快照仍对应当前 position，再执行任何删除；不匹配时 fail closed 全部保留。
+        guard locations.allSatisfy({ location in
+            groups.indices.contains(location.groupIndex)
+                && groups[location.groupIndex].items.indices.contains(location.itemIndex)
+                && groups[location.groupIndex].items[location.itemIndex] == location.item
+                && groups[location.groupIndex].items[location.itemIndex].isSelected
+        }) else { return }
+
+        let byGroup = Dictionary(grouping: locations, by: \.groupIndex)
+        for groupIndex in byGroup.keys.sorted(by: >) {
+            let itemIndices = byGroup[groupIndex, default: []]
+                .map(\.itemIndex)
+                .sorted(by: >)
+            for itemIndex in itemIndices {
+                groups[groupIndex].items.remove(at: itemIndex)
+            }
         }
         groups.removeAll { $0.items.isEmpty }
     }
 
-    private static func merge(_ reports: [CleaningReport]) -> CleaningReport {
-        CleaningReport(
-            removedCount: reports.reduce(0) { $0 + $1.removedCount },
-            reclaimedBytes: reports.reduce(0) { $0 + $1.reclaimedBytes },
-            failures: reports.flatMap(\.failures),
-            restorable: reports.flatMap(\.restorable)
-        )
+    private func rememberHistory(
+        report: CleaningReport,
+        result: HistoryRecordResult?
+    ) {
+        let operationID = report.operation.id
+        operationHasIrreversibleChanges[operationID] = report.facts.contains { fact in
+            guard fact.mutation != .none else { return false }
+            switch fact {
+            case let .deletion(item):
+                return !(item.disposition == .succeeded
+                    && item.mutation == .changed
+                    && item.intent == .trash)
+            case .auxiliary:
+                return true
+            }
+        }
+        switch result {
+        case let .inserted(recordID)?:
+            historyRecordIDsByOperation[operationID] = recordID
+        case let .alreadyRecorded(recordID)?:
+            historyRecordIDsByOperation[operationID] = recordID
+        case .notRecordedNoChanges?:
+            historyRecordIDsByOperation.removeValue(forKey: operationID)
+        case let .rejected(code)?:
+            historyRecordIDsByOperation.removeValue(forKey: operationID)
+            persistenceWarning = xLoc("文件操作结果已保留，但清理历史未能写入。")
+            XicoLog.history.error("cleaning history record rejected code=\(code, privacy: .public)")
+        case nil:
+            historyRecordIDsByOperation.removeValue(forKey: operationID)
+        }
+    }
+
+    /// 把 Domain 的 remaining payload 重新绑定到原回执所有者；不是严格子集就拒绝更新。
+    private func ownedReceiptSubset(
+        _ remaining: [RestorableItem],
+        from requested: [OwnedUndoReceipt]
+    ) -> [OwnedUndoReceipt]? {
+        var unmatched = remaining
+        var subset: [OwnedUndoReceipt] = []
+        for entry in requested {
+            guard let index = unmatched.firstIndex(of: entry.item) else { continue }
+            subset.append(entry)
+            unmatched.remove(at: index)
+        }
+        return unmatched.isEmpty ? subset : nil
+    }
+
+    /// 每个回执只更新创建它的历史记录。含永久删除或已执行辅助事实的记录即使回执归零也保留，
+    /// 只把 restorable payload 更新为空，避免把不可逆事实从历史中抹掉。
+    @discardableResult
+    private func synchronizeHistoryAfterUndo(
+        requestedLedger: [OwnedUndoReceipt],
+        remainingLedger: [OwnedUndoReceipt]
+    ) -> Bool {
+        let ownerIDs = Set(requestedLedger.map(\.ownerOperationID))
+            .sorted { $0.uuidString < $1.uuidString }
+        var hadRejectedUpdate = false
+
+        for ownerID in ownerIDs {
+            guard let recordID = historyRecordIDsByOperation[ownerID] else { continue }
+            let remaining = remainingLedger
+                .filter { $0.ownerOperationID == ownerID }
+                .map(\.item)
+            let removesWholeRecord = remaining.isEmpty
+                && operationHasIrreversibleChanges[ownerID] != true
+            let result = removesWholeRecord
+                ? env.historySink.remove(id: recordID)
+                : env.historySink.updateRestorable(id: recordID, to: remaining)
+
+            switch result {
+            case .committed:
+                if removesWholeRecord {
+                    historyRecordIDsByOperation.removeValue(forKey: ownerID)
+                    operationHasIrreversibleChanges.removeValue(forKey: ownerID)
+                }
+            case .notFound:
+                historyRecordIDsByOperation.removeValue(forKey: ownerID)
+                operationHasIrreversibleChanges.removeValue(forKey: ownerID)
+                persistenceWarning = xLoc("撤销结果已生效，但对应的历史记录已不存在。")
+            case let .rejected(code):
+                // 保留 recordID 所有权，不能把失败的持久化同步伪装为已提交。
+                hadRejectedUpdate = true
+                persistenceWarning = xLoc("撤销结果已生效，但清理历史未能同步更新。")
+                XicoLog.history.error("cleaning history undo sync rejected code=\(code, privacy: .public)")
+            }
+        }
+        return hadRejectedUpdate
+    }
+
+    private func publishUndoInvalidation(_ outcome: OperationOutcome) async {
+        await outcomeGate.registerTerminal(outcome.id)
+        guard await outcomeGate.consume(.internalInvalidation, for: outcome.id),
+              let domains = OutcomeOperationRegistry.semantics(
+                for: outcome.kind)?.invalidationDomains,
+              let request = ValidatedOutcomeInvalidation(
+                outcome: outcome,
+                domains: domains) else {
+            XicoLog.clean.error("cleaning undo invalidation validation rejected")
+            return
+        }
+        switch env.invalidationSink.publish(request) {
+        case .published:
+            break
+        case let .rejected(code):
+            XicoLog.clean.error("cleaning undo invalidation rejected code=\(code, privacy: .public)")
+        }
     }
 
     private func ensureLicensed() -> Bool {

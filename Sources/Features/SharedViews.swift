@@ -950,27 +950,90 @@ private struct LegacyTaskOutcomeCompatibilityView: View {
     }
 }
 
-/// 清理流的完成页——薄封装 `TaskCompletionView`（释放字节数计数庆祝 + 撤销/完成）。
-/// `note`：可选的诚实附注（如 P3 的「空间被快照暂存」解释），追加在明细行之后。
+/// 清理流唯一的 reducer-backed 结果页适配器。
+///
+/// `CleaningOutcomeConsumer` 已在公开终态前冻结 sink 决策与一次性展示授权；
+/// 这里仅把可用动作交给通用 `TaskOutcomeView`，不重算成功、不发通知、也不注册 gate。
+@MainActor
 struct CompletionView: View {
-    let report: CleaningReport
-    let intent: DeleteIntent
-    var note: String? = nil
-    let onUndo: () -> Void
+    let outcome: CleaningOutcomeConsumption
+    var onRetry: (() -> Void)?
+    var onUndo: (() -> Void)?
     let onDone: () -> Void
+    @State private var showingDetails = false
 
-    private var canUndo: Bool { intent == .trash && !report.restorable.isEmpty }
+    private var hasDetails: Bool {
+        let counts = outcome.presentationContext.operation.counts
+        return !outcome.presentationContext.operation.issues.isEmpty
+            || counts.failed > 0
+            || counts.skipped > 0
+            || counts.cancelled > 0
+    }
 
     var body: some View {
-        TaskCompletionView(
-            animateTo: report.reclaimedBytes,
-            metricText: { xLocF("已释放 %@", $0.formattedBytes) },
-            detail: xLocF("清理了 %d 项", report.removedCount) +
-                (report.failures.isEmpty ? "" : xLocF(" · %d 项被跳过", report.failures.count)) +
-                (note.map { "\n" + $0 } ?? ""),
-            undoTitle: canUndo ? xLoc("撤销") : nil,
-            onUndo: canUndo ? onUndo : nil,
-            doneTitle: xLoc("完成"),
-            onDone: onDone)
+        TaskOutcomeView(
+            context: outcome.presentationContext,
+            actions: TaskOutcomeActions(
+                retry: onRetry,
+                details: hasDetails ? { showingDetails = true } : nil,
+                undo: onUndo,
+                done: onDone),
+            authorization: outcome.presentationAuthorization)
+            .sheet(isPresented: $showingDetails) {
+                CleaningOutcomeDetailsSheet(
+                    operation: outcome.presentationContext.operation,
+                    onDone: { showingDetails = false })
+            }
+    }
+}
+
+@MainActor
+private struct CleaningOutcomeDetailsSheet: View {
+    let operation: OperationOutcome
+    let onDone: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: XSpacing.l) {
+            HStack(spacing: XSpacing.s) {
+                Image(systemName: "list.bullet.clipboard")
+                    .foregroundStyle(XColor.brand)
+                Text(xLoc("操作详情")).xTitle()
+                Spacer()
+            }
+
+            OutcomeCountGrid(summary: TaskOutcomeCountSummary(operation.counts))
+
+            if operation.issues.isEmpty {
+                Text(xLoc("没有需要处理的问题。"))
+                    .font(XFont.body)
+                    .foregroundStyle(XColor.textSecondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: XSpacing.s) {
+                        ForEach(Array(operation.issues.enumerated()), id: \.offset) { _, issue in
+                            XCard(padding: XSpacing.m) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(xLoc(issue.code))
+                                        .font(XFont.bodyEmphasis)
+                                        .foregroundStyle(XColor.textPrimary)
+                                    Text(xLoc(issue.recovery.rawValue))
+                                        .font(XFont.caption)
+                                        .foregroundStyle(XColor.textSecondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button(xLoc("完成"), action: onDone)
+                    .buttonStyle(XPrimaryButtonStyle())
+            }
+        }
+        .padding(XSpacing.xl)
+        .frame(minWidth: 520, minHeight: 380)
     }
 }

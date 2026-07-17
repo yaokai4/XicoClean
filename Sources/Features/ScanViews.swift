@@ -37,6 +37,16 @@ struct SessionScaffold<Idle: View>: View {
         } message: {
             Text(xLocF("有 %d 项无法自动放回原位（可能废纸篓已被清空、文件被移动或所在卷已卸载）。这些项仍可在废纸篓中手动找回。", vm.undoFailedItems.count))
         }
+        .alert(
+            xLoc("历史记录未同步"),
+            isPresented: Binding(
+                get: { vm.persistenceWarning != nil },
+                set: { if !$0 { vm.persistenceWarning = nil } })
+        ) {
+            Button(xLoc("好"), role: .cancel) { vm.persistenceWarning = nil }
+        } message: {
+            Text(vm.persistenceWarning ?? "")
+        }
     }
 
     private func failedView(_ message: String) -> some View {
@@ -147,6 +157,8 @@ struct SessionScaffold<Idle: View>: View {
                     HStack(spacing: XSpacing.s) {
                         XRingGauge(progress: 0, spinning: true, colors: XColor.brandGradientColors, lineWidth: 2.5, size: 16) { EmptyView() }
                         Text(xLoc("清理中…")).font(XFont.caption).foregroundStyle(XColor.textSecondary)
+                        Button(xLoc("取消")) { vm.cancelCleaning() }
+                            .buttonStyle(XSecondaryButtonStyle(compact: true))
                     }
                 } else if vm.needsPurchaseToClean {
                     // 试用到期后扫描仍可用（看见价值），但清理需购买——直接给出「购买后清理」CTA，
@@ -208,9 +220,14 @@ struct SessionScaffold<Idle: View>: View {
     }
 
     @ViewBuilder private var finishedView: some View {
-        if let report = vm.lastReport {
-            CompletionView(report: report, intent: vm.intent,
-                           onUndo: { vm.undo() }, onDone: { vm.reset() })
+        if let outcome = vm.outcomeConsumption {
+            CompletionView(
+                outcome: outcome,
+                onRetry: vm.hasRetryableCleaningRemainder
+                    ? { vm.retryCleaning() }
+                    : nil,
+                onUndo: vm.hasUndoReceipts ? { vm.undo() } : nil,
+                onDone: { vm.reset() })
         } else {
             emptyView
         }
@@ -405,9 +422,14 @@ public struct SmartScanView: View {
             case .active:
                 SmartScanHubActiveView(hub: hub)
             case .finished:
-                if let report = hub.lastReport {
-                    CompletionView(report: report, intent: .trash, note: hub.spaceNote,
-                                   onUndo: { hub.undo() }, onDone: { hub.reset() })
+                if let outcome = hub.outcomeConsumption {
+                    CompletionView(
+                        outcome: outcome,
+                        onRetry: hub.hasRetryableCleaningRemainder
+                            ? { hub.retryCleaning() }
+                            : nil,
+                        onUndo: hub.hasUndoReceipts ? { hub.undo() } : nil,
+                        onDone: { hub.reset() })
                 } else {
                     dashboard.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -420,15 +442,43 @@ public struct SmartScanView: View {
         } message: {
             Text(xLocF("有 %d 项无法自动放回原位（可能废纸篓已被清空、文件被移动或所在卷已卸载）。这些项仍可在废纸篓中手动找回。", hub.undoFailedItems.count))
         }
+        .alert(
+            xLoc("历史记录未同步"),
+            isPresented: Binding(
+                get: { hub.persistenceWarning != nil },
+                set: { if !$0 { hub.dismissPersistenceWarning() } })
+        ) {
+            Button(xLoc("好"), role: .cancel) { hub.dismissPersistenceWarning() }
+        } message: {
+            Text(hub.persistenceWarning ?? "")
+        }
+        .alert(
+            xLoc("历史记录未同步"),
+            isPresented: Binding(
+                get: { historyUndoWarning != nil },
+                set: { if !$0 { historyUndoWarning = nil } })
+        ) {
+            Button(xLoc("好"), role: .cancel) { historyUndoWarning = nil }
+        } message: {
+            Text(historyUndoWarning ?? "")
+        }
         .onAppear {
             refresh()
             withAnimation(XMotion.settle) { appeared = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .xicoOutcomeInvalidated)) { notification in
+            guard let event = notification.object as? OutcomeInvalidationEvent,
+                  !event.domains.isDisjoint(with: [.diskCapacity, .cleaningHistory]) else {
+                return
+            }
+            refresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in refresh() }
     }
 
     @State private var lastUndoable: CleaningRecord?
     @State private var undoing = false
+    @State private var historyUndoWarning: String?
 
     private func refresh() {
         capacity = env.fs.volumeCapacity(for: FileManager.default.homeDirectoryForCurrentUser)
@@ -441,13 +491,32 @@ public struct SmartScanView: View {
     private func undoLast() {
         guard let rec = lastUndoable, !undoing else { return }
         undoing = true
-        let report = CleaningReport(removedCount: rec.removedCount, reclaimedBytes: rec.reclaimedBytes,
-                                    failures: [], restorable: rec.restorable)
         Task {
-            let result = await env.cleaningEngine.undo(report)
-            if result.allSucceeded { env.history.remove(id: rec.id) }
-            // 部分失败：只保留仍未恢复的项为可撤销，用户可重试（而非丢掉全部重试能力）
-            else { env.history.updateRestorable(id: rec.id, to: result.failed) }
+            let result = await env.cleaningEngine.undo(
+                rec.restorable,
+                parentID: rec.operationID)
+            let historyResult: HistoryUpdateResult
+            if result.payload.remaining.isEmpty, !rec.hasIrreversibleChanges {
+                historyResult = env.historySink.remove(id: rec.id)
+            } else {
+                // 部分失败：只保留仍未恢复的项为可撤销，用户可重试（而非丢掉全部重试能力）
+                historyResult = env.historySink.updateRestorable(
+                    id: rec.id,
+                    to: result.payload.remaining)
+            }
+            switch historyResult {
+            case .committed:
+                historyUndoWarning = nil
+            case .notFound:
+                historyUndoWarning = xLoc("撤销结果已生效，但对应的历史记录已不存在。")
+            case .rejected:
+                historyUndoWarning = xLoc("撤销结果已生效，但清理历史未能同步更新。")
+            }
+            if let invalidation = ValidatedOutcomeInvalidation(
+                outcome: result.outcome,
+                domains: [.diskCapacity, .scanIndex, .cleaningHistory]) {
+                _ = env.invalidationSink.publish(invalidation)
+            }
             refresh()
             undoing = false
         }
@@ -779,7 +848,7 @@ public struct ModuleScanView: View {
     private let meta: ModuleMetadata?
     private let intent: DeleteIntent
     private let history: HistoryStore
-    /// idle 英雄区的信任胶囊——在 .onAppear / .xicoDidClean 时算一次并缓存，
+    /// idle 英雄区的信任胶囊——在出现或类型化清理历史失效时算一次并缓存，
     /// 而非每次 body 求值都读历史库 + 造格式化器（审计 ScanViews:492 P3）。
     @State private var facts: [ModuleIdleHero.Fact] = []
 
@@ -835,6 +904,11 @@ public struct ModuleScanView: View {
         .onAppear {
             computeFacts()
             if CommandLine.arguments.contains("--autoscan"), vm.phase == .idle { vm.start() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .xicoOutcomeInvalidated)) { notification in
+            guard let event = notification.object as? OutcomeInvalidationEvent,
+                  event.domains.contains(.cleaningHistory) else { return }
+            computeFacts()
         }
         .onReceive(NotificationCenter.default.publisher(for: .xicoDidClean)) { _ in computeFacts() }
     }
