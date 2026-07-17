@@ -312,9 +312,17 @@ struct TaskOutcomePresentation: Equatable, Sendable {
 
         switch operation.status {
         case .success:
-            if irreversible || operation.mutation == .none {
+            // An irreversible success is terminal: there is nothing to restore,
+            // so it always collapses to a single dismissal, independent of any
+            // receipt the consumer may still hold.
+            if irreversible {
                 return [.done]
             }
+            // A retry generation may finish `unchanged` (`mutation == .none`) yet
+            // still own a Domain-verified receipt from an earlier changed
+            // generation. The consumer capability is authoritative, so that undo
+            // must survive an unchanged success exactly as it does for a changed
+            // one — current-generation mutation alone cannot erase it.
             if failClosed {
                 return canUndo ? [.details, .undoChanged, .done] : [.details, .done]
             }
@@ -331,6 +339,11 @@ struct TaskOutcomePresentation: Equatable, Sendable {
             if hasRetry { actions.append(.retryFailed) }
             if hasRecovery { actions.append(.recovery) }
             actions.append(.details)
+            // A retry rejected before mutation (e.g. the 256-fact admission
+            // limit) still owns a Domain-verified receipt from an earlier
+            // changed generation; that undo must survive a `.failure` outcome
+            // exactly as it does for `.partial`/`.cancelled` above.
+            if canUndo { actions.append(.undoChanged) }
             actions.append(.done)
             return actions
         case .cancelled:

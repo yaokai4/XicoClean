@@ -906,11 +906,14 @@ public final class SmartScanHubViewModel: ObservableObject {
     }
 
     public func reset() {
+        guard !isUndoing else { return }
+        // Undo-in-progress is the first gate above: while an undo is in flight
+        // the Domain owns the receipt ledger and retry state, so `reset()` must
+        // not run any teardown ahead of it — mirrors ModuleSessionViewModel.
         if cleaning {
             cancelCleaning()
             return
         }
-        guard !isUndoing else { return }
         cancelTasks()
         env.scanIndex.invalidate()
         phase = .idle

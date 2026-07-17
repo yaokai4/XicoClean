@@ -715,16 +715,23 @@ public actor CleaningEngine {
             }
         }
 
+        // Post-admission safety recheck. The admission preflight already cleared
+        // this item (an initial denial is `cleaning.safety.denied`/skipped and
+        // never reaches here), so a denial now means the target's identity or
+        // state changed between admission and execution: report it as the
+        // retryable `cleaning.safety.identityChanged`, matching the symlink
+        // recheck below — not as a non-retryable initial policy denial.
         guard safety.verify(item.url, intent: intent).isAllowed else {
+            Self.log.error("cleaning.safety.identityChanged count=1")
             let issue = Self.issue(
-                code: "cleaning.safety.denied",
-                category: .safetyPolicy,
+                code: "cleaning.safety.identityChanged",
+                category: .identityChanged,
                 requestID: request.requestID,
-                recovery: .chooseAnotherTarget,
-                retryable: false)
+                recovery: .retry,
+                retryable: true)
             return Self.result(for: request,
                                intent: intent,
-                               disposition: .skipped(issue),
+                               disposition: .failed(issue),
                                mutation: .none)
         }
 

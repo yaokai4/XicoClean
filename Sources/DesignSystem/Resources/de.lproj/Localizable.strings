@@ -1693,3 +1693,16 @@
 "%@。%@。下一步：%@" = "%@. %@. Nächster Schritt: %@";
 "结果展示正在升级" = "Die Ergebnisansicht wird aktualisiert";
 "请返回并重新执行此操作以查看完整结果。" = "Kehren Sie zurück und führen Sie diesen Vorgang erneut aus, um das vollständige Ergebnis anzuzeigen.";
+
+/* Task 4 · outcome / undo results */
+"历史记录未同步" = "Verlauf nicht synchronisiert";
+"当前结果已发生变化，已停止使用旧重试授权。请重新扫描后再试。" = "Die aktuellen Ergebnisse haben sich geändert, daher wird die alte Wiederholungsfreigabe nicht mehr verwendet. Bitte scanne erneut und versuche es noch einmal.";
+"撤销结果已生效，但对应的历史记录已不存在。" = "Das Rückgängigmachen wurde angewendet, aber der zugehörige Verlaufseintrag existiert nicht mehr.";
+"撤销结果已生效，但清理历史未能同步更新。" = "Das Rückgängigmachen wurde angewendet, aber der Bereinigungsverlauf konnte nicht aktualisiert werden.";
+"撤销结果已生效，但相关界面未能全部刷新。" = "Das Rückgängigmachen wurde angewendet, aber nicht alle zugehörigen Ansichten konnten aktualisiert werden.";
+"撤销结果无法与原始回执核对，已保留原记录以避免错误更新。" = "Das Rückgängig-Ergebnis konnte nicht mit dem ursprünglichen Beleg abgeglichen werden, daher wurde der ursprüngliche Eintrag beibehalten, um eine fehlerhafte Aktualisierung zu vermeiden.";
+"撤销结果无法与原始回执核对；已保留全部回执以便重试。" = "Das Rückgängig-Ergebnis konnte nicht mit dem ursprünglichen Beleg abgeglichen werden; alle Belege wurden beibehalten, damit du es erneut versuchen kannst.";
+"操作详情" = "Vorgangsdetails";
+"文件操作结果已保留，但清理历史未能写入。" = "Das Ergebnis des Dateivorgangs wurde beibehalten, aber der Bereinigungsverlauf konnte nicht geschrieben werden.";
+"正在重试未完成项目…" = "Nicht abgeschlossene Elemente werden wiederholt…";
+"没有需要处理的问题。" = "Es gibt keine Probleme zu bearbeiten.";
