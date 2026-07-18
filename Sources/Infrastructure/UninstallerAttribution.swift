@@ -74,6 +74,9 @@ public enum UninstallMode: String, Sendable, Equatable {
 public enum UninstallerAttributionError: Error, Sendable, Equatable {
     case appStillPresent
     case appBodyNotAdmitted
+    case foreignApp
+    case appIdentityChanged
+    case appMetadataChanged
 }
 
 public enum UninstallPlanError: Error, Sendable, Equatable {
@@ -84,37 +87,123 @@ public enum UninstallPlanError: Error, Sendable, Equatable {
     case invalidSelectedCandidate
     case emptySelection
     case authorizationUnavailable
+    case missingTargetIdentity
+    case appIdentityChanged
+    case appMetadataChanged
+    case batchExpired
+    case batchAlreadyConsumed
+    case entitlementAttestationChanged
+    case launchAgentAttestationChanged
 }
 
-/// Injected boundary for reading the signed application's application-group entitlement.
-/// `nil` means the signature/entitlement could not be verified and therefore proves no ownership.
-public protocol EntitlementReader: Sendable {
-    func applicationGroups(for appURL: URL) -> [String]?
+public struct SignedEntitlementAttestation: Sendable, Equatable {
+    public let groups: [String]
+    public let codeIdentifier: String
+    public let uniqueCode: Data
+    public let sourceIdentity: LocalFileIdentity
+
+    public init(groups: [String], codeIdentifier: String, uniqueCode: Data,
+                sourceIdentity: LocalFileIdentity) {
+        self.groups = groups
+        self.codeIdentifier = codeIdentifier
+        self.uniqueCode = uniqueCode
+        self.sourceIdentity = sourceIdentity
+    }
+
+    var isWithinBounds: Bool {
+        Self.groupsAreWithinBounds(groups)
+            && !codeIdentifier.isEmpty
+            && !uniqueCode.isEmpty
+    }
+
+    static func groupsAreWithinBounds(_ groups: [String]) -> Bool {
+        guard groups.count <= SecurityEntitlementReader.maximumGroupCount else { return false }
+        var totalBytes = 0
+        for group in groups {
+            let (next, overflow) = totalBytes.addingReportingOverflow(group.utf8.count)
+            guard !overflow,
+                  next <= SecurityEntitlementReader.maximumGroupUTF8Bytes else { return false }
+            totalBytes = next
+        }
+        return true
+    }
 }
 
-public struct SecurityEntitlementReader: EntitlementReader {
+public struct SecurityCodeInspection: Sendable, Equatable {
+    public let groups: [String]
+    public let codeIdentifier: String
+    public let uniqueCode: Data
+
+    public init(groups: [String], codeIdentifier: String, uniqueCode: Data) {
+        self.groups = groups
+        self.codeIdentifier = codeIdentifier
+        self.uniqueCode = uniqueCode
+    }
+}
+
+public protocol SecurityCodeInspecting: Sendable {
+    func inspect(appURL: URL) -> SecurityCodeInspection?
+}
+
+public struct SecurityFrameworkCodeInspector: SecurityCodeInspecting {
     public init() {}
 
-    public func applicationGroups(for appURL: URL) -> [String]? {
+    public func inspect(appURL: URL) -> SecurityCodeInspection? {
         var staticCode: SecStaticCode?
         guard SecStaticCodeCreateWithPath(appURL as CFURL, [], &staticCode) == errSecSuccess,
               let staticCode else { return nil }
-
         let validityFlags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures
                                       | kSecCSCheckNestedCode
                                       | kSecCSStrictValidate)
         guard SecStaticCodeCheckValidity(staticCode, validityFlags, nil) == errSecSuccess else {
             return nil
         }
-
         var signingInformation: CFDictionary?
         guard SecCodeCopySigningInformation(staticCode,
                                             SecCSFlags(rawValue: kSecCSSigningInformation),
                                             &signingInformation) == errSecSuccess,
               let dictionary = signingInformation as? [String: Any],
-              let entitlements = dictionary[kSecCodeInfoEntitlementsDict as String]
-                as? [String: Any] else { return nil }
-        return entitlements["com.apple.security.application-groups"] as? [String]
+              let codeIdentifier = dictionary[kSecCodeInfoIdentifier as String] as? String,
+              let uniqueCode = dictionary[kSecCodeInfoUnique as String] as? Data else { return nil }
+        let entitlements = dictionary[kSecCodeInfoEntitlementsDict as String] as? [String: Any]
+        let groups = entitlements?["com.apple.security.application-groups"] as? [String] ?? []
+        return SecurityCodeInspection(groups: groups, codeIdentifier: codeIdentifier,
+                                      uniqueCode: uniqueCode)
+    }
+}
+
+/// Injected boundary for a bounded signature-validated application-group attestation.
+/// `nil` means the signature, identity, or payload bounds could not be verified.
+public protocol EntitlementReader: Sendable {
+    func attestation(for appURL: URL) -> SignedEntitlementAttestation?
+}
+
+public struct SecurityEntitlementReader: EntitlementReader {
+    public static let maximumGroupCount = 128
+    public static let maximumGroupUTF8Bytes = 16 * 1024
+
+    private let inspector: any SecurityCodeInspecting
+    private let identitySampler: any IdentitySampler
+
+    public init(inspector: any SecurityCodeInspecting = SecurityFrameworkCodeInspector(),
+                identitySampler: any IdentitySampler = LocalFileIdentitySampler()) {
+        self.inspector = inspector
+        self.identitySampler = identitySampler
+    }
+
+    public func attestation(for appURL: URL) -> SignedEntitlementAttestation? {
+        let canonicalPath = appURL.standardizedFileURL.path
+        guard let before = identitySampler.sample(canonicalPath),
+              let inspection = inspector.inspect(appURL: appURL),
+              SignedEntitlementAttestation.groupsAreWithinBounds(inspection.groups),
+              let after = identitySampler.sample(canonicalPath),
+              before == after else { return nil }
+        let attestation = SignedEntitlementAttestation(
+            groups: inspection.groups.sorted(),
+            codeIdentifier: inspection.codeIdentifier,
+            uniqueCode: inspection.uniqueCode,
+            sourceIdentity: before)
+        return attestation.isWithinBounds ? attestation : nil
     }
 }
 
@@ -134,67 +223,102 @@ public struct LaunchAgentRecord: Sendable, Equatable {
     }
 }
 
+public struct LaunchAgentAttestation: Sendable, Equatable {
+    public let record: LaunchAgentRecord
+    public let plistIdentity: LocalFileIdentity
+    public let resolvedProgramPath: String?
+    public let programIdentity: LocalFileIdentity?
+
+    public init(record: LaunchAgentRecord,
+                plistIdentity: LocalFileIdentity,
+                resolvedProgramPath: String?,
+                programIdentity: LocalFileIdentity?) {
+        self.record = record
+        self.plistIdentity = plistIdentity
+        self.resolvedProgramPath = resolvedProgramPath
+        self.programIdentity = programIdentity
+    }
+
+    static func capture(record: LaunchAgentRecord, plistURL: URL) -> LaunchAgentAttestation? {
+        guard let plistIdentity = LocalFileIdentitySampler().sample(plistURL.path) else { return nil }
+        return capture(record: record, plistIdentity: plistIdentity)
+    }
+
+    static func capture(record: LaunchAgentRecord,
+                        plistIdentity: LocalFileIdentity) -> LaunchAgentAttestation {
+        guard let executable = record.executablePath, executable.hasPrefix("/") else {
+            return LaunchAgentAttestation(record: record, plistIdentity: plistIdentity,
+                                          resolvedProgramPath: nil, programIdentity: nil)
+        }
+        let unresolved = URL(fileURLWithPath: executable)
+        let resolvedBefore = unresolved.resolvingSymlinksInPath().standardizedFileURL
+        let sampler = LocalFileIdentitySampler()
+        guard let before = sampler.sample(resolvedBefore.path),
+              Self.isRegular(before) else {
+            return LaunchAgentAttestation(record: record, plistIdentity: plistIdentity,
+                                          resolvedProgramPath: nil, programIdentity: nil)
+        }
+        let resolvedAfter = unresolved.resolvingSymlinksInPath().standardizedFileURL
+        guard resolvedBefore.path == resolvedAfter.path,
+              sampler.sample(resolvedAfter.path) == before else {
+            return LaunchAgentAttestation(record: record, plistIdentity: plistIdentity,
+                                          resolvedProgramPath: nil, programIdentity: nil)
+        }
+        return LaunchAgentAttestation(record: record, plistIdentity: plistIdentity,
+                                      resolvedProgramPath: resolvedBefore.path,
+                                      programIdentity: before)
+    }
+
+    private static func isRegular(_ identity: LocalFileIdentity) -> Bool {
+        #if canImport(Darwin)
+        return (identity.mode & UInt32(S_IFMT)) == UInt32(S_IFREG)
+        #else
+        return true
+        #endif
+    }
+}
+
 public protocol LaunchAgentReader: Sendable {
-    func launchAgent(at url: URL) -> LaunchAgentRecord?
+    func attestation(at url: URL) -> LaunchAgentAttestation?
 }
 
 public struct PlistLaunchAgentReader: LaunchAgentReader {
     public static let maximumBytes = 1_048_576
+    private let afterRead: @Sendable () -> Void
 
-    public init() {}
+    public init(afterRead: @escaping @Sendable () -> Void = {}) {
+        self.afterRead = afterRead
+    }
 
-    public func launchAgent(at url: URL) -> LaunchAgentRecord? {
-        guard let data = Self.readBoundedRegularFile(at: url),
-              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+    public func attestation(at url: URL) -> LaunchAgentAttestation? {
+        guard let read = BoundedRegularFileReader.read(at: url,
+                                                       maximumBytes: Self.maximumBytes,
+                                                       afterRead: afterRead),
+              let plist = try? PropertyListSerialization.propertyList(from: read.data,
+                                                                      options: [], format: nil),
               let dictionary = plist as? [String: Any] else { return nil }
-        return LaunchAgentRecord(
+        let record = LaunchAgentRecord(
             label: dictionary["Label"] as? String,
             program: dictionary["Program"] as? String,
             programArguments: dictionary["ProgramArguments"] as? [String] ?? [])
+        return LaunchAgentAttestation.capture(record: record, plistIdentity: read.identity)
     }
 
-    private static func readBoundedRegularFile(at url: URL) -> Data? {
-        #if canImport(Darwin)
-        var pathStat = stat()
-        guard lstat(url.path, &pathStat) == 0,
-              (pathStat.st_mode & S_IFMT) == S_IFREG,
-              pathStat.st_size >= 0,
-              pathStat.st_size <= maximumBytes else { return nil }
-
-        let descriptor = open(url.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
-        guard descriptor >= 0 else { return nil }
-        defer { close(descriptor) }
-
-        var openedStat = stat()
-        guard fstat(descriptor, &openedStat) == 0,
-              (openedStat.st_mode & S_IFMT) == S_IFREG,
-              openedStat.st_dev == pathStat.st_dev,
-              openedStat.st_ino == pathStat.st_ino,
-              openedStat.st_size >= 0,
-              openedStat.st_size <= maximumBytes else { return nil }
-
-        var data = Data()
-        data.reserveCapacity(Int(openedStat.st_size))
-        var buffer = [UInt8](repeating: 0, count: 32 * 1024)
-        while true {
-            let count = read(descriptor, &buffer, buffer.count)
-            if count == 0 { return data }
-            if count < 0 {
-                if errno == EINTR { continue }
-                return nil
-            }
-            guard data.count + count <= maximumBytes else { return nil }
-            data.append(contentsOf: buffer.prefix(count))
-        }
-        #else
-        return nil
-        #endif
+    public func launchAgent(at url: URL) -> LaunchAgentRecord? {
+        attestation(at: url)?.record
     }
+
 }
 
 public enum UninstallCandidateRole: String, Sendable, Equatable {
     case appBody
     case associatedFile
+}
+
+enum CandidateEvidenceBinding: Sendable, Equatable {
+    case none
+    case signedEntitlement(SignedEntitlementAttestation)
+    case launchAgent(LaunchAgentAttestation)
 }
 
 public struct UninstallCandidate: Identifiable, Sendable {
@@ -204,12 +328,14 @@ public struct UninstallCandidate: Identifiable, Sendable {
     public let role: UninstallCandidateRole
     public let recoveryHint: String
     let batchID: UUID
+    let evidenceBinding: CandidateEvidenceBinding
 
     init(item: CleanableItem,
          evidence: OwnershipEvidence,
          selectionPolicy: SelectionPolicy,
          role: UninstallCandidateRole,
          batchID: UUID,
+         evidenceBinding: CandidateEvidenceBinding = .none,
          recoveryHint: String = "Moved to Trash; restore it from Finder Trash if needed.") {
         var item = item
         item.isSelected = selectionPolicy.defaultSelected
@@ -218,6 +344,7 @@ public struct UninstallCandidate: Identifiable, Sendable {
         self.selectionPolicy = selectionPolicy
         self.role = role
         self.batchID = batchID
+        self.evidenceBinding = evidenceBinding
         self.recoveryHint = recoveryHint
     }
 
@@ -248,22 +375,33 @@ public struct UninstallCandidate: Identifiable, Sendable {
 /// Service-issued, app/mode-bound candidate inventory. Its initializer and candidate mutation are
 /// module-internal so Features can only alter selection through the policy-aware methods below.
 public struct UninstallBatch: Sendable {
+    public static let timeToLive: TimeInterval = 5 * 60
+
     let issuanceID: UUID
     let batchID: UUID
     public let app: InstalledApp
     public let mode: UninstallMode
+    public let createdAt: Date
+    public let expiresAt: Date
+    let entitlementAttestation: SignedEntitlementAttestation?
     public private(set) var candidates: [UninstallCandidate]
 
     init(issuanceID: UUID,
          batchID: UUID,
          app: InstalledApp,
          mode: UninstallMode,
-         candidates: [UninstallCandidate]) {
+         candidates: [UninstallCandidate],
+         createdAt: Date = Date(),
+         expiresAt: Date? = nil,
+         entitlementAttestation: SignedEntitlementAttestation? = nil) {
         self.issuanceID = issuanceID
         self.batchID = batchID
         self.app = app
         self.mode = mode
         self.candidates = candidates
+        self.createdAt = createdAt
+        self.expiresAt = expiresAt ?? createdAt.addingTimeInterval(Self.timeToLive)
+        self.entitlementAttestation = entitlementAttestation
     }
 
     public mutating func toggle(_ id: UUID) {

@@ -17,9 +17,15 @@ public protocol UninstallCapabilityRouting: Sendable {
 
 public struct UninstallCapabilityController: UninstallCapabilityRouting, Sendable {
     private let issuer: DestructiveOperationIssuer
+    private let consumptionGate: UninstallBatchConsumptionGate
+    private let now: @Sendable () -> Date
 
-    public init(issuer: DestructiveOperationIssuer) {
+    public init(issuer: DestructiveOperationIssuer,
+                consumptionGate: UninstallBatchConsumptionGate = UninstallBatchConsumptionGate(),
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.issuer = issuer
+        self.consumptionGate = consumptionGate
+        self.now = now
     }
 
     public func execute(
@@ -27,14 +33,29 @@ public struct UninstallCapabilityController: UninstallCapabilityRouting, Sendabl
         service: UninstallerService,
         operation: @escaping @Sendable ([CleanableItem]) async -> CleaningReport
     ) async throws -> DestructiveExecutionResult<CleaningReport> {
-        let plan = try service.prepareUninstallPlan(from: batch, using: issuer)
-        guard let authorization = issuer.authorize(plan) else {
+        let attemptTime = now()
+        guard attemptTime < batch.expiresAt else { throw UninstallPlanError.batchExpired }
+        guard await consumptionGate.consume(batch.batchID) else {
+            throw UninstallPlanError.batchAlreadyConsumed
+        }
+        let plan = try service.prepareUninstallPlan(from: batch, using: issuer, now: attemptTime)
+        guard let authorization = issuer.authorize(plan, now: attemptTime) else {
             throw UninstallPlanError.authorizationUnavailable
         }
         let selectedItems = batch.selectedItems
-        return await issuer.execute(plan, authorization: authorization) {
+        return await issuer.execute(plan, authorization: authorization, now: attemptTime) {
             await operation(selectedItems)
         }
+    }
+}
+
+public actor UninstallBatchConsumptionGate {
+    private var consumed: Set<UUID> = []
+
+    public init() {}
+
+    func consume(_ batchID: UUID) -> Bool {
+        consumed.insert(batchID).inserted
     }
 }
 

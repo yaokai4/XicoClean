@@ -18,18 +18,77 @@ final class UninstallerAttributionTests: XCTestCase {
         }
     }
 
+    private final class MutableSafety: @unchecked Sendable, SafetyEngine {
+        private let lock = NSLock()
+        private var allowed = true
+        func deny() { lock.withLock { allowed = false } }
+        func verify(_ url: URL, intent: DeleteIntent) -> SafetyVerdict {
+            lock.withLock { allowed } ? .allow : .deny(reason: "changed fixture verdict")
+        }
+    }
+
     private struct FakeEntitlementReader: EntitlementReader {
         let groups: [String]?
-        func applicationGroups(for appURL: URL) -> [String]? { groups }
+        func attestation(for appURL: URL) -> SignedEntitlementAttestation? {
+            guard let groups,
+                  let identity = LocalFileIdentitySampler().sample(appURL.path) else { return nil }
+            let bundleID = Bundle(url: appURL)?.bundleIdentifier ?? ""
+            return SignedEntitlementAttestation(groups: groups.sorted(),
+                                                codeIdentifier: bundleID,
+                                                uniqueCode: Data([1]),
+                                                sourceIdentity: identity)
+        }
     }
 
     private struct FakeLaunchAgentReader: LaunchAgentReader {
         let records: [String: LaunchAgentRecord]
-        func launchAgent(at url: URL) -> LaunchAgentRecord? { records[url.path] }
+        func attestation(at url: URL) -> LaunchAgentAttestation? {
+            guard let record = records[url.path] else { return nil }
+            return LaunchAgentAttestation.capture(record: record, plistURL: url)
+        }
     }
 
     private struct NilIdentitySampler: IdentitySampler {
         func sample(_ canonicalPath: String) -> LocalFileIdentity? { nil }
+    }
+
+    private final class SequenceIdentitySampler: @unchecked Sendable, IdentitySampler {
+        private let lock = NSLock()
+        private var values: [LocalFileIdentity?]
+
+        init(_ values: [LocalFileIdentity?]) { self.values = values }
+
+        func sample(_ canonicalPath: String) -> LocalFileIdentity? {
+            lock.withLock {
+                if values.count > 1 { return values.removeFirst() }
+                return values.first ?? nil
+            }
+        }
+    }
+
+    private struct FakeSecurityCodeInspector: SecurityCodeInspecting {
+        let inspection: SecurityCodeInspection?
+        func inspect(appURL: URL) -> SecurityCodeInspection? { inspection }
+    }
+
+    private final class MutableEntitlementAttestationReader: @unchecked Sendable, EntitlementReader {
+        private let lock = NSLock()
+        private var stored: SignedEntitlementAttestation?
+
+        init(_ attestation: SignedEntitlementAttestation?) { stored = attestation }
+        func set(_ attestation: SignedEntitlementAttestation?) {
+            lock.withLock { stored = attestation }
+        }
+        func attestation(for appURL: URL) -> SignedEntitlementAttestation? {
+            lock.withLock { stored }
+        }
+    }
+
+    private final class InvocationCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        var count: Int { lock.withLock { value } }
+        func increment() { lock.withLock { value += 1 } }
     }
 
     private struct Fixture {
@@ -37,6 +96,7 @@ final class UninstallerAttributionTests: XCTestCase {
         let home: URL
         let appURL: URL
         let app: InstalledApp
+        let issuanceID: UUID
 
         init(bundleID: String = "com.example.product", displayName: String = "Example Product") throws {
             let unresolvedRoot = FileManager.default.temporaryDirectory
@@ -46,10 +106,22 @@ final class UninstallerAttributionTests: XCTestCase {
                 ? URL(fileURLWithPath: "/private" + unresolvedRoot.path)
                 : unresolvedRoot.resolvingSymlinksInPath()
             home = root.appendingPathComponent("home")
-            appURL = root.appendingPathComponent("Applications/Example Product.app")
+            issuanceID = UUID()
+            appURL = home.appendingPathComponent("Applications/Example Product.app")
             try FileManager.default.createDirectory(at: appURL, withIntermediateDirectories: true)
+            let contents = appURL.appendingPathComponent("Contents")
+            try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+            var info: [String: Any] = ["CFBundleName": displayName]
+            if !bundleID.isEmpty { info["CFBundleIdentifier"] = bundleID }
+            let infoData = try PropertyListSerialization.data(fromPropertyList: info,
+                                                              format: .xml, options: 0)
+            try infoData.write(to: contents.appendingPathComponent("Info.plist"))
+            let identity = try XCTUnwrap(LocalFileIdentitySampler().sample(appURL.path))
+            let metadataIdentity = try XCTUnwrap(LocalFileIdentitySampler().sample(
+                contents.appendingPathComponent("Info.plist").path))
             app = InstalledApp(id: appURL.path, name: displayName, bundleID: bundleID,
-                               url: appURL, size: 0)
+                               url: appURL, size: 0, provenanceID: issuanceID,
+                               sourceIdentity: identity, metadataIdentity: metadataIdentity)
         }
 
         func createLibraryItem(_ relativePath: String, directory: Bool = true) throws -> URL {
@@ -92,7 +164,9 @@ final class UninstallerAttributionTests: XCTestCase {
                 safety: safety,
                 home: home,
                 entitlementReader: FakeEntitlementReader(groups: entitlements),
-                launchAgentReader: FakeLaunchAgentReader(records: launchAgents))
+                launchAgentReader: FakeLaunchAgentReader(records: launchAgents),
+                identitySampler: LocalFileIdentitySampler(),
+                issuanceID: issuanceID)
         }
 
         func remove() { try? FileManager.default.removeItem(at: root) }
@@ -190,7 +264,81 @@ final class UninstallerAttributionTests: XCTestCase {
         let fixture = try Fixture()
         defer { fixture.remove() }
 
-        XCTAssertNil(SecurityEntitlementReader().applicationGroups(for: fixture.appURL))
+        XCTAssertNil(SecurityEntitlementReader().attestation(for: fixture.appURL))
+    }
+
+    func testSecurityEntitlementReaderRejectsChangedPrePostSourceIdentity() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let before = try XCTUnwrap(LocalFileIdentitySampler().sample(fixture.appURL.path))
+        let after = LocalFileIdentity(device: before.device, inode: before.inode + 1,
+                                      mode: before.mode, size: before.size,
+                                      mtimeNanoseconds: before.mtimeNanoseconds,
+                                      hardLinkCount: before.hardLinkCount)
+        let inspector = FakeSecurityCodeInspector(inspection: SecurityCodeInspection(
+            groups: ["group.com.example.shared"], codeIdentifier: fixture.app.bundleID,
+            uniqueCode: Data([1, 2, 3])))
+        let reader = SecurityEntitlementReader(
+            inspector: inspector,
+            identitySampler: SequenceIdentitySampler([before, after]))
+
+        XCTAssertNil(reader.attestation(for: fixture.appURL))
+    }
+
+    func testSecurityEntitlementReaderRejectsExcessiveGroupCount() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let identity = try XCTUnwrap(LocalFileIdentitySampler().sample(fixture.appURL.path))
+        let groups = (0...SecurityEntitlementReader.maximumGroupCount).map {
+            "group.com.example.\($0)"
+        }
+        let reader = SecurityEntitlementReader(
+            inspector: FakeSecurityCodeInspector(inspection: SecurityCodeInspection(
+                groups: groups, codeIdentifier: fixture.app.bundleID,
+                uniqueCode: Data([1]))),
+            identitySampler: SequenceIdentitySampler([identity, identity]))
+
+        XCTAssertNil(reader.attestation(for: fixture.appURL))
+    }
+
+    func testSecurityEntitlementReaderRejectsExcessiveAggregateGroupBytes() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let identity = try XCTUnwrap(LocalFileIdentitySampler().sample(fixture.appURL.path))
+        let oversized = "group." + String(
+            repeating: "a", count: SecurityEntitlementReader.maximumGroupUTF8Bytes)
+        let reader = SecurityEntitlementReader(
+            inspector: FakeSecurityCodeInspector(inspection: SecurityCodeInspection(
+                groups: [oversized], codeIdentifier: fixture.app.bundleID,
+                uniqueCode: Data([1]))),
+            identitySampler: SequenceIdentitySampler([identity, identity]))
+
+        XCTAssertNil(reader.attestation(for: fixture.appURL))
+    }
+
+    func testPrepareUninstallPlanRejectsChangedSignedEntitlementAttestation() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let group = "group.com.example.shared"
+        _ = try fixture.createLibraryItem("Group Containers/\(group)")
+        let original = SignedEntitlementAttestation(
+            groups: [group], codeIdentifier: fixture.app.bundleID,
+            uniqueCode: Data([1, 2, 3]), sourceIdentity: fixture.app.sourceIdentity)
+        let reader = MutableEntitlementAttestationReader(original)
+        let service = UninstallerService(
+            fs: LocalFileSystemService(), safety: AllowAllSafety(), home: fixture.home,
+            entitlementReader: reader, launchAgentReader: FakeLaunchAgentReader(records: [:]),
+            identitySampler: LocalFileIdentitySampler(), issuanceID: fixture.issuanceID)
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        reader.set(SignedEntitlementAttestation(
+            groups: [group], codeIdentifier: fixture.app.bundleID,
+            uniqueCode: Data([9, 9, 9]), sourceIdentity: fixture.app.sourceIdentity))
+        let issuer = DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
+                                                ledger: AuthorizationLedger())
+
+        XCTAssertThrowsError(try service.prepareUninstallPlan(from: batch, using: issuer)) {
+            XCTAssertEqual($0 as? UninstallPlanError, .entitlementAttestationChanged)
+        }
     }
 
     func testLaunchAgentRecommendedOnlyWhenLabelExactAndProgramInsideBundle() throws { // UNI-07
@@ -305,6 +453,118 @@ final class UninstallerAttributionTests: XCTestCase {
         XCTAssertNil(PlistLaunchAgentReader().launchAgent(at: fifo))
         XCTAssertLessThan(Date().timeIntervalSince(started), 0.5)
         #endif
+    }
+
+    func testPlistLaunchAgentReaderReturnsPlistAndResolvedProgramIdentities() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let executable = try fixture.createAppExecutable()
+        let plist = try fixture.createLaunchAgentPlist(
+            "\(fixture.app.bundleID).plist",
+            dictionary: ["Label": fixture.app.bundleID, "Program": executable.path])
+
+        let attestation = try XCTUnwrap(PlistLaunchAgentReader().attestation(at: plist))
+
+        XCTAssertEqual(attestation.record.label, fixture.app.bundleID)
+        XCTAssertEqual(attestation.plistIdentity,
+                       LocalFileIdentitySampler().sample(plist.path))
+        XCTAssertEqual(attestation.resolvedProgramPath,
+                       executable.resolvingSymlinksInPath().standardizedFileURL.path)
+        XCTAssertEqual(attestation.programIdentity,
+                       LocalFileIdentitySampler().sample(executable.path))
+    }
+
+    func testPlistLaunchAgentReaderRejectsPathReplacementDuringRead() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let executable = try fixture.createAppExecutable()
+        let plist = try fixture.createLaunchAgentPlist(
+            "\(fixture.app.bundleID).plist",
+            dictionary: ["Label": fixture.app.bundleID, "Program": executable.path])
+        let replacement = try fixture.createLaunchAgentPlist(
+            "replacement.plist",
+            dictionary: ["Label": fixture.app.bundleID, "Program": executable.path])
+        let reader = PlistLaunchAgentReader(afterRead: {
+            try? FileManager.default.removeItem(at: plist)
+            try? FileManager.default.moveItem(at: replacement, to: plist)
+        })
+
+        XCTAssertNil(reader.attestation(at: plist))
+    }
+
+    func testPrepareUninstallPlanRejectsLaunchPlistReplacement() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let executable = try fixture.createAppExecutable()
+        let plist = try fixture.createLaunchAgentPlist(
+            "\(fixture.app.bundleID).plist",
+            dictionary: ["Label": fixture.app.bundleID, "Program": executable.path])
+        let service = UninstallerService(
+            fs: LocalFileSystemService(), safety: AllowAllSafety(), home: fixture.home,
+            entitlementReader: FakeEntitlementReader(groups: []),
+            launchAgentReader: PlistLaunchAgentReader(),
+            identitySampler: LocalFileIdentitySampler(), issuanceID: fixture.issuanceID)
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let replacement = try fixture.createLaunchAgentPlist(
+            "replacement.plist",
+            dictionary: ["Label": fixture.app.bundleID, "Program": executable.path])
+        try FileManager.default.removeItem(at: plist)
+        try FileManager.default.moveItem(at: replacement, to: plist)
+        let issuer = DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
+                                                ledger: AuthorizationLedger())
+
+        XCTAssertThrowsError(try service.prepareUninstallPlan(from: batch, using: issuer)) {
+            XCTAssertEqual($0 as? UninstallPlanError, .launchAgentAttestationChanged)
+        }
+    }
+
+    func testPrepareUninstallPlanRejectsLaunchProgramSamePathReplacement() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let executable = try fixture.createAppExecutable()
+        _ = try fixture.createLaunchAgentPlist(
+            "\(fixture.app.bundleID).plist",
+            dictionary: ["Label": fixture.app.bundleID, "Program": executable.path])
+        let service = UninstallerService(
+            fs: LocalFileSystemService(), safety: AllowAllSafety(), home: fixture.home,
+            entitlementReader: FakeEntitlementReader(groups: []),
+            launchAgentReader: PlistLaunchAgentReader(),
+            identitySampler: LocalFileIdentitySampler(), issuanceID: fixture.issuanceID)
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        try FileManager.default.removeItem(at: executable)
+        try Data("replacement executable".utf8).write(to: executable)
+        let issuer = DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
+                                                ledger: AuthorizationLedger())
+
+        XCTAssertThrowsError(try service.prepareUninstallPlan(from: batch, using: issuer)) {
+            XCTAssertEqual($0 as? UninstallPlanError, .launchAgentAttestationChanged)
+        }
+    }
+
+    func testPrepareUninstallPlanRejectsLaunchProgramSymlinkRetarget() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let first = try fixture.createAppExecutable("Contents/MacOS/first")
+        let second = try fixture.createAppExecutable("Contents/MacOS/second")
+        let link = fixture.appURL.appendingPathComponent("Contents/MacOS/current")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
+        _ = try fixture.createLaunchAgentPlist(
+            "\(fixture.app.bundleID).plist",
+            dictionary: ["Label": fixture.app.bundleID, "Program": link.path])
+        let service = UninstallerService(
+            fs: LocalFileSystemService(), safety: AllowAllSafety(), home: fixture.home,
+            entitlementReader: FakeEntitlementReader(groups: []),
+            launchAgentReader: PlistLaunchAgentReader(),
+            identitySampler: LocalFileIdentitySampler(), issuanceID: fixture.issuanceID)
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: second)
+        let issuer = DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
+                                                ledger: AuthorizationLedger())
+
+        XCTAssertThrowsError(try service.prepareUninstallPlan(from: batch, using: issuer)) {
+            XCTAssertEqual($0 as? UninstallPlanError, .launchAgentAttestationChanged)
+        }
     }
 
     func testLaunchAgentWithProgramOutsideBundleIsNotRecommended() throws { // UNI-07
@@ -437,7 +697,7 @@ final class UninstallerAttributionTests: XCTestCase {
         let service = fixture.service()
         let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
         let candidates = batch.candidates
-        let issuer = DestructiveOperationIssuer(sampler: NilIdentitySampler(),
+        let issuer = DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
                                                 ledger: AuthorizationLedger())
 
         let plan = try service.prepareUninstallPlan(from: batch, using: issuer,
@@ -457,13 +717,38 @@ final class UninstallerAttributionTests: XCTestCase {
         XCTAssertEqual(body.attribution, Domain.AttributionEvidence.verifiedAppBody)
     }
 
-    func testCapabilityControllerPreparesAndAuthorizesBeforeInvokingOperation() async throws {
+    func testCapabilityControllerRejectsNilTargetIdentityWithoutInvokingOperation() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         _ = try fixture.createLibraryItem("Caches/\(fixture.app.bundleID)")
         let service = fixture.service()
         let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
         let issuer = DestructiveOperationIssuer(sampler: NilIdentitySampler(),
+                                                ledger: AuthorizationLedger())
+        let controller = UninstallCapabilityController(issuer: issuer)
+        let engine = CleaningEngine(safety: AllowAllSafety(), fs: LocalFileSystemService())
+        let counter = InvocationCounter()
+
+        do {
+            _ = try await controller.execute(batch: batch, service: service) { _ in
+                counter.increment()
+                return await engine.execute(CleaningPlan(items: [], intent: .trash))
+            }
+            XCTFail("nil identity must fail closed")
+        } catch {
+            XCTAssertEqual(error as? UninstallPlanError, .missingTargetIdentity)
+        }
+
+        XCTAssertEqual(counter.count, 0)
+    }
+
+    func testCapabilityControllerExecutesWhenEverySelectedIdentityExists() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.createLibraryItem("Caches/\(fixture.app.bundleID)")
+        let service = fixture.service()
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let issuer = DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
                                                 ledger: AuthorizationLedger())
         let controller = UninstallCapabilityController(issuer: issuer)
         let engine = CleaningEngine(safety: AllowAllSafety(), fs: LocalFileSystemService())
@@ -478,12 +763,185 @@ final class UninstallerAttributionTests: XCTestCase {
         }
     }
 
-    func testPrepareUninstallPlanRejectsBatchIssuedByAnotherService() throws {
+    func testCapabilityControllerConsumesBatchExactlyOnceSequentially() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let service = fixture.service()
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let controller = UninstallCapabilityController(
+            issuer: DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
+                                                ledger: AuthorizationLedger()))
+        let engine = CleaningEngine(safety: AllowAllSafety(), fs: LocalFileSystemService())
+        let counter = InvocationCounter()
+
+        _ = try await controller.execute(batch: batch, service: service) { _ in
+            counter.increment()
+            return await engine.execute(CleaningPlan(items: [], intent: .trash))
+        }
+        do {
+            _ = try await controller.execute(batch: batch, service: service) { _ in
+                counter.increment()
+                return await engine.execute(CleaningPlan(items: [], intent: .trash))
+            }
+            XCTFail("batch replay must fail closed")
+        } catch {
+            XCTAssertEqual(error as? UninstallPlanError, .batchAlreadyConsumed)
+        }
+        XCTAssertEqual(counter.count, 1)
+    }
+
+    func testCapabilityControllerConsumesBatchExactlyOnceConcurrently() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let service = fixture.service()
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let controller = UninstallCapabilityController(
+            issuer: DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
+                                                ledger: AuthorizationLedger()))
+        let engine = CleaningEngine(safety: AllowAllSafety(), fs: LocalFileSystemService())
+        let counter = InvocationCounter()
+
+        let executed = await withTaskGroup(of: Bool.self, returning: Int.self) { group in
+            for _ in 0..<12 {
+                group.addTask {
+                    do {
+                        let result = try await controller.execute(batch: batch, service: service) { _ in
+                            counter.increment()
+                            return await engine.execute(CleaningPlan(items: [], intent: .trash))
+                        }
+                        if case .executed = result { return true }
+                    } catch {}
+                    return false
+                }
+            }
+            var count = 0
+            for await value in group where value { count += 1 }
+            return count
+        }
+
+        XCTAssertEqual(executed, 1)
+        XCTAssertEqual(counter.count, 1)
+    }
+
+    func testCapabilityControllerRejectsExpiredBatchBeforeOperation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let service = fixture.service()
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let issued = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let batch = UninstallBatch(issuanceID: issued.issuanceID,
+                                   batchID: issued.batchID,
+                                   app: issued.app,
+                                   mode: issued.mode,
+                                   candidates: issued.candidates,
+                                   createdAt: createdAt,
+                                   expiresAt: createdAt.addingTimeInterval(300))
+        let controller = UninstallCapabilityController(
+            issuer: DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
+                                                ledger: AuthorizationLedger()),
+            now: { Date(timeIntervalSince1970: 401) })
+        let engine = CleaningEngine(safety: AllowAllSafety(), fs: LocalFileSystemService())
+        let counter = InvocationCounter()
+
+        do {
+            _ = try await controller.execute(batch: batch, service: service) { _ in
+                counter.increment()
+                return await engine.execute(CleaningPlan(items: [], intent: .trash))
+            }
+            XCTFail("expired batch must fail closed")
+        } catch {
+            XCTAssertEqual(error as? UninstallPlanError, .batchExpired)
+        }
+        XCTAssertEqual(counter.count, 0)
+    }
+
+    func testUninstallTargetsRejectsAppIssuedByAnotherService() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let issuingService = fixture.service()
-        let otherService = fixture.service()
-        let batch = try issuingService.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let otherService = UninstallerService(
+            fs: LocalFileSystemService(), safety: AllowAllSafety(), home: fixture.home,
+            entitlementReader: FakeEntitlementReader(groups: []),
+            launchAgentReader: FakeLaunchAgentReader(records: [:]))
+        let issuedApp = try XCTUnwrap(issuingService.listApps().first {
+            $0.url.standardizedFileURL.path == fixture.appURL.standardizedFileURL.path
+        })
+
+        XCTAssertThrowsError(
+            try otherService.uninstallTargets(for: issuedApp, mode: .uninstallApp)
+        ) { error in
+            XCTAssertEqual(error as? UninstallerAttributionError, .foreignApp)
+        }
+    }
+
+    func testPrepareUninstallPlanRejectsSamePathAppBodyReplacement() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let service = fixture.service()
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        try FileManager.default.removeItem(at: fixture.appURL)
+        try FileManager.default.createDirectory(at: fixture.appURL.appendingPathComponent("Contents"),
+                                                withIntermediateDirectories: true)
+        let replacementInfo = try PropertyListSerialization.data(
+            fromPropertyList: ["CFBundleIdentifier": fixture.app.bundleID,
+                               "CFBundleName": fixture.app.name],
+            format: .xml, options: 0)
+        try replacementInfo.write(to: fixture.appURL.appendingPathComponent("Contents/Info.plist"))
+        let issuer = DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
+                                                ledger: AuthorizationLedger())
+
+        XCTAssertThrowsError(try service.prepareUninstallPlan(from: batch, using: issuer)) {
+            XCTAssertEqual($0 as? UninstallPlanError, .appIdentityChanged)
+        }
+    }
+
+    func testPrepareUninstallPlanRechecksRequiredBodySafety() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let safety = MutableSafety()
+        let service = fixture.service(safety: safety)
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        safety.deny()
+        let issuer = DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
+                                                ledger: AuthorizationLedger())
+
+        XCTAssertThrowsError(try service.prepareUninstallPlan(from: batch, using: issuer)) {
+            XCTAssertEqual($0 as? UninstallPlanError, .requiredAppBodyMissing)
+        }
+    }
+
+    func testPrepareUninstallPlanRejectsSameContentInfoPlistReplacement() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let service = fixture.service()
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let infoURL = fixture.appURL.appendingPathComponent("Contents/Info.plist")
+        let originalData = try Data(contentsOf: infoURL)
+        try FileManager.default.removeItem(at: infoURL)
+        try originalData.write(to: infoURL)
+        let issuer = DestructiveOperationIssuer(sampler: LocalFileIdentitySampler(),
+                                                ledger: AuthorizationLedger())
+
+        XCTAssertThrowsError(try service.prepareUninstallPlan(from: batch, using: issuer)) {
+            XCTAssertEqual($0 as? UninstallPlanError, .appMetadataChanged)
+        }
+    }
+
+    func testPrepareUninstallPlanRejectsBatchIssuedByAnotherService() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let issuingService = UninstallerService(
+            fs: LocalFileSystemService(), safety: AllowAllSafety(), home: fixture.home,
+            entitlementReader: FakeEntitlementReader(groups: []),
+            launchAgentReader: FakeLaunchAgentReader(records: [:]))
+        let otherService = UninstallerService(
+            fs: LocalFileSystemService(), safety: AllowAllSafety(), home: fixture.home,
+            entitlementReader: FakeEntitlementReader(groups: []),
+            launchAgentReader: FakeLaunchAgentReader(records: [:]))
+        let issuedApp = try XCTUnwrap(issuingService.listApps().first {
+            $0.url.standardizedFileURL.path == fixture.appURL.standardizedFileURL.path
+        })
+        let batch = try issuingService.uninstallTargets(for: issuedApp, mode: .uninstallApp)
         let issuer = DestructiveOperationIssuer(sampler: NilIdentitySampler(),
                                                 ledger: AuthorizationLedger())
 

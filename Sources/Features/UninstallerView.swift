@@ -34,10 +34,8 @@ final class UninstallerModel: ObservableObject {
             self.loading = false
             // 第二阶段：后台补齐体积并按大小重排
             let sized = await Task.detached { () -> [InstalledApp] in
-                apps.map { app in
-                    InstalledApp(id: app.id, name: app.name, bundleID: app.bundleID,
-                                 url: app.url, size: env.uninstaller.appSize(app))
-                }.sorted { $0.size > $1.size }
+                apps.compactMap { env.uninstaller.appByFillingSize($0) }
+                    .sorted { $0.size > $1.size }
             }.value
             self.apps = sized
         }
@@ -80,6 +78,7 @@ final class UninstallerModel: ObservableObject {
     @Published var licenseBlocked = false
 
     func uninstall() {
+        guard !working else { return }
         // 二次确认：只接受服务签发、仍绑定当前应用和卸载模式的完整批次。更深的候选密封、
         // 必选应用本体和 Task 1 计划校验由 capability controller 再次 fail-closed 验证。
         guard let app = selected, let batch,

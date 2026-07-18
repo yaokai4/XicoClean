@@ -71,7 +71,7 @@ public enum AttributionEvidence: String, Sendable, Equatable {
 
 /// A stat-backed identity snapshot. Local deletion rechecks at least device/inode/type
 /// (`mode`); shred additionally rechecks `hardLinkCount` (doc 19 §6.2).
-public struct LocalFileIdentity: Equatable, Sendable {
+public struct LocalFileIdentity: Equatable, Hashable, Sendable {
     public let device: UInt64
     public let inode: UInt64
     public let mode: UInt32

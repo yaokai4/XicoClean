@@ -11,11 +11,15 @@ final class UninstallerModelCapabilityTests: XCTestCase {
     }
 
     private struct EmptyEntitlements: EntitlementReader {
-        func applicationGroups(for appURL: URL) -> [String]? { [] }
+        func attestation(for appURL: URL) -> SignedEntitlementAttestation? {
+            guard let identity = LocalFileIdentitySampler().sample(appURL.path) else { return nil }
+            return SignedEntitlementAttestation(groups: [], codeIdentifier: "com.example.test",
+                                                uniqueCode: Data([1]), sourceIdentity: identity)
+        }
     }
 
     private struct EmptyLaunchAgents: LaunchAgentReader {
-        func launchAgent(at url: URL) -> LaunchAgentRecord? { nil }
+        func attestation(at url: URL) -> LaunchAgentAttestation? { nil }
     }
 
     private final class RecordingFileSystem: @unchecked Sendable, FileSystemService {
@@ -86,8 +90,21 @@ final class UninstallerModelCapabilityTests: XCTestCase {
             home = root.appendingPathComponent("home")
             let appURL = root.appendingPathComponent("Applications/Test.app")
             try FileManager.default.createDirectory(at: appURL, withIntermediateDirectories: true)
+            let issuanceID = UUID()
+            let contents = appURL.appendingPathComponent("Contents")
+            try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+            let infoData = try PropertyListSerialization.data(
+                fromPropertyList: ["CFBundleIdentifier": "com.example.test",
+                                   "CFBundleName": "Test App"],
+                format: .xml, options: 0)
+            try infoData.write(to: contents.appendingPathComponent("Info.plist"))
+            let appIdentity = try XCTUnwrap(LocalFileIdentitySampler().sample(appURL.path))
+            let metadataIdentity = try XCTUnwrap(LocalFileIdentitySampler().sample(
+                contents.appendingPathComponent("Info.plist").path))
             app = InstalledApp(id: appURL.path, name: "Test App",
-                               bundleID: "com.example.test", url: appURL, size: 0)
+                               bundleID: "com.example.test", url: appURL, size: 0,
+                               provenanceID: issuanceID, sourceIdentity: appIdentity,
+                               metadataIdentity: metadataIdentity)
             let cache = home.appendingPathComponent("Library/Caches/com.example.test")
             heuristic = home.appendingPathComponent("Library/Application Support/Test App")
             try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
@@ -97,7 +114,9 @@ final class UninstallerModelCapabilityTests: XCTestCase {
             router = DenyingCapabilityRouter()
             let service = UninstallerService(fs: fs, safety: AllowAllSafety(), home: home,
                                              entitlementReader: EmptyEntitlements(),
-                                             launchAgentReader: EmptyLaunchAgents())
+                                             launchAgentReader: EmptyLaunchAgents(),
+                                             identitySampler: LocalFileIdentitySampler(),
+                                             issuanceID: issuanceID)
             let sampler = RecordingSampler()
             let capability = UninstallCapabilityController(
                 issuer: DestructiveOperationIssuer(sampler: sampler,
@@ -156,6 +175,19 @@ final class UninstallerModelCapabilityTests: XCTestCase {
         XCTAssertEqual(fixture.router.calls, 1)
         XCTAssertTrue(fixture.fs.trashed.isEmpty,
                       "failed-closed capability must prevent the CleaningEngine closure")
+    }
+
+    func testModelIgnoresRepeatedConfirmationWhileUninstallIsWorking() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        fixture.model.select(fixture.app)
+        try await waitUntil { !fixture.model.targets.isEmpty }
+
+        fixture.model.uninstall()
+        fixture.model.uninstall()
+        try await waitUntil { !fixture.model.working }
+
+        XCTAssertEqual(fixture.router.calls, 1)
     }
 
     private func waitUntil(_ predicate: @escaping @MainActor () -> Bool) async throws {
