@@ -193,7 +193,7 @@ git commit -m "feat: two-phase destructive capability core with one-time authori
 - Modify: `Sources/Infrastructure/ShredderService.swift`（新增 `prepare(_ urls:) -> ShredderPlan` 阶段，注入 `FileSyscalls`，保留 SHR-07 基座）
 - Create: `Tests/IntegrationTests/ShredderPreparationTests.swift`
 
-- [ ] **Step 1: Write RED tests for the preparation phase**
+- [x] **Step 1: Write RED tests for the preparation phase**
 
 用任务专属临时目录构造真实 fixture（安全，可弃置）+ fake `FileSyscalls` 注错：
 
@@ -210,7 +210,7 @@ func testPreparePerformsNoWritesOrUnlinks() throws                              
 func testPreparedManifestCarriesPerTargetLocalFileIdentityWithHardLinkCount() throws
 ```
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 ```bash
 swift test --filter ShredderPreparationTests --disable-automatic-resolution --skip-update
@@ -218,15 +218,15 @@ swift test --filter ShredderPreparationTests --disable-automatic-resolution --sk
 
 Expected: FAIL —— 无 prepare 阶段、无 manifest、无 `FileSyscalls` 接缝。
 
-- [ ] **Step 3: Extract injectable `FileSyscalls`**
+- [x] **Step 3: Extract injectable `FileSyscalls`**
 
 按 `POSIXLaunchctlProcessDriver` 范式定义 `protocol FileSyscalls: Sendable`，把 `ShredderService` 现有全局 `openat/fstatat/fstat/fdopendir/readdir/unlinkat` 与新引入的 `pwrite/fsync/ftruncate` 收拢到 `SystemFileSyscalls`。`ShredderService.init` 增加 `syscalls: FileSyscalls = SystemFileSyscalls()`。保留 fd 锚定、`O_NOFOLLOW`、`fcntl(F_DUPFD_CLOEXEC)`、快照式 drain、`maxRecursionDepth=256`（SHR-07 不回退）。
 
-- [ ] **Step 4: Implement the check-then-execute preparation pass**
+- [x] **Step 4: Implement the check-then-execute preparation pass**
 
 新增 `prepare(_ urls:)`：从父目录 fd 锚定，只读地深度遍历，产出**有界 identity manifest**（每条含 canonical path + `LocalFileIdentity`）。对每一顶层与每一子项过 `safety.verify(_, intent:.trash)`（SHR-01）；`fstatat(AT_SYMLINK_NOFOLLOW)` 判类型，符号链接只登记链接本身（SHR-02），非常规类型（FIFO/socket/设备）登记为 unrecognized（SHR-03），常规文件 `st_nlink>1` 登记为 hard-linked refusal（SHR-04）。**顶层预授权门（SHR-06）：** 任一根的子树里出现红线拒绝、unrecognized 或 hard-linked，该根整体不进入授权，`prepare` 返回该根为 `rejected`，绝不 best-effort 删兄弟项。设定条目/manifest 预算：超预算的根返回 `requiresSplit`，不带未知覆盖面执行（SHR-05）。prepare 阶段**零写入零 unlink**。manifest 交给 Task 1 `prepare(_:)` 组装成 `DestructivePlan(kind:.shred)`。
 
-- [ ] **Step 5: Run focused tests + zero-gate**
+- [x] **Step 5: Run focused tests + zero-gate**
 
 ```bash
 swift test --filter ShredderPreparationTests --disable-automatic-resolution --skip-update
@@ -235,7 +235,7 @@ swift test --filter ShredderServiceTests --disable-automatic-resolution --skip-u
 
 Expected: PASS，既有 `testDoesNotFollowSymlinksIntoProtectedTargets` / 红线拒绝仍绿。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Sources/Infrastructure/FileSyscalls.swift Sources/Infrastructure/ShredderService.swift Tests/IntegrationTests/ShredderPreparationTests.swift

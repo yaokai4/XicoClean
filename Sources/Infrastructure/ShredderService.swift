@@ -13,14 +13,24 @@ import Darwin
 public struct ShredderService: Sendable {
     private let safety: SafetyEngine
     private let passes: Int
+    private let syscalls: FileSyscalls
+    /// SHR-05 bounded-manifest budget: a root whose read-only preflight exceeds this
+    /// many identity entries returns `requiresSplit` instead of executing with an
+    /// unknown blast radius.
+    private let maxManifestEntries: Int
 
     /// 递归深度上限（fail-safe）：正常树远达不到，仅兜住病态深度——超限即中止（返回 false），
     /// 同时把「同时打开的 dirFD 数」封在此上限内，杜绝无界递归耗尽 fd / 爆栈（与 HelperFileRemover 同策）。
     private static let maxRecursionDepth = 256
 
-    public init(safety: SafetyEngine, passes: Int = 3) {
+    public init(safety: SafetyEngine,
+                passes: Int = 3,
+                syscalls: FileSyscalls = SystemFileSyscalls(),
+                maxManifestEntries: Int = 100_000) {
         self.safety = safety
         self.passes = max(1, passes)
+        self.syscalls = syscalls
+        self.maxManifestEntries = max(1, maxManifestEntries)
     }
 
     public struct Result: Sendable {
@@ -46,6 +56,82 @@ public struct ShredderService: Sendable {
             }
         }
         return Result(shredded: shredded, failed: failed, freedBytes: freed)
+    }
+
+    // MARK: - Preparation phase (SHR-01…06): read-only, zero writes / zero unlinks.
+
+    /// Read-only preflight. For each root, anchors at its parent directory fd and walks
+    /// the subtree with the injected `FileSyscalls`, building a bounded identity
+    /// manifest. Runs the SafetyEngine red-line on every node (SHR-01), never follows
+    /// symlinks (SHR-02), and gates the whole root: any red-lined / unrecognized /
+    /// hard-linked descendant rejects the entire root (SHR-03/04/06) rather than
+    /// best-effort deleting siblings. Performs no writes and no unlinks; the accepted
+    /// manifest feeds the Task 1 capability core to build a `DestructivePlan(.shred)`.
+    public func prepare(_ urls: [URL]) -> [ShredRootResult] {
+        urls.map { ShredRootResult(rootPath: $0.path, disposition: disposition(for: $0)) }
+    }
+
+    private func disposition(for url: URL) -> ShredRootDisposition {
+        // SHR-01: top-level red-line (a denied root never enters the manifest).
+        guard safety.verify(url, intent: .trash).isAllowed else { return .rejected(.safetyDenied) }
+        let parent = url.deletingLastPathComponent()
+        let leaf = url.lastPathComponent
+        let parentFD = syscalls.openDirectory(path: parent.path)
+        guard parentFD >= 0 else { return .rejected(.openFailed) }
+        defer { syscalls.closeDescriptor(parentFD) }
+        var manifest: [ShredManifestEntry] = []
+        switch walk(parentFD: parentFD, name: leaf, url: url, depth: 0, into: &manifest) {
+        case .clean: return .accepted(manifest)
+        case .rejected(let reason): return .rejected(reason)
+        case .budgetExceeded: return .requiresSplit(entryCount: manifest.count)
+        }
+    }
+
+    private enum WalkOutcome: Equatable { case clean, rejected(ShredRejectionReason), budgetExceeded }
+
+    /// Read-only recursive classification. `depth == 0` is the root (already red-line
+    /// checked by the caller); deeper nodes are re-checked here (SHR-01).
+    private func walk(parentFD: Int32, name: String, url: URL, depth: Int,
+                      into manifest: inout [ShredManifestEntry]) -> WalkOutcome {
+        guard depth < Self.maxRecursionDepth else { return .rejected(.openFailed) }
+        if depth > 0, !safety.verify(url, intent: .trash).isAllowed { return .rejected(.safetyDenied) }
+        guard let st = syscalls.statChild(parentFD: parentFD, name: name) else {
+            return .rejected(.openFailed)
+        }
+        if st.isSymlink {
+            // SHR-02: register the link itself; never follow it.
+            return append(ShredManifestEntry(canonicalPath: url.path, identity: st.localIdentity, isDirectory: false),
+                          to: &manifest)
+        }
+        if st.isRegularFile {
+            if st.hardLinkCount > 1 { return .rejected(.hardLinked) }   // SHR-04
+            return append(ShredManifestEntry(canonicalPath: url.path, identity: st.localIdentity, isDirectory: false),
+                          to: &manifest)
+        }
+        if st.isDirectory {
+            let dirFD = syscalls.openChildDirectory(parentFD: parentFD, name: name)
+            guard dirFD >= 0 else { return .rejected(.openFailed) }
+            defer { syscalls.closeDescriptor(dirFD) }
+            guard let children = syscalls.listChildren(dirFD: dirFD) else { return .rejected(.openFailed) }
+            for child in children {
+                let outcome = walk(parentFD: dirFD, name: child,
+                                   url: url.appendingPathComponent(child), depth: depth + 1, into: &manifest)
+                if case .clean = outcome { continue }
+                return outcome   // SHR-06: any bad descendant rejects the whole root
+            }
+            // Directory recorded after its children so execution removes children first.
+            return append(ShredManifestEntry(canonicalPath: url.path, identity: st.localIdentity, isDirectory: true),
+                          to: &manifest)
+        }
+        // SHR-03: FIFO / socket / device / other non-regular types are integrally refused.
+        return .rejected(.unrecognizedType)
+    }
+
+    private func append(_ entry: ShredManifestEntry,
+                        to manifest: inout [ShredManifestEntry]) -> WalkOutcome {
+        guard manifest.count < maxManifestEntries else { return .budgetExceeded }   // SHR-05
+        manifest.append(entry)
+        return .clean
     }
 
     /// 对单个文件多轮随机覆写后删除；目录则递归。
@@ -201,5 +287,43 @@ public struct ShredderService: Sendable {
             }
             try? handle.synchronize()
         }
+    }
+}
+
+/// One entry of a shred preparation manifest: a canonical path and the identity
+/// snapshot taken during the read-only preflight. Directories are recorded after their
+/// children so execution removes contents before the directory itself.
+public struct ShredManifestEntry: Sendable, Equatable {
+    public let canonicalPath: String
+    public let identity: LocalFileIdentity
+    public let isDirectory: Bool
+
+    public init(canonicalPath: String, identity: LocalFileIdentity, isDirectory: Bool) {
+        self.canonicalPath = canonicalPath
+        self.identity = identity
+        self.isDirectory = isDirectory
+    }
+}
+
+public enum ShredRejectionReason: String, Sendable, Equatable {
+    case safetyDenied        // SHR-01 / SHR-06 red-line
+    case hardLinked          // SHR-04 st_nlink > 1
+    case unrecognizedType    // SHR-03 FIFO / socket / device / other
+    case openFailed          // read-only open/stat/list failure, or pathological depth
+}
+
+public enum ShredRootDisposition: Sendable, Equatable {
+    case accepted([ShredManifestEntry])
+    case rejected(ShredRejectionReason)
+    case requiresSplit(entryCount: Int)
+}
+
+public struct ShredRootResult: Sendable, Equatable {
+    public let rootPath: String
+    public let disposition: ShredRootDisposition
+
+    public init(rootPath: String, disposition: ShredRootDisposition) {
+        self.rootPath = rootPath
+        self.disposition = disposition
     }
 }
