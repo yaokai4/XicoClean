@@ -117,9 +117,9 @@ public struct OrphanScanner: ScannerModule {
     /// 某 bundle id 的全部标准关联位置（存在的才返回）。与 UninstallerService.uninstallTargets
     /// 的 by-bundleID 清单同口径——卸载器与孤儿引擎一个脑子，废纸篓哨兵也复用此函数。
     public static func artifactURLs(for bundleID: String, home: URL, fs: FileSystemService) -> [URL] {
-        guard UninstallerService.isValidPathToken(bundleID) else { return [] }
+        guard let bundleID = BundleIdentifier(rawValue: bundleID)?.rawValue else { return [] }
         let lib = home.appendingPathComponent("Library")
-        var urls: [URL] = [
+        return [
             lib.appendingPathComponent("Application Support/\(bundleID)"),
             lib.appendingPathComponent("Caches/\(bundleID)"),
             lib.appendingPathComponent("Preferences/\(bundleID).plist"),
@@ -129,15 +129,6 @@ public struct OrphanScanner: ScannerModule {
             lib.appendingPathComponent("HTTPStorages/\(bundleID)"),
             lib.appendingPathComponent("WebKit/\(bundleID)"),
         ].filter { fs.exists($0) }
-        // 模糊位置（文件名包含 bundle id）：Group Containers / LaunchAgents。
-        for dirName in ["Group Containers", "LaunchAgents"] {
-            let dir = lib.appendingPathComponent(dirName)
-            for url in fs.contentsOfDirectory(dir)
-            where url.lastPathComponent.localizedCaseInsensitiveContains(bundleID) {
-                urls.append(url)
-            }
-        }
-        return urls
     }
 
     /// 形如 reverse-DNS（≥3 段、无空格）才进入候选。

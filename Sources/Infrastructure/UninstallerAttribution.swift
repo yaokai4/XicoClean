@@ -1,5 +1,9 @@
 import Foundation
 import Domain
+import Security
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// A syntactically safe reverse-DNS identifier suitable for constructing exact
 /// per-application Library paths. Parsing is deliberately lossless: identifiers are
@@ -33,6 +37,7 @@ public struct BundleIdentifier: RawRepresentable, Hashable, Sendable {
 /// Rich uninstaller ownership evidence. This Infrastructure vocabulary controls
 /// candidate selection and maps one-to-one to Domain attribution when a plan is built.
 public enum OwnershipEvidence: String, Sendable, Equatable {
+    case verifiedAppBody
     case exactBundleIDPath
     case signedApplicationGroup
     case launchAgentProgramInsideBundle
@@ -41,6 +46,7 @@ public enum OwnershipEvidence: String, Sendable, Equatable {
 
     var domainValue: Domain.AttributionEvidence {
         switch self {
+        case .verifiedAppBody: return .verifiedAppBody
         case .exactBundleIDPath: return .exactBundleIDPath
         case .signedApplicationGroup: return .signedApplicationGroup
         case .launchAgentProgramInsideBundle: return .launchAgentProgramInsideBundle
@@ -67,6 +73,17 @@ public enum UninstallMode: String, Sendable, Equatable {
 
 public enum UninstallerAttributionError: Error, Sendable, Equatable {
     case appStillPresent
+    case appBodyNotAdmitted
+}
+
+public enum UninstallPlanError: Error, Sendable, Equatable {
+    case foreignBatch
+    case foreignCandidate
+    case requiredAppBodyMissing
+    case modeInvariantViolation
+    case invalidSelectedCandidate
+    case emptySelection
+    case authorizationUnavailable
 }
 
 /// Injected boundary for reading the signed application's application-group entitlement.
@@ -75,32 +92,29 @@ public protocol EntitlementReader: Sendable {
     func applicationGroups(for appURL: URL) -> [String]?
 }
 
-public struct CodesignEntitlementReader: EntitlementReader {
+public struct SecurityEntitlementReader: EntitlementReader {
     public init() {}
 
     public func applicationGroups(for appURL: URL) -> [String]? {
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        process.arguments = ["--display", "--entitlements", ":-", appURL.path]
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(appURL as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode else { return nil }
+
+        let validityFlags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures
+                                      | kSecCSCheckNestedCode
+                                      | kSecCSStrictValidate)
+        guard SecStaticCodeCheckValidity(staticCode, validityFlags, nil) == errSecSuccess else {
             return nil
         }
-        // Drain while codesign is running so an unusually large entitlement plist cannot fill
-        // the pipe and deadlock a wait-before-read sequence.
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        guard let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
-              let dictionary = plist as? [String: Any],
-              let groups = dictionary["com.apple.security.application-groups"] as? [String] else {
-            return nil
-        }
-        return groups
+
+        var signingInformation: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode,
+                                            SecCSFlags(rawValue: kSecCSSigningInformation),
+                                            &signingInformation) == errSecSuccess,
+              let dictionary = signingInformation as? [String: Any],
+              let entitlements = dictionary[kSecCodeInfoEntitlementsDict as String]
+                as? [String: Any] else { return nil }
+        return entitlements["com.apple.security.application-groups"] as? [String]
     }
 }
 
@@ -125,10 +139,12 @@ public protocol LaunchAgentReader: Sendable {
 }
 
 public struct PlistLaunchAgentReader: LaunchAgentReader {
+    public static let maximumBytes = 1_048_576
+
     public init() {}
 
     public func launchAgent(at url: URL) -> LaunchAgentRecord? {
-        guard let data = try? Data(contentsOf: url),
+        guard let data = Self.readBoundedRegularFile(at: url),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
               let dictionary = plist as? [String: Any] else { return nil }
         return LaunchAgentRecord(
@@ -136,23 +152,72 @@ public struct PlistLaunchAgentReader: LaunchAgentReader {
             program: dictionary["Program"] as? String,
             programArguments: dictionary["ProgramArguments"] as? [String] ?? [])
     }
+
+    private static func readBoundedRegularFile(at url: URL) -> Data? {
+        #if canImport(Darwin)
+        var pathStat = stat()
+        guard lstat(url.path, &pathStat) == 0,
+              (pathStat.st_mode & S_IFMT) == S_IFREG,
+              pathStat.st_size >= 0,
+              pathStat.st_size <= maximumBytes else { return nil }
+
+        let descriptor = open(url.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+
+        var openedStat = stat()
+        guard fstat(descriptor, &openedStat) == 0,
+              (openedStat.st_mode & S_IFMT) == S_IFREG,
+              openedStat.st_dev == pathStat.st_dev,
+              openedStat.st_ino == pathStat.st_ino,
+              openedStat.st_size >= 0,
+              openedStat.st_size <= maximumBytes else { return nil }
+
+        var data = Data()
+        data.reserveCapacity(Int(openedStat.st_size))
+        var buffer = [UInt8](repeating: 0, count: 32 * 1024)
+        while true {
+            let count = read(descriptor, &buffer, buffer.count)
+            if count == 0 { return data }
+            if count < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            guard data.count + count <= maximumBytes else { return nil }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        #else
+        return nil
+        #endif
+    }
+}
+
+public enum UninstallCandidateRole: String, Sendable, Equatable {
+    case appBody
+    case associatedFile
 }
 
 public struct UninstallCandidate: Identifiable, Sendable {
     public private(set) var item: CleanableItem
     public let evidence: OwnershipEvidence
     public let selectionPolicy: SelectionPolicy
+    public let role: UninstallCandidateRole
     public let recoveryHint: String
+    let batchID: UUID
 
-    public init(item: CleanableItem,
-                evidence: OwnershipEvidence,
-                selectionPolicy: SelectionPolicy,
-                recoveryHint: String = "Moved to Trash; restore it from Finder Trash if needed.") {
+    init(item: CleanableItem,
+         evidence: OwnershipEvidence,
+         selectionPolicy: SelectionPolicy,
+         role: UninstallCandidateRole,
+         batchID: UUID,
+         recoveryHint: String = "Moved to Trash; restore it from Finder Trash if needed.") {
         var item = item
         item.isSelected = selectionPolicy.defaultSelected
         self.item = item
         self.evidence = evidence
         self.selectionPolicy = selectionPolicy
+        self.role = role
+        self.batchID = batchID
         self.recoveryHint = recoveryHint
     }
 
@@ -161,7 +226,7 @@ public struct UninstallCandidate: Identifiable, Sendable {
     public var isSelected: Bool { item.isSelected }
     public var isSelectable: Bool { selectionPolicy.isSelectable }
 
-    public mutating func setSelected(_ selected: Bool) {
+    mutating func setSelected(_ selected: Bool) {
         switch selectionPolicy {
         case .required:
             item.isSelected = true
@@ -172,19 +237,65 @@ public struct UninstallCandidate: Identifiable, Sendable {
         }
     }
 
-    public static func selectAll(_ candidates: [UninstallCandidate]) -> [UninstallCandidate] {
-        candidates.map { candidate in
-            var candidate = candidate
-            candidate.setSelected(candidate.selectionPolicy == .required
-                                  || candidate.selectionPolicy == .recommended)
-            return candidate
-        }
-    }
-
-    public var targetRequest: TargetRequest {
+    var targetRequest: TargetRequest {
         TargetRequest(canonicalPath: url.standardizedFileURL.path,
                       recoverability: .trashRestorable,
                       riskLevel: .low,
                       attribution: evidence.domainValue)
+    }
+}
+
+/// Service-issued, app/mode-bound candidate inventory. Its initializer and candidate mutation are
+/// module-internal so Features can only alter selection through the policy-aware methods below.
+public struct UninstallBatch: Sendable {
+    let issuanceID: UUID
+    let batchID: UUID
+    public let app: InstalledApp
+    public let mode: UninstallMode
+    public private(set) var candidates: [UninstallCandidate]
+
+    init(issuanceID: UUID,
+         batchID: UUID,
+         app: InstalledApp,
+         mode: UninstallMode,
+         candidates: [UninstallCandidate]) {
+        self.issuanceID = issuanceID
+        self.batchID = batchID
+        self.app = app
+        self.mode = mode
+        self.candidates = candidates
+    }
+
+    public mutating func toggle(_ id: UUID) {
+        guard let index = candidates.firstIndex(where: { $0.id == id }) else { return }
+        candidates[index].setSelected(!candidates[index].isSelected)
+    }
+
+    public mutating func setAll(_ selected: Bool) {
+        for index in candidates.indices {
+            let policy = candidates[index].selectionPolicy
+            candidates[index].setSelected(selected
+                                          && (policy == .required || policy == .recommended))
+        }
+    }
+
+    public mutating func selectAll() { setAll(true) }
+
+    public var allPolicySelected: Bool {
+        !candidates.isEmpty && candidates.allSatisfy { candidate in
+            switch candidate.selectionPolicy {
+            case .required, .recommended: return candidate.isSelected
+            case .manualOnly, .blocked: return !candidate.isSelected
+            }
+        }
+    }
+
+    var selectedItems: [CleanableItem] {
+        candidates.filter(\.isSelected).map(\.item)
+    }
+
+    public var selectedCount: Int { candidates.filter(\.isSelected).count }
+    public var selectedSize: Int64 {
+        candidates.filter(\.isSelected).reduce(0) { $0 + $1.item.size }
     }
 }

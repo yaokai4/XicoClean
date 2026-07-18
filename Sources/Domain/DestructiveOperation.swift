@@ -61,6 +61,7 @@ public enum RiskLevel: String, Sendable, Equatable {
 /// remaining cases.
 public enum AttributionEvidence: String, Sendable, Equatable {
     case userSelected
+    case verifiedAppBody
     case exactBundleIDPath
     case signedApplicationGroup
     case launchAgentProgramInsideBundle

@@ -23,16 +23,18 @@ public struct UninstallerService: Sendable {
     private let home: URL
     private let entitlementReader: any EntitlementReader
     private let launchAgentReader: any LaunchAgentReader
+    private let issuanceID: UUID
 
     public init(fs: FileSystemService, safety: SafetyEngine,
                 home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                entitlementReader: any EntitlementReader = CodesignEntitlementReader(),
+                entitlementReader: any EntitlementReader = SecurityEntitlementReader(),
                 launchAgentReader: any LaunchAgentReader = PlistLaunchAgentReader()) {
         self.fs = fs
         self.safety = safety
         self.home = home
         self.entitlementReader = entitlementReader
         self.launchAgentReader = launchAgentReader
+        self.issuanceID = UUID()
     }
 
     /// 快速列出应用（不计算体积，便于秒级出列表）；体积随后由 fillSize 异步补齐。
@@ -78,26 +80,22 @@ public struct UninstallerService: Sendable {
         return true
     }
 
-    /// Compatibility projection for the current UI. Task 4's mode-aware candidate API below is
-    /// the source of truth; execution/result consumption is intentionally left to Task 5.
-    public func uninstallTargets(for app: InstalledApp) -> [CleanableItem] {
-        (try? uninstallTargets(for: app, mode: .uninstallApp).map(\.item)) ?? []
-    }
-
     /// Builds attributed, policy-bearing candidates without mutating the filesystem.
     public func uninstallTargets(for app: InstalledApp,
-                                 mode: UninstallMode) throws -> [UninstallCandidate] {
+                                 mode: UninstallMode) throws -> UninstallBatch {
         if mode == .cleanLeftovers, fs.exists(app.url) {
             throw UninstallerAttributionError.appStillPresent
         }
 
+        let batchID = UUID()
         var items: [UninstallCandidate] = []
         var seen = Set<String>()
 
         func add(_ url: URL,
                  safety level: SafetyLevel,
                  evidence: OwnershipEvidence,
-                 policy: SelectionPolicy) {
+                 policy: SelectionPolicy,
+                 role: UninstallCandidateRole = .associatedFile) {
             // 深度断言：关联文件至少要落在 `~/Library/<类别>/<具体项>`（≥6 分量）之下，
             // 绝不允许目标是 `~/Library/<类别>` 这一级本身（红线亦会拦，此为第一道闸）。
             let underLibrary = url.path.hasPrefix(home.appendingPathComponent("Library").path + "/")
@@ -110,7 +108,8 @@ public struct UninstallerService: Sendable {
                                           detail: url.path, size: size, safety: level,
                                           isSelected: policy.defaultSelected)
             items.append(UninstallCandidate(item: cleanable, evidence: evidence,
-                                            selectionPolicy: policy))
+                                            selectionPolicy: policy, role: role,
+                                            batchID: batchID))
         }
 
         let parsedBundleID = BundleIdentifier(rawValue: app.bundleID)
@@ -119,7 +118,8 @@ public struct UninstallerService: Sendable {
         // not inferred from a Library path; the direct app selection makes it required while
         // avoiding a false exact-path attribution claim.
         if mode == .uninstallApp {
-            add(app.url, safety: .safe, evidence: .unverified, policy: .required)
+            add(app.url, safety: .safe, evidence: .verifiedAppBody, policy: .required,
+                role: .appBody)
         }
 
         let lib = home.appendingPathComponent("Library")
@@ -179,17 +179,58 @@ public struct UninstallerService: Sendable {
                 evidence: .displayNameHeuristic, policy: .manualOnly)
         }
 
-        return items
+        if mode == .uninstallApp {
+            let admittedBodies = items.filter {
+                $0.role == .appBody && $0.url.standardizedFileURL.path
+                    == app.url.standardizedFileURL.path
+                    && $0.selectionPolicy == .required && $0.isSelected
+                    && $0.evidence == .verifiedAppBody
+            }
+            guard admittedBodies.count == 1 else {
+                throw UninstallerAttributionError.appBodyNotAdmitted
+            }
+        }
+
+        return UninstallBatch(issuanceID: issuanceID, batchID: batchID, app: app,
+                              mode: mode, candidates: items)
     }
 
     /// Hands selected Task 4 candidates to Task 1's immutable capability preparation boundary.
     /// Authorization and execution are deliberately not part of this task.
-    public func prepareUninstallPlan(from candidates: [UninstallCandidate],
+    public func prepareUninstallPlan(from batch: UninstallBatch,
                                      using issuer: DestructiveOperationIssuer,
-                                     now: Date = Date()) -> DestructivePlan {
-        issuer.prepare(kind: .uninstall,
-                       targets: candidates.filter(\.isSelected).map(\.targetRequest),
-                       now: now)
+                                     now: Date = Date()) throws -> DestructivePlan {
+        guard batch.issuanceID == issuanceID else { throw UninstallPlanError.foreignBatch }
+        guard batch.candidates.allSatisfy({ $0.batchID == batch.batchID }) else {
+            throw UninstallPlanError.foreignCandidate
+        }
+
+        let bodies = batch.candidates.filter(\.role.isAppBody)
+        switch batch.mode {
+        case .uninstallApp:
+            guard bodies.count == 1,
+                  let body = bodies.first,
+                  body.url.standardizedFileURL.path == batch.app.url.standardizedFileURL.path,
+                  body.selectionPolicy == .required,
+                  body.isSelected,
+                  body.evidence == .verifiedAppBody else {
+                throw UninstallPlanError.requiredAppBodyMissing
+            }
+        case .cleanLeftovers:
+            guard bodies.isEmpty, !fs.exists(batch.app.url) else {
+                throw UninstallPlanError.modeInvariantViolation
+            }
+        }
+
+        let selected = batch.candidates.filter(\.isSelected)
+        guard !selected.isEmpty else { throw UninstallPlanError.emptySelection }
+        guard selected.allSatisfy({ candidate in
+            candidate.selectionPolicy != .blocked && candidate.evidence != .unverified
+        }) else { throw UninstallPlanError.invalidSelectedCandidate }
+
+        return issuer.prepare(kind: .uninstall,
+                              targets: selected.map(\.targetRequest),
+                              now: now)
     }
 
     private static func isValidPathComponent(_ value: String) -> Bool {
@@ -199,9 +240,22 @@ public struct UninstallerService: Sendable {
 
     private static func isProgram(_ path: String, inside appURL: URL) -> Bool {
         guard path.hasPrefix("/") else { return false }
-        let program = canonicalComparisonPath(path)
-        let bundle = canonicalComparisonPath(appURL.path)
-        return program != bundle && program.hasPrefix(bundle + "/")
+        let fileManager = FileManager.default
+        let resolvedBundle = appURL.resolvingSymlinksInPath().standardizedFileURL
+        let unresolvedProgram = URL(fileURLWithPath: path)
+        guard let bundleValues = try? resolvedBundle.resourceValues(forKeys: [.isDirectoryKey]),
+              bundleValues.isDirectory == true,
+              fileManager.fileExists(atPath: unresolvedProgram.path) else { return false }
+        let resolvedProgram = unresolvedProgram.resolvingSymlinksInPath().standardizedFileURL
+        guard let programValues = try? resolvedProgram.resourceValues(forKeys: [.isRegularFileKey]),
+              programValues.isRegularFile == true else { return false }
+
+        let programComponents = canonicalComparisonPath(resolvedProgram.path)
+            .split(separator: "/", omittingEmptySubsequences: true)
+        let bundleComponents = canonicalComparisonPath(resolvedBundle.path)
+            .split(separator: "/", omittingEmptySubsequences: true)
+        guard programComponents.count > bundleComponents.count else { return false }
+        return programComponents.prefix(bundleComponents.count).elementsEqual(bundleComponents)
     }
 
     private static func canonicalComparisonPath(_ path: String) -> String {
@@ -212,4 +266,8 @@ public struct UninstallerService: Sendable {
             ? String(standardized.dropFirst("/private".count))
             : standardized
     }
+}
+
+private extension UninstallCandidateRole {
+    var isAppBody: Bool { self == .appBody }
 }

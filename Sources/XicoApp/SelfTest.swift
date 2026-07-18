@@ -48,8 +48,9 @@ func runSelfTest() async -> Bool {
     log("[应用与系统]")
     await time("卸载器列表", { env.uninstaller.listApps() }, describe: { "\($0.count) 个应用" })
     if let first = env.uninstaller.listApps().first {
-        await time("卸载关联文件定位", { env.uninstaller.uninstallTargets(for: first) },
-                   describe: { "\($0.count) 项（\(first.name)）" })
+        await time("卸载关联文件定位", {
+            try? env.uninstaller.uninstallTargets(for: first, mode: .uninstallApp)
+        }, describe: { "\($0?.candidates.count ?? 0) 项（\(first.name)）" })
     }
     await time("启动项", { env.optimization.launchAgents() },
                describe: { "\($0.count) 个（用户级可开关 \($0.filter { !$0.isSystem }.count)）" })

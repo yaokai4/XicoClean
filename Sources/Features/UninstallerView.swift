@@ -8,7 +8,7 @@ import DesignSystem
 final class UninstallerModel: ObservableObject {
     @Published var apps: [InstalledApp] = []
     @Published var selected: InstalledApp?
-    @Published var targets: [CleanableItem] = []
+    @Published private(set) var batch: UninstallBatch?
     @Published var loading = false
     @Published var working = false
     @Published var lastFreed: Int64?
@@ -21,6 +21,8 @@ final class UninstallerModel: ObservableObject {
 
     private let env: XicoEnvironment
     init(env: XicoEnvironment) { self.env = env }
+
+    var targets: [UninstallCandidate] { batch?.candidates ?? [] }
 
     func load() {
         loading = true
@@ -44,46 +46,69 @@ final class UninstallerModel: ObservableObject {
     func select(_ app: InstalledApp) {
         // 立即清空上一应用的列表——避免 A→B 快切时 B 的头部仍绑着 A 的旧文件列表，
         // 用户此刻确认就会误删「另一应用」的文件（P2 数据安全）。
-        targets = []
+        batch = nil
         selected = app
         lastFreed = nil
         let env = self.env
         let appID = app.id
         Task {
-            let targets = await Task.detached { env.uninstaller.uninstallTargets(for: app) }.value
+            let batch = try? await Task.detached {
+                try env.uninstaller.uninstallTargets(for: app, mode: .uninstallApp)
+            }.value
             // 慢扫描回来时若选择已切走，丢弃这批陈旧结果，绝不覆盖更新选择的列表。
             guard self.selected?.id == appID else { return }
-            self.targets = targets
+            self.batch = batch
         }
     }
 
     func toggle(_ id: UUID) {
-        guard let i = targets.firstIndex(where: { $0.id == id }) else { return }
-        targets[i].isSelected.toggle()
+        guard var batch else { return }
+        batch.toggle(id)
+        self.batch = batch
     }
 
-    var allTargetsSelected: Bool { !targets.isEmpty && targets.allSatisfy(\.isSelected) }
-    func toggleAllTargets(_ on: Bool) { for i in targets.indices { targets[i].isSelected = on } }
+    var allTargetsSelected: Bool { batch?.allPolicySelected ?? false }
+    func toggleAllTargets(_ on: Bool) {
+        guard var batch else { return }
+        batch.setAll(on)
+        self.batch = batch
+    }
 
-    var selectedSize: Int64 { targets.filter(\.isSelected).reduce(0) { $0 + $1.size } }
-    var selectedCount: Int { targets.filter(\.isSelected).count }
+    var selectedSize: Int64 { batch?.selectedSize ?? 0 }
+    var selectedCount: Int { batch?.selectedCount ?? 0 }
 
     @Published var licenseBlocked = false
 
     func uninstall() {
-        // 二次确认：当前展示的关联文件必须确实属于此刻选中的应用。
-        // uninstallTargets 总把应用本体（url == app.url）作为首项加入，故据此校验；
-        // 一旦对不上（快切时序错配的兜底），直接放弃本次卸载，绝不删「另一应用」的文件。
-        guard let app = selected, targets.contains(where: { $0.url == app.url }) else { return }
-        let items = targets.filter(\.isSelected)
-        guard !items.isEmpty else { return }
+        // 二次确认：只接受服务签发、仍绑定当前应用和卸载模式的完整批次。更深的候选密封、
+        // 必选应用本体和 Task 1 计划校验由 capability controller 再次 fail-closed 验证。
+        guard let app = selected, let batch,
+              batch.mode == .uninstallApp,
+              batch.app.id == app.id,
+              batch.app.url.standardizedFileURL == app.url.standardizedFileURL,
+              batch.selectedCount > 0 else { return }
         // 卸载同样是删除操作，必须过许可证门禁（与扫描/清理一致，堵住"试用到期仍可卸载"）
         guard env.license.status().state.allowsCommercialUse else { licenseBlocked = true; return }
         working = true
         let env = self.env
-        let appName = selected?.name ?? xLoc("应用")
+        let appName = app.name
         Task {
-            let report = await env.cleaningEngine.execute(CleaningPlan(items: items, intent: .trash))
+            let result: DestructiveExecutionResult<CleaningReport>
+            do {
+                result = try await env.uninstallCapability.execute(
+                    batch: batch,
+                    service: env.uninstaller
+                ) { items in
+                    await env.cleaningEngine.execute(CleaningPlan(items: items, intent: .trash))
+                }
+            } catch {
+                self.working = false
+                return
+            }
+            guard case let .executed(report) = result else {
+                self.working = false
+                return
+            }
             self.lastFreed = report.reclaimedBytes
             self.lastRemovedCount = report.removedCount
             // 计入清理历史并广播刷新（此前卸载释放的空间被系统性少计）。
@@ -94,7 +119,7 @@ final class UninstallerModel: ObservableObject {
             NotificationCenter.default.post(name: .xicoDidClean, object: nil)
             self.working = false
             self.selected = nil
-            self.targets = []
+            self.batch = nil
             self.load()
         }
     }
@@ -222,8 +247,8 @@ public struct UninstallerView: View {
 
                 ScrollView {
                     LazyVStack(spacing: 2) {
-                        ForEach(model.targets) { item in
-                            ItemRowView(item: item) { model.toggle(item.id) }
+                        ForEach(model.targets) { candidate in
+                            ItemRowView(item: candidate.item) { model.toggle(candidate.id) }
                         }
                     }
                     .padding(XSpacing.l)

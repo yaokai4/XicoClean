@@ -16,6 +16,7 @@ public final class XicoEnvironment: @unchecked Sendable {
     /// 哈希与图片指纹共享的 CPU/IO 并发预算。
     public let scanWorkLimiter: ScanWorkLimiter
     public let uninstaller: UninstallerService
+    public let uninstallCapability: any UninstallCapabilityRouting
     public let optimization: OptimizationService
     public let maintenanceRunner: MaintenanceRunner
     public let liveMetrics: LiveMetricsSampler
@@ -58,7 +59,9 @@ public final class XicoEnvironment: @unchecked Sendable {
         historySink: (any OutcomeHistoryWriting)? = nil,
         cleaningNotifier: (any CleaningNotificationSending)? = nil,
         invalidationSink: (any OutcomeInvalidationPublishing)? = nil,
-        threatRemediation: (any ThreatRemediationExecuting)? = nil
+        threatRemediation: (any ThreatRemediationExecuting)? = nil,
+        uninstaller: UninstallerService? = nil,
+        uninstallCapability: (any UninstallCapabilityRouting)? = nil
     ) {
         self.fs = fs
         self.safety = safety
@@ -80,7 +83,12 @@ public final class XicoEnvironment: @unchecked Sendable {
         self.diskTreeScanner = DiskTreeScanner(fs: fs)
         self.scanIndex = ScanSnapshotStore()
         self.scanWorkLimiter = ScanWorkLimiter()
-        self.uninstaller = UninstallerService(fs: fs, safety: safety)
+        let resolvedUninstaller = uninstaller ?? UninstallerService(fs: fs, safety: safety)
+        self.uninstaller = resolvedUninstaller
+        self.uninstallCapability = uninstallCapability ?? UninstallCapabilityController(
+            issuer: DestructiveOperationIssuer(
+                sampler: LocalFileIdentitySampler(),
+                ledger: AuthorizationLedger()))
         self.optimization = OptimizationService()
         self.maintenanceRunner = MaintenanceRunner()
         self.liveMetrics = LiveMetricsSampler(fs: fs)
