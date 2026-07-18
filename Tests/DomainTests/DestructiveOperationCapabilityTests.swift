@@ -1,5 +1,6 @@
 import XCTest
 @testable import Domain
+@testable import Infrastructure
 
 final class DestructiveOperationCapabilityTests: XCTestCase {
 
@@ -14,6 +15,17 @@ final class DestructiveOperationCapabilityTests: XCTestCase {
         private(set) var value = 0
         func increment() { value += 1 }
         func snapshot() -> Int { value }
+    }
+
+    private final class MutableWallClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Date
+        init(_ value: Date) { self.value = value }
+        func now() -> Date { lock.withLock { value } }
+        func set(_ value: Date) { lock.withLock { self.value = value } }
+        func advance(_ interval: TimeInterval) {
+            lock.withLock { value = value.addingTimeInterval(interval) }
+        }
     }
 
     private func identity(inode: UInt64 = 100,
@@ -122,6 +134,64 @@ final class DestructiveOperationCapabilityTests: XCTestCase {
         XCTAssertNotEqual(baseDigest, PlanDigest.compute(kind: .shred, targets: changedIdentity))
     }
 
+    func testPrepareCarriesChangeTimeAndFixedSHA256EvidenceFingerprint() throws {
+        let changeTime: Int64 = 222
+        let sealedIdentity = LocalFileIdentity(
+            device: 1, inode: 9, mode: 0o100_644, size: 4_096,
+            mtimeNanoseconds: 111, changeTimeNanoseconds: changeTime,
+            hardLinkCount: 1)
+        let fingerprint = try XCTUnwrap(EvidenceFingerprint(sha256: [UInt8](repeating: 0xA5,
+                                                                             count: 32)))
+        let sealedRequest = TargetRequest(
+            canonicalPath: "/sealed",
+            recoverability: .trashRestorable,
+            riskLevel: .low,
+            attribution: .verifiedAppBody,
+            evidenceFingerprint: fingerprint)
+
+        let plan = issuer(["/sealed": sealedIdentity]).prepare(
+            kind: .uninstall, targets: [sealedRequest], now: t0)
+
+        XCTAssertEqual(plan.targets.first?.identity?.changeTimeNanoseconds, changeTime)
+        XCTAssertEqual(plan.targets.first?.evidenceFingerprint, fingerprint)
+        XCTAssertEqual(fingerprint.bytes.count, 32)
+    }
+
+    func testDigestChangesWhenOnlyChangeTimeOrEvidenceFingerprintChanges() throws {
+        let baseIdentity = LocalFileIdentity(
+            device: 1, inode: 9, mode: 0o100_644, size: 4_096,
+            mtimeNanoseconds: 111, changeTimeNanoseconds: 222,
+            hardLinkCount: 1)
+        let changedCTime = LocalFileIdentity(
+            device: 1, inode: 9, mode: 0o100_644, size: 4_096,
+            mtimeNanoseconds: 111, changeTimeNanoseconds: 333,
+            hardLinkCount: 1)
+        let fingerprintA = try XCTUnwrap(EvidenceFingerprint(
+            sha256: [UInt8](repeating: 0x11, count: 32)))
+        let fingerprintB = try XCTUnwrap(EvidenceFingerprint(
+            sha256: [UInt8](repeating: 0x22, count: 32)))
+        func target(_ identity: LocalFileIdentity,
+                    _ fingerprint: EvidenceFingerprint) -> PlannedTarget {
+            PlannedTarget(canonicalPath: "/sealed", identity: identity,
+                          recoverability: .trashRestorable, riskLevel: .low,
+                          attribution: .verifiedAppBody,
+                          evidenceFingerprint: fingerprint)
+        }
+
+        let base = PlanDigest.compute(kind: .uninstall,
+                                      targets: [target(baseIdentity, fingerprintA)])
+        XCTAssertNotEqual(base, PlanDigest.compute(
+            kind: .uninstall, targets: [target(changedCTime, fingerprintA)]))
+        XCTAssertNotEqual(base, PlanDigest.compute(
+            kind: .uninstall, targets: [target(baseIdentity, fingerprintB)]))
+    }
+
+    func testEvidenceFingerprintRejectsNonSHA256LengthsAndHasExplicitNone() {
+        XCTAssertNil(EvidenceFingerprint(sha256: [UInt8](repeating: 1, count: 31)))
+        XCTAssertNil(EvidenceFingerprint(sha256: [UInt8](repeating: 1, count: 33)))
+        XCTAssertTrue(EvidenceFingerprint.none.bytes.isEmpty)
+    }
+
     // MARK: - Authorization binding
 
     func testAuthorizationBindsPlanIDDigestNonceExpiryAndKind() throws {
@@ -141,6 +211,47 @@ final class DestructiveOperationCapabilityTests: XCTestCase {
         let sut = issuer(["/a": identity()])
         let plan = sut.prepare(kind: .shred, targets: [request("/a")], now: t0)
         XCTAssertNotNil(sut.authorize(plan, now: t0))
+    }
+
+    func testAuthorizeRejectsUnsealedUninstallTargetsDefenseInDepth() throws {
+        let fingerprint = try XCTUnwrap(EvidenceFingerprint(
+            sha256: [UInt8](repeating: 0x44, count: 32)))
+        let validRequest = TargetRequest(
+            canonicalPath: "/a", recoverability: .trashRestorable, riskLevel: .low,
+            attribution: .verifiedAppBody, evidenceFingerprint: fingerprint)
+
+        let empty = issuer([:]).prepare(kind: .uninstall, targets: [], now: t0)
+        let missingEvidence = issuer(["/a": identity()]).prepare(
+            kind: .uninstall, targets: [request("/a")], now: t0)
+        let missingIdentity = issuer([:]).prepare(
+            kind: .uninstall, targets: [validRequest], now: t0)
+
+        XCTAssertNil(issuer([:]).authorize(empty, now: t0))
+        XCTAssertNil(issuer(["/a": identity()]).authorize(missingEvidence, now: t0))
+        XCTAssertNil(issuer([:]).authorize(missingIdentity, now: t0))
+    }
+
+    func testAuthorizeRejectsFutureCreatedPlanAndInvalidCanonicalDigest() throws {
+        let clock = MutableWallClock(t0)
+        let sut = DestructiveOperationIssuer(
+            sampler: FakeSampler(table: ["/a": identity()]),
+            ledger: AuthorizationLedger(), wallNow: { clock.now() })
+        let plan = sut.prepare(kind: .shred, targets: [request("/a")])
+
+        clock.set(t0.addingTimeInterval(-1))
+        XCTAssertNil(sut.authorize(plan), "createdAt > fresh now must fail closed")
+
+        clock.set(t0)
+        let substituted = PlannedTarget(
+            canonicalPath: "/substituted", identity: identity(inode: 999),
+            recoverability: .irreversible, riskLevel: .high,
+            attribution: .userSelected)
+        let invalidDigest = DestructivePlan(
+            planID: plan.planID, kind: plan.kind,
+            createdAt: plan.createdAt, expiresAt: plan.expiresAt,
+            targets: [substituted], digest: plan.digest)
+        XCTAssertNil(sut.authorize(invalidDigest),
+                     "digest must be recomputed from current canonical plan fields")
     }
 
     // MARK: - Nonce lifecycle
@@ -202,6 +313,57 @@ final class DestructiveOperationCapabilityTests: XCTestCase {
         }
         let sideEffects = await counter.snapshot()
         XCTAssertEqual(sideEffects, 1)
+    }
+
+    func testFreshWallClockAfterLedgerAwaitBlocksExpiredBodyAndSpendsNonce() async throws {
+        let clock = MutableWallClock(t0)
+        let ledger = AuthorizationLedger(onConsume: { clock.advance(301) })
+        let sut = DestructiveOperationIssuer(
+            sampler: FakeSampler(table: ["/a": identity()]), ledger: ledger,
+            wallNow: { clock.now() })
+        let plan = sut.prepare(kind: .shred, targets: [request("/a")])
+        let authorization = try XCTUnwrap(sut.authorize(plan))
+        let counter = Counter()
+
+        let expired = await sut.execute(plan, authorization: authorization) {
+            await counter.increment()
+            return true
+        }
+        XCTAssertEqual(failure(expired), .expired)
+        let expiredBodyRuns = await counter.snapshot()
+        XCTAssertEqual(expiredBodyRuns, 0)
+
+        clock.set(t0)
+        let replay = await sut.execute(plan, authorization: authorization) {
+            await counter.increment()
+            return true
+        }
+        XCTAssertEqual(failure(replay), .nonceAlreadyConsumed)
+        let replayBodyRuns = await counter.snapshot()
+        XCTAssertEqual(replayBodyRuns, 0)
+    }
+
+    func testExecuteRejectsCanonicalTargetTamperingEvenWhenStoredDigestIsUnchanged() async throws {
+        let sut = issuer(["/a": identity()])
+        let plan = sut.prepare(kind: .shred, targets: [request("/a")], now: t0)
+        let authorization = try XCTUnwrap(sut.authorize(plan, now: t0))
+        let substituted = PlannedTarget(
+            canonicalPath: "/substituted", identity: identity(inode: 999),
+            recoverability: .irreversible, riskLevel: .high,
+            attribution: .userSelected)
+        let tampered = DestructivePlan(
+            planID: plan.planID, kind: plan.kind,
+            createdAt: plan.createdAt, expiresAt: plan.expiresAt,
+            targets: [substituted], digest: plan.digest)
+        let counter = Counter()
+
+        let result = await sut.execute(tampered, authorization: authorization, now: t0) {
+            await counter.increment()
+            return true
+        }
+        XCTAssertEqual(failure(result), .digestMismatch)
+        let bodyRuns = await counter.snapshot()
+        XCTAssertEqual(bodyRuns, 0)
     }
 
     func testLateCancelAfterTerminalDoesNotRewriteOutcome() async throws {

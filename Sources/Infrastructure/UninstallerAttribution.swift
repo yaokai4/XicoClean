@@ -77,6 +77,7 @@ public enum UninstallerAttributionError: Error, Sendable, Equatable {
     case foreignApp
     case appIdentityChanged
     case appMetadataChanged
+    case trustedClockUnavailable
 }
 
 public enum UninstallPlanError: Error, Sendable, Equatable {
@@ -91,9 +92,15 @@ public enum UninstallPlanError: Error, Sendable, Equatable {
     case appIdentityChanged
     case appMetadataChanged
     case batchExpired
+    case batchNotYetValid
     case batchAlreadyConsumed
     case entitlementAttestationChanged
     case launchAgentAttestationChanged
+    case physicalPathAttestationChanged
+    case duplicateTarget
+    case evidenceFingerprintUnavailable
+    case preparedTargetMismatch
+    case preparationSealUnavailable
 }
 
 public struct SignedEntitlementAttestation: Sendable, Equatable {
@@ -101,75 +108,256 @@ public struct SignedEntitlementAttestation: Sendable, Equatable {
     public let codeIdentifier: String
     public let uniqueCode: Data
     public let sourceIdentity: LocalFileIdentity
+    let sourceSeal: AppBundleSourceSeal?
 
-    public init(groups: [String], codeIdentifier: String, uniqueCode: Data,
-                sourceIdentity: LocalFileIdentity) {
+    package init(groups: [String], codeIdentifier: String, uniqueCode: Data,
+                 sourceIdentity: LocalFileIdentity) {
         self.groups = groups
         self.codeIdentifier = codeIdentifier
         self.uniqueCode = uniqueCode
         self.sourceIdentity = sourceIdentity
+        self.sourceSeal = nil
     }
 
-    var isWithinBounds: Bool {
-        Self.groupsAreWithinBounds(groups)
-            && !codeIdentifier.isEmpty
-            && !uniqueCode.isEmpty
-    }
-
-    static func groupsAreWithinBounds(_ groups: [String]) -> Bool {
-        guard groups.count <= SecurityEntitlementReader.maximumGroupCount else { return false }
-        var totalBytes = 0
-        for group in groups {
-            let (next, overflow) = totalBytes.addingReportingOverflow(group.utf8.count)
-            guard !overflow,
-                  next <= SecurityEntitlementReader.maximumGroupUTF8Bytes else { return false }
-            totalBytes = next
-        }
-        return true
-    }
-}
-
-public struct SecurityCodeInspection: Sendable, Equatable {
-    public let groups: [String]
-    public let codeIdentifier: String
-    public let uniqueCode: Data
-
-    public init(groups: [String], codeIdentifier: String, uniqueCode: Data) {
+    init(groups: [String], codeIdentifier: String, uniqueCode: Data,
+         sourceIdentity: LocalFileIdentity,
+         sourceSeal: AppBundleSourceSeal) {
         self.groups = groups
         self.codeIdentifier = codeIdentifier
         self.uniqueCode = uniqueCode
+        self.sourceIdentity = sourceIdentity
+        self.sourceSeal = sourceSeal
+    }
+
+    var isWithinBounds: Bool {
+        guard let validated = BoundedSecuritySigningFields.validating(
+            RawSecuritySigningFields(
+                groups: groups, codeIdentifier: codeIdentifier, uniqueCode: uniqueCode,
+                mainExecutableURL: URL(fileURLWithPath: "/bounded-attestation"))) else {
+            return false
+        }
+        return groups == validated.groups
+    }
+
+    static func groupsAreWithinBounds(_ groups: [String]) -> Bool {
+        BoundedSecuritySigningFields.validatedGroups(groups) != nil
     }
 }
 
-public protocol SecurityCodeInspecting: Sendable {
-    func inspect(appURL: URL) -> SecurityCodeInspection?
+struct RawSecuritySigningFields: Sendable, Equatable {
+    let groups: [String]
+    let codeIdentifier: String
+    let uniqueCode: Data
+    let mainExecutableURL: URL
 }
 
-public struct SecurityFrameworkCodeInspector: SecurityCodeInspecting {
-    public init() {}
+struct BoundedSecuritySigningFields: Sendable, Equatable {
+    static let maximumUniqueCodeBytes = 64
+    static let maximumExecutablePathBytes = 16 * 1024
 
-    public func inspect(appURL: URL) -> SecurityCodeInspection? {
+    let groups: [String]
+    let codeIdentifier: BundleIdentifier
+    let uniqueCode: Data
+    let mainExecutableCanonicalPath: String
+
+    static func validating(_ raw: RawSecuritySigningFields) -> Self? {
+        guard let codeIdentifier = BundleIdentifier(rawValue: raw.codeIdentifier),
+              raw.mainExecutableURL.isFileURL,
+              raw.mainExecutableURL.path.hasPrefix("/"),
+              raw.mainExecutableURL.path.utf8.count <= maximumExecutablePathBytes,
+              (1...maximumUniqueCodeBytes).contains(raw.uniqueCode.count),
+              let groups = validatedGroups(raw.groups) else { return nil }
+        return Self(groups: groups, codeIdentifier: codeIdentifier,
+                    uniqueCode: raw.uniqueCode,
+                    mainExecutableCanonicalPath: raw.mainExecutableURL.standardizedFileURL.path)
+    }
+
+    static func validatedGroups(_ rawGroups: [String]) -> [String]? {
+        guard rawGroups.count <= SecurityEntitlementReader.maximumGroupCount,
+              Set(rawGroups).count == rawGroups.count else { return nil }
+        var aggregateBytes = 0
+        for group in rawGroups {
+            let byteCount = group.utf8.count
+            let (next, overflow) = aggregateBytes.addingReportingOverflow(byteCount)
+            guard Self.isValidGroup(group), !overflow,
+                  next <= SecurityEntitlementReader.maximumGroupUTF8Bytes else { return nil }
+            aggregateBytes = next
+        }
+        return rawGroups.sorted { lhs, rhs in
+            lhs.utf8.lexicographicallyPrecedes(rhs.utf8)
+        }
+    }
+
+    private static func isValidGroup(_ group: String) -> Bool {
+        let byteCount = group.utf8.count
+        guard !group.isEmpty, group != ".", group != "..", byteCount <= 255,
+              !group.contains("/"), !group.contains("\\"), !group.contains("\0") else {
+            return false
+        }
+        return !group.unicodeScalars.contains { scalar in
+            scalar.value < 0x20 || scalar.value == 0x7f
+        }
+    }
+}
+
+enum StaticCodeValidationPolicy: Sendable, Equatable {
+    case strictAllArchitecturesAndNestedCode
+}
+
+enum SigningInformationPolicy: Sendable, Equatable {
+    case entitlementsAndGenericIdentity
+}
+
+protocol SecurityFrameworkSession: AnyObject, Sendable {
+    func checkValidity(_ policy: StaticCodeValidationPolicy) -> Bool
+    func copySigningFields(_ policy: SigningInformationPolicy) -> RawSecuritySigningFields?
+}
+
+protocol SecurityFrameworkSessionFactory: Sendable {
+    func open(appURL: URL) -> (any SecurityFrameworkSession)?
+}
+
+protocol SecurityCodeSourceAttesting: Sendable {
+    func capture(appURL: URL) -> AppBundleSourceSeal?
+}
+
+struct SystemSecurityCodeSourceAttestor: SecurityCodeSourceAttesting {
+    func capture(appURL: URL) -> AppBundleSourceSeal? {
+        FDAnchoredAppBundlePathAttestor(appURL: appURL).captureSourceSeal()
+    }
+}
+
+struct SystemSecurityFrameworkSessionFactory: SecurityFrameworkSessionFactory {
+    func open(appURL: URL) -> (any SecurityFrameworkSession)? {
         var staticCode: SecStaticCode?
         guard SecStaticCodeCreateWithPath(appURL as CFURL, [], &staticCode) == errSecSuccess,
               let staticCode else { return nil }
-        let validityFlags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures
-                                      | kSecCSCheckNestedCode
-                                      | kSecCSStrictValidate)
-        guard SecStaticCodeCheckValidity(staticCode, validityFlags, nil) == errSecSuccess else {
-            return nil
-        }
-        var signingInformation: CFDictionary?
-        guard SecCodeCopySigningInformation(staticCode,
-                                            SecCSFlags(rawValue: kSecCSSigningInformation),
-                                            &signingInformation) == errSecSuccess,
-              let dictionary = signingInformation as? [String: Any],
-              let codeIdentifier = dictionary[kSecCodeInfoIdentifier as String] as? String,
-              let uniqueCode = dictionary[kSecCodeInfoUnique as String] as? Data else { return nil }
-        let entitlements = dictionary[kSecCodeInfoEntitlementsDict as String] as? [String: Any]
-        let groups = entitlements?["com.apple.security.application-groups"] as? [String] ?? []
-        return SecurityCodeInspection(groups: groups, codeIdentifier: codeIdentifier,
-                                      uniqueCode: uniqueCode)
+        return SystemSecurityFrameworkSession(staticCode: staticCode)
     }
+}
+
+private final class SystemSecurityFrameworkSession: @unchecked Sendable,
+                                                    SecurityFrameworkSession {
+    private let staticCode: SecStaticCode
+
+    init(staticCode: SecStaticCode) { self.staticCode = staticCode }
+
+    func checkValidity(_ policy: StaticCodeValidationPolicy) -> Bool {
+        let flags: SecCSFlags
+        switch policy {
+        case .strictAllArchitecturesAndNestedCode:
+            flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures
+                               | kSecCSCheckNestedCode
+                               | kSecCSStrictValidate)
+        }
+        return SecStaticCodeCheckValidity(staticCode, flags, nil) == errSecSuccess
+    }
+
+    func copySigningFields(_ policy: SigningInformationPolicy) -> RawSecuritySigningFields? {
+        guard policy == .entitlementsAndGenericIdentity else { return nil }
+        var signingInformation: CFDictionary?
+        guard SecCodeCopySigningInformation(
+                staticCode, SecCSFlags(rawValue: kSecCSSigningInformation),
+                &signingInformation) == errSecSuccess,
+              let signingInformation else { return nil }
+        return SecuritySigningFieldsParser.parse(signingInformation)
+    }
+}
+
+/// Bounds CoreFoundation values before bridging them into Swift-owned strings, arrays, or Data.
+/// This prevents a malicious signature dictionary from forcing an unbounded temporary copy merely
+/// to be rejected by accepted-value validation afterward.
+enum SecuritySigningFieldsParser {
+    static func parse(_ dictionary: CFDictionary) -> RawSecuritySigningFields? {
+        guard let identifierValue = value(in: dictionary, key: kSecCodeInfoIdentifier),
+              CFGetTypeID(identifierValue) == CFStringGetTypeID(),
+              utf8Length(unsafeDowncast(identifierValue, to: CFString.self),
+                         maximum: 255) != nil,
+              let uniqueValue = value(in: dictionary, key: kSecCodeInfoUnique),
+              CFGetTypeID(uniqueValue) == CFDataGetTypeID(),
+              (1...BoundedSecuritySigningFields.maximumUniqueCodeBytes)
+                .contains(CFDataGetLength(unsafeDowncast(uniqueValue, to: CFData.self))),
+              let executableValue = value(in: dictionary, key: kSecCodeInfoMainExecutable),
+              CFGetTypeID(executableValue) == CFURLGetTypeID() else { return nil }
+        let identifier = unsafeDowncast(identifierValue, to: CFString.self)
+        let unique = unsafeDowncast(uniqueValue, to: CFData.self)
+        let executable = unsafeDowncast(executableValue, to: CFURL.self)
+        guard utf8Length(CFURLGetString(executable),
+                         maximum: BoundedSecuritySigningFields.maximumExecutablePathBytes)
+                != nil else { return nil }
+
+        let groups: [String]
+        if let entitlementsValue = value(in: dictionary, key: kSecCodeInfoEntitlementsDict) {
+            guard CFGetTypeID(entitlementsValue) == CFDictionaryGetTypeID(),
+                  let parsed = boundedGroups(
+                    in: unsafeDowncast(entitlementsValue, to: CFDictionary.self)) else {
+                return nil
+            }
+            groups = parsed
+        } else {
+            groups = []
+        }
+
+        let mainExecutableURL = executable as URL
+        guard mainExecutableURL.isFileURL, mainExecutableURL.path.hasPrefix("/") else { return nil }
+        return RawSecuritySigningFields(
+            groups: groups,
+            codeIdentifier: identifier as String,
+            uniqueCode: unique as Data,
+            mainExecutableURL: mainExecutableURL)
+    }
+
+    private static func boundedGroups(in entitlements: CFDictionary) -> [String]? {
+        let groupsKey = "com.apple.security.application-groups" as CFString
+        guard let groupsValue = value(in: entitlements, key: groupsKey) else { return [] }
+        guard CFGetTypeID(groupsValue) == CFArrayGetTypeID() else { return nil }
+        let array = unsafeDowncast(groupsValue, to: CFArray.self)
+        let count = CFArrayGetCount(array)
+        guard count <= SecurityEntitlementReader.maximumGroupCount else { return nil }
+
+        var aggregate = 0
+        var groups: [String] = []
+        groups.reserveCapacity(count)
+        for index in 0..<count {
+            guard let raw = CFArrayGetValueAtIndex(array, index) else { return nil }
+            let value = Unmanaged<CFTypeRef>.fromOpaque(raw).takeUnretainedValue()
+            guard CFGetTypeID(value) == CFStringGetTypeID(),
+                  let bytes = utf8Length(unsafeDowncast(value, to: CFString.self),
+                                         maximum: 255) else { return nil }
+            let string = unsafeDowncast(value, to: CFString.self)
+            let (next, overflow) = aggregate.addingReportingOverflow(bytes)
+            guard !overflow, next <= SecurityEntitlementReader.maximumGroupUTF8Bytes else {
+                return nil
+            }
+            aggregate = next
+            groups.append(string as String)
+        }
+        return groups
+    }
+
+    private static func value(in dictionary: CFDictionary,
+                              key: CFString) -> CFTypeRef? {
+        let keyPointer = Unmanaged.passUnretained(key).toOpaque()
+        guard let raw = CFDictionaryGetValue(dictionary, keyPointer) else { return nil }
+        return Unmanaged<CFTypeRef>.fromOpaque(raw).takeUnretainedValue()
+    }
+
+    private static func utf8Length(_ string: CFString, maximum: Int) -> Int? {
+        let scalarLength = CFStringGetLength(string)
+        guard scalarLength <= maximum else { return nil }
+        var usedBytes = 0
+        let converted = CFStringGetBytes(
+            string, CFRange(location: 0, length: scalarLength),
+            CFStringBuiltInEncodings.UTF8.rawValue, 0, false,
+            nil, 0, &usedBytes)
+        guard converted == scalarLength, usedBytes <= maximum else { return nil }
+        return usedBytes
+    }
+}
+
+struct StableSecurityCodeSnapshot: Sendable, Equatable {
+    let signing: BoundedSecuritySigningFields
+    let source: AppBundleSourceSeal
 }
 
 /// Injected boundary for a bounded signature-validated application-group attestation.
@@ -182,28 +370,50 @@ public struct SecurityEntitlementReader: EntitlementReader {
     public static let maximumGroupCount = 128
     public static let maximumGroupUTF8Bytes = 16 * 1024
 
-    private let inspector: any SecurityCodeInspecting
-    private let identitySampler: any IdentitySampler
+    private let sessionFactory: any SecurityFrameworkSessionFactory
+    private let sourceAttestor: any SecurityCodeSourceAttesting
 
-    public init(inspector: any SecurityCodeInspecting = SecurityFrameworkCodeInspector(),
-                identitySampler: any IdentitySampler = LocalFileIdentitySampler()) {
-        self.inspector = inspector
-        self.identitySampler = identitySampler
+    public init() {
+        sessionFactory = SystemSecurityFrameworkSessionFactory()
+        sourceAttestor = SystemSecurityCodeSourceAttestor()
+    }
+
+    init(sessionFactory: any SecurityFrameworkSessionFactory,
+         sourceAttestor: any SecurityCodeSourceAttesting) {
+        self.sessionFactory = sessionFactory
+        self.sourceAttestor = sourceAttestor
     }
 
     public func attestation(for appURL: URL) -> SignedEntitlementAttestation? {
-        let canonicalPath = appURL.standardizedFileURL.path
-        guard let before = identitySampler.sample(canonicalPath),
-              let inspection = inspector.inspect(appURL: appURL),
-              SignedEntitlementAttestation.groupsAreWithinBounds(inspection.groups),
-              let after = identitySampler.sample(canonicalPath),
-              before == after else { return nil }
-        let attestation = SignedEntitlementAttestation(
-            groups: inspection.groups.sorted(),
-            codeIdentifier: inspection.codeIdentifier,
-            uniqueCode: inspection.uniqueCode,
-            sourceIdentity: before)
-        return attestation.isWithinBounds ? attestation : nil
+        guard let first = onePhase(appURL: appURL, sessionFactory: sessionFactory,
+                                   sourceAttestor: sourceAttestor),
+              let second = onePhase(appURL: appURL, sessionFactory: sessionFactory,
+                                    sourceAttestor: sourceAttestor),
+              first == second else { return nil }
+        let signing = second.signing
+        return SignedEntitlementAttestation(
+            groups: signing.groups,
+            codeIdentifier: signing.codeIdentifier.rawValue,
+            uniqueCode: signing.uniqueCode,
+            sourceIdentity: second.source.appRoot,
+            sourceSeal: second.source)
+    }
+
+    private func onePhase(
+        appURL: URL,
+        sessionFactory: any SecurityFrameworkSessionFactory,
+        sourceAttestor: any SecurityCodeSourceAttesting
+    ) -> StableSecurityCodeSnapshot? {
+        guard let sourceBefore = sourceAttestor.capture(appURL: appURL),
+              let session = sessionFactory.open(appURL: appURL),
+              session.checkValidity(.strictAllArchitecturesAndNestedCode),
+              let raw = session.copySigningFields(.entitlementsAndGenericIdentity),
+              let signing = BoundedSecuritySigningFields.validating(raw),
+              signing.mainExecutableCanonicalPath == sourceBefore.mainExecutableCanonicalPath,
+              session.checkValidity(.strictAllArchitecturesAndNestedCode),
+              let sourceAfter = sourceAttestor.capture(appURL: appURL),
+              sourceAfter == sourceBefore else { return nil }
+        return StableSecurityCodeSnapshot(signing: signing, source: sourceAfter)
     }
 }
 
@@ -226,60 +436,93 @@ public struct LaunchAgentRecord: Sendable, Equatable {
 public struct LaunchAgentAttestation: Sendable, Equatable {
     public let record: LaunchAgentRecord
     public let plistIdentity: LocalFileIdentity
+    public let plistExactLength: Int
+    public let plistContentDigest: EvidenceFingerprint
     public let resolvedProgramPath: String?
     public let programIdentity: LocalFileIdentity?
+    let programChangeToken: ProgramChangeToken?
 
-    public init(record: LaunchAgentRecord,
-                plistIdentity: LocalFileIdentity,
-                resolvedProgramPath: String?,
-                programIdentity: LocalFileIdentity?) {
+    package init(record: LaunchAgentRecord,
+                 plistIdentity: LocalFileIdentity,
+                 plistExactLength: Int = 0,
+                 plistContentDigest: EvidenceFingerprint = .none,
+                 resolvedProgramPath: String?,
+                 programIdentity: LocalFileIdentity?) {
+        self.init(record: record, plistIdentity: plistIdentity,
+                  plistExactLength: plistExactLength,
+                  plistContentDigest: plistContentDigest,
+                  resolvedProgramPath: resolvedProgramPath,
+                  programIdentity: programIdentity,
+                  programChangeToken: nil)
+    }
+
+    private init(record: LaunchAgentRecord,
+                 plistIdentity: LocalFileIdentity,
+                 plistExactLength: Int,
+                 plistContentDigest: EvidenceFingerprint,
+                 resolvedProgramPath: String?,
+                 programIdentity: LocalFileIdentity?,
+                 programChangeToken: ProgramChangeToken?) {
         self.record = record
         self.plistIdentity = plistIdentity
+        self.plistExactLength = plistExactLength
+        self.plistContentDigest = plistContentDigest
         self.resolvedProgramPath = resolvedProgramPath
         self.programIdentity = programIdentity
+        self.programChangeToken = programChangeToken
     }
 
     static func capture(record: LaunchAgentRecord, plistURL: URL) -> LaunchAgentAttestation? {
-        guard let plistIdentity = LocalFileIdentitySampler().sample(plistURL.path) else { return nil }
-        return capture(record: record, plistIdentity: plistIdentity)
+        guard let read = BoundedRegularFileReader.read(
+            at: plistURL, maximumBytes: PlistLaunchAgentReader.maximumBytes) else { return nil }
+        return capture(record: record,
+                       plistFile: BoundedFileAttestation(
+                        identity: read.identity, exactLength: read.exactLength,
+                        contentDigest: read.contentDigest))
     }
 
     static func capture(record: LaunchAgentRecord,
                         plistIdentity: LocalFileIdentity) -> LaunchAgentAttestation {
-        guard let executable = record.executablePath, executable.hasPrefix("/") else {
-            return LaunchAgentAttestation(record: record, plistIdentity: plistIdentity,
-                                          resolvedProgramPath: nil, programIdentity: nil)
-        }
-        let unresolved = URL(fileURLWithPath: executable)
-        let resolvedBefore = unresolved.resolvingSymlinksInPath().standardizedFileURL
-        let sampler = LocalFileIdentitySampler()
-        guard let before = sampler.sample(resolvedBefore.path),
-              Self.isRegular(before) else {
-            return LaunchAgentAttestation(record: record, plistIdentity: plistIdentity,
-                                          resolvedProgramPath: nil, programIdentity: nil)
-        }
-        let resolvedAfter = unresolved.resolvingSymlinksInPath().standardizedFileURL
-        guard resolvedBefore.path == resolvedAfter.path,
-              sampler.sample(resolvedAfter.path) == before else {
-            return LaunchAgentAttestation(record: record, plistIdentity: plistIdentity,
-                                          resolvedProgramPath: nil, programIdentity: nil)
-        }
-        return LaunchAgentAttestation(record: record, plistIdentity: plistIdentity,
-                                      resolvedProgramPath: resolvedBefore.path,
-                                      programIdentity: before)
+        capture(record: record,
+                plistFile: BoundedFileAttestation(identity: plistIdentity, exactLength: 0,
+                                                  contentDigest: .none))
     }
 
-    private static func isRegular(_ identity: LocalFileIdentity) -> Bool {
-        #if canImport(Darwin)
-        return (identity.mode & UInt32(S_IFMT)) == UInt32(S_IFREG)
-        #else
-        return true
-        #endif
+    static func capture(record: LaunchAgentRecord,
+                        plistFile: BoundedFileAttestation) -> LaunchAgentAttestation {
+        return LaunchAgentAttestation(record: record, plistIdentity: plistFile.identity,
+                                      plistExactLength: plistFile.exactLength,
+                                      plistContentDigest: plistFile.contentDigest,
+                                      resolvedProgramPath: nil,
+                                      programIdentity: nil)
     }
+
+    func bindingProgram(to appURL: URL) -> LaunchAgentAttestation {
+        guard let executable = record.executablePath, executable.hasPrefix("/"),
+              let token = FDAnchoredAppBundlePathAttestor(appURL: appURL).programToken(
+                absoluteURL: URL(fileURLWithPath: executable),
+                maximumDigestBytes: 16 * 1_048_576) else {
+            return LaunchAgentAttestation(
+                record: record, plistIdentity: plistIdentity,
+                plistExactLength: plistExactLength,
+                plistContentDigest: plistContentDigest,
+                resolvedProgramPath: nil, programIdentity: nil,
+                programChangeToken: nil)
+        }
+        return LaunchAgentAttestation(
+            record: record, plistIdentity: plistIdentity,
+            plistExactLength: plistExactLength,
+            plistContentDigest: plistContentDigest,
+            resolvedProgramPath: token.canonicalPath,
+            programIdentity: token.executable,
+            programChangeToken: token)
+    }
+
 }
 
-public protocol LaunchAgentReader: Sendable {
-    func attestation(at url: URL) -> LaunchAgentAttestation?
+package protocol LaunchAgentReader: Sendable {
+    func attestation(at url: URL,
+                     anchoredRead: AnchoredRegularFileRead) -> LaunchAgentAttestation?
 }
 
 public struct PlistLaunchAgentReader: LaunchAgentReader {
@@ -290,18 +533,32 @@ public struct PlistLaunchAgentReader: LaunchAgentReader {
         self.afterRead = afterRead
     }
 
+    package func attestation(at url: URL,
+                             anchoredRead: AnchoredRegularFileRead) -> LaunchAgentAttestation? {
+        afterRead()
+        return parse(data: anchoredRead.data, file: anchoredRead.fileAttestation)
+    }
+
     public func attestation(at url: URL) -> LaunchAgentAttestation? {
         guard let read = BoundedRegularFileReader.read(at: url,
                                                        maximumBytes: Self.maximumBytes,
-                                                       afterRead: afterRead),
-              let plist = try? PropertyListSerialization.propertyList(from: read.data,
+                                                       afterRead: afterRead) else { return nil }
+        return parse(data: read.data,
+                     file: BoundedFileAttestation(identity: read.identity,
+                                                  exactLength: read.exactLength,
+                                                  contentDigest: read.contentDigest))
+    }
+
+    private func parse(data: Data,
+                       file: BoundedFileAttestation) -> LaunchAgentAttestation? {
+        guard let plist = try? PropertyListSerialization.propertyList(from: data,
                                                                       options: [], format: nil),
               let dictionary = plist as? [String: Any] else { return nil }
         let record = LaunchAgentRecord(
             label: dictionary["Label"] as? String,
             program: dictionary["Program"] as? String,
             programArguments: dictionary["ProgramArguments"] as? [String] ?? [])
-        return LaunchAgentAttestation.capture(record: record, plistIdentity: read.identity)
+        return LaunchAgentAttestation.capture(record: record, plistFile: file)
     }
 
     public func launchAgent(at url: URL) -> LaunchAgentRecord? {
@@ -316,6 +573,22 @@ public enum UninstallCandidateRole: String, Sendable, Equatable {
 }
 
 enum CandidateEvidenceBinding: Sendable, Equatable {
+    case none
+    case physicalPath(PhysicalPathAttestation)
+    case signedEntitlement(SignedEntitlementAttestation, PhysicalPathAttestation)
+    case launchAgent(LaunchAgentAttestation, PhysicalPathAttestation)
+
+    var physicalPath: PhysicalPathAttestation? {
+        switch self {
+        case .none: return nil
+        case .physicalPath(let path): return path
+        case .signedEntitlement(_, let path): return path
+        case .launchAgent(_, let path): return path
+        }
+    }
+}
+
+enum CandidateEvidenceSource: Sendable {
     case none
     case signedEntitlement(SignedEntitlementAttestation)
     case launchAgent(LaunchAgentAttestation)
@@ -364,11 +637,14 @@ public struct UninstallCandidate: Identifiable, Sendable {
         }
     }
 
-    var targetRequest: TargetRequest {
+    var targetRequest: TargetRequest { targetRequest(with: .none) }
+
+    func targetRequest(with evidenceFingerprint: EvidenceFingerprint) -> TargetRequest {
         TargetRequest(canonicalPath: url.standardizedFileURL.path,
                       recoverability: .trashRestorable,
                       riskLevel: .low,
-                      attribution: evidence.domainValue)
+                      attribution: evidence.domainValue,
+                      evidenceFingerprint: evidenceFingerprint)
     }
 }
 
@@ -376,6 +652,7 @@ public struct UninstallCandidate: Identifiable, Sendable {
 /// module-internal so Features can only alter selection through the policy-aware methods below.
 public struct UninstallBatch: Sendable {
     public static let timeToLive: TimeInterval = 5 * 60
+    static let timeToLiveNanoseconds: UInt64 = 300_000_000_000
 
     let issuanceID: UUID
     let batchID: UUID
@@ -384,6 +661,7 @@ public struct UninstallBatch: Sendable {
     public let createdAt: Date
     public let expiresAt: Date
     let entitlementAttestation: SignedEntitlementAttestation?
+    let claimToken: UninstallBatchClaimToken
     public private(set) var candidates: [UninstallCandidate]
 
     init(issuanceID: UUID,
@@ -393,7 +671,8 @@ public struct UninstallBatch: Sendable {
          candidates: [UninstallCandidate],
          createdAt: Date = Date(),
          expiresAt: Date? = nil,
-         entitlementAttestation: SignedEntitlementAttestation? = nil) {
+         entitlementAttestation: SignedEntitlementAttestation? = nil,
+         claimToken: UninstallBatchClaimToken? = nil) {
         self.issuanceID = issuanceID
         self.batchID = batchID
         self.app = app
@@ -402,6 +681,16 @@ public struct UninstallBatch: Sendable {
         self.createdAt = createdAt
         self.expiresAt = expiresAt ?? createdAt.addingTimeInterval(Self.timeToLive)
         self.entitlementAttestation = entitlementAttestation
+        if let claimToken {
+            self.claimToken = claimToken
+        } else {
+            let clock = SystemUninstallTrustedClock()
+            self.claimToken = UninstallBatchClaimToken.make(
+                clock: clock,
+                issuedAtNanoseconds: clock.monotonicNowNanoseconds(),
+                lifetimeNanoseconds: Self.timeToLiveNanoseconds)
+                ?? UninstallBatchClaimToken.failClosedExpired(clock: clock)
+        }
     }
 
     public mutating func toggle(_ id: UUID) {

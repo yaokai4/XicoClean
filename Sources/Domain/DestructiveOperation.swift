@@ -77,6 +77,7 @@ public struct LocalFileIdentity: Equatable, Hashable, Sendable {
     public let mode: UInt32
     public let size: Int64
     public let mtimeNanoseconds: Int64
+    public let changeTimeNanoseconds: Int64
     public let hardLinkCount: UInt64
 
     public init(device: UInt64,
@@ -84,13 +85,30 @@ public struct LocalFileIdentity: Equatable, Hashable, Sendable {
                 mode: UInt32,
                 size: Int64,
                 mtimeNanoseconds: Int64,
+                changeTimeNanoseconds: Int64 = 0,
                 hardLinkCount: UInt64) {
         self.device = device
         self.inode = inode
         self.mode = mode
         self.size = size
         self.mtimeNanoseconds = mtimeNanoseconds
+        self.changeTimeNanoseconds = changeTimeNanoseconds
         self.hardLinkCount = hardLinkCount
+    }
+}
+
+/// Rich ownership evidence is represented in a plan by either an explicit absence tag or one
+/// fixed SHA-256 value. The fingerprint alone grants no authority; Infrastructure must still
+/// produce a sealed uninstall preparation before authorization.
+public struct EvidenceFingerprint: Equatable, Hashable, Sendable {
+    public static let none = EvidenceFingerprint(bytes: [])
+    public let bytes: [UInt8]
+
+    private init(bytes: [UInt8]) { self.bytes = bytes }
+
+    package init?(sha256 bytes: [UInt8]) {
+        guard bytes.count == 32 else { return nil }
+        self.bytes = bytes
     }
 }
 
@@ -101,15 +119,18 @@ public struct TargetRequest: Sendable, Equatable {
     public let recoverability: Recoverability
     public let riskLevel: RiskLevel
     public let attribution: AttributionEvidence
+    public let evidenceFingerprint: EvidenceFingerprint
 
     public init(canonicalPath: String,
                 recoverability: Recoverability,
                 riskLevel: RiskLevel,
-                attribution: AttributionEvidence) {
+                attribution: AttributionEvidence,
+                evidenceFingerprint: EvidenceFingerprint = .none) {
         self.canonicalPath = canonicalPath
         self.recoverability = recoverability
         self.riskLevel = riskLevel
         self.attribution = attribution
+        self.evidenceFingerprint = evidenceFingerprint
     }
 }
 
@@ -121,17 +142,20 @@ public struct PlannedTarget: Sendable, Equatable {
     public let recoverability: Recoverability
     public let riskLevel: RiskLevel
     public let attribution: AttributionEvidence
+    public let evidenceFingerprint: EvidenceFingerprint
 
     public init(canonicalPath: String,
                 identity: LocalFileIdentity?,
                 recoverability: Recoverability,
                 riskLevel: RiskLevel,
-                attribution: AttributionEvidence) {
+                attribution: AttributionEvidence,
+                evidenceFingerprint: EvidenceFingerprint = .none) {
         self.canonicalPath = canonicalPath
         self.identity = identity
         self.recoverability = recoverability
         self.riskLevel = riskLevel
         self.attribution = attribution
+        self.evidenceFingerprint = evidenceFingerprint
     }
 }
 
@@ -144,11 +168,11 @@ public struct PlanDigest: Equatable, Sendable {
 
     init(bytes: [UInt8]) { self.bytes = bytes }
 
-    static let schemaVersion: UInt8 = 1
+    static let schemaVersion: UInt8 = 2
 
-    static func compute(kind: DestructiveKind,
-                        targets: [PlannedTarget],
-                        version: UInt8 = schemaVersion) -> PlanDigest {
+    package static func compute(kind: DestructiveKind,
+                                targets: [PlannedTarget],
+                                version: UInt8 = schemaVersion) -> PlanDigest {
         let encoded = canonicalBytes(kind: kind, targets: targets, version: version)
         return PlanDigest(bytes: Array(SHA256.hash(data: Data(encoded))))
     }
@@ -172,6 +196,7 @@ public struct PlanDigest: Equatable, Sendable {
                 appendBE(id.mode, to: &buf)
                 appendBE(UInt64(bitPattern: id.size), to: &buf)
                 appendBE(UInt64(bitPattern: id.mtimeNanoseconds), to: &buf)
+                appendBE(UInt64(bitPattern: id.changeTimeNanoseconds), to: &buf)
                 appendBE(id.hardLinkCount, to: &buf)
             } else {
                 buf.append(0)                      // identity-absent sentinel
@@ -179,6 +204,12 @@ public struct PlanDigest: Equatable, Sendable {
             appendString(target.recoverability.rawValue, to: &buf)
             appendString(target.riskLevel.rawValue, to: &buf)
             appendString(target.attribution.rawValue, to: &buf)
+            if target.evidenceFingerprint.bytes.isEmpty {
+                buf.append(0)
+            } else {
+                buf.append(1)
+                buf.append(contentsOf: target.evidenceFingerprint.bytes)
+            }
         }
         return buf
     }
@@ -205,12 +236,12 @@ public struct DestructivePlan: Sendable, Equatable {
 
     /// Internal so the issuer (and `@testable` tamper fixtures) can build plans, but
     /// production code outside `Domain` cannot fabricate one.
-    init(planID: UUID,
-         kind: DestructiveKind,
-         createdAt: Date,
-         expiresAt: Date,
-         targets: [PlannedTarget],
-         digest: PlanDigest) {
+    package init(planID: UUID,
+                 kind: DestructiveKind,
+                 createdAt: Date,
+                 expiresAt: Date,
+                 targets: [PlannedTarget],
+                 digest: PlanDigest) {
         self.planID = planID
         self.kind = kind
         self.createdAt = createdAt
@@ -218,27 +249,9 @@ public struct DestructivePlan: Sendable, Equatable {
         self.targets = targets
         self.digest = digest
     }
-}
 
-/// One-time capability object. Every stored binding is internal and the initializer is
-/// **fileprivate** — only `DestructiveOperationIssuer` (in this file) can mint one.
-public struct Authorization: Sendable, Equatable {
-    public let planID: UUID
-    let digest: PlanDigest
-    let nonce: UUID
-    let expiresAt: Date
-    let kind: DestructiveKind
-
-    fileprivate init(planID: UUID,
-                     digest: PlanDigest,
-                     nonce: UUID,
-                     expiresAt: Date,
-                     kind: DestructiveKind) {
-        self.planID = planID
-        self.digest = digest
-        self.nonce = nonce
-        self.expiresAt = expiresAt
-        self.kind = kind
+    package var hasValidCanonicalDigest: Bool {
+        digest == PlanDigest.compute(kind: kind, targets: targets)
     }
 }
 
@@ -253,73 +266,4 @@ public enum DestructiveAuthorizationFailure: String, Sendable, Equatable {
 public enum DestructiveExecutionResult<R: Sendable>: Sendable {
     case executed(R)
     case failedClosed(DestructiveAuthorizationFailure)
-}
-
-/// Samples a `LocalFileIdentity` for a canonical path. Injected so the capability is
-/// testable without real files; production supplies a stat-backed implementation.
-public protocol IdentitySampler: Sendable {
-    func sample(_ canonicalPath: String) -> LocalFileIdentity?
-}
-
-public struct DestructiveOperationIssuer: Sendable {
-    /// Local shred / uninstall / snapshot authorizations live 5 minutes (doc 19 §6.1).
-    public static let localTimeToLive: TimeInterval = 5 * 60
-
-    private let sampler: IdentitySampler
-    private let ledger: AuthorizationLedger
-
-    public init(sampler: IdentitySampler, ledger: AuthorizationLedger) {
-        self.sampler = sampler
-        self.ledger = ledger
-    }
-
-    /// Builds an immutable plan: one identity snapshot per target, a 5-minute expiry
-    /// and the canonical digest. Never touches the filesystem itself.
-    public func prepare(kind: DestructiveKind,
-                        targets: [TargetRequest],
-                        now: Date = Date()) -> DestructivePlan {
-        let planned = targets.map { request in
-            PlannedTarget(canonicalPath: request.canonicalPath,
-                          identity: sampler.sample(request.canonicalPath),
-                          recoverability: request.recoverability,
-                          riskLevel: request.riskLevel,
-                          attribution: request.attribution)
-        }
-        let digest = PlanDigest.compute(kind: kind, targets: planned)
-        return DestructivePlan(planID: UUID(),
-                               kind: kind,
-                               createdAt: now,
-                               expiresAt: now.addingTimeInterval(Self.localTimeToLive),
-                               targets: planned,
-                               digest: digest)
-    }
-
-    /// Mints a one-time authorization bound to the plan. Returns `nil` (fail closed) if
-    /// the plan has already expired; an expired plan is never re-confirmable.
-    public func authorize(_ plan: DestructivePlan, now: Date = Date()) -> Authorization? {
-        guard now < plan.expiresAt else { return nil }
-        return Authorization(planID: plan.planID,
-                             digest: plan.digest,
-                             nonce: UUID(),
-                             expiresAt: plan.expiresAt,
-                             kind: plan.kind)
-    }
-
-    /// Validates the authorization against the plan, then atomically consumes the nonce
-    /// BEFORE invoking `body`. The executor closure runs only on the single successful
-    /// consumption; every mismatch, expiry or replay returns fail-closed without calling
-    /// `body`. Once a terminal result is produced a replay cannot rewrite it.
-    public func execute<R: Sendable>(_ plan: DestructivePlan,
-                                     authorization: Authorization,
-                                     now: Date = Date(),
-                                     _ body: () async -> R) async -> DestructiveExecutionResult<R> {
-        guard authorization.planID == plan.planID else { return .failedClosed(.planMismatch) }
-        guard authorization.kind == plan.kind else { return .failedClosed(.kindMismatch) }
-        guard authorization.digest == plan.digest else { return .failedClosed(.digestMismatch) }
-        guard now < authorization.expiresAt else { return .failedClosed(.expired) }
-        guard await ledger.consume(authorization.nonce) else {
-            return .failedClosed(.nonceAlreadyConsumed)
-        }
-        return .executed(await body())
-    }
 }

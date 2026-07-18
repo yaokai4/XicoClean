@@ -80,7 +80,7 @@ let package = Package(
         // 测试
         .testTarget(
             name: "DomainTests",
-            dependencies: ["Domain", "Shared"]
+            dependencies: ["Domain", "Infrastructure", "Shared"]
         ),
         .testTarget(
             name: "IntegrationTests",

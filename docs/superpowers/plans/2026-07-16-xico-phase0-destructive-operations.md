@@ -349,7 +349,7 @@ git commit -m "fix(shredder): pwrite/fsync-verified overwrite, unlink gate, hone
 - Modify: `Sources/Infrastructure/UninstallerService.swift`（`uninstallTargets` 产出带 evidence + policy 的候选；保留红线闸与 Library 深度≥6 闸；注入 entitlement/launch-agent reader）
 - Create: `Tests/IntegrationTests/UninstallerAttributionTests.swift`
 
-- [ ] **Step 1: Write RED tests**
+- [x] **Step 1: Write RED tests**
 
 fixture 用临时 App bundle + fake `EntitlementReader`/`LaunchAgentReader`：
 
@@ -370,7 +370,7 @@ func testCleanLeftoversModeRequiresAppAbsent() throws                           
 func testEveryCandidateCarriesOwnershipEvidenceAndRecoveryHint() throws         // UNI-09
 ```
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 ```bash
 swift test --filter UninstallerAttributionTests --disable-automatic-resolution --skip-update
@@ -378,7 +378,7 @@ swift test --filter UninstallerAttributionTests --disable-automatic-resolution -
 
 Expected: FAIL —— 无解析器 / evidence / policy / mode。
 
-- [ ] **Step 3: Implement strict bundleID parser and attribution/selection model**
+- [x] **Step 3: Implement strict bundleID parser and attribution/selection model**
 
 ```swift
 public enum OwnershipEvidence: Sendable {
@@ -394,11 +394,11 @@ public enum UninstallMode: Sendable { case uninstallApp, cleanLeftovers }
 
 `BundleIdentifier` 按段解析 reverse-DNS：仅 ASCII 字母数字与连字符、拒空段、拒 `/`/`\`/`.`/`..`、拒过短弱 token 与超长分量（UNI-01）；取不到 bundleID 时**不回退 url.path**，归 `.unverified` 且不推荐。8 固定路径 → `exactBundleIDPath` + `recommended`（UNI-04）。Group Containers 改为读签名 entitlements 的 `application-groups`（注入 `EntitlementReader`），命中才 `signedApplicationGroup` 且标 `manualOnly`（UNI-06）。LaunchAgent 解析 plist `Label`/`Program`/`ProgramArguments`（注入 `LaunchAgentReader`），仅当 Label 精确且 Program 指向该 bundle 内才 `launchAgentProgramInsideBundle` + `recommended`（UNI-07）。显示名目录 `displayNameHeuristic` + 默认不选（UNI-08）。保留现有红线闸与 Library `pathComponents.count<6` 闸。
 
-- [ ] **Step 4: Wire mode + policy into `uninstallTargets`**
+- [x] **Step 4: Wire mode + policy into `uninstallTargets`**
 
 `uninstallApp` 模式：App 本体 `SelectionPolicy.required`，不可取消选择（UNI-02）。`cleanLeftovers` 模式前置校验 App 不存在（UNI-03）。全选逻辑改为「只选 `required`/`recommended`，排除 `manualOnly`/`heuristic`」（UNI-08）。每候选携带 `OwnershipEvidence` + 恢复方式提示（trash 可恢复）（UNI-09）。候选交 Task 1 `prepare(kind:.uninstall)` 组装 plan。
 
-- [ ] **Step 5: Run focused tests + zero-gate**
+- [x] **Step 5: Run focused tests + zero-gate**
 
 ```bash
 swift test --filter UninstallerAttributionTests --disable-automatic-resolution --skip-update
@@ -407,7 +407,7 @@ swift build -c debug --disable-automatic-resolution --skip-update
 
 Expected: PASS。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Sources/Infrastructure/UninstallerAttribution.swift Sources/Infrastructure/UninstallerService.swift Tests/IntegrationTests/UninstallerAttributionTests.swift

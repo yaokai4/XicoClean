@@ -212,4 +212,19 @@ final class ShredderPreparationTests: XCTestCase {
         XCTAssertEqual(entry.identity.size, 4_096)
         XCTAssertTrue(entry.identity.inode != 0)
     }
+
+    func testSystemFileSyscallsPreservesChangeTimeInLocalIdentity() throws {
+        _ = try file("change-token.txt", in: dir, bytes: 16)
+        let syscalls = SystemFileSyscalls()
+        let descriptor = syscalls.openDirectory(path: dir.path)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { if descriptor >= 0 { syscalls.closeDescriptor(descriptor) } }
+
+        let fileStat = try XCTUnwrap(syscalls.statChild(parentFD: descriptor,
+                                                        name: "change-token.txt"))
+
+        XCTAssertNotEqual(fileStat.changeTimeNanoseconds, 0)
+        XCTAssertEqual(fileStat.localIdentity.changeTimeNanoseconds,
+                       fileStat.changeTimeNanoseconds)
+    }
 }

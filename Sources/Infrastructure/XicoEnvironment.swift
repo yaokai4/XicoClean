@@ -15,8 +15,8 @@ public final class XicoEnvironment: @unchecked Sendable {
     public let scanIndex: ScanSnapshotStore
     /// 哈希与图片指纹共享的 CPU/IO 并发预算。
     public let scanWorkLimiter: ScanWorkLimiter
-    public let uninstaller: UninstallerService
-    public let uninstallCapability: any UninstallCapabilityRouting
+    package let uninstaller: UninstallerService
+    package let uninstallCapability: any UninstallCapabilityRouting
     public let optimization: OptimizationService
     public let maintenanceRunner: MaintenanceRunner
     public let liveMetrics: LiveMetricsSampler
@@ -49,7 +49,7 @@ public final class XicoEnvironment: @unchecked Sendable {
 
     private let scanners: [ModuleID: ScannerModule]
 
-    public init(
+    init(
         fs: FileSystemService,
         safety: SafetyEngine,
         definitions: DefinitionsLibrary,
@@ -73,11 +73,12 @@ public final class XicoEnvironment: @unchecked Sendable {
         )
         let helper = HelperProxy()
         self.helper = helper
-        self.cleaningEngine = CleaningEngine(
+        let cleaningEngine = CleaningEngine(
             safety: safety,
             fs: fs,
             privileged: helper,
             threatRemediation: threatRemediation ?? ThreatRemediation())
+        self.cleaningEngine = cleaningEngine
         self.metrics = MetricsSampler(fs: fs)
         self.permissions = PermissionsManager()
         self.diskTreeScanner = DiskTreeScanner(fs: fs)
@@ -85,10 +86,10 @@ public final class XicoEnvironment: @unchecked Sendable {
         self.scanWorkLimiter = ScanWorkLimiter()
         let resolvedUninstaller = uninstaller ?? UninstallerService(fs: fs, safety: safety)
         self.uninstaller = resolvedUninstaller
-        self.uninstallCapability = uninstallCapability ?? UninstallCapabilityController(
-            issuer: DestructiveOperationIssuer(
-                sampler: LocalFileIdentitySampler(),
-                ledger: AuthorizationLedger()))
+        self.uninstallCapability = uninstallCapability
+            ?? UninstallCapabilityController(
+                service: resolvedUninstaller,
+                payloadExecutor: CleaningEngineUninstallPayloadExecutor(engine: cleaningEngine))
         self.optimization = OptimizationService()
         self.maintenanceRunner = MaintenanceRunner()
         self.liveMetrics = LiveMetricsSampler(fs: fs)
@@ -109,6 +110,26 @@ public final class XicoEnvironment: @unchecked Sendable {
         map[.largeFiles] = LargeFilesScanner(fs: fs, safety: safety, snapshotStore: scanIndex)
         map[.trash] = TrashScanner(fs: fs)
         self.scanners = map   // 非定义驱动的扫描器（无需随规则库更新而变）
+    }
+
+    public convenience init(
+        fs: FileSystemService,
+        safety: SafetyEngine,
+        definitions: DefinitionsLibrary,
+        definitionsUpdater: DefinitionsUpdateService? = nil,
+        license: LicenseService? = nil,
+        history: HistoryStore? = nil,
+        historySink: (any OutcomeHistoryWriting)? = nil,
+        cleaningNotifier: (any CleaningNotificationSending)? = nil,
+        invalidationSink: (any OutcomeInvalidationPublishing)? = nil,
+        threatRemediation: (any ThreatRemediationExecuting)? = nil
+    ) {
+        self.init(
+            fs: fs, safety: safety, definitions: definitions,
+            definitionsUpdater: definitionsUpdater, license: license, history: history,
+            historySink: historySink, cleaningNotifier: cleaningNotifier,
+            invalidationSink: invalidationSink, threatRemediation: threatRemediation,
+            uninstaller: nil, uninstallCapability: nil)
     }
 
     /// 当前生效的清理定义（优先已签名缓存，否则内置）——每次取，规则库在线更新后免重启即生效。

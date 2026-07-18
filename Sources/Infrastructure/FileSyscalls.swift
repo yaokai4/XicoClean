@@ -14,15 +14,18 @@ public struct FileStat: Equatable, Sendable {
     public let mode: UInt32
     public let size: Int64
     public let mtimeNanoseconds: Int64
+    public let changeTimeNanoseconds: Int64
     public let hardLinkCount: UInt64
 
     public init(device: UInt64, inode: UInt64, mode: UInt32, size: Int64,
-                mtimeNanoseconds: Int64, hardLinkCount: UInt64) {
+                mtimeNanoseconds: Int64, changeTimeNanoseconds: Int64 = 0,
+                hardLinkCount: UInt64) {
         self.device = device
         self.inode = inode
         self.mode = mode
         self.size = size
         self.mtimeNanoseconds = mtimeNanoseconds
+        self.changeTimeNanoseconds = changeTimeNanoseconds
         self.hardLinkCount = hardLinkCount
     }
 
@@ -35,7 +38,9 @@ public struct FileStat: Equatable, Sendable {
     /// Projects to the domain identity used in destructive plans.
     public var localIdentity: LocalFileIdentity {
         LocalFileIdentity(device: device, inode: inode, mode: mode, size: size,
-                          mtimeNanoseconds: mtimeNanoseconds, hardLinkCount: hardLinkCount)
+                          mtimeNanoseconds: mtimeNanoseconds,
+                          changeTimeNanoseconds: changeTimeNanoseconds,
+                          hardLinkCount: hardLinkCount)
     }
 }
 
@@ -139,15 +144,24 @@ public struct SystemFileSyscalls: FileSyscalls {
 
     public func closeDescriptor(_ fd: Int32) { close(fd) }
 
-    private static func map(_ st: stat) -> FileStat {
-        // st_mtimespec: seconds + nanoseconds → total nanoseconds.
-        let mtimeNanos = Int64(st.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(st.st_mtimespec.tv_nsec)
+    private static func map(_ st: stat) -> FileStat? {
+        guard let mtimeNanos = nanoseconds(st.st_mtimespec),
+              let ctimeNanos = nanoseconds(st.st_ctimespec) else { return nil }
         return FileStat(device: UInt64(bitPattern: Int64(st.st_dev)),
                         inode: st.st_ino,
                         mode: UInt32(st.st_mode),
                         size: Int64(st.st_size),
                         mtimeNanoseconds: mtimeNanos,
+                        changeTimeNanoseconds: ctimeNanos,
                         hardLinkCount: UInt64(st.st_nlink))
+    }
+
+    private static func nanoseconds(_ value: timespec) -> Int64? {
+        let (scaled, overflow) = Int64(value.tv_sec)
+            .multipliedReportingOverflow(by: 1_000_000_000)
+        guard !overflow else { return nil }
+        let (result, additionOverflow) = scaled.addingReportingOverflow(Int64(value.tv_nsec))
+        return additionOverflow ? nil : result
     }
 }
 #endif

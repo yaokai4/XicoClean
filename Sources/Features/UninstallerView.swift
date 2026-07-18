@@ -7,10 +7,12 @@ import DesignSystem
 @MainActor
 final class UninstallerModel: ObservableObject {
     @Published var apps: [InstalledApp] = []
-    @Published var selected: InstalledApp?
+    @Published private(set) var selected: InstalledApp?
     @Published private(set) var batch: UninstallBatch?
     @Published var loading = false
-    @Published var working = false
+    @Published private(set) var scanningTargets = false
+    @Published private(set) var working = false
+    @Published private(set) var confirmationID: UUID?
     @Published var lastFreed: Int64?
     @Published var lastRemovedCount: Int = 0
     @Published var query = ""
@@ -19,17 +21,60 @@ final class UninstallerModel: ObservableObject {
         query.isEmpty ? apps : apps.filter { $0.name.localizedCaseInsensitiveContains(query) }
     }
 
+    typealias TargetScanner = @Sendable (InstalledApp) async -> UninstallBatch?
+
+    private struct ConfirmationContext {
+        let confirmation: UninstallConfirmation
+        let generation: UUID
+        let app: InstalledApp
+        let appName: String
+        let selectedCount: Int
+        let selectedSize: Int64
+    }
+
+    private struct ExecutionContext {
+        let confirmation: UninstallConfirmation
+        let generation: UUID
+        let app: InstalledApp
+    }
+
     private let env: XicoEnvironment
-    init(env: XicoEnvironment) { self.env = env }
+    private let targetScanner: TargetScanner
+    private var appListGeneration = UUID()
+    private var targetScanGeneration = UUID()
+    private var confirmationContext: ConfirmationContext?
+    private var executionContext: ExecutionContext?
+    private(set) var confirmationGeneration: UUID?
+    private(set) var activeExecutionGeneration: UUID?
+
+    init(env: XicoEnvironment, targetScanner: TargetScanner? = nil) {
+        self.env = env
+        let service = env.uninstaller
+        self.targetScanner = targetScanner ?? { app in
+            await Task.detached {
+                try? service.uninstallTargets(for: app, mode: .uninstallApp)
+            }.value
+        }
+    }
+
+    var isInteractionFrozen: Bool { confirmationContext != nil || working }
+
+    var confirmationAppName: String? { confirmationContext?.appName }
+    var confirmationSelectedCount: Int? { confirmationContext?.selectedCount }
+    var confirmationSelectedSize: Int64? { confirmationContext?.selectedSize }
 
     var targets: [UninstallCandidate] { batch?.candidates ?? [] }
 
     func load() {
+        guard !isInteractionFrozen else { return }
+        let generation = UUID()
+        appListGeneration = generation
         loading = true
         let env = self.env
         Task {
             // 第一阶段：秒级出列表（无体积）
             let apps = await Task.detached { env.uninstaller.listApps() }.value
+            guard self.appListGeneration == generation, !self.isInteractionFrozen else { return }
             self.apps = apps
             self.loading = false
             // 第二阶段：后台补齐体积并按大小重排
@@ -37,29 +82,47 @@ final class UninstallerModel: ObservableObject {
                 apps.compactMap { env.uninstaller.appByFillingSize($0) }
                     .sorted { $0.size > $1.size }
             }.value
+            guard self.appListGeneration == generation, !self.isInteractionFrozen else { return }
             self.apps = sized
         }
     }
 
     func select(_ app: InstalledApp) {
+        guard !isInteractionFrozen else { return }
+        startTargetScan(for: app, replacingSelection: true)
+    }
+
+    private func startTargetScan(for app: InstalledApp, replacingSelection: Bool) {
         // 立即清空上一应用的列表——避免 A→B 快切时 B 的头部仍绑着 A 的旧文件列表，
         // 用户此刻确认就会误删「另一应用」的文件（P2 数据安全）。
+        let generation = UUID()
+        targetScanGeneration = generation
         batch = nil
-        selected = app
-        lastFreed = nil
-        let env = self.env
-        let appID = app.id
+        scanningTargets = true
+        if replacingSelection {
+            selected = app
+            lastFreed = nil
+        }
+        let targetScanner = self.targetScanner
         Task {
-            let batch = try? await Task.detached {
-                try env.uninstaller.uninstallTargets(for: app, mode: .uninstallApp)
-            }.value
-            // 慢扫描回来时若选择已切走，丢弃这批陈旧结果，绝不覆盖更新选择的列表。
-            guard self.selected?.id == appID else { return }
-            self.batch = batch
+            let scannedBatch = await targetScanner(app)
+            // ID/路径相同仍不足够：A1→B→A2→A1 可让第一轮 A1 回来时再次命中。
+            // generation、完整 InstalledApp（含 opaque provenance/物理证明）和批次绑定必须全相等。
+            guard self.targetScanGeneration == generation,
+                  self.selected == app else { return }
+            self.scanningTargets = false
+            guard let scannedBatch,
+                  scannedBatch.mode == .uninstallApp,
+                  scannedBatch.app == app else {
+                self.batch = nil
+                return
+            }
+            self.batch = scannedBatch
         }
     }
 
     func toggle(_ id: UUID) {
+        guard !isInteractionFrozen else { return }
         guard var batch else { return }
         batch.toggle(id)
         self.batch = batch
@@ -67,6 +130,7 @@ final class UninstallerModel: ObservableObject {
 
     var allTargetsSelected: Bool { batch?.allPolicySelected ?? false }
     func toggleAllTargets(_ on: Bool) {
+        guard !isInteractionFrozen else { return }
         guard var batch else { return }
         batch.setAll(on)
         self.batch = batch
@@ -77,56 +141,151 @@ final class UninstallerModel: ObservableObject {
 
     @Published var licenseBlocked = false
 
-    func uninstall() {
-        guard !working else { return }
-        // 二次确认：只接受服务签发、仍绑定当前应用和卸载模式的完整批次。更深的候选密封、
-        // 必选应用本体和 Task 1 计划校验由 capability controller 再次 fail-closed 验证。
+    /// Freezes the exact reviewed batch at the capability boundary. Features retains only the
+    /// opaque confirmation and never reconstructs or substitutes its batch snapshot.
+    @discardableResult
+    func beginConfirmation() -> UUID? {
+        guard !working else { return nil }
+        if let confirmationContext { return confirmationContext.generation }
         guard let app = selected, let batch,
               batch.mode == .uninstallApp,
-              batch.app.id == app.id,
-              batch.app.url.standardizedFileURL == app.url.standardizedFileURL,
-              batch.selectedCount > 0 else { return }
+              batch.app == app,
+              batch.selectedCount > 0 else { return nil }
+        let confirmation = env.uninstallCapability.beginConfirmation(for: batch)
+        let generation = UUID()
+        confirmationContext = ConfirmationContext(confirmation: confirmation,
+                                                  generation: generation,
+                                                  app: app,
+                                                  appName: confirmation.summary.appName,
+                                                  selectedCount: confirmation.summary.selectedCount,
+                                                  selectedSize: confirmation.summary.selectedSize)
+        confirmationGeneration = generation
+        confirmationID = confirmation.id
+        // A list-size refresh that was already in flight may not mutate UI under the dialog.
+        appListGeneration = UUID()
+        loading = false
+        return generation
+    }
+
+    func cancelConfirmation() {
+        guard let generation = confirmationContext?.generation else { return }
+        cancelConfirmation(generation: generation)
+    }
+
+    func cancelConfirmation(generation: UUID) {
+        guard confirmationContext?.generation == generation else { return }
+        confirmationContext = nil
+        confirmationGeneration = nil
+        confirmationID = nil
+    }
+
+    func uninstallConfirmed() {
+        guard !working, let reviewed = confirmationContext else { return }
         // 卸载同样是删除操作，必须过许可证门禁（与扫描/清理一致，堵住"试用到期仍可卸载"）
         guard env.license.status().state.allowsCommercialUse else { licenseBlocked = true; return }
+        confirmationContext = nil
+        confirmationGeneration = nil
+        confirmationID = nil
+        let generation = UUID()
+        let execution = ExecutionContext(confirmation: reviewed.confirmation,
+                                         generation: generation,
+                                         app: reviewed.app)
+        executionContext = execution
+        activeExecutionGeneration = generation
         working = true
         let env = self.env
-        let appName = app.name
         Task {
-            let result: DestructiveExecutionResult<CleaningReport>
             do {
-                result = try await env.uninstallCapability.execute(
-                    batch: batch,
-                    service: env.uninstaller
-                ) { items in
-                    await env.cleaningEngine.execute(CleaningPlan(items: items, intent: .trash))
-                }
+                let result = try await env.uninstallCapability.execute(
+                    confirmation: execution.confirmation)
+                self.finishExecution(generation: generation, result: result)
             } catch {
-                self.working = false
-                return
+                self.finishExecution(generation: generation, error: error)
             }
-            guard case let .executed(report) = result else {
-                self.working = false
-                return
-            }
-            self.lastFreed = report.reclaimedBytes
-            self.lastRemovedCount = report.removedCount
-            // 计入清理历史并广播刷新（此前卸载释放的空间被系统性少计）。
-            // 存规范中文键「卸载 · <名>」而非记录时已本地化的串——由展示层按当前语言重排前缀，
-            // 避免历史行冻结在卸载时的语言（与其他历史模块「显示时本地化」的口径一致）。
-            env.history.record(module: "卸载 · \(appName)",
-                               reclaimedBytes: report.reclaimedBytes, removedCount: report.removedCount)
+        }
+    }
+
+    /// One terminal may mutate Feature state only while its execution generation still owns it.
+    /// Internal visibility gives deterministic stale-terminal regression coverage.
+    func finishExecution(generation: UUID,
+                         result: DestructiveExecutionResult<CleaningReport>) {
+        guard let execution = executionContext,
+              execution.generation == generation,
+              activeExecutionGeneration == generation else { return }
+        switch result {
+        case .failedClosed:
+            clearActiveExecution(generation: generation)
+            invalidateReviewedBatchAndRefresh(app: execution.app)
+        case .executed(let report):
+            lastFreed = report.reclaimedBytes
+            lastRemovedCount = report.removedCount
+            env.history.record(module: "卸载 · \(execution.app.name)",
+                               reclaimedBytes: report.reclaimedBytes,
+                               removedCount: report.removedCount)
             NotificationCenter.default.post(name: .xicoDidClean, object: nil)
-            self.working = false
-            self.selected = nil
-            self.batch = nil
-            self.load()
+            clearActiveExecution(generation: generation)
+            selected = nil
+            batch = nil
+            targetScanGeneration = UUID()
+            scanningTargets = false
+            load()
+        }
+    }
+
+    private func finishExecution(generation: UUID, error: Error) {
+        guard let execution = executionContext,
+              execution.generation == generation,
+              activeExecutionGeneration == generation else { return }
+        clearActiveExecution(generation: generation)
+        if Self.invalidatesReviewedBatch(error) {
+            invalidateReviewedBatchAndRefresh(app: execution.app)
+            return
+        }
+        // Read-only/pre-claim validation errors are retryable without substituting the reviewed
+        // payload: restore the same opaque confirmation under a fresh UI generation.
+        let retryGeneration = UUID()
+        confirmationContext = ConfirmationContext(confirmation: execution.confirmation,
+                                                  generation: retryGeneration,
+                                                  app: execution.app,
+                                                  appName: execution.confirmation.summary.appName,
+                                                  selectedCount: execution.confirmation.summary.selectedCount,
+                                                  selectedSize: execution.confirmation.summary.selectedSize)
+        confirmationGeneration = retryGeneration
+        confirmationID = execution.confirmation.id
+    }
+
+    private func clearActiveExecution(generation: UUID) {
+        guard activeExecutionGeneration == generation else { return }
+        executionContext = nil
+        activeExecutionGeneration = nil
+        working = false
+    }
+
+    private func invalidateReviewedBatchAndRefresh(app: InstalledApp) {
+        confirmationContext = nil
+        confirmationGeneration = nil
+        confirmationID = nil
+        batch = nil
+        guard selected == app else {
+            scanningTargets = false
+            return
+        }
+        startTargetScan(for: app, replacingSelection: false)
+    }
+
+    private static func invalidatesReviewedBatch(_ error: Error) -> Bool {
+        guard let planError = error as? UninstallPlanError else { return false }
+        switch planError {
+        case .batchExpired, .batchAlreadyConsumed, .authorizationUnavailable:
+            return true
+        default:
+            return false
         }
     }
 }
 
 public struct UninstallerView: View {
     @StateObject private var model: UninstallerModel
-    @State private var confirmUninstall = false
     public init(env: XicoEnvironment) {
         _model = StateObject(wrappedValue: UninstallerModel(env: env))
     }
@@ -143,12 +302,19 @@ public struct UninstallerView: View {
             detail
         }
         .onAppear { if model.apps.isEmpty { model.load() } }
-        .confirmationDialog(xLocF("确认卸载 %@？", model.selected?.name ?? xLoc("应用")),
-                            isPresented: $confirmUninstall, titleVisibility: .visible) {
-            Button(xLocF("卸载并移入废纸篓（%d 项）", model.selectedCount), role: .destructive) { model.uninstall() }
-            Button(xLoc("取消"), role: .cancel) {}
+        .confirmationDialog(xLocF("确认卸载 %@？",
+                                  model.confirmationAppName ?? xLoc("应用")),
+                            isPresented: confirmationPresented, titleVisibility: .visible) {
+            Button(xLocF("卸载并移入废纸篓（%d 项）",
+                         model.confirmationSelectedCount ?? 0),
+                   role: .destructive) {
+                model.uninstallConfirmed()
+            }
+            Button(xLoc("取消"), role: .cancel) { model.cancelConfirmation() }
         } message: {
-            Text(xLocF("将把应用本体与已勾选的 %d 项关联文件移入废纸篓（%@），可在访达废纸篓中恢复。请确认勾选项中没有你仍需要的数据。", model.selectedCount, model.selectedSize.formattedBytes))
+            Text(xLocF("将把应用本体与已勾选的 %d 项关联文件移入废纸篓（%@），可在访达废纸篓中恢复。请确认勾选项中没有你仍需要的数据。",
+                       model.confirmationSelectedCount ?? 0,
+                       (model.confirmationSelectedSize ?? 0).formattedBytes))
         }
         .alert(xLoc("需要有效许可证"), isPresented: $model.licenseBlocked) {
             Button(xLoc("升级")) { NotificationCenter.default.post(name: .xicoShowPricing, object: nil) }
@@ -158,12 +324,29 @@ public struct UninstallerView: View {
         }
     }
 
+    /// SwiftUI also writes `false` to a dialog binding while invoking one of its buttons.
+    /// Defer dismissal ownership by one turn so the destructive action can synchronously consume
+    /// the exact opaque confirmation first; a stale dismissal cannot cancel a newer dialog.
+    private var confirmationPresented: Binding<Bool> {
+        Binding(
+            get: { model.confirmationID != nil },
+            set: { presented in
+                guard !presented,
+                      let generation = model.confirmationGeneration else { return }
+                Task { @MainActor in
+                    await Task.yield()
+                    model.cancelConfirmation(generation: generation)
+                }
+            })
+    }
+
     private var appList: some View {
         VStack(spacing: 0) {
             XHeaderBar(title: xLoc("卸载器"), subtitle: xLocF("%d 个应用", model.apps.count)) {
                 if model.loading { XSpinner() }
             }
             searchField
+                .disabled(model.isInteractionFrozen)
             if model.loading && model.apps.isEmpty {
                 // 首次加载应用清单时，列表主体给出骨架行（而非仅头部小转圈的空白），
                 // 与监视器进程/核心列表的骨架处理一致。
@@ -195,6 +378,7 @@ public struct UninstallerView: View {
                     .padding(.horizontal, XSpacing.s)
                     .padding(.bottom, XSpacing.l)
                 }
+                .disabled(model.isInteractionFrozen)
             }
         }
         .frame(width: 330)
@@ -237,6 +421,7 @@ public struct UninstallerView: View {
                 HStack(spacing: XSpacing.s) {
                     XCheckbox(isOn: model.allTargetsSelected) { model.toggleAllTargets(!model.allTargetsSelected) }
                         .accessibilityLabel(xLoc("全选关联文件"))
+                        .disabled(model.isInteractionFrozen)
                     Text(xLoc("关联文件")).font(XFont.captionEmphasis).foregroundStyle(XColor.textSecondary)
                     Spacer()
                     Text(xLocF("已选 %d 项 · %@", model.selectedCount, model.selectedSize.formattedBytes))
@@ -252,15 +437,19 @@ public struct UninstallerView: View {
                     }
                     .padding(XSpacing.l)
                 }
+                .disabled(model.isInteractionFrozen)
 
                 XActionBar(title: xLocF("已选 %d 项", model.selectedCount),
                            subtitle: xLoc("将移入废纸篓，可在访达中恢复")) {
                     if model.working {
                         XSpinner()
                     } else {
-                        Button(xLocF("卸载 · %@", model.selectedSize.formattedBytes)) { confirmUninstall = true }
-                            .buttonStyle(XPrimaryButtonStyle(enabled: model.selectedCount > 0))
-                            .disabled(model.selectedCount == 0)
+                        Button(xLocF("卸载 · %@", model.selectedSize.formattedBytes)) {
+                            _ = model.beginConfirmation()
+                        }
+                        .buttonStyle(XPrimaryButtonStyle(
+                            enabled: model.selectedCount > 0 && !model.isInteractionFrozen))
+                        .disabled(model.selectedCount == 0 || model.isInteractionFrozen)
                     }
                 }
             }

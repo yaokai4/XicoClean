@@ -9,11 +9,16 @@ public struct InstalledApp: Identifiable, Sendable, Hashable {
     public let size: Int64
     let provenanceID: UUID
     let sourceIdentity: LocalFileIdentity
-    let metadataIdentity: LocalFileIdentity
+    let appPathProof: AppBundlePathProof
+    let metadataAttestation: AppBundleBoundedContentAttestation
+    var metadataIdentity: LocalFileIdentity { metadataAttestation.identity }
+    var metadataExactLength: Int { metadataAttestation.exactLength }
+    var metadataContentDigest: EvidenceFingerprint { metadataAttestation.contentDigest }
 
     init(id: String, name: String, bundleID: String, url: URL, size: Int64,
          provenanceID: UUID, sourceIdentity: LocalFileIdentity,
-         metadataIdentity: LocalFileIdentity) {
+         appPathProof: AppBundlePathProof,
+         metadataAttestation: AppBundleBoundedContentAttestation) {
         self.id = id
         self.name = name
         self.bundleID = bundleID
@@ -21,13 +26,15 @@ public struct InstalledApp: Identifiable, Sendable, Hashable {
         self.size = size
         self.provenanceID = provenanceID
         self.sourceIdentity = sourceIdentity
-        self.metadataIdentity = metadataIdentity
+        self.appPathProof = appPathProof
+        self.metadataAttestation = metadataAttestation
     }
 
     func withSize(_ size: Int64) -> InstalledApp {
         InstalledApp(id: id, name: name, bundleID: bundleID, url: url, size: size,
                      provenanceID: provenanceID, sourceIdentity: sourceIdentity,
-                     metadataIdentity: metadataIdentity)
+                     appPathProof: appPathProof,
+                     metadataAttestation: metadataAttestation)
     }
 }
 
@@ -39,17 +46,18 @@ public struct UninstallerService: Sendable {
     private let entitlementReader: any EntitlementReader
     private let launchAgentReader: any LaunchAgentReader
     private let issuanceID: UUID
-    private let identitySampler: any IdentitySampler
+    private let pathAttestor: any LibraryPathAttesting
+    private let preparationHooks: UninstallPreparationHooks
+    private let clock: any UninstallTrustedClock
 
     public init(fs: FileSystemService, safety: SafetyEngine,
-                home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                entitlementReader: any EntitlementReader = SecurityEntitlementReader(),
-                launchAgentReader: any LaunchAgentReader = PlistLaunchAgentReader(),
-                identitySampler: any IdentitySampler = LocalFileIdentitySampler()) {
+                home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.init(fs: fs, safety: safety, home: home,
-                  entitlementReader: entitlementReader,
-                  launchAgentReader: launchAgentReader,
-                  identitySampler: identitySampler,
+                  entitlementReader: SecurityEntitlementReader(),
+                  launchAgentReader: PlistLaunchAgentReader(),
+                  pathAttestor: nil,
+                  preparationHooks: .none,
+                  clock: SystemUninstallTrustedClock(),
                   issuanceID: UUID())
     }
 
@@ -57,14 +65,18 @@ public struct UninstallerService: Sendable {
          home: URL,
          entitlementReader: any EntitlementReader,
          launchAgentReader: any LaunchAgentReader,
-         identitySampler: any IdentitySampler,
-         issuanceID: UUID) {
+         pathAttestor: (any LibraryPathAttesting)? = nil,
+         preparationHooks: UninstallPreparationHooks = .none,
+         clock: (any UninstallTrustedClock)? = nil,
+         issuanceID: UUID = UUID()) {
         self.fs = fs
         self.safety = safety
         self.home = home
         self.entitlementReader = entitlementReader
         self.launchAgentReader = launchAgentReader
-        self.identitySampler = identitySampler
+        self.pathAttestor = pathAttestor ?? FDAnchoredLibraryPathAttestor(home: home)
+        self.preparationHooks = preparationHooks
+        self.clock = clock ?? SystemUninstallTrustedClock()
         self.issuanceID = issuanceID
     }
 
@@ -81,15 +93,20 @@ public struct UninstallerService: Sendable {
             for url in fs.contentsOfDirectory(dir) where url.pathExtension == "app" {
                 guard !seen.contains(url.path) else { continue }
                 seen.insert(url.path)
-                guard let identity = identitySampler.sample(url.standardizedFileURL.path),
-                      Self.isDirectory(identity),
-                      let metadata = Self.bundleMetadata(at: url) else { continue }
+                let appAttestor = FDAnchoredAppBundlePathAttestor(appURL: url)
+                guard let appProof = appAttestor.attestApp(),
+                      Self.isDirectory(appProof.appRootIdentity),
+                      let metadata = Self.bundleMetadata(at: url, attestor: appAttestor) else {
+                    continue
+                }
                 // A missing identifier proves no ownership. Never turn the app's URL path into
                 // an attribution token: doing so can construct unrelated Library targets.
                 apps.append(InstalledApp(id: url.path, name: metadata.name,
                                          bundleID: metadata.bundleID, url: url, size: 0,
-                                         provenanceID: issuanceID, sourceIdentity: identity,
-                                         metadataIdentity: metadata.identity))
+                                         provenanceID: issuanceID,
+                                         sourceIdentity: appProof.appRootIdentity,
+                                         appPathProof: appProof,
+                                         metadataAttestation: metadata.attestation))
             }
         }
         return apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -120,8 +137,7 @@ public struct UninstallerService: Sendable {
 
     /// Builds attributed, policy-bearing candidates without mutating the filesystem.
     public func uninstallTargets(for app: InstalledApp,
-                                 mode: UninstallMode,
-                                 now: Date = Date()) throws -> UninstallBatch {
+                                 mode: UninstallMode) throws -> UninstallBatch {
         guard app.provenanceID == issuanceID else {
             throw UninstallerAttributionError.foreignApp
         }
@@ -142,11 +158,23 @@ public struct UninstallerService: Sendable {
                  evidence: OwnershipEvidence,
                  policy: SelectionPolicy,
                  role: UninstallCandidateRole = .associatedFile,
-                 evidenceBinding: CandidateEvidenceBinding = .none) {
-            // 深度断言：关联文件至少要落在 `~/Library/<类别>/<具体项>`（≥6 分量）之下，
-            // 绝不允许目标是 `~/Library/<类别>` 这一级本身（红线亦会拦，此为第一道闸）。
-            let underLibrary = url.path.hasPrefix(home.appendingPathComponent("Library").path + "/")
-            if underLibrary && url.pathComponents.count < 6 { return }
+                 evidenceSource: CandidateEvidenceSource = .none,
+                 knownPhysicalPath: PhysicalPathAttestation? = nil) {
+            let evidenceBinding: CandidateEvidenceBinding
+            if role == .appBody {
+                guard case .none = evidenceSource else { return }
+                evidenceBinding = .none
+            } else {
+                guard let path = knownPhysicalPath ?? pathAttestor.attest(url) else { return }
+                switch evidenceSource {
+                case .none:
+                    evidenceBinding = .physicalPath(path)
+                case .signedEntitlement(let attestation):
+                    evidenceBinding = .signedEntitlement(attestation, path)
+                case .launchAgent(let attestation):
+                    evidenceBinding = .launchAgent(attestation, path)
+                }
+            }
             guard !seen.contains(url.path), fs.exists(url),
                   safety.verify(url, intent: .trash).isAllowed else { return }
             seen.insert(url.path)
@@ -205,7 +233,7 @@ public struct UninstallerService: Sendable {
                 where entitledGroups.contains(url.lastPathComponent) {
                     add(url, safety: .caution, evidence: .signedApplicationGroup,
                         policy: .manualOnly,
-                        evidenceBinding: .signedEntitlement(attestation))
+                        evidenceSource: .signedEntitlement(attestation))
                 }
             }
 
@@ -214,14 +242,21 @@ public struct UninstallerService: Sendable {
             // external program remain visible but blocked; containing labels prove nothing.
             let launchAgentsDirectory = lib.appendingPathComponent("LaunchAgents")
             for url in fs.contentsOfDirectory(launchAgentsDirectory) {
-                guard let attestation = launchAgentReader.attestation(at: url),
+                guard let anchoredRead = pathAttestor.readRegularFile(
+                        url, maximumBytes: PlistLaunchAgentReader.maximumBytes),
+                      let parsed = launchAgentReader.attestation(
+                        at: url, anchoredRead: anchoredRead) else { continue }
+                let attestation = parsed.bindingProgram(to: app.url)
+                guard
                       attestation.record.label == bid else { continue }
                 if Self.isProgram(attestation, inside: app.url) {
                     add(url, safety: .caution, evidence: .launchAgentProgramInsideBundle,
                         policy: .recommended,
-                        evidenceBinding: .launchAgent(attestation))
+                        evidenceSource: .launchAgent(attestation),
+                        knownPhysicalPath: anchoredRead.pathAttestation)
                 } else {
-                    add(url, safety: .caution, evidence: .unverified, policy: .blocked)
+                    add(url, safety: .caution, evidence: .unverified, policy: .blocked,
+                        knownPhysicalPath: anchoredRead.pathAttestation)
                 }
             }
         }
@@ -245,17 +280,136 @@ public struct UninstallerService: Sendable {
             }
         }
 
+        let createdAt = clock.wallNow()
+        let expiresAt = createdAt.addingTimeInterval(UninstallBatch.timeToLive)
+        let monotonicIssuedAt = clock.monotonicNowNanoseconds()
+        guard createdAt.timeIntervalSince1970.isFinite,
+              expiresAt.timeIntervalSince1970.isFinite,
+              expiresAt > createdAt,
+              expiresAt.timeIntervalSince(createdAt) == UninstallBatch.timeToLive,
+              let claimToken = UninstallBatchClaimToken.make(
+                clock: clock, issuedAtNanoseconds: monotonicIssuedAt,
+                lifetimeNanoseconds: UninstallBatch.timeToLiveNanoseconds) else {
+            throw UninstallerAttributionError.trustedClockUnavailable
+        }
         return UninstallBatch(issuanceID: issuanceID, batchID: batchID, app: app,
-                              mode: mode, candidates: items, createdAt: now,
-                              entitlementAttestation: signedEntitlementAttestation)
+                              mode: mode, candidates: items, createdAt: createdAt,
+                              expiresAt: expiresAt,
+                              entitlementAttestation: signedEntitlementAttestation,
+                              claimToken: claimToken)
     }
 
-    /// Hands selected Task 4 candidates to Task 1's immutable capability preparation boundary.
-    /// Authorization and execution are deliberately not part of this task.
-    public func prepareUninstallPlan(from batch: UninstallBatch,
-                                     using issuer: DestructiveOperationIssuer,
-                                     now: Date = Date()) throws -> DestructivePlan {
+    func prepareUninstallExecution(from batch: UninstallBatch,
+                                   using issuer: DestructiveOperationIssuer) throws
+        -> PreparedUninstallExecution {
+        // Reject forged structure and policy before consulting mutable filesystem evidence.
+        // This keeps failures deterministic while the full fail-closed attestation pass below
+        // still runs for every structurally admissible batch.
         guard batch.issuanceID == issuanceID else { throw UninstallPlanError.foreignBatch }
+        guard batch.candidates.allSatisfy({ $0.batchID == batch.batchID }) else {
+            throw UninstallPlanError.foreignCandidate
+        }
+        if batch.mode == .uninstallApp {
+            let bodies = batch.candidates.filter(\.role.isAppBody)
+            guard bodies.count == 1,
+                  let body = bodies.first,
+                  body.url.standardizedFileURL.path
+                    == batch.app.url.standardizedFileURL.path,
+                  body.selectionPolicy == .required,
+                  body.isSelected,
+                  body.evidence == .verifiedAppBody else {
+                throw UninstallPlanError.requiredAppBodyMissing
+            }
+        }
+        let selected = UninstallEvidenceSeal.orderedSelectedCandidates(in: batch)
+        guard !selected.isEmpty else { throw UninstallPlanError.emptySelection }
+        guard selected.allSatisfy({ candidate in
+            candidate.selectionPolicy != .blocked && candidate.evidence != .unverified
+        }) else { throw UninstallPlanError.invalidSelectedCandidate }
+
+        try validateBatchForPreparation(batch)
+
+        let paths = selected.map { $0.url.standardizedFileURL.path }
+        guard Set(paths).count == paths.count else { throw UninstallPlanError.duplicateTarget }
+        var physicalObjects = Set<PhysicalObjectID>()
+        var orderedTargets: [PreparedUninstallTarget] = []
+        orderedTargets.reserveCapacity(selected.count)
+        for (index, candidate) in selected.enumerated() {
+            guard let ordinal = UInt32(exactly: index),
+                  let identity = UninstallEvidenceSeal.expectedIdentity(
+                    for: candidate, in: batch) else {
+                throw UninstallPlanError.missingTargetIdentity
+            }
+            guard physicalObjects.insert(PhysicalObjectID(identity)).inserted else {
+                throw UninstallPlanError.duplicateTarget
+            }
+            guard let fingerprint = UninstallEvidenceSeal.fingerprint(
+                    batch: batch, candidate: candidate, ordinal: ordinal,
+                    expectedIdentity: identity),
+                  fingerprint != .none else {
+                throw UninstallPlanError.evidenceFingerprintUnavailable
+            }
+            orderedTargets.append(PreparedUninstallTarget(
+                ordinal: ordinal, candidate: candidate,
+                canonicalPath: candidate.url.standardizedFileURL.path,
+                expectedIdentity: identity, evidenceFingerprint: fingerprint,
+                ownershipAttestation: candidate.evidenceBinding))
+        }
+
+        preparationHooks.beforeIssuerPrepare()
+        let issuedPlan = issuer.prepare(
+            kind: .uninstall,
+            targets: orderedTargets.map {
+                $0.candidate.targetRequest(with: $0.evidenceFingerprint)
+            })
+        let plan = preparationHooks.afterIssuerPrepare(issuedPlan)
+        guard plan.targets.allSatisfy({ $0.identity != nil }) else {
+            throw UninstallPlanError.missingTargetIdentity
+        }
+        guard plan.planID == issuedPlan.planID,
+              plan.kind == issuedPlan.kind,
+              plan.createdAt == issuedPlan.createdAt,
+              plan.expiresAt == issuedPlan.expiresAt,
+              plan.digest == issuedPlan.digest else {
+            throw UninstallPlanError.preparedTargetMismatch
+        }
+
+        // Revalidate all rich evidence after Task 1 samples the target paths. This prevents an
+        // app metadata or attestation A→B change that leaves the app-directory inode unchanged.
+        try validateBatchForPreparation(batch)
+        guard plan.targets.count == orderedTargets.count else {
+            throw UninstallPlanError.preparedTargetMismatch
+        }
+        for (planned, sealed) in zip(plan.targets, orderedTargets) {
+            guard planned.canonicalPath == sealed.canonicalPath,
+                  planned.identity == sealed.expectedIdentity,
+                  planned.evidenceFingerprint == sealed.evidenceFingerprint,
+                  planned.evidenceFingerprint != .none,
+                  planned.recoverability == sealed.candidate.targetRequest.recoverability,
+                  planned.riskLevel == sealed.candidate.targetRequest.riskLevel,
+                  planned.attribution == sealed.candidate.targetRequest.attribution else {
+                throw UninstallPlanError.preparedTargetMismatch
+            }
+        }
+        guard let preparationSeal = UninstallEvidenceSeal.preparationSeal(
+                plan: plan, batch: batch, targets: orderedTargets),
+              preparationSeal.count == 32 else {
+            throw UninstallPlanError.preparationSealUnavailable
+        }
+        let prepared = preparationHooks.afterPreparation(PreparedUninstallExecution(
+            plan: plan, orderedTargets: orderedTargets, batchSnapshot: batch,
+            batchID: batch.batchID, issuanceID: batch.issuanceID,
+            preparationSeal: preparationSeal))
+        guard prepared.validateIntegrity() else {
+            throw UninstallPlanError.preparedTargetMismatch
+        }
+        return prepared
+    }
+
+    private func validateBatchForPreparation(_ batch: UninstallBatch) throws {
+        guard batch.issuanceID == issuanceID else { throw UninstallPlanError.foreignBatch }
+        let now = clock.wallNow()
+        guard batch.createdAt <= now else { throw UninstallPlanError.batchNotYetValid }
         guard now < batch.expiresAt else { throw UninstallPlanError.batchExpired }
         guard batch.candidates.allSatisfy({ $0.batchID == batch.batchID }) else {
             throw UninstallPlanError.foreignCandidate
@@ -279,20 +433,62 @@ public struct UninstallerService: Sendable {
         }
         try validateEntitlementAttestation(in: batch)
         try validateLaunchAgentAttestations(in: batch)
+        try validatePhysicalPathAttestations(in: batch)
+        try validateEvidenceCrossBindings(in: batch)
+    }
 
-        let selected = batch.candidates.filter(\.isSelected)
-        guard !selected.isEmpty else { throw UninstallPlanError.emptySelection }
-        guard selected.allSatisfy({ candidate in
-            candidate.selectionPolicy != .blocked && candidate.evidence != .unverified
-        }) else { throw UninstallPlanError.invalidSelectedCandidate }
-
-        let plan = issuer.prepare(kind: .uninstall,
-                                  targets: selected.map(\.targetRequest),
-                                  now: now)
-        guard plan.targets.allSatisfy({ $0.identity != nil }) else {
-            throw UninstallPlanError.missingTargetIdentity
+    private func validateEvidenceCrossBindings(in batch: UninstallBatch) throws {
+        for candidate in batch.candidates {
+            switch candidate.evidenceBinding {
+            case .none:
+                guard candidate.role == .appBody else {
+                    throw UninstallPlanError.preparedTargetMismatch
+                }
+            case .physicalPath(let path):
+                guard candidate.role == .associatedFile,
+                      path.canonicalPath == candidate.url.path else {
+                    throw UninstallPlanError.preparedTargetMismatch
+                }
+            case .signedEntitlement(let entitlement, let path):
+                guard candidate.role == .associatedFile,
+                      path.canonicalPath == candidate.url.path,
+                      let source = entitlement.sourceSeal,
+                      source.appRoot == batch.app.sourceIdentity,
+                      source.appChainFingerprint == batch.app.appPathProof.chainFingerprint,
+                      source.infoPlist == batch.app.metadataAttestation else {
+                    throw UninstallPlanError.entitlementAttestationChanged
+                }
+            case .launchAgent(let launch, let path):
+                guard candidate.role == .associatedFile,
+                      path.canonicalPath == candidate.url.path,
+                      path.targetIdentity == launch.plistIdentity,
+                      launch.plistExactLength > 0,
+                      launch.plistContentDigest != .none,
+                      let token = launch.programChangeToken,
+                      launch.resolvedProgramPath == token.canonicalPath,
+                      launch.programIdentity == token.executable else {
+                    throw UninstallPlanError.launchAgentAttestationChanged
+                }
+            }
         }
-        return plan
+    }
+
+    private struct PhysicalObjectID: Hashable {
+        let device: UInt64
+        let inode: UInt64
+        init(_ identity: LocalFileIdentity) {
+            device = identity.device
+            inode = identity.inode
+        }
+    }
+
+    private func validatePhysicalPathAttestations(in batch: UninstallBatch) throws {
+        for candidate in batch.candidates where candidate.role == .associatedFile {
+            guard let stored = candidate.evidenceBinding.physicalPath,
+                  pathAttestor.attest(candidate.url) == stored else {
+                throw UninstallPlanError.physicalPathAttestationChanged
+            }
+        }
     }
 
     private func validateEntitlementAttestation(in batch: UninstallBatch) throws {
@@ -306,7 +502,10 @@ public struct UninstallerService: Sendable {
         guard stored.isWithinBounds,
               stored.sourceIdentity == batch.app.sourceIdentity,
               boundCandidates.allSatisfy({
-                  $0.evidenceBinding == .signedEntitlement(stored)
+                  if case let .signedEntitlement(attestation, _) = $0.evidenceBinding {
+                      return attestation == stored
+                  }
+                  return false
               }),
               entitlementReader.attestation(for: batch.app.url) == stored else {
             throw UninstallPlanError.entitlementAttestationChanged
@@ -316,8 +515,16 @@ public struct UninstallerService: Sendable {
     private func validateLaunchAgentAttestations(in batch: UninstallBatch) throws {
         for candidate in batch.candidates
         where candidate.evidence == .launchAgentProgramInsideBundle {
-            guard case let .launchAgent(stored) = candidate.evidenceBinding,
-                  let current = launchAgentReader.attestation(at: candidate.url),
+            guard case let .launchAgent(stored, storedPath) = candidate.evidenceBinding,
+                  let anchoredRead = pathAttestor.readRegularFile(
+                    candidate.url, maximumBytes: PlistLaunchAgentReader.maximumBytes),
+                  anchoredRead.pathAttestation == storedPath,
+                  let parsed = launchAgentReader.attestation(
+                    at: candidate.url, anchoredRead: anchoredRead) else {
+                throw UninstallPlanError.launchAgentAttestationChanged
+            }
+            let current = parsed.bindingProgram(to: batch.app.url)
+            guard
                   current == stored,
                   current.record.label == batch.app.bundleID,
                   Self.isProgram(current, inside: batch.app.url) else {
@@ -335,16 +542,18 @@ public struct UninstallerService: Sendable {
             if planBoundary { throw UninstallPlanError.requiredAppBodyMissing }
             throw UninstallerAttributionError.appBodyNotAdmitted
         }
-        guard let currentIdentity = identitySampler.sample(app.url.standardizedFileURL.path),
-              currentIdentity == app.sourceIdentity else {
+        let appAttestor = FDAnchoredAppBundlePathAttestor(appURL: app.url)
+        guard let currentProof = appAttestor.attestApp(),
+              currentProof == app.appPathProof,
+              currentProof.appRootIdentity == app.sourceIdentity else {
             if planBoundary { throw UninstallPlanError.appIdentityChanged }
             throw UninstallerAttributionError.appIdentityChanged
         }
         guard app.id == app.url.path,
               app.url.pathExtension == "app",
-              let metadata = Self.bundleMetadata(at: app.url),
+              let metadata = Self.bundleMetadata(at: app.url, attestor: appAttestor),
               metadata.bundleID == app.bundleID,
-              metadata.identity == app.metadataIdentity else {
+              metadata.attestation == app.metadataAttestation else {
             if planBoundary { throw UninstallPlanError.appMetadataChanged }
             throw UninstallerAttributionError.appMetadataChanged
         }
@@ -353,13 +562,14 @@ public struct UninstallerService: Sendable {
     private struct BundleMetadata {
         let name: String
         let bundleID: String
-        let identity: LocalFileIdentity
+        let attestation: AppBundleBoundedContentAttestation
     }
 
-    private static func bundleMetadata(at appURL: URL) -> BundleMetadata? {
-        let infoURL = appURL.appendingPathComponent("Contents/Info.plist")
-        guard let read = BoundedRegularFileReader.read(
-                at: infoURL, maximumBytes: PlistLaunchAgentReader.maximumBytes),
+    private static func bundleMetadata(at appURL: URL,
+                                       attestor: any AppBundlePathAttesting) -> BundleMetadata? {
+        guard let read = attestor.readRegularFile(
+                relativeComponents: ["Contents", "Info.plist"],
+                maximumBytes: PlistLaunchAgentReader.maximumBytes),
               let plist = try? PropertyListSerialization.propertyList(from: read.data,
                                                                       options: [], format: nil),
               let dictionary = plist as? [String: Any] else { return nil }
@@ -367,7 +577,8 @@ public struct UninstallerService: Sendable {
         let name = (dictionary["CFBundleDisplayName"] as? String)
             ?? (dictionary["CFBundleName"] as? String)
             ?? appURL.deletingPathExtension().lastPathComponent
-        return BundleMetadata(name: name, bundleID: bundleID, identity: read.identity)
+        return BundleMetadata(name: name, bundleID: bundleID,
+                              attestation: read.attestation)
     }
 
     private static func isDirectory(_ identity: LocalFileIdentity) -> Bool {
@@ -385,29 +596,12 @@ public struct UninstallerService: Sendable {
 
     private static func isProgram(_ attestation: LaunchAgentAttestation,
                                   inside appURL: URL) -> Bool {
-        guard let path = attestation.resolvedProgramPath,
-              let identity = attestation.programIdentity else { return false }
-        let resolvedBundle = appURL.resolvingSymlinksInPath().standardizedFileURL
-        guard let bundleValues = try? resolvedBundle.resourceValues(forKeys: [.isDirectoryKey]),
-              bundleValues.isDirectory == true,
-              let currentIdentity = LocalFileIdentitySampler().sample(path),
-              currentIdentity == identity else { return false }
-
-        let programComponents = canonicalComparisonPath(path)
-            .split(separator: "/", omittingEmptySubsequences: true)
-        let bundleComponents = canonicalComparisonPath(resolvedBundle.path)
-            .split(separator: "/", omittingEmptySubsequences: true)
-        guard programComponents.count > bundleComponents.count else { return false }
-        return programComponents.prefix(bundleComponents.count).elementsEqual(bundleComponents)
-    }
-
-    private static func canonicalComparisonPath(_ path: String) -> String {
-        let standardized = (path as NSString).standardizingPath
-        // macOS exposes /var through the /private/var symlink. Foundation may preserve either
-        // spelling across URL APIs; normalize that system alias before the component boundary test.
-        return standardized.hasPrefix("/private/var/")
-            ? String(standardized.dropFirst("/private".count))
-            : standardized
+        guard let token = attestation.programChangeToken,
+              attestation.resolvedProgramPath == token.canonicalPath,
+              attestation.programIdentity == token.executable else { return false }
+        return FDAnchoredAppBundlePathAttestor(appURL: appURL).programToken(
+            absoluteURL: URL(fileURLWithPath: token.canonicalPath),
+            maximumDigestBytes: 16 * 1_048_576) == token
     }
 }
 
