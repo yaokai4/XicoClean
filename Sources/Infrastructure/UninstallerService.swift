@@ -21,12 +21,18 @@ public struct UninstallerService: Sendable {
     private let fs: FileSystemService
     private let safety: SafetyEngine
     private let home: URL
+    private let entitlementReader: any EntitlementReader
+    private let launchAgentReader: any LaunchAgentReader
 
     public init(fs: FileSystemService, safety: SafetyEngine,
-                home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+                home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                entitlementReader: any EntitlementReader = CodesignEntitlementReader(),
+                launchAgentReader: any LaunchAgentReader = PlistLaunchAgentReader()) {
         self.fs = fs
         self.safety = safety
         self.home = home
+        self.entitlementReader = entitlementReader
+        self.launchAgentReader = launchAgentReader
     }
 
     /// 快速列出应用（不计算体积，便于秒级出列表）；体积随后由 fillSize 异步补齐。
@@ -43,7 +49,9 @@ public struct UninstallerService: Sendable {
                 guard !seen.contains(url.path) else { continue }
                 seen.insert(url.path)
                 let bundle = Bundle(url: url)
-                let bundleID = bundle?.bundleIdentifier ?? url.path
+                // A missing identifier proves no ownership. Never turn the app's URL path into
+                // an attribution token: doing so can construct unrelated Library targets.
+                let bundleID = bundle?.bundleIdentifier ?? ""
                 let name = (bundle?.infoDictionary?["CFBundleDisplayName"] as? String)
                     ?? (bundle?.infoDictionary?["CFBundleName"] as? String)
                     ?? url.deletingPathExtension().lastPathComponent
@@ -70,12 +78,26 @@ public struct UninstallerService: Sendable {
         return true
     }
 
-    /// 应用本体 + 全部关联文件
+    /// Compatibility projection for the current UI. Task 4's mode-aware candidate API below is
+    /// the source of truth; execution/result consumption is intentionally left to Task 5.
     public func uninstallTargets(for app: InstalledApp) -> [CleanableItem] {
-        var items: [CleanableItem] = []
+        (try? uninstallTargets(for: app, mode: .uninstallApp).map(\.item)) ?? []
+    }
+
+    /// Builds attributed, policy-bearing candidates without mutating the filesystem.
+    public func uninstallTargets(for app: InstalledApp,
+                                 mode: UninstallMode) throws -> [UninstallCandidate] {
+        if mode == .cleanLeftovers, fs.exists(app.url) {
+            throw UninstallerAttributionError.appStillPresent
+        }
+
+        var items: [UninstallCandidate] = []
         var seen = Set<String>()
 
-        func add(_ url: URL, safety level: SafetyLevel, selected: Bool = true) {
+        func add(_ url: URL,
+                 safety level: SafetyLevel,
+                 evidence: OwnershipEvidence,
+                 policy: SelectionPolicy) {
             // 深度断言：关联文件至少要落在 `~/Library/<类别>/<具体项>`（≥6 分量）之下，
             // 绝不允许目标是 `~/Library/<类别>` 这一级本身（红线亦会拦，此为第一道闸）。
             let underLibrary = url.path.hasPrefix(home.appendingPathComponent("Library").path + "/")
@@ -84,21 +106,29 @@ public struct UninstallerService: Sendable {
                   safety.verify(url, intent: .trash).isAllowed else { return }
             seen.insert(url.path)
             let size = fs.allocatedSize(of: url)
-            items.append(CleanableItem(url: url, displayName: url.lastPathComponent,
-                                       detail: url.path, size: size, safety: level, isSelected: selected))
+            let cleanable = CleanableItem(url: url, displayName: url.lastPathComponent,
+                                          detail: url.path, size: size, safety: level,
+                                          isSelected: policy.defaultSelected)
+            items.append(UninstallCandidate(item: cleanable, evidence: evidence,
+                                            selectionPolicy: policy))
         }
 
-        // 应用本体
-        add(app.url, safety: .safe)
+        let parsedBundleID = BundleIdentifier(rawValue: app.bundleID)
+
+        // App body is mandatory only for a normal uninstall. A missing/malformed bundle ID is
+        // not inferred from a Library path; the direct app selection makes it required while
+        // avoiding a false exact-path attribution claim.
+        if mode == .uninstallApp {
+            add(app.url, safety: .safe, evidence: .unverified, policy: .required)
+        }
 
         let lib = home.appendingPathComponent("Library")
-        let bid = app.bundleID
         let name = app.name
-        let bidOK = Self.isValidPathToken(bid)
         let nameOK = Self.isValidPathToken(name)
 
-        // 按 bundleID 定位（bundleID 唯一性高，默认勾选）
-        if bidOK {
+        // The eight exact bundle-ID locations are the only bundle-derived recommended paths.
+        if let parsedBundleID {
+            let bid = parsedBundleID.rawValue
             let byBID: [URL] = [
                 lib.appendingPathComponent("Application Support/\(bid)"),
                 lib.appendingPathComponent("Caches/\(bid)"),
@@ -109,25 +139,77 @@ public struct UninstallerService: Sendable {
                 lib.appendingPathComponent("HTTPStorages/\(bid)"),
                 lib.appendingPathComponent("WebKit/\(bid)")
             ]
-            for url in byBID { add(url, safety: .caution) }
+            for url in byBID {
+                add(url, safety: .caution, evidence: .exactBundleIDPath, policy: .recommended)
+            }
+
+            // Group containers are ownership candidates only when their exact directory names
+            // occur in the signed app's application-groups entitlement. Substring matching is
+            // forbidden because it can attribute another app's shared container.
+            if let groups = entitlementReader.applicationGroups(for: app.url) {
+                let entitledGroups = Set(groups.filter(Self.isValidPathComponent))
+                let groupDirectory = lib.appendingPathComponent("Group Containers")
+                for url in fs.contentsOfDirectory(groupDirectory)
+                where entitledGroups.contains(url.lastPathComponent) {
+                    add(url, safety: .caution, evidence: .signedApplicationGroup, policy: .manualOnly)
+                }
+            }
+
+            // Launch-agent ownership requires both an exact Label and an executable whose
+            // standardized path is strictly inside this app bundle. Exact-label agents with an
+            // external program remain visible but blocked; containing labels prove nothing.
+            let launchAgentsDirectory = lib.appendingPathComponent("LaunchAgents")
+            for url in fs.contentsOfDirectory(launchAgentsDirectory) {
+                guard let record = launchAgentReader.launchAgent(at: url),
+                      record.label == bid else { continue }
+                if let program = record.executablePath,
+                   Self.isProgram(program, inside: app.url) {
+                    add(url, safety: .caution, evidence: .launchAgentProgramInsideBundle,
+                        policy: .recommended)
+                } else {
+                    add(url, safety: .caution, evidence: .unverified, policy: .blocked)
+                }
+            }
         }
 
         // 按显示名定位（易与共享 vendor 目录碰撞，如 Firefox 含书签/密码）——默认**不勾选**，
         // 需用户主动确认，避免"卸载 App A 顺手删掉同厂商 App B 的数据"。
         if nameOK {
-            add(lib.appendingPathComponent("Application Support/\(name)"), safety: .caution, selected: false)
-        }
-
-        // 需要模糊匹配的位置（子串包含 bundleID）
-        if bidOK {
-            for groupDir in ["Group Containers", "LaunchAgents"] {
-                let dir = lib.appendingPathComponent(groupDir)
-                for url in fs.contentsOfDirectory(dir) where url.lastPathComponent.contains(bid) {
-                    add(url, safety: .caution)
-                }
-            }
+            add(lib.appendingPathComponent("Application Support/\(name)"), safety: .caution,
+                evidence: .displayNameHeuristic, policy: .manualOnly)
         }
 
         return items
+    }
+
+    /// Hands selected Task 4 candidates to Task 1's immutable capability preparation boundary.
+    /// Authorization and execution are deliberately not part of this task.
+    public func prepareUninstallPlan(from candidates: [UninstallCandidate],
+                                     using issuer: DestructiveOperationIssuer,
+                                     now: Date = Date()) -> DestructivePlan {
+        issuer.prepare(kind: .uninstall,
+                       targets: candidates.filter(\.isSelected).map(\.targetRequest),
+                       now: now)
+    }
+
+    private static func isValidPathComponent(_ value: String) -> Bool {
+        !value.isEmpty && value != "." && value != ".."
+            && !value.contains("/") && !value.contains("\\")
+    }
+
+    private static func isProgram(_ path: String, inside appURL: URL) -> Bool {
+        guard path.hasPrefix("/") else { return false }
+        let program = canonicalComparisonPath(path)
+        let bundle = canonicalComparisonPath(appURL.path)
+        return program != bundle && program.hasPrefix(bundle + "/")
+    }
+
+    private static func canonicalComparisonPath(_ path: String) -> String {
+        let standardized = (path as NSString).standardizingPath
+        // macOS exposes /var through the /private/var symlink. Foundation may preserve either
+        // spelling across URL APIs; normalize that system alias before the component boundary test.
+        return standardized.hasPrefix("/private/var/")
+            ? String(standardized.dropFirst("/private".count))
+            : standardized
     }
 }
