@@ -40,22 +40,57 @@ public struct ShredderService: Sendable {
     }
 
     public func shred(_ urls: [URL], progress: @escaping ProgressHandler = { _ in }) async -> Result {
+        let payload = await execute(urls, progress: progress)
         var shredded = 0
         var failed: [URL] = []
-        var freed: Int64 = 0
+        for item in payload.items {
+            if case .succeeded = item.disposition { shredded += 1 } else { failed.append(item.url) }
+        }
+        return Result(shredded: shredded, failed: failed, freedBytes: payload.freedBytes)
+    }
+
+    /// Executes shredding and returns per-item honest facts (SHR-14). A directory is not
+    /// a transaction: earlier successes plus a later failure or cancel produce a truthful
+    /// per-item partial. Nothing is ever unlinked after a cancelled or failed overwrite.
+    public func execute(_ urls: [URL],
+                        cancelled: @escaping () -> Bool = { false },
+                        progress: @escaping ProgressHandler = { _ in }) async -> ShredderPayload {
+        var results: [ShredderItemResult] = []
         let total = urls.count
         for (idx, url) in urls.enumerated() {
-            if Task.isCancelled { break }
+            if Task.isCancelled || cancelled() { break }
             progress(ScanProgress(fraction: total > 0 ? Double(idx) / Double(total) : nil,
-                                  message: url.lastPathComponent, bytesFound: freed))
-            var freedForItem: Int64 = 0
-            if overwriteAndRemove(url, freed: &freedForItem) {
-                shredded += 1; freed += freedForItem
-            } else {
-                failed.append(url)
+                                  message: url.lastPathComponent,
+                                  bytesFound: results.reduce(Int64(0)) { $0 + $1.freedBytes }))
+            for outcome in overwriteAndRemove(url, cancelled: cancelled) {
+                results.append(ShredderItemResult(requestID: UUID(),
+                                                  url: outcome.url,
+                                                  disposition: outcome.disposition,
+                                                  mutation: outcome.mutation,
+                                                  freedBytes: outcome.freedBytes))
             }
         }
-        return Result(shredded: shredded, failed: failed, freedBytes: freed)
+        return ShredderPayload(items: results)
+    }
+
+    /// A single per-target outcome accumulated during the fd-anchored execution walk.
+    private struct ShredItemOutcome {
+        let url: URL
+        let disposition: OperationDisposition
+        let mutation: OperationMutationFact
+        let freedBytes: Int64
+    }
+
+    private func item(_ url: URL, _ disposition: OperationDisposition,
+                      _ mutation: OperationMutationFact, _ freedBytes: Int64 = 0) -> ShredItemOutcome {
+        ShredItemOutcome(url: url, disposition: disposition, mutation: mutation, freedBytes: freedBytes)
+    }
+
+    private func shredIssue(_ code: String, _ category: OperationIssueCategory,
+                            _ recovery: OperationRecoveryHint, retryable: Bool) -> OperationIssue {
+        // subjectID stays nil: the item result already carries the URL; the issue must
+        // not persist a raw path.
+        OperationIssue(code: code, category: category, subjectID: nil, recovery: recovery, retryable: retryable)
     }
 
     // MARK: - Preparation phase (SHR-01…06): read-only, zero writes / zero unlinks.
@@ -144,148 +179,199 @@ public struct ShredderService: Sendable {
     ///   走同一套 fd 相对遍历——从父目录 fd `openat(O_NOFOLLOW)` 下钻，`fdopendir` 只读枚举（先整趟
     ///   drain 子项名、再在快照上递归/删除，绝不边读边改同一目录流），子项一律经 `unlinkat` 按名删除，
     ///   绝不在遍历中途按路径重开子项（否则祖先被换成软链即穿透删掉类外目标）。与 HelperFileRemover 同构。
-    private func overwriteAndRemove(_ url: URL, freed: inout Int64) -> Bool {
+    /// fd-anchored execution of one root. Preserves the SHR-07 base (fd-relative,
+    /// O_NOFOLLOW, never re-open a child by path) but routes every syscall through the
+    /// injected `FileSyscalls` and emits per-item outcomes instead of a single bool.
+    private func overwriteAndRemove(_ url: URL, cancelled: () -> Bool) -> [ShredItemOutcome] {
         // 顶层基础红线：系统/其他用户/云同步/钥匙串/图库包/数据根一律拒（用 .trash 取基础判定）。
         guard safety.verify(url, intent: .trash).isAllowed else {
             XicoLog.clean.error("粉碎被红线拒绝: \(url.path, privacy: .public)")
-            return false
+            return [item(url, .skipped(shredIssue("shred.safety.denied", .safetyPolicy, .chooseAnotherTarget, retryable: false)), .none)]
         }
-        // 从叶子的父目录 fd 锚定进入，整棵子树的遍历/覆写/删除全程 fd 相对，绝不按路径重开子项。
         let parent = url.deletingLastPathComponent()
         let leaf = url.lastPathComponent
-        let parentFD = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        let parentFD = syscalls.openDirectory(path: parent.path)
         guard parentFD >= 0 else {
             XicoLog.clean.error("粉碎打开父目录失败: \(parent.path, privacy: .public)")
-            return false
+            return [item(url, .failed(shredIssue("shred.io.openParentFailed", .io, .retry, retryable: true)), .none)]
         }
-        defer { close(parentFD) }
-        return shredEntry(parentFD: parentFD, name: leaf, url: url, freed: &freed, depth: 0)
+        defer { syscalls.closeDescriptor(parentFD) }
+        return shredEntry(parentFD: parentFD, name: leaf, url: url, depth: 0, cancelled: cancelled)
     }
 
     /// fd 锚定地粉碎一个条目（不跟随符号链接）：目录递归、常规文件多轮覆写后删、软链只删链接本身。
     /// `url` 仅用于红线策略判定与日志，所有 open/unlink 一律走父 fd 相对，绝不按路径重开。
-    private func shredEntry(parentFD: Int32, name: String, url: URL, freed: inout Int64, depth: Int) -> Bool {
-        // 病态深度兜底：中止而非继续，宁可漏删也不无界递归耗尽 fd / 爆栈。
+    private func shredEntry(parentFD: Int32, name: String, url: URL, depth: Int,
+                            cancelled: () -> Bool) -> [ShredItemOutcome] {
         guard depth < Self.maxRecursionDepth else {
             XicoLog.clean.error("粉碎递归超深，中止: \(url.path, privacy: .public)")
-            return false
+            return [item(url, .failed(shredIssue("shred.io.tooDeep", .validation, .manualAction, retryable: false)), .none)]
         }
-        // 每一层复核红线（子项也要拒系统区/云同步/钥匙串/图库包等）；顶层已在 overwriteAndRemove 校过。
-        guard depth == 0 || safety.verify(url, intent: .trash).isAllowed else {
+        if depth > 0, !safety.verify(url, intent: .trash).isAllowed {
             XicoLog.clean.error("粉碎被红线拒绝: \(url.path, privacy: .public)")
-            return false
+            return [item(url, .skipped(shredIssue("shred.safety.denied", .safetyPolicy, .chooseAnotherTarget, retryable: false)), .none)]
         }
-        // 类型判定用 fstatat(AT_SYMLINK_NOFOLLOW)（不跟随软链，且相对父 fd，无按路径重开）。
-        var st = stat()
-        guard fstatat(parentFD, name, &st, AT_SYMLINK_NOFOLLOW) == 0 else { return false }
-        let type = st.st_mode & S_IFMT
-        // 符号链接：只删链接本身，绝不跟随进入目标。
-        if type == S_IFLNK { return unlinkat(parentFD, name, 0) == 0 }
-        if type == S_IFDIR {
-            let dirFD = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            guard dirFD >= 0 else { return false }
-            // 用 dirFD 的副本喂 fdopendir 只做枚举；dirFD 本身保留作 unlinkat/递归的锚点 fd。
-            // 先整趟读全子项名（drain）、closedir，再在快照上递归/删除——绝不边读边改同一 readdir 流
-            // （POSIX 未规定边遍历边修改目录的行为，可能漏项/重复枚举）。
-            let streamFD = fcntl(dirFD, F_DUPFD_CLOEXEC, 0)
-            guard streamFD >= 0, let dir = fdopendir(streamFD) else {
-                if streamFD >= 0 { close(streamFD) }
-                close(dirFD)
-                return false
+        // Type via statChild (fstatat AT_SYMLINK_NOFOLLOW): never follows a final symlink.
+        guard let st = syscalls.statChild(parentFD: parentFD, name: name) else {
+            return [item(url, .failed(shredIssue("shred.io.statFailed", .io, .retry, retryable: true)), .none)]
+        }
+        if st.isSymlink {
+            // SHR-02: delete the link itself; never follow it.
+            let rc = syscalls.unlinkChild(parentFD: parentFD, name: name, removeDir: false)
+            return [rc == 0
+                    ? item(url, .succeeded, .changed)
+                    : item(url, .failed(shredIssue("shred.io.unlinkFailed", .io, .retry, retryable: true)), .none)]
+        }
+        if st.isRegularFile {
+            return [shredRegularFile(parentFD: parentFD, name: name, url: url, classified: st, cancelled: cancelled)]
+        }
+        if st.isDirectory {
+            let dirFD = syscalls.openChildDirectory(parentFD: parentFD, name: name)
+            guard dirFD >= 0 else {
+                return [item(url, .failed(shredIssue("shred.io.openFailed", .io, .retry, retryable: true)), .none)]
             }
-            var names: [String] = []
-            while let ent = readdir(dir) {
-                let n = withUnsafeBytes(of: ent.pointee.d_name) { raw -> String in
-                    String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+            defer { syscalls.closeDescriptor(dirFD) }
+            guard let children = syscalls.listChildren(dirFD: dirFD) else {
+                return [item(url, .failed(shredIssue("shred.io.listFailed", .io, .retry, retryable: true)), .none)]
+            }
+            var outcomes: [ShredItemOutcome] = []
+            var allSucceeded = true
+            for child in children {
+                if Task.isCancelled || cancelled() { allSucceeded = false; break }
+                let childOutcomes = shredEntry(parentFD: dirFD, name: child,
+                                               url: url.appendingPathComponent(child),
+                                               depth: depth + 1, cancelled: cancelled)
+                outcomes.append(contentsOf: childOutcomes)
+                if childOutcomes.contains(where: { if case .succeeded = $0.disposition { return false } else { return true } }) {
+                    allSucceeded = false
                 }
-                if n == "." || n == ".." { continue }
-                names.append(n)
             }
-            closedir(dir)   // 关闭枚举用副本；dirFD 仍开着，作后续 unlink/递归的锚点
-            var ok = true
-            for n in names {
-                if !shredEntry(parentFD: dirFD, name: n, url: url.appendingPathComponent(n),
-                               freed: &freed, depth: depth + 1) { ok = false }
+            // SHR-14: the directory is not a transaction — remove it only when every
+            // child truly succeeded; otherwise keep it and report a per-item skip.
+            if allSucceeded {
+                let rc = syscalls.unlinkChild(parentFD: parentFD, name: name, removeDir: true)
+                outcomes.append(rc == 0
+                                ? item(url, .succeeded, .changed)
+                                : item(url, .failed(shredIssue("shred.io.rmdirFailed", .io, .retry, retryable: true)), .none))
+            } else {
+                outcomes.append(item(url, .skipped(shredIssue("shred.io.childrenIncomplete", .io, .retry, retryable: true)), .none))
             }
-            close(dirFD)
-            return ok && unlinkat(parentFD, name, AT_REMOVEDIR) == 0
+            return outcomes
         }
-        if type == S_IFREG {
-            return shredRegularFile(parentFD: parentFD, name: name, url: url, freed: &freed)
-        }
-        // FIFO/设备/socket 等非常规类型：拒绝覆写（保守），不处理。
+        // SHR-03: FIFO / socket / device / other non-regular types are integrally refused.
         XicoLog.clean.error("粉碎目标非常规文件，拒绝: \(url.path, privacy: .public)")
-        return false
+        return [item(url, .skipped(shredIssue("shred.identity.unrecognizedType", .validation, .chooseAnotherTarget, retryable: false)), .none)]
     }
 
-    /// TOCTOU 加固的常规文件粉碎：由 shredEntry 传入已锚定的父目录 fd，openat/unlinkat 一律相对该 fd，绝不按路径重开。
-    private func shredRegularFile(parentFD: Int32, name: String, url: URL, freed: inout Int64) -> Bool {
-        let leaf = name
-        // 叶子用 O_WRONLY|O_NOFOLLOW 从父 fd 打开：期间被换成软链 → openat 失败 → 拒（不穿透目标）。
-        let fd = openat(parentFD, leaf, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
+    /// TOCTOU-hardened regular-file shred. Opens `O_WRONLY|O_NOFOLLOW` from the anchored
+    /// parent fd; every syscall is fd-relative and routed through the injected seam.
+    private func shredRegularFile(parentFD: Int32, name: String, url: URL,
+                                  classified: FileStat, cancelled: () -> Bool) -> ShredItemOutcome {
+        let fd = syscalls.openRegularForWrite(parentFD: parentFD, name: name)
         guard fd >= 0 else {
             XicoLog.clean.error("粉碎打开目标失败（可能已变为符号链接）: \(url.path, privacy: .public)")
-            return false
+            return item(url, .failed(shredIssue("shred.io.openFailed", .io, .retry, retryable: true)), .none)
         }
-        var fdClosed = false
-        defer { if !fdClosed { close(fd) } }
-        // fstat 复核：仍是常规文件才继续（杜绝对 FIFO/设备/软链等做覆写）。
-        var st = stat()
-        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
+        var closed = false
+        defer { if !closed { syscalls.closeDescriptor(fd) } }
+        guard let opened = syscalls.statOpen(fd: fd), opened.isRegularFile else {
             XicoLog.clean.error("粉碎目标非常规文件，拒绝: \(url.path, privacy: .public)")
-            return false
+            return item(url, .skipped(shredIssue("shred.identity.notRegular", .identityChanged, .chooseAnotherTarget, retryable: false)), .none)
         }
-        let size = Int64(st.st_size)
-        overwriteFile(fd: fd, size: size)
-        close(fd); fdClosed = true
-        // unlinkat 按名从父 fd 删除；删前再 fstatat 复核 inode 未变（防止 open 后名字被重绑到别的文件）。
-        var after = stat()
-        guard fstatat(parentFD, leaf, &after, AT_SYMLINK_NOFOLLOW) == 0,
-              after.st_ino == st.st_ino, after.st_dev == st.st_dev,
-              (after.st_mode & S_IFMT) == S_IFREG else {
-            XicoLog.clean.error("粉碎删除前 inode 复核失败，拒绝删除: \(url.path, privacy: .public)")
-            return false
+        // Amendment C1: re-verify identity + st_nlink == 1 on the opened fd BEFORE the
+        // first overwrite pass. A hard link created in the prepare→execute window (or a
+        // same-name swap to a linked / different-inode file) must not have its content
+        // clobbered. Fail closed WITHOUT writing a single byte.
+        guard opened.hardLinkCount == 1,
+              opened.inode == classified.inode, opened.device == classified.device else {
+            XicoLog.clean.error("粉碎前身份复核失败（硬链接/身份漂移），拒绝覆写: \(url.path, privacy: .public)")
+            return item(url, .skipped(shredIssue("shred.identity.hardLinkedOrDrifted", .identityChanged, .chooseAnotherTarget, retryable: false)), .none)
         }
-        guard unlinkat(parentFD, leaf, 0) == 0 else {
-            XicoLog.clean.error("粉碎删除失败: \(url.path, privacy: .public)")
-            return false
+        let size = opened.size
+        let outcome = overwriteFile(fd: fd, size: size, cancelled: cancelled)
+        syscalls.closeDescriptor(fd); closed = true
+        switch outcome {
+        case .cancelled:
+            // SHR-12: a cancelled overwrite is never unlinked; content may be partially
+            // rewritten → cancelledPossiblyModified.
+            return item(url, .cancelled(shredIssue("shred.cancelled.possiblyModified", .io, .manualAction, retryable: true)),
+                        size > 0 ? .possiblyChanged : .none)
+        case .failed:
+            // SHR-13: an I/O failure is never unlinked → failedPossiblyModified.
+            return item(url, .failed(shredIssue("shred.io.failedPossiblyModified", .io, .retry, retryable: true)),
+                        size > 0 ? .possiblyChanged : .none)
+        case .completed:
+            // SHR-11: only after every pass truly succeeded, recheck identity by name,
+            // then unlink. A rebind to a different inode fails closed and does not delete.
+            guard let after = syscalls.statChild(parentFD: parentFD, name: name),
+                  after.inode == opened.inode, after.device == opened.device, after.isRegularFile else {
+                XicoLog.clean.error("粉碎删除前 inode 复核失败，拒绝删除: \(url.path, privacy: .public)")
+                return item(url, .failed(shredIssue("shred.identity.changedBeforeUnlink", .identityChanged, .retry, retryable: true)), .possiblyChanged)
+            }
+            guard syscalls.unlinkChild(parentFD: parentFD, name: name, removeDir: false) == 0 else {
+                XicoLog.clean.error("粉碎删除失败: \(url.path, privacy: .public)")
+                return item(url, .failed(shredIssue("shred.io.unlinkFailed", .io, .retry, retryable: true)), .possiblyChanged)
+            }
+            return item(url, .succeeded, .changed, size)
         }
-        freed += size
-        return true
     }
 
-    /// 经已打开的 fd 多轮随机覆写（不按路径重开，配合 TOCTOU 加固）。
-    private func overwriteFile(fd: Int32, size: Int64) {
-        guard size > 0 else { return }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
-        let chunk = 1 << 20   // 1MB 随机块
-        // 复用同一缓冲区，每块用一次 SecRandomCopyBytes 批量填充随机字节——
-        // 取代逐字节 UInt8.random（多 GB 文件会产生数十亿次 RNG 调用，把本应 I/O 密集的
-        // 覆写拖成 CPU 密集）。语义不变：每一轮 pass 仍写整幅随机数据。
+    private enum OverwriteOutcome: Equatable { case completed, cancelled, failed }
+
+    /// Multi-pass overwrite through the injected syscalls. Precise `pwrite` loop:
+    /// `written`/`offset` advance only by REAL bytes written (SHR-09); `EINTR` retries
+    /// without double-counting; each pass must fully write and successfully `fsync`
+    /// before the next (SHR-10); cancellation is checked between bounded chunks (SHR-12);
+    /// any zero/failed write or `fsync` failure returns `.failed` (SHR-13). Never unlinks
+    /// — that decision belongs to the caller and only on `.completed`.
+    private func overwriteFile(fd: Int32, size: Int64, cancelled: () -> Bool) -> OverwriteOutcome {
+        guard size > 0 else { return .completed }
+        let chunk = 1 << 20
         var buffer = [UInt8](repeating: 0, count: chunk)
         for _ in 0..<passes {
-            if Task.isCancelled { return }
-            try? handle.seek(toOffset: 0)
-            var remaining = size
-            while remaining > 0 {
-                let n = Int(min(Int64(chunk), remaining))
-                buffer.withUnsafeMutableBytes { raw in
-                    // 失败极罕见；万一失败则退回按 UInt64 字直取，绝不写出可预测的全零。
-                    if SecRandomCopyBytes(kSecRandomDefault, n, raw.baseAddress!) != errSecSuccess {
-                        var rng = SystemRandomNumberGenerator()
-                        var off = 0
-                        while off + 8 <= n {
-                            var word = rng.next() as UInt64
-                            memcpy(raw.baseAddress!.advanced(by: off), &word, 8)
-                            off += 8
-                        }
-                        while off < n { raw[off] = UInt8(truncatingIfNeeded: rng.next() as UInt64); off += 1 }
+            var offset: Int64 = 0
+            while offset < size {
+                if Task.isCancelled || cancelled() { return .cancelled }
+                let n = Int(min(Int64(chunk), size - offset))
+                fillRandom(&buffer, count: n)
+                var written = 0
+                while written < n {
+                    if Task.isCancelled || cancelled() { return .cancelled }
+                    let result: WriteResult = buffer.withUnsafeBytes { raw in
+                        syscalls.pwrite(fd: fd,
+                                        bytes: UnsafeRawBufferPointer(rebasing: raw[written..<n]),
+                                        offset: offset + Int64(written))
+                    }
+                    switch result {
+                    case .wrote(let w):
+                        if w <= 0 { return .failed }   // no progress ⇒ fail closed
+                        written += w                    // SHR-09: advance by real bytes
+                    case .failed(let code):
+                        if code == EINTR { continue }   // SHR-09: retry, no double count
+                        return .failed                  // SHR-13: ENOSPC / EIO / etc.
                     }
                 }
-                try? handle.write(contentsOf: Data(buffer[0..<n]))
-                remaining -= Int64(n)
+                offset += Int64(n)
             }
-            try? handle.synchronize()
+            if syscalls.fsync(fd: fd) != 0 { return .failed }   // SHR-10
+        }
+        return .completed
+    }
+
+    /// Fills the first `n` bytes of `buffer` with random data; never writes predictable
+    /// zeros even if `SecRandomCopyBytes` fails (SystemRNG fallback).
+    private func fillRandom(_ buffer: inout [UInt8], count n: Int) {
+        buffer.withUnsafeMutableBytes { raw in
+            if SecRandomCopyBytes(kSecRandomDefault, n, raw.baseAddress!) != errSecSuccess {
+                var rng = SystemRandomNumberGenerator()
+                var off = 0
+                while off + 8 <= n {
+                    var word = rng.next() as UInt64
+                    memcpy(raw.baseAddress!.advanced(by: off), &word, 8)
+                    off += 8
+                }
+                while off < n { raw[off] = UInt8(truncatingIfNeeded: rng.next() as UInt64); off += 1 }
+            }
         }
     }
 }

@@ -269,7 +269,7 @@ git commit -m "feat(shredder): bounded identity manifest with pre-authorization 
 - Create: `Tests/IntegrationTests/ShredderExecutionIOTests.swift`
 - Modify: `Tests/IntegrationTests/ShredderServiceTests.swift`（端到端断言逐项 `ShredderPayload`）
 
-- [ ] **Step 1: Write RED tests for execution I/O, cancel and marking**
+- [x] **Step 1: Write RED tests for execution I/O, cancel and marking**
 
 ```swift
 func testPwriteLoopAdvancesOffsetByActualBytesOnShortWrite() throws            // SHR-09
@@ -288,7 +288,7 @@ func testShredderProducesShredderPayloadNotAggregateOnlyResult() throws        /
 func testFullSuccessProducesNonCelebratoryNeutralTerminal() throws             // SHR-15
 ```
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 ```bash
 swift test --filter ShredderExecutionIOTests --disable-automatic-resolution --skip-update
@@ -296,19 +296,19 @@ swift test --filter ShredderExecutionIOTests --disable-automatic-resolution --sk
 
 Expected: FAIL —— 当前 `try?` 吞错、remaining 按意图递减、取消在 pass 开头、无逐项结果。
 
-- [ ] **Step 3: Rewrite overwrite as a precise pwrite loop with per-pass verification**
+- [x] **Step 3: Rewrite overwrite as a precise pwrite loop with per-pass verification**
 
 `overwriteFile` 改为：每轮 pass 用 1MB chunk 循环 `syscalls.pwrite(fd, buf, len, offset)`；`SecRandomCopyBytes` 填随机（失败退回 SystemRNG，绝不写全零，保留现状）；返回值为真实写入字节，`remaining` 只按真实字节推进（SHR-09）；`EINTR` 重试不重复计数；短写从新 offset 继续。每 chunk 之间检查 `Task.isCancelled` / 取消 flag（SHR-12），命中即返回 `.cancelled(possiblyModified: true)`，绝不继续。每轮 pass 结束 `syscalls.fsync`，失败即整体失败（SHR-10）。任一 chunk 写失败（ENOSPC/EIO/短写无法完成）→ 返回 `.failed(possiblyModified: true)`。
 
-- [ ] **Step 4: Bind the unlink gate to true全-pass success + final identity recheck**
+- [x] **Step 4: Bind the unlink gate to true全-pass success + final identity recheck**
 
 `shredRegularFile`：只有 `overwriteFile` 返回 `.completed`（全 pass 真实成功 + fsync 成功）才继续；删前仍 `fstatat` 复核 `st_ino/st_dev/S_IFREG` 未变（SHR-11，保留现有 157-162 逻辑），身份漂移即 fail closed 不删（§6.2）。`overwriteFile` 返回 `.cancelled`/`.failed` 时**直接跳过 close→复核→unlink**，登记逐项结果，绝不删除进行中的文件（修复当前最严重 bug）。
 
-- [ ] **Step 5: Emit per-item `ShredderPayload` with disposition + mutation**
+- [x] **Step 5: Emit per-item `ShredderPayload` with disposition + mutation**
 
 `shred`/`execute` 改为对 manifest 每一目标产出 `ShredderItemResult`：成功 = `.succeeded + .changed + freedBytes`；取消未改写 = `.cancelled(nil) + .none`；取消已部分覆写 = `.cancelled(issue) + .possiblyChanged`（cancelledPossiblyModified）；I/O 失败 = `.failed(issue) + .possiblyChanged`（failedPossiblyModified）；身份漂移/红线 = `.skipped/.failed + .none`。聚合仍可保留但不再是唯一载体。目录非事务：先成功后失败/取消形成逐项 partial（SHR-14）。全成功经 Task 1 `execute` 返回 neutral 终态；`.shred` 在 `OutcomeOperationRegistry` 已是 `profile:.neutral`——服务层断言不产生任何庆祝信号（SHR-15，UI 呈现由 outcome-workflows Task 7 落地）。
 
-- [ ] **Step 6: Run focused tests + zero-gate**
+- [x] **Step 6: Run focused tests + zero-gate**
 
 ```bash
 swift test --filter ShredderExecutionIOTests --disable-automatic-resolution --skip-update
@@ -319,7 +319,7 @@ swift build -c debug --disable-automatic-resolution --skip-update
 
 Expected: PASS。取消 P95<500ms 的产品目标由 per-chunk 粒度保障（阻塞 I/O 无法满足时上层显示「正在停止」，属 outcome-workflows UI，不在本 task 断言）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add Sources/Infrastructure/ShredderService.swift Sources/Infrastructure/ShredderPayload.swift Sources/Infrastructure/FileSyscalls.swift Tests/IntegrationTests/ShredderExecutionIOTests.swift Tests/IntegrationTests/ShredderServiceTests.swift
