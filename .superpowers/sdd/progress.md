@@ -39,3 +39,13 @@ Next active subsystem: `docs/superpowers/plans/2026-07-16-xico-phase0-destructiv
 Pause checkpoint (2026-07-17 10:11 JST): user requested an end-of-day stop. A concurrent repository-user Git action later committed and pushed the entire Task 4 checkpoint as `2670847`, but it remains intentionally RED on `TaskOutcomePresentationTests.testAdmissionRejectedRetryStillOffersUndoForRetainedPriorReceipt` and is not a completion commit. All background agents/tests were stopped. Resume only from `.superpowers/sdd/xico-outcome-task4-pause-handoff-2026-07-17.md`; do not rewrite `2670847` or mark Task 4 complete until the listed focused/full/build/review gates pass.
 
 Pause checkpoint RESOLVED (2026-07-18): resumed per handoff §7. The documented RED plus three additional pre-existing failures were fixed and all Task 4 gates passed (see the Task 4 completion entry above). `2670847` was not rewritten; fixes landed as a new follow-up commit.
+
+---
+
+# Xico Phase 0 Destructive Operations SDD Progress
+
+Branch: codex/precision-monitoring
+Plan: docs/superpowers/plans/2026-07-16-xico-phase0-destructive-operations.md (authored 2026-07-18 from doc 19 + code survey; independent safety review folded 3 CRITICAL data-loss gaps in as binding RED requirements C1/C2/C3).
+
+Destructive Ops Task 1: complete and independently security-reviewed CLEAN (2026-07-18). The `prepare → authorize → execute` capability core: `DestructiveOperation.swift` (`LocalFileIdentity` device/inode/mode/size/mtime/hardLinkCount, `DestructiveKind`→`OperationKind`, `Recoverability`/`RiskLevel`/`AttributionEvidence`, `PlannedTarget`, immutable `DestructivePlan`, unforgeable `Authorization` with a fileprivate init, versioned deterministic SHA-256 `PlanDigest` canonical encoder, `DestructiveOperationIssuer`) + `AuthorizationLedger.swift` (actor, exactly-once nonce). Evidence: DestructiveOperationCapabilityTests 16/16 (incl. 24-way concurrent exactly-once nonce, digest determinism/versioning/sensitivity, expiry + planID/kind/digest mismatch fail-closed, amendment tests for riskLevel and the 5-minute TTL); full suite 727 executed / 15 env-skips / 0 failures; Release build clean. Independent adversarial security review: 0 bypass — authorization unforgeable, nonce atomic-consume-before-body, digest injective (no collision), expiry fail-closed. Reviewer's forward note: the gate only protects real files once Tasks 2–6 route Shredder/Uninstaller/Space-Lens deletion through `execute()`.
+Next: Destructive Ops Task 2 (Shredder preparation — bounded identity manifest, injectable `FileSyscalls`), then Task 3 (Shredder execution, incl. amendment C1: re-verify identity + `st_nlink==1` before the FIRST overwrite pass).

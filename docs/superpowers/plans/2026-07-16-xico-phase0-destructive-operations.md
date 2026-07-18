@@ -78,7 +78,7 @@ Minor (also required):
 - Modify: `Sources/Domain/OperationConsumerFacts.swift`（仅复用现有 `.shred/.uninstall/.spaceTrash/.snapshotDelete` 常量映射到 `DestructiveKind`；不新增 kind）
 - Create: `Tests/DomainTests/DestructiveOperationCapabilityTests.swift`
 
-- [ ] **Step 1: Write RED tests for the capability core**
+- [x] **Step 1: Write RED tests for the capability core**
 
 仅用 in-memory fixture，绝不触碰文件系统。测试覆盖授权重放、身份、digest 确定性、时效、kind 绑定：
 
@@ -101,7 +101,7 @@ func testLocalFileIdentityIncludesHardLinkCountForShredKind() throws
 
 `prepare/execute` 用一个注入的 `IdentitySampler`（fake，返回构造好的 `LocalFileIdentity`）与一个记录调用顺序的 fake side-effect sink，从而无需真实文件即可断言「nonce 消费在副作用之前」。
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 ```bash
 swift test --filter DestructiveOperationCapabilityTests --disable-automatic-resolution --skip-update
@@ -109,7 +109,7 @@ swift test --filter DestructiveOperationCapabilityTests --disable-automatic-reso
 
 Expected: FAIL —— 类型与 API 尚不存在。
 
-- [ ] **Step 3: Define identity, plan, digest and authorization types**
+- [x] **Step 3: Define identity, plan, digest and authorization types**
 
 ```swift
 public struct LocalFileIdentity: Equatable, Sendable {
@@ -151,11 +151,11 @@ public struct Authorization: Sendable {
 
 `PlanDigest` 用**带 schema 版本的确定性 canonical 编码**：固定字段顺序、按 `canonicalPath` 字节序稳定排序 targets、整数一律 big-endian 定长、路径按「长度前缀 + UTF-8 字节」编码、身份缺失以显式 tag 编码——绝不依赖字典顺序、locale、`String(describing:)` 或 Swift 默认描述。编码器产出 `[UInt8]` 再取 SHA-256（`Security`/`CryptoKit`）。schema 版本作为编码首字节，版本变化即 digest 变化。
 
-- [ ] **Step 4: Implement prepare / authorize / execute + one-time nonce ledger**
+- [x] **Step 4: Implement prepare / authorize / execute + one-time nonce ledger**
 
 `prepare(_:)`：对每个规范化目标取一次 `LocalFileIdentity` 快照（经注入 `IdentitySampler`），计算 `expiresAt`（本地粉碎/卸载 = createdAt + 5 分钟；快照删除按 §6.1 归入 neutral，同样 5 分钟），组装 digest，返回不可变 plan。`authorize(_:confirmation:)`：校验 plan 未过期，生成新 `nonce`，签发绑定 `planID+digest+nonce+expiresAt+kind` 的 `Authorization`。`execute(_:authorization:)`：**先**校验 `authorization.kind == plan.kind`、`authorization.digest == plan.digest`、未过期，**再**经 `AuthorizationLedger.consume(nonce:)`（actor 内 `Set<UUID>` 一次性插入，返回是否首次）原子消费，只有返回 true 才调用执行器闭包；任一步失败返回 fail-closed 结果且执行器闭包一次都不调用。终态一旦产生，`execute` 忽略迟到取消。
 
-- [ ] **Step 5: Run focused tests + zero-gate**
+- [x] **Step 5: Run focused tests + zero-gate**
 
 ```bash
 swift test --filter DestructiveOperationCapabilityTests --disable-automatic-resolution --skip-update
@@ -164,7 +164,7 @@ swift build -c debug --disable-automatic-resolution --skip-update
 
 Expected: PASS，含并发 nonce 竞争恰好一次成功、compile-negative 断言 `Authorization` 初始化器在 normal import 下不可达。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Sources/Domain/DestructiveOperation.swift Sources/Domain/AuthorizationLedger.swift Sources/Domain/OperationConsumerFacts.swift Tests/DomainTests/DestructiveOperationCapabilityTests.swift
