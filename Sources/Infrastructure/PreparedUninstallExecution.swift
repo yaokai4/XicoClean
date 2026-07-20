@@ -4,6 +4,7 @@ import Foundation
 
 struct PreparedUninstallTarget: Sendable {
     let ordinal: UInt32
+    let batchCandidateIndex: UInt32
     let candidate: UninstallCandidate
     let canonicalPath: String
     let expectedIdentity: LocalFileIdentity
@@ -37,6 +38,9 @@ struct PreparedUninstallExecution: Sendable {
         for (index, tuple) in zip(selected.indices, zip(selected, orderedTargets)) {
             let (candidate, sealed) = tuple
             guard let ordinal = UInt32(exactly: index),
+                  batchSnapshot.candidates.indices.contains(Int(sealed.batchCandidateIndex)),
+                  UninstallEvidenceSeal.sameCandidate(
+                    batchSnapshot.candidates[Int(sealed.batchCandidateIndex)], candidate),
                   sealed.ordinal == ordinal,
                   UninstallEvidenceSeal.sameCandidate(sealed.candidate, candidate),
                   sealed.canonicalPath == candidate.url.standardizedFileURL.path,
@@ -48,6 +52,7 @@ struct PreparedUninstallExecution: Sendable {
                                                                in: batchSnapshot),
                   let recomputed = UninstallEvidenceSeal.fingerprint(
                     batch: batchSnapshot, candidate: candidate, ordinal: ordinal,
+                    batchCandidateIndex: sealed.batchCandidateIndex,
                     expectedIdentity: sealed.expectedIdentity),
                   recomputed == sealed.evidenceFingerprint,
                   recomputed != .none else { return false }
@@ -63,11 +68,6 @@ struct PreparedUninstallExecution: Sendable {
         }
         return UninstallEvidenceSeal.preparationSeal(
             plan: plan, batch: batchSnapshot, targets: orderedTargets) == preparationSeal
-    }
-
-    var selectedItems: [CleanableItem]? {
-        guard validateIntegrity() else { return nil }
-        return orderedTargets.map(\.candidate.item)
     }
 }
 
@@ -91,7 +91,7 @@ struct UninstallPreparationHooks: Sendable {
 enum UninstallEvidenceSeal {
     static func orderedSelectedCandidates(in batch: UninstallBatch) -> [UninstallCandidate] {
         batch.candidates.filter(\.isSelected).sorted { lhs, rhs in
-            if lhs.role != rhs.role { return lhs.role == .appBody }
+            if lhs.role != rhs.role { return lhs.role == .associatedFile }
             return lhs.url.standardizedFileURL.path.utf8.lexicographicallyPrecedes(
                 rhs.url.standardizedFileURL.path.utf8)
         }
@@ -123,6 +123,7 @@ enum UninstallEvidenceSeal {
     static func fingerprint(batch: UninstallBatch,
                             candidate: UninstallCandidate,
                             ordinal: UInt32,
+                            batchCandidateIndex: UInt32,
                             expectedIdentity: LocalFileIdentity) -> EvidenceFingerprint? {
         var encoder = CanonicalEncoder(version: 1)
         encoder.uuid(batch.issuanceID)
@@ -133,6 +134,7 @@ enum UninstallEvidenceSeal {
         encode(batch.app, to: &encoder)
         encoder.uuid(candidate.id)
         encoder.uint(ordinal)
+        encoder.uint(batchCandidateIndex)
         encoder.string(candidate.role.rawValue)
         encoder.string(candidate.selectionPolicy.rawValue)
         encoder.string(candidate.evidence.rawValue)
@@ -158,6 +160,7 @@ enum UninstallEvidenceSeal {
         encoder.count(targets.count)
         for target in targets {
             encoder.uint(target.ordinal)
+            encoder.uint(target.batchCandidateIndex)
             encoder.string(target.canonicalPath)
             encode(target.expectedIdentity, to: &encoder)
             encoder.bytes(target.evidenceFingerprint.bytes)

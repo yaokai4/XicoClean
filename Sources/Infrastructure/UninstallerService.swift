@@ -1,6 +1,23 @@
 import Foundation
 import Domain
 
+/// Stable security identity for one installed-App workflow. Display name and measured size are
+/// deliberately excluded because they may refresh without replacing the App; provenance,
+/// physical identity and sealed metadata are included so a new App at the same path cannot inherit
+/// an older uninstall ledger or recovery receipt.
+package struct UninstallAppWorkflowIdentity: Sendable, Hashable {
+    package let appID: String
+    package let bundleID: String
+    package let canonicalPath: String
+    package let provenanceID: UUID
+    package let sourceIdentity: LocalFileIdentity
+    package let appChainFingerprint: EvidenceFingerprint
+    package let metadataIdentity: LocalFileIdentity
+    package let metadataExactLength: Int
+    package let metadataContentDigest: EvidenceFingerprint
+    package let metadataPathChainFingerprint: EvidenceFingerprint
+}
+
 public struct InstalledApp: Identifiable, Sendable, Hashable {
     public let id: String
     public let name: String
@@ -14,6 +31,19 @@ public struct InstalledApp: Identifiable, Sendable, Hashable {
     var metadataIdentity: LocalFileIdentity { metadataAttestation.identity }
     var metadataExactLength: Int { metadataAttestation.exactLength }
     var metadataContentDigest: EvidenceFingerprint { metadataAttestation.contentDigest }
+    package var uninstallWorkflowIdentity: UninstallAppWorkflowIdentity {
+        UninstallAppWorkflowIdentity(
+            appID: id,
+            bundleID: bundleID,
+            canonicalPath: url.standardizedFileURL.path,
+            provenanceID: provenanceID,
+            sourceIdentity: sourceIdentity,
+            appChainFingerprint: appPathProof.chainFingerprint,
+            metadataIdentity: metadataAttestation.identity,
+            metadataExactLength: metadataAttestation.exactLength,
+            metadataContentDigest: metadataAttestation.contentDigest,
+            metadataPathChainFingerprint: metadataAttestation.pathChainFingerprint)
+    }
 
     init(id: String, name: String, bundleID: String, url: URL, size: Int64,
          provenanceID: UUID, sourceIdentity: LocalFileIdentity,
@@ -336,6 +366,13 @@ public struct UninstallerService: Sendable {
         orderedTargets.reserveCapacity(selected.count)
         for (index, candidate) in selected.enumerated() {
             guard let ordinal = UInt32(exactly: index),
+                  let batchIndex = batch.candidates.indices.first(where: {
+                      UninstallEvidenceSeal.sameCandidate(batch.candidates[$0], candidate)
+                  }),
+                  batch.candidates.indices.filter({
+                      UninstallEvidenceSeal.sameCandidate(batch.candidates[$0], candidate)
+                  }).count == 1,
+                  let batchCandidateIndex = UInt32(exactly: batchIndex),
                   let identity = UninstallEvidenceSeal.expectedIdentity(
                     for: candidate, in: batch) else {
                 throw UninstallPlanError.missingTargetIdentity
@@ -345,12 +382,14 @@ public struct UninstallerService: Sendable {
             }
             guard let fingerprint = UninstallEvidenceSeal.fingerprint(
                     batch: batch, candidate: candidate, ordinal: ordinal,
+                    batchCandidateIndex: batchCandidateIndex,
                     expectedIdentity: identity),
                   fingerprint != .none else {
                 throw UninstallPlanError.evidenceFingerprintUnavailable
             }
             orderedTargets.append(PreparedUninstallTarget(
-                ordinal: ordinal, candidate: candidate,
+                ordinal: ordinal, batchCandidateIndex: batchCandidateIndex,
+                candidate: candidate,
                 canonicalPath: candidate.url.standardizedFileURL.path,
                 expectedIdentity: identity, evidenceFingerprint: fingerprint,
                 ownershipAttestation: candidate.evidenceBinding))
@@ -406,6 +445,65 @@ public struct UninstallerService: Sendable {
         return prepared
     }
 
+    /// Reopens the exact Task 4 ownership proof for one sealed occurrence. This method is called
+    /// synchronously from the engine-owned mutation loop while the App body is still present for
+    /// normal uninstall mode; it never mutates the filesystem.
+    func revalidateExecutionTarget(
+        _ target: PreparedUninstallTarget,
+        in batch: UninstallBatch
+    ) -> Bool {
+        do {
+            guard batch.issuanceID == issuanceID,
+                  batch.batchID == target.candidate.batchID,
+                  batch.candidates.indices.contains(Int(target.batchCandidateIndex)),
+                  UninstallEvidenceSeal.sameCandidate(
+                    batch.candidates[Int(target.batchCandidateIndex)], target.candidate),
+                  target.candidate.isSelected,
+                  target.canonicalPath
+                    == target.candidate.url.standardizedFileURL.path,
+                  target.expectedIdentity
+                    == UninstallEvidenceSeal.expectedIdentity(
+                        for: target.candidate, in: batch),
+                  let fingerprint = UninstallEvidenceSeal.fingerprint(
+                    batch: batch,
+                    candidate: target.candidate,
+                    ordinal: target.ordinal,
+                    batchCandidateIndex: target.batchCandidateIndex,
+                    expectedIdentity: target.expectedIdentity),
+                  fingerprint == target.evidenceFingerprint,
+                  fingerprint != .none else { return false }
+
+            switch batch.mode {
+            case .uninstallApp:
+                try validateCurrentApp(batch.app, planBoundary: true)
+            case .cleanLeftovers:
+                guard target.candidate.role == .associatedFile,
+                      !fs.exists(batch.app.url) else { return false }
+            }
+
+            try validateEvidenceCrossBinding(target.candidate, in: batch)
+            switch target.candidate.evidenceBinding {
+            case .none:
+                guard target.candidate.role == .appBody,
+                      target.candidate.evidence == .verifiedAppBody else { return false }
+            case .physicalPath(let stored):
+                guard let current = pathAttestor.attest(target.candidate.url),
+                      Self.sameStablePhysicalPath(current, stored) else { return false }
+            case .signedEntitlement:
+                try validateEntitlementAttestation(in: batch)
+                guard let stored = target.candidate.evidenceBinding.physicalPath,
+                      let current = pathAttestor.attest(target.candidate.url),
+                      Self.sameStablePhysicalPath(current, stored) else { return false }
+            case .launchAgent:
+                try validateLaunchAgentAttestation(
+                    target.candidate, in: batch, allowStablePathMetadataDrift: true)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private func validateBatchForPreparation(_ batch: UninstallBatch) throws {
         guard batch.issuanceID == issuanceID else { throw UninstallPlanError.foreignBatch }
         let now = clock.wallNow()
@@ -439,36 +537,43 @@ public struct UninstallerService: Sendable {
 
     private func validateEvidenceCrossBindings(in batch: UninstallBatch) throws {
         for candidate in batch.candidates {
-            switch candidate.evidenceBinding {
-            case .none:
-                guard candidate.role == .appBody else {
-                    throw UninstallPlanError.preparedTargetMismatch
-                }
-            case .physicalPath(let path):
-                guard candidate.role == .associatedFile,
-                      path.canonicalPath == candidate.url.path else {
-                    throw UninstallPlanError.preparedTargetMismatch
-                }
-            case .signedEntitlement(let entitlement, let path):
-                guard candidate.role == .associatedFile,
-                      path.canonicalPath == candidate.url.path,
-                      let source = entitlement.sourceSeal,
-                      source.appRoot == batch.app.sourceIdentity,
-                      source.appChainFingerprint == batch.app.appPathProof.chainFingerprint,
-                      source.infoPlist == batch.app.metadataAttestation else {
-                    throw UninstallPlanError.entitlementAttestationChanged
-                }
-            case .launchAgent(let launch, let path):
-                guard candidate.role == .associatedFile,
-                      path.canonicalPath == candidate.url.path,
-                      path.targetIdentity == launch.plistIdentity,
-                      launch.plistExactLength > 0,
-                      launch.plistContentDigest != .none,
-                      let token = launch.programChangeToken,
-                      launch.resolvedProgramPath == token.canonicalPath,
-                      launch.programIdentity == token.executable else {
-                    throw UninstallPlanError.launchAgentAttestationChanged
-                }
+            try validateEvidenceCrossBinding(candidate, in: batch)
+        }
+    }
+
+    private func validateEvidenceCrossBinding(
+        _ candidate: UninstallCandidate,
+        in batch: UninstallBatch
+    ) throws {
+        switch candidate.evidenceBinding {
+        case .none:
+            guard candidate.role == .appBody else {
+                throw UninstallPlanError.preparedTargetMismatch
+            }
+        case .physicalPath(let path):
+            guard candidate.role == .associatedFile,
+                  path.canonicalPath == candidate.url.path else {
+                throw UninstallPlanError.preparedTargetMismatch
+            }
+        case .signedEntitlement(let entitlement, let path):
+            guard candidate.role == .associatedFile,
+                  path.canonicalPath == candidate.url.path,
+                  let source = entitlement.sourceSeal,
+                  source.appRoot == batch.app.sourceIdentity,
+                  source.appChainFingerprint == batch.app.appPathProof.chainFingerprint,
+                  source.infoPlist == batch.app.metadataAttestation else {
+                throw UninstallPlanError.entitlementAttestationChanged
+            }
+        case .launchAgent(let launch, let path):
+            guard candidate.role == .associatedFile,
+                  path.canonicalPath == candidate.url.path,
+                  path.targetIdentity == launch.plistIdentity,
+                  launch.plistExactLength > 0,
+                  launch.plistContentDigest != .none,
+                  let token = launch.programChangeToken,
+                  launch.resolvedProgramPath == token.canonicalPath,
+                  launch.programIdentity == token.executable else {
+                throw UninstallPlanError.launchAgentAttestationChanged
             }
         }
     }
@@ -515,21 +620,33 @@ public struct UninstallerService: Sendable {
     private func validateLaunchAgentAttestations(in batch: UninstallBatch) throws {
         for candidate in batch.candidates
         where candidate.evidence == .launchAgentProgramInsideBundle {
-            guard case let .launchAgent(stored, storedPath) = candidate.evidenceBinding,
-                  let anchoredRead = pathAttestor.readRegularFile(
-                    candidate.url, maximumBytes: PlistLaunchAgentReader.maximumBytes),
-                  anchoredRead.pathAttestation == storedPath,
-                  let parsed = launchAgentReader.attestation(
-                    at: candidate.url, anchoredRead: anchoredRead) else {
-                throw UninstallPlanError.launchAgentAttestationChanged
-            }
-            let current = parsed.bindingProgram(to: batch.app.url)
-            guard
-                  current == stored,
-                  current.record.label == batch.app.bundleID,
-                  Self.isProgram(current, inside: batch.app.url) else {
-                throw UninstallPlanError.launchAgentAttestationChanged
-            }
+            try validateLaunchAgentAttestation(candidate, in: batch)
+        }
+    }
+
+    private func validateLaunchAgentAttestation(
+        _ candidate: UninstallCandidate,
+        in batch: UninstallBatch,
+        allowStablePathMetadataDrift: Bool = false
+    ) throws {
+        guard case let .launchAgent(stored, storedPath) = candidate.evidenceBinding,
+              let anchoredRead = pathAttestor.readRegularFile(
+                        candidate.url, maximumBytes: PlistLaunchAgentReader.maximumBytes) else {
+            throw UninstallPlanError.launchAgentAttestationChanged
+        }
+        let pathMatches = allowStablePathMetadataDrift
+            ? Self.sameStablePhysicalPath(anchoredRead.pathAttestation, storedPath)
+            : anchoredRead.pathAttestation == storedPath
+        guard pathMatches,
+              let parsed = launchAgentReader.attestation(
+                        at: candidate.url, anchoredRead: anchoredRead) else {
+            throw UninstallPlanError.launchAgentAttestationChanged
+        }
+        let current = parsed.bindingProgram(to: batch.app.url)
+        guard current == stored,
+              current.record.label == batch.app.bundleID,
+              Self.isProgram(current, inside: batch.app.url) else {
+            throw UninstallPlanError.launchAgentAttestationChanged
         }
     }
 
@@ -544,7 +661,7 @@ public struct UninstallerService: Sendable {
         }
         let appAttestor = FDAnchoredAppBundlePathAttestor(appURL: app.url)
         guard let currentProof = appAttestor.attestApp(),
-              currentProof == app.appPathProof,
+              Self.sameStableAppPath(currentProof, app.appPathProof),
               currentProof.appRootIdentity == app.sourceIdentity else {
             if planBoundary { throw UninstallPlanError.appIdentityChanged }
             throw UninstallerAttributionError.appIdentityChanged
@@ -553,7 +670,8 @@ public struct UninstallerService: Sendable {
               app.url.pathExtension == "app",
               let metadata = Self.bundleMetadata(at: app.url, attestor: appAttestor),
               metadata.bundleID == app.bundleID,
-              metadata.attestation == app.metadataAttestation else {
+              Self.sameStableMetadata(metadata.attestation,
+                                      app.metadataAttestation) else {
             if planBoundary { throw UninstallPlanError.appMetadataChanged }
             throw UninstallerAttributionError.appMetadataChanged
         }
@@ -587,6 +705,60 @@ public struct UninstallerService: Sendable {
         #else
         return true
         #endif
+    }
+
+    /// The no-follow attestor proves that every component is the same physical object. Size and
+    /// timestamps are intentionally excluded at the final mutation boundary: moving an earlier
+    /// sibling to Trash legitimately changes its parent directory metadata. The target's exact
+    /// device/inode/type is independently rechecked by the engine immediately before `trash`.
+    private static func sameStablePhysicalPath(
+        _ current: PhysicalPathAttestation,
+        _ stored: PhysicalPathAttestation
+    ) -> Bool {
+        guard current.canonicalPath == stored.canonicalPath,
+              current.componentNames == stored.componentNames,
+              current.componentIdentities.count == stored.componentIdentities.count else {
+            return false
+        }
+        let fileTypeMask: UInt32 = 0o170000
+        return zip(current.componentIdentities, stored.componentIdentities).allSatisfy {
+            $0.device == $1.device
+                && $0.inode == $1.inode
+                && ($0.mode & fileTypeMask) == ($1.mode & fileTypeMask)
+        }
+    }
+
+    /// Creating or removing a sibling legitimately changes ancestor directory timestamps. Keep
+    /// the no-follow physical chain exact by device/inode/type, while the separate leaf equality
+    /// in `validateCurrentApp` still requires the App directory's complete scan-time identity.
+    private static func sameStableAppPath(
+        _ current: AppBundlePathProof,
+        _ stored: AppBundlePathProof
+    ) -> Bool {
+        guard current.canonicalPath == stored.canonicalPath,
+              current.rootRelativeComponents == stored.rootRelativeComponents,
+              current.componentIdentities.count == stored.componentIdentities.count else {
+            return false
+        }
+        let fileTypeMask: UInt32 = 0o170000
+        return zip(current.componentIdentities, stored.componentIdentities).allSatisfy {
+            $0.device == $1.device
+                && $0.inode == $1.inode
+                && ($0.mode & fileTypeMask) == ($1.mode & fileTypeMask)
+        }
+    }
+
+    /// The current no-follow App proof already revalidates the physical ancestor chain. Compare
+    /// the Info.plist leaf itself exactly (identity including ctime, length and digest) without
+    /// requiring the volatile ancestor-metadata fingerprint to remain byte-identical.
+    private static func sameStableMetadata(
+        _ current: AppBundleBoundedContentAttestation,
+        _ stored: AppBundleBoundedContentAttestation
+    ) -> Bool {
+        current.relativeComponentsInsideApp == stored.relativeComponentsInsideApp
+            && current.identity == stored.identity
+            && current.exactLength == stored.exactLength
+            && current.contentDigest == stored.contentDigest
     }
 
     private static func isValidPathComponent(_ value: String) -> Bool {

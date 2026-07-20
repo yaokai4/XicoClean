@@ -68,6 +68,7 @@ final class CleaningRoundTripTests: XCTestCase {
         XCTAssertEqual(undo.outcome.parentID, report.operation.id)
         XCTAssertEqual(undo.payload.restoredCount, 1)
         XCTAssertTrue(undo.payload.remaining.isEmpty)
+        XCTAssertEqual(undo.payload.items.single?.restoredURL, file)
         XCTAssertTrue(fixture.fs.exists(file), "撤销后文件应被还原")
     }
 
@@ -95,6 +96,7 @@ final class CleaningRoundTripTests: XCTestCase {
         XCTAssertEqual(undo.outcome.status, .failure,
                        "sandbox trash 已空时 undo 不能假装成功")
         XCTAssertEqual(undo.payload.remaining.count, 1)
+        XCTAssertNil(undo.payload.items.single?.restoredURL)
     }
 
     /// 原位已存在同名项 → 恢复到不冲突的新名字，绝不覆盖用户既有文件。
@@ -120,6 +122,35 @@ final class CleaningRoundTripTests: XCTestCase {
         let restoredCopies = (try FileManager.default.contentsOfDirectory(atPath: fixture.content.path))
             .filter { $0.contains("恢复") }
         XCTAssertEqual(restoredCopies.count, 1, "冲突时应生成一个不覆盖的恢复副本")
+        let expectedRestoredURL = fixture.content.appendingPathComponent("dup (恢复 1).txt")
+        XCTAssertEqual(undo.payload.items.single?.restoredURL, expectedRestoredURL)
+        XCTAssertTrue(fixture.fs.exists(expectedRestoredURL))
+    }
+
+    /// The production filesystem adapter must report the destination it actually selected rather
+    /// than silently collapsing a collision restore back to the stale original receipt path.
+    func testLocalFileSystemRestoreReturnsActualUniqueURLOnCollision() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("XicoLocalRestore-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let content = root.appendingPathComponent("Content")
+        let trash = root.appendingPathComponent("SandboxTrash")
+        try FileManager.default.createDirectory(at: content, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+        let original = content.appendingPathComponent("dup.txt")
+        let trashed = trash.appendingPathComponent("dup.txt")
+        try Data("newer".utf8).write(to: original)
+        try Data("original".utf8).write(to: trashed)
+        let expected = content.appendingPathComponent("dup (恢复 1).txt")
+
+        let actual = try localFS.restore(RestorableItem(
+            originalURL: original,
+            trashedURL: trashed))
+
+        XCTAssertEqual(actual, expected)
+        XCTAssertEqual(try String(contentsOf: original, encoding: .utf8), "newer")
+        XCTAssertEqual(try String(contentsOf: actual, encoding: .utf8), "original")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: trashed.path))
     }
 
     /// 双重撤销：第二次 undo 应把（已经放回的）项判为失败，而不是崩溃或重复。
@@ -261,7 +292,7 @@ private final class SandboxedFileSystemService: @unchecked Sendable, FileSystemS
         try FileManager.default.removeItem(at: url)
     }
 
-    func restore(_ item: RestorableItem) throws {
+    func restore(_ item: RestorableItem) throws -> URL {
         try requireInsideAllowedRoot(item.originalURL)
         try requireInsideTrashRoot(item.trashedURL)
         recordMutation(item.originalURL)
@@ -281,6 +312,7 @@ private final class SandboxedFileSystemService: @unchecked Sendable, FileSystemS
             } while FileManager.default.fileExists(atPath: destination.path)
         }
         try FileManager.default.moveItem(at: item.trashedURL, to: destination)
+        return destination
     }
 
     func volumeCapacity(for url: URL) -> VolumeCapacity? {

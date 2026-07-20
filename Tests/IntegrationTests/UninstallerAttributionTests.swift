@@ -190,8 +190,6 @@ final class UninstallerAttributionTests: XCTestCase {
         private let lock = NSLock()
         private var counts: [Int] = []
         let counter: InvocationCounter
-        private let engine = CleaningEngine(
-            safety: AllowAllSafety(), fs: LocalFileSystemService())
 
         init(counter: InvocationCounter = InvocationCounter()) {
             self.counter = counter
@@ -201,14 +199,104 @@ final class UninstallerAttributionTests: XCTestCase {
 
         func execute(
             _ prepared: PreparedUninstallExecution,
-            admission: @escaping @Sendable () async -> Bool
-        ) async -> CleaningReport? {
-            guard await admission(), let items = prepared.selectedItems else { return nil }
-            lock.withLock { counts.append(items.count) }
+            admission: @escaping @Sendable () async -> Bool,
+            finalAdmission: @escaping @Sendable () -> Bool,
+            evidenceAdmission: @escaping @Sendable (PreparedUninstallTarget) -> Bool
+        ) async -> UninstallPayloadExecution? {
+            guard await admission(), finalAdmission(),
+                  prepared.validateIntegrity(),
+                  prepared.orderedTargets.allSatisfy(evidenceAdmission) else { return nil }
+            lock.withLock { counts.append(prepared.orderedTargets.count) }
             counter.increment()
-            // Tests must never mutate their fixture. Production uses
-            // CleaningEngineUninstallPayloadExecutor with the exact sealed items.
-            return await engine.execute(CleaningPlan(items: [], intent: .trash))
+            // Tests must never mutate their fixture. Return a reducer-backed, no-mutation
+            // uninstall terminal correlated to every exact prepared occurrence.
+            let bindings = prepared.orderedTargets.map {
+                UninstallPayloadOccurrenceBinding(requestID: UUID(), target: $0)
+            }
+            let results = bindings.map { binding in
+                let issue = OperationIssue(
+                    code: "uninstall.test.noMutation",
+                    category: .unavailable,
+                    subjectID: binding.requestID.uuidString,
+                    recovery: .retry,
+                    retryable: true)
+                return CleaningItemResult(
+                    requestID: binding.requestID,
+                    itemID: binding.target.candidate.item.id,
+                    url: binding.target.candidate.url,
+                    intent: .trash,
+                    disposition: .failed(issue),
+                    mutation: .none,
+                    reclaimedBytes: 0,
+                    restorable: nil)
+            }
+            let now = Date()
+            let outcome = try! OperationOutcomeReducer.reduce(
+                kind: .uninstall,
+                requestedSubjectIDs: bindings.map { $0.requestID.uuidString },
+                itemOutcomes: results.map {
+                    OperationItemOutcome(
+                        subjectID: $0.requestID.uuidString,
+                        disposition: $0.disposition,
+                        mutation: $0.mutation)
+                },
+                cancellationAccepted: false,
+                startedAt: now,
+                finishedAt: now)
+            return UninstallPayloadExecution(
+                report: CleaningReport(operation: outcome, items: results),
+                occurrences: bindings)
+        }
+    }
+
+    /// Simulates an Infrastructure bug after the mutation body returned: every emitted success
+    /// carries an exact reversible receipt, but the report omits the final prepared occurrence.
+    /// No real filesystem mutation occurs.
+    private struct MalformedPostMutationPayloadExecutor: UninstallPayloadExecuting {
+        func execute(
+            _ prepared: PreparedUninstallExecution,
+            admission: @escaping @Sendable () async -> Bool,
+            finalAdmission: @escaping @Sendable () -> Bool,
+            evidenceAdmission: @escaping @Sendable (PreparedUninstallTarget) -> Bool
+        ) async -> UninstallPayloadExecution? {
+            guard await admission(), finalAdmission(), prepared.validateIntegrity(),
+                  prepared.orderedTargets.allSatisfy(evidenceAdmission) else { return nil }
+            let occurrences = prepared.orderedTargets.map {
+                UninstallPayloadOccurrenceBinding(requestID: UUID(), target: $0)
+            }
+            let retainedOccurrences = Array(occurrences.dropLast())
+            let results = retainedOccurrences.map { occurrence in
+                CleaningItemResult(
+                    requestID: occurrence.requestID,
+                    itemID: occurrence.target.candidate.id,
+                    url: occurrence.target.candidate.url,
+                    intent: .trash,
+                    disposition: .succeeded,
+                    mutation: .changed,
+                    reclaimedBytes:
+                        occurrence.target.candidate.item.estimatedReclaimableBytes,
+                    restorable: RestorableItem(
+                        originalURL: occurrence.target.candidate.url,
+                        trashedURL: URL(fileURLWithPath: "/private/tmp/xico-malformed-trash")
+                            .appendingPathComponent(occurrence.requestID.uuidString)))
+            }
+            let now = Date()
+            let outcome = try! OperationOutcomeReducer.reduce(
+                kind: .uninstall,
+                requestedSubjectIDs: results.map { $0.requestID.uuidString },
+                itemOutcomes: results.map {
+                    OperationItemOutcome(
+                        subjectID: $0.requestID.uuidString,
+                        disposition: $0.disposition,
+                        mutation: $0.mutation,
+                        affectedBytes: $0.reclaimedBytes)
+                },
+                cancellationAccepted: false,
+                startedAt: now,
+                finishedAt: now)
+            return UninstallPayloadExecution(
+                report: CleaningReport(operation: outcome, items: results),
+                occurrences: occurrences)
         }
     }
 
@@ -248,10 +336,91 @@ final class UninstallerAttributionTests: XCTestCase {
         func remove(_ url: URL) throws {
             lock.withLock { recordedTrashPaths.append(url.standardizedFileURL.path) }
         }
-        func restore(_ item: RestorableItem) throws {}
+        func restore(_ item: RestorableItem) throws -> URL { item.originalURL }
         func volumeCapacity(for url: URL) -> VolumeCapacity? { local.volumeCapacity(for: url) }
         func deepEnumerate(_ url: URL, includeFiles: Bool) -> AsyncStream<FileEntry> {
             local.deepEnumerate(url, includeFiles: includeFiles)
+        }
+    }
+
+    private final class NonMutatingTrashFileSystem: @unchecked Sendable,
+                                                    FileSystemService {
+        private let local = LocalFileSystemService()
+        private let lock = NSLock()
+        private let onTrash: @Sendable () -> Void
+        private var paths: [String] = []
+
+        init(onTrash: @escaping @Sendable () -> Void = {}) {
+            self.onTrash = onTrash
+        }
+
+        var trashedPaths: [String] { lock.withLock { paths } }
+        func exists(_ url: URL) -> Bool { local.exists(url) }
+        func contentsOfDirectory(_ url: URL) -> [URL] { local.contentsOfDirectory(url) }
+        func allocatedSize(of url: URL) -> Int64 { local.allocatedSize(of: url) }
+        func entry(for url: URL) -> FileEntry? { local.entry(for: url) }
+        func trash(_ url: URL) throws -> URL {
+            lock.withLock { paths.append(url.standardizedFileURL.path) }
+            onTrash()
+            return URL(fileURLWithPath: "/private/tmp/xico-fake-trash")
+                .appendingPathComponent(UUID().uuidString)
+        }
+        func remove(_ url: URL) throws {
+            XCTFail("uninstall must not permanently remove a target")
+        }
+        func restore(_ item: RestorableItem) throws -> URL { item.originalURL }
+        func volumeCapacity(for url: URL) -> VolumeCapacity? {
+            local.volumeCapacity(for: url)
+        }
+        func deepEnumerate(_ url: URL, includeFiles: Bool) -> AsyncStream<FileEntry> {
+            local.deepEnumerate(url, includeFiles: includeFiles)
+        }
+    }
+
+    /// Simulates the parent-directory timestamp changes caused by moving an earlier sibling to
+    /// Trash while preserving every component's device/inode/type identity.
+    private final class ParentMetadataDriftPathAttestor: @unchecked Sendable,
+                                                          LibraryPathAttesting {
+        private let base: FDAnchoredLibraryPathAttestor
+        private let lock = NSLock()
+        private var shouldDrift = false
+
+        init(home: URL) { base = FDAnchoredLibraryPathAttestor(home: home) }
+        func beginDrift() { lock.withLock { shouldDrift = true } }
+
+        func attest(_ url: URL) -> PhysicalPathAttestation? {
+            guard let proof = base.attest(url) else { return nil }
+            guard lock.withLock({ shouldDrift }),
+                  proof.componentIdentities.count >= 2 else { return proof }
+            var identities = proof.componentIdentities
+            let parentIndex = identities.index(identities.endIndex, offsetBy: -2)
+            let parent = identities[parentIndex]
+            identities[parentIndex] = LocalFileIdentity(
+                device: parent.device,
+                inode: parent.inode,
+                mode: parent.mode,
+                size: parent.size,
+                mtimeNanoseconds: parent.mtimeNanoseconds &+ 1,
+                changeTimeNanoseconds: parent.changeTimeNanoseconds &+ 1,
+                hardLinkCount: parent.hardLinkCount)
+            return PhysicalPathAttestation(
+                canonicalPath: proof.canonicalPath,
+                componentNames: proof.componentNames,
+                componentIdentities: identities)
+        }
+
+        func readRegularFile(_ url: URL, maximumBytes: Int) -> AnchoredRegularFileRead? {
+            base.readRegularFile(url, maximumBytes: maximumBytes)
+        }
+    }
+
+    private struct OverridingIdentitySampler: IdentitySampler {
+        let path: String
+        let replacement: LocalFileIdentity
+        private let local = LocalFileIdentitySampler()
+
+        func sample(_ canonicalPath: String) -> LocalFileIdentity? {
+            canonicalPath == path ? replacement : local.sample(canonicalPath)
         }
     }
 
@@ -361,7 +530,9 @@ final class UninstallerAttributionTests: XCTestCase {
                                  _ mutation: PreparedPayloadMutation)
         -> PreparedUninstallExecution {
         var targets = prepared.orderedTargets
-        let index = targets.count - 1
+        let index = mutation == .role
+            ? targets.firstIndex(where: { $0.candidate.role != .appBody })!
+            : targets.count - 1
         let target = targets[index]
         let original = target.candidate
         let originalItem = original.item
@@ -382,12 +553,16 @@ final class UninstallerAttributionTests: XCTestCase {
             item: item,
             evidence: mutation == .evidence ? .unverified : original.evidence,
             selectionPolicy: mutation == .policy ? .manualOnly : original.selectionPolicy,
-            role: mutation == .role ? .appBody : original.role,
+            role: mutation == .role
+                ? (original.role == .appBody ? .associatedFile : .appBody)
+                : original.role,
             batchID: original.batchID,
             evidenceBinding: original.evidenceBinding,
             recoveryHint: original.recoveryHint)
         targets[index] = PreparedUninstallTarget(
-            ordinal: target.ordinal, candidate: candidate,
+            ordinal: target.ordinal,
+            batchCandidateIndex: target.batchCandidateIndex,
+            candidate: candidate,
             canonicalPath: target.canonicalPath,
             expectedIdentity: target.expectedIdentity,
             evidenceFingerprint: target.evidenceFingerprint,
@@ -412,7 +587,9 @@ final class UninstallerAttributionTests: XCTestCase {
         func entry(for url: URL) -> FileEntry? { local.entry(for: url) }
         func trash(_ url: URL) throws -> URL { throw CocoaError(.fileWriteNoPermission) }
         func remove(_ url: URL) throws { throw CocoaError(.fileWriteNoPermission) }
-        func restore(_ item: RestorableItem) throws { throw CocoaError(.fileWriteNoPermission) }
+        func restore(_ item: RestorableItem) throws -> URL {
+            throw CocoaError(.fileWriteNoPermission)
+        }
         func volumeCapacity(for url: URL) -> VolumeCapacity? { local.volumeCapacity(for: url) }
         func deepEnumerate(_ url: URL, includeFiles: Bool) -> AsyncStream<FileEntry> {
             local.deepEnumerate(url, includeFiles: includeFiles)
@@ -1164,7 +1341,10 @@ final class UninstallerAttributionTests: XCTestCase {
         let prepared = try service.prepareUninstallExecution(from: batch, using: issuer)
 
         XCTAssertEqual(prepared.plan.targets.count, prepared.orderedTargets.count)
-        XCTAssertEqual(prepared.orderedTargets.first?.candidate.role, .appBody)
+        XCTAssertTrue(prepared.orderedTargets.dropLast().allSatisfy {
+            $0.candidate.role == .associatedFile
+        })
+        XCTAssertEqual(prepared.orderedTargets.last?.candidate.role, .appBody)
         for (planTarget, sealedTarget) in zip(prepared.plan.targets,
                                               prepared.orderedTargets) {
             XCTAssertEqual(planTarget.canonicalPath, sealedTarget.canonicalPath)
@@ -1174,6 +1354,25 @@ final class UninstallerAttributionTests: XCTestCase {
             XCTAssertNotEqual(planTarget.evidenceFingerprint, .none)
         }
         XCTAssertEqual(prepared.preparationSeal.count, 32)
+    }
+
+    func testPreparationAcceptsSiblingMetadataDriftAlongSameAppPhysicalChain() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let service = fixture.service()
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let sibling = fixture.appURL.deletingLastPathComponent()
+            .appendingPathComponent("New Sibling.app")
+        try FileManager.default.createDirectory(at: sibling,
+                                                withIntermediateDirectories: true)
+        let issuer = DestructiveOperationIssuer(
+            sampler: LocalFileIdentitySampler(), ledger: AuthorizationLedger())
+
+        let prepared = try service.prepareUninstallExecution(from: batch, using: issuer)
+
+        XCTAssertEqual(prepared.batchSnapshot.app.sourceIdentity,
+                       fixture.app.sourceIdentity)
+        XCTAssertEqual(prepared.orderedTargets.last?.candidate.role, .appBody)
     }
 
     func testPreparationRejectsIdentitySubstitutionAfterValidationBeforeIssuerSampling() throws {
@@ -1739,7 +1938,8 @@ final class UninstallerAttributionTests: XCTestCase {
         let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
 
         let fs = BlockingRecordingFileSystem()
-        let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs)
+        let permit = UninstallExecutionPermitToken()
+        let engine = permit.makeCleaningEngine(safety: AllowAllSafety(), fs: fs)
         // Keep the actor blocker outside the app proof's ancestor chain; creating a sibling in
         // `fixture.root` correctly changes that directory's ctime and would invalidate the app.
         let blockerURL = URL(fileURLWithPath:
@@ -1758,6 +1958,7 @@ final class UninstallerAttributionTests: XCTestCase {
         let allowActorHop = DispatchSemaphore(value: 0)
         let payloadExecutor = CleaningEngineUninstallPayloadExecutor(
             engine: engine,
+            permit: permit,
             beforeActorHop: {
                 reachedActorHop.signal()
                 _ = allowActorHop.wait(timeout: .now() + 5)
@@ -1802,10 +2003,12 @@ final class UninstallerAttributionTests: XCTestCase {
         let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
 
         let fs = BlockingRecordingFileSystem()
-        let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs)
+        let permit = UninstallExecutionPermitToken()
+        let engine = permit.makeCleaningEngine(safety: AllowAllSafety(), fs: fs)
         let admissionGate = AsyncAdmissionGate()
         let payloadExecutor = CleaningEngineUninstallPayloadExecutor(
             engine: engine,
+            permit: permit,
             afterActorAdmission: { await admissionGate.suspend() })
         let controller = UninstallCapabilityController(
             service: service,
@@ -1846,14 +2049,576 @@ final class UninstallerAttributionTests: XCTestCase {
 
         do {
             let result = try await uninstall.value
-            if case .executed = result {
-                XCTFail("actor reentry after expiry must not execute the uninstall payload")
+            if case .executed(let terminal) = result {
+                XCTAssertFalse(terminal.fullSuccess)
+                XCTAssertEqual(terminal.report.operation.status, .failure)
+                XCTAssertTrue(terminal.restorable.isEmpty)
+                XCTAssertTrue(terminal.report.items.allSatisfy {
+                    $0.mutation == .none
+                        && $0.disposition != .succeeded
+                })
             }
         } catch {
             XCTAssertEqual(error as? UninstallPlanError, .batchExpired)
         }
         XCTAssertEqual(fs.trashedPaths, [blockerURL.standardizedFileURL.path],
                        "the final synchronous lifetime read must precede every uninstall effect")
+    }
+
+    func testDedicatedControllerExecutesAssociatedBeforeBodyAndReturnsTrustedTerminal()
+        async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let cache = try fixture.createLibraryItem("Caches/\(fixture.app.bundleID)")
+        let fs = NonMutatingTrashFileSystem()
+        let service = UninstallerService(
+            fs: fs, safety: AllowAllSafety(), home: fixture.home,
+            entitlementReader: FakeEntitlementReader(groups: []),
+            launchAgentReader: FakeLaunchAgentReader(records: [:]),
+            issuanceID: fixture.issuanceID)
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let permit = UninstallExecutionPermitToken()
+        let engine = permit.makeCleaningEngine(safety: AllowAllSafety(), fs: fs)
+        let controller = UninstallCapabilityController(
+            service: service,
+            payloadExecutor: CleaningEngineUninstallPayloadExecutor(
+                engine: engine, permit: permit),
+            issuer: DestructiveOperationIssuer(
+                sampler: LocalFileIdentitySampler(), ledger: AuthorizationLedger()))
+
+        let result = try await controller.execute(
+            confirmation: controller.beginConfirmation(for: batch))
+        let terminal: UninstallExecution
+        switch result {
+        case .executed(let value): terminal = value
+        case .failedClosed(let failure):
+            return XCTFail("unexpected fail-closed terminal: \(failure)")
+        }
+
+        XCTAssertTrue(terminal.fullSuccess)
+        XCTAssertEqual(terminal.report.operation.kind, .uninstall)
+        XCTAssertTrue(terminal.report.isReducerBacked)
+        XCTAssertEqual(fs.trashedPaths,
+                       [cache.standardizedFileURL.path,
+                        fixture.appURL.standardizedFileURL.path])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cache.path),
+                      "the execution fake must not touch Finder Trash")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.appURL.path))
+    }
+
+    func testExecutionAcceptsOwnSiblingParentMetadataDriftForSamePhysicalChain()
+        async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let groups = ["group.com.example.alpha", "group.com.example.beta"]
+        let groupURLs = try groups.map {
+            try fixture.createLibraryItem("Group Containers/\($0)")
+        }
+        let pathAttestor = ParentMetadataDriftPathAttestor(home: fixture.home)
+        let fs = NonMutatingTrashFileSystem(onTrash: pathAttestor.beginDrift)
+        let service = UninstallerService(
+            fs: fs, safety: AllowAllSafety(), home: fixture.home,
+            entitlementReader: FakeEntitlementReader(groups: groups),
+            launchAgentReader: FakeLaunchAgentReader(records: [:]),
+            pathAttestor: pathAttestor,
+            issuanceID: fixture.issuanceID)
+        var batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        for candidate in batch.candidates
+        where candidate.evidence == .signedApplicationGroup {
+            batch.toggle(candidate.id)
+        }
+        XCTAssertEqual(batch.candidates.filter {
+            $0.isSelected && $0.evidence == .signedApplicationGroup
+        }.count, 2)
+        let permit = UninstallExecutionPermitToken()
+        let engine = permit.makeCleaningEngine(safety: AllowAllSafety(), fs: fs)
+        let controller = UninstallCapabilityController(
+            service: service,
+            payloadExecutor: CleaningEngineUninstallPayloadExecutor(
+                engine: engine, permit: permit),
+            issuer: DestructiveOperationIssuer(
+                sampler: LocalFileIdentitySampler(), ledger: AuthorizationLedger()))
+
+        let execution = try await controller.execute(
+            confirmation: controller.beginConfirmation(for: batch))
+        let terminal: UninstallExecution
+        switch execution {
+        case .executed(let value): terminal = value
+        case .failedClosed(let failure):
+            return XCTFail("unexpected fail-closed terminal: \(failure)")
+        }
+
+        XCTAssertTrue(terminal.fullSuccess)
+        XCTAssertEqual(fs.trashedPaths,
+                       groupURLs.map { $0.standardizedFileURL.path }.sorted()
+                        + [fixture.appURL.standardizedFileURL.path])
+        XCTAssertTrue(groupURLs.allSatisfy {
+            FileManager.default.fileExists(atPath: $0.path)
+        }, "the metadata-drift fake must never touch Finder Trash")
+    }
+
+    func testControllerIdentityDriftRetainsCandidateAndNeverTrashesReplacement()
+        async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let cache = try fixture.createLibraryItem("Caches/\(fixture.app.bundleID)")
+        let expected = try XCTUnwrap(LocalFileIdentitySampler().sample(cache.path))
+        let replacement = LocalFileIdentity(
+            device: expected.device,
+            inode: expected.inode &+ 1,
+            mode: expected.mode,
+            size: expected.size,
+            mtimeNanoseconds: expected.mtimeNanoseconds,
+            changeTimeNanoseconds: expected.changeTimeNanoseconds,
+            hardLinkCount: expected.hardLinkCount)
+        let fs = NonMutatingTrashFileSystem()
+        let service = UninstallerService(
+            fs: fs, safety: AllowAllSafety(), home: fixture.home,
+            entitlementReader: FakeEntitlementReader(groups: []),
+            launchAgentReader: FakeLaunchAgentReader(records: [:]),
+            issuanceID: fixture.issuanceID)
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let permit = UninstallExecutionPermitToken()
+        let engine = permit.makeCleaningEngine(safety: AllowAllSafety(), fs: fs)
+        let executor = CleaningEngineUninstallPayloadExecutor(
+            engine: engine,
+            permit: permit,
+            identitySampler: OverridingIdentitySampler(
+                path: cache.standardizedFileURL.path,
+                replacement: replacement))
+        let controller = UninstallCapabilityController(
+            service: service,
+            payloadExecutor: executor,
+            issuer: DestructiveOperationIssuer(
+                sampler: LocalFileIdentitySampler(), ledger: AuthorizationLedger()))
+
+        let result = try await controller.execute(
+            confirmation: controller.beginConfirmation(for: batch))
+        let terminal: UninstallExecution
+        switch result {
+        case .executed(let value): terminal = value
+        case .failedClosed(let failure):
+            return XCTFail("unexpected fail-closed terminal: \(failure)")
+        }
+
+        XCTAssertFalse(terminal.fullSuccess)
+        XCTAssertEqual(terminal.completion, .appMovedButSomeDataRetained)
+        XCTAssertEqual(terminal.retryDirective, .cleanLeftovers)
+        XCTAssertEqual(fs.trashedPaths, [fixture.appURL.standardizedFileURL.path])
+        XCTAssertTrue(terminal.remainingBatch?.candidates.contains {
+            $0.url.standardizedFileURL.path == cache.standardizedFileURL.path
+        } == true)
+        let cacheFact = try XCTUnwrap(terminal.report.items.first {
+            $0.url.standardizedFileURL.path == cache.standardizedFileURL.path
+        })
+        XCTAssertEqual(cacheFact.mutation, .none)
+        if case .failed(let issue) = cacheFact.disposition {
+            XCTAssertEqual(issue.code, "uninstall.identity.changed")
+        } else {
+            XCTFail("identity drift must be an explicit failed fact")
+        }
+    }
+
+    func testTerminalRejectsWrongKindCountOrderDuplicateSubstitutionAndMalformedReceipt()
+        throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.createLibraryItem("Caches/\(fixture.app.bundleID)")
+        let service = fixture.service()
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let prepared = try service.prepareUninstallExecution(
+            from: batch,
+            using: DestructiveOperationIssuer(
+                sampler: LocalFileIdentitySampler(), ledger: AuthorizationLedger()))
+        let occurrences = prepared.orderedTargets.map {
+            UninstallPayloadOccurrenceBinding(requestID: UUID(), target: $0)
+        }
+
+        func result(
+            for occurrence: UninstallPayloadOccurrenceBinding,
+            itemID: UUID? = nil,
+            url: URL? = nil,
+            trashedURL: URL? = nil
+        ) -> CleaningItemResult {
+            let target = occurrence.target
+            return CleaningItemResult(
+                requestID: occurrence.requestID,
+                itemID: itemID ?? target.candidate.item.id,
+                url: url ?? target.candidate.url,
+                intent: .trash,
+                disposition: .succeeded,
+                mutation: .changed,
+                reclaimedBytes: target.candidate.item.estimatedReclaimableBytes,
+                restorable: RestorableItem(
+                    originalURL: target.candidate.url,
+                    trashedURL: trashedURL
+                        ?? URL(fileURLWithPath: "/private/tmp/xico-terminal-trash")
+                            .appendingPathComponent(occurrence.requestID.uuidString)))
+        }
+
+        func payload(
+            kind: OperationKind = .uninstall,
+            occurrences payloadOccurrences: [UninstallPayloadOccurrenceBinding] = occurrences,
+            results: [CleaningItemResult]
+        ) throws -> UninstallPayloadExecution {
+            let now = Date()
+            let outcome = try OperationOutcomeReducer.reduce(
+                kind: kind,
+                requestedSubjectIDs: results.map { $0.requestID.uuidString },
+                itemOutcomes: results.map {
+                    OperationItemOutcome(
+                        subjectID: $0.requestID.uuidString,
+                        disposition: $0.disposition,
+                        mutation: $0.mutation,
+                        affectedBytes: $0.reclaimedBytes)
+                },
+                cancellationAccepted: false,
+                startedAt: now,
+                finishedAt: now)
+            return UninstallPayloadExecution(
+                report: CleaningReport(operation: outcome, items: results),
+                occurrences: payloadOccurrences)
+        }
+
+        let validResults = occurrences.map { result(for: $0) }
+        let validTerminal = try XCTUnwrap(UninstallExecution(
+            payload: try payload(results: validResults), prepared: prepared))
+        XCTAssertEqual(validTerminal.occurrenceFacts.count, occurrences.count)
+        for (fact, occurrence) in zip(validTerminal.occurrenceFacts, occurrences) {
+            XCTAssertEqual(fact.operationID, validTerminal.report.operation.id)
+            XCTAssertEqual(fact.requestID, occurrence.requestID)
+            XCTAssertEqual(fact.candidateID, occurrence.target.candidate.id)
+            XCTAssertEqual(fact.subject.appID, prepared.batchSnapshot.app.id)
+            XCTAssertEqual(fact.subject.canonicalPath, occurrence.target.canonicalPath)
+            XCTAssertEqual(fact.subject.role, occurrence.target.candidate.role)
+            XCTAssertEqual(fact.subject.evidence, occurrence.target.candidate.evidence)
+            XCTAssertEqual(fact.disposition, .succeeded)
+            XCTAssertEqual(fact.mutation, .changed)
+        }
+
+        var duplicateOccurrences = occurrences
+        duplicateOccurrences[1] = UninstallPayloadOccurrenceBinding(
+            requestID: duplicateOccurrences[0].requestID,
+            target: duplicateOccurrences[1].target)
+        var substitutedItem = validResults
+        substitutedItem[0] = result(for: occurrences[0], itemID: UUID())
+        var substitutedURL = validResults
+        substitutedURL[0] = result(
+            for: occurrences[0],
+            url: occurrences[0].target.candidate.url.appendingPathExtension("replacement"))
+        var malformedReceipt = validResults
+        malformedReceipt[0] = result(
+            for: occurrences[0],
+            trashedURL: occurrences[0].target.candidate.url)
+
+        let invalidPayloads = [
+            try payload(kind: .cleaningExecute, results: validResults),
+            try payload(results: Array(validResults.dropLast())),
+            try payload(results: Array(validResults.reversed())),
+            try payload(occurrences: duplicateOccurrences, results: validResults),
+            try payload(results: substitutedItem),
+            try payload(results: substitutedURL),
+            try payload(results: malformedReceipt)
+        ]
+        for invalid in invalidPayloads {
+            XCTAssertNil(UninstallExecution(payload: invalid, prepared: prepared))
+        }
+
+        var factMismatch = validResults
+        factMismatch[0] = CleaningItemResult(
+            requestID: factMismatch[0].requestID,
+            itemID: factMismatch[0].itemID,
+            url: factMismatch[0].url,
+            intent: .trash,
+            disposition: .failed(OperationIssue(
+                code: "uninstall.test.malformed",
+                category: .internalInvariant,
+                subjectID: factMismatch[0].requestID.uuidString,
+                recovery: .none,
+                retryable: false)),
+            mutation: .none,
+            reclaimedBytes: 0,
+            restorable: nil)
+        let validPayload = try payload(results: validResults)
+        let nonReducer = UninstallPayloadExecution(
+            report: CleaningReport(operation: validPayload.report.operation,
+                                   items: factMismatch),
+            occurrences: occurrences)
+        XCTAssertFalse(nonReducer.report.isReducerBacked)
+        XCTAssertNil(UninstallExecution(payload: nonReducer, prepared: prepared))
+    }
+
+    func testTrustedTerminalRejectsIssuesBoundToAnotherOrUnknownOccurrence()
+        throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.createLibraryItem("Caches/\(fixture.app.bundleID)")
+        let service = fixture.service()
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let prepared = try service.prepareUninstallExecution(
+            from: batch,
+            using: DestructiveOperationIssuer(
+                sampler: LocalFileIdentitySampler(), ledger: AuthorizationLedger()))
+        let occurrences = prepared.orderedTargets.map {
+            UninstallPayloadOccurrenceBinding(requestID: UUID(), target: $0)
+        }
+        guard occurrences.count >= 2 else {
+            XCTFail("fixture must provide another exact occurrence for cross-binding")
+            return
+        }
+
+        func issue(subjectID: String) -> OperationIssue {
+            OperationIssue(
+                code: "uninstall.test.issueBinding",
+                category: .identityChanged,
+                subjectID: subjectID,
+                recovery: .retry,
+                retryable: true)
+        }
+
+        func result(
+            for occurrence: UninstallPayloadOccurrenceBinding,
+            disposition: OperationDisposition
+        ) -> CleaningItemResult {
+            CleaningItemResult(
+                requestID: occurrence.requestID,
+                itemID: occurrence.target.candidate.id,
+                url: occurrence.target.candidate.url,
+                intent: .trash,
+                disposition: disposition,
+                mutation: .none,
+                reclaimedBytes: 0,
+                restorable: nil)
+        }
+
+        func payload(firstDisposition: OperationDisposition) throws
+            -> UninstallPayloadExecution {
+            var results = occurrences.map { occurrence in
+                result(
+                    for: occurrence,
+                    disposition: .failed(issue(
+                        subjectID: occurrence.requestID.uuidString)))
+            }
+            results[0] = result(for: occurrences[0], disposition: firstDisposition)
+            let cancellationAccepted = results.contains {
+                if case .cancelled = $0.disposition { return true }
+                return false
+            }
+            let now = Date()
+            let outcome = try OperationOutcomeReducer.reduce(
+                kind: .uninstall,
+                requestedSubjectIDs: occurrences.map { $0.requestID.uuidString },
+                itemOutcomes: results.map {
+                    OperationItemOutcome(
+                        subjectID: $0.requestID.uuidString,
+                        disposition: $0.disposition,
+                        mutation: $0.mutation)
+                },
+                cancellationAccepted: cancellationAccepted,
+                startedAt: now,
+                finishedAt: now)
+            return UninstallPayloadExecution(
+                report: CleaningReport(operation: outcome, items: results),
+                occurrences: occurrences)
+        }
+
+        let nilIssueCancellation = try payload(firstDisposition: .cancelled(nil))
+        XCTAssertTrue(nilIssueCancellation.report.isReducerBacked)
+        XCTAssertNotNil(UninstallExecution(
+            payload: nilIssueCancellation, prepared: prepared),
+            "a cancellation without an issue keeps its existing valid semantics")
+
+        let malformedSubjects = [
+            ("another occurrence", occurrences[1].requestID.uuidString),
+            ("unknown occurrence", UUID().uuidString)
+        ]
+        let dispositions: [(String, (OperationIssue) -> OperationDisposition)] = [
+            ("failed", { .failed($0) }),
+            ("skipped", { .skipped($0) }),
+            ("cancelled", { .cancelled($0) })
+        ]
+        for (dispositionName, makeDisposition) in dispositions {
+            for (subjectName, subjectID) in malformedSubjects {
+                let malformed = try payload(
+                    firstDisposition: makeDisposition(issue(subjectID: subjectID)))
+                XCTAssertTrue(
+                    malformed.report.isReducerBacked,
+                    "\(dispositionName)/\(subjectName) must reach terminal binding validation")
+                XCTAssertNil(
+                    UninstallExecution(payload: malformed, prepared: prepared),
+                    "\(dispositionName) issue bound to \(subjectName) must fail closed")
+            }
+        }
+    }
+
+    func testMalformedFallbackDropsEveryReceiptSharingTrashEndpointButKeepsIndependentReceipts()
+        throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.createLibraryItem("Application Support/\(fixture.app.bundleID)")
+        _ = try fixture.createLibraryItem("Caches/\(fixture.app.bundleID)")
+        let service = fixture.service()
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let prepared = try service.prepareUninstallExecution(
+            from: batch,
+            using: DestructiveOperationIssuer(
+                sampler: LocalFileIdentitySampler(), ledger: AuthorizationLedger()))
+        guard prepared.orderedTargets.count >= 3 else {
+            XCTFail("fixture must provide two conflicting targets and one independent target")
+            return
+        }
+        let sharedTrash = URL(
+            fileURLWithPath: "/private/tmp/xico-malformed-shared-trash")
+        let generated = try makeSuccessfulUninstallPayload(prepared: prepared) {
+            index, occurrence in
+            index < 2
+                ? sharedTrash
+                : URL(fileURLWithPath: "/private/tmp/xico-malformed-independent-trash")
+                    .appendingPathComponent(occurrence.requestID.uuidString)
+        }
+
+        XCTAssertNil(UninstallExecution(payload: generated.payload, prepared: prepared),
+                     "a trusted terminal must reject duplicate receipt endpoints")
+        let fallback = UninstallExecution(
+            malformedPayload: generated.payload, prepared: prepared)
+        let conflictingOriginals = Set(generated.receipts.prefix(2).map {
+            $0.originalURL.standardizedFileURL.path
+        })
+
+        XCTAssertTrue(fallback.restorable.allSatisfy {
+            !conflictingOriginals.contains($0.originalURL.standardizedFileURL.path)
+        }, "every receipt in an ambiguous shared-trash collision must be discarded")
+        XCTAssertEqual(fallback.restorable, Array(generated.receipts.dropFirst(2)),
+                       "independent exact receipts must remain available for undo")
+    }
+
+    func testMalformedFallbackDropsEveryReceiptInOriginalTrashCrossCollisionButKeepsIndependentReceipts()
+        throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.createLibraryItem("Application Support/\(fixture.app.bundleID)")
+        _ = try fixture.createLibraryItem("Caches/\(fixture.app.bundleID)")
+        let service = fixture.service()
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let prepared = try service.prepareUninstallExecution(
+            from: batch,
+            using: DestructiveOperationIssuer(
+                sampler: LocalFileIdentitySampler(), ledger: AuthorizationLedger()))
+        guard prepared.orderedTargets.count >= 3 else {
+            XCTFail("fixture must provide two conflicting targets and one independent target")
+            return
+        }
+        let secondOriginal = prepared.orderedTargets[1].candidate.url
+        let generated = try makeSuccessfulUninstallPayload(prepared: prepared) {
+            index, occurrence in
+            index == 0
+                ? secondOriginal
+                : URL(fileURLWithPath: "/private/tmp/xico-malformed-independent-trash")
+                    .appendingPathComponent(occurrence.requestID.uuidString)
+        }
+
+        XCTAssertNil(UninstallExecution(payload: generated.payload, prepared: prepared),
+                     "a trusted terminal must reject original-to-trash endpoint aliasing")
+        let fallback = UninstallExecution(
+            malformedPayload: generated.payload, prepared: prepared)
+        let conflictingOriginals = Set(generated.receipts.prefix(2).map {
+            $0.originalURL.standardizedFileURL.path
+        })
+
+        XCTAssertTrue(fallback.restorable.allSatisfy {
+            !conflictingOriginals.contains($0.originalURL.standardizedFileURL.path)
+        }, "both sides of an original-to-trash collision must be discarded")
+        XCTAssertEqual(fallback.restorable, Array(generated.receipts.dropFirst(2)),
+                       "independent exact receipts must remain available for undo")
+    }
+
+    private func makeSuccessfulUninstallPayload(
+        prepared: PreparedUninstallExecution,
+        trashedURL: (Int, UninstallPayloadOccurrenceBinding) -> URL
+    ) throws -> (payload: UninstallPayloadExecution, receipts: [RestorableItem]) {
+        let occurrences = prepared.orderedTargets.map {
+            UninstallPayloadOccurrenceBinding(requestID: UUID(), target: $0)
+        }
+        let receipts = occurrences.enumerated().map { index, occurrence in
+            RestorableItem(
+                originalURL: occurrence.target.candidate.url,
+                trashedURL: trashedURL(index, occurrence))
+        }
+        let results = zip(occurrences, receipts).map { occurrence, receipt in
+            CleaningItemResult(
+                requestID: occurrence.requestID,
+                itemID: occurrence.target.candidate.id,
+                url: occurrence.target.candidate.url,
+                intent: .trash,
+                disposition: .succeeded,
+                mutation: .changed,
+                reclaimedBytes:
+                    occurrence.target.candidate.item.estimatedReclaimableBytes,
+                restorable: receipt)
+        }
+        let now = Date()
+        let outcome = try OperationOutcomeReducer.reduce(
+            kind: .uninstall,
+            requestedSubjectIDs: occurrences.map { $0.requestID.uuidString },
+            itemOutcomes: results.map {
+                OperationItemOutcome(
+                    subjectID: $0.requestID.uuidString,
+                    disposition: $0.disposition,
+                    mutation: $0.mutation,
+                    affectedBytes: $0.reclaimedBytes)
+            },
+            cancellationAccepted: false,
+            startedAt: now,
+            finishedAt: now)
+        return (
+            UninstallPayloadExecution(
+                report: CleaningReport(operation: outcome, items: results),
+                occurrences: occurrences),
+            receipts)
+    }
+
+    func testControllerRetainsExactReceiptsAndReturnsUncertainTerminalForMalformedPayload()
+        async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.createLibraryItem("Caches/\(fixture.app.bundleID)")
+        let service = fixture.service()
+        let batch = try service.uninstallTargets(for: fixture.app, mode: .uninstallApp)
+        let controller = UninstallCapabilityController(
+            service: service,
+            payloadExecutor: MalformedPostMutationPayloadExecutor(),
+            issuer: DestructiveOperationIssuer(
+                sampler: LocalFileIdentitySampler(), ledger: AuthorizationLedger()))
+        let confirmation = controller.beginConfirmation(for: batch)
+
+        let result = try await controller.execute(confirmation: confirmation)
+        let terminal: UninstallExecution
+        switch result {
+        case .executed(let value): terminal = value
+        case .failedClosed(let failure):
+            return XCTFail("unexpected capability failure: \(failure)")
+        }
+
+        XCTAssertEqual(terminal.completion, .uncertain)
+        XCTAssertFalse(terminal.fullSuccess)
+        XCTAssertTrue(terminal.requiresFreshScanForRetry)
+        XCTAssertEqual(terminal.retryDirective, .determineFromFreshScan)
+        XCTAssertTrue(terminal.report.isReducerBacked)
+        XCTAssertEqual(terminal.report.operation.kind, .uninstall)
+        XCTAssertEqual(terminal.report.operation.status, .failure)
+        XCTAssertTrue(terminal.occurrenceFacts.allSatisfy {
+            $0.mutation == .possiblyChanged && $0.disposition != .succeeded
+        })
+        XCTAssertEqual(terminal.restorable.count, batch.selectedCount - 1,
+                       "strictly correlated receipts must survive malformed aggregation")
+        XCTAssertEqual(terminal.remainingBatch?.selectedCount, batch.selectedCount)
+
+        do {
+            _ = try await controller.execute(confirmation: confirmation)
+            XCTFail("the consumed malformed operation must never replay")
+        } catch {
+            XCTAssertEqual(error as? UninstallPlanError, .batchAlreadyConsumed)
+        }
     }
 
     func testCapabilityControllerConsumesBatchExactlyOnceConcurrently() async throws {

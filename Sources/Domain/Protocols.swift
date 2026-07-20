@@ -23,8 +23,10 @@ public protocol FileSystemService: Sendable {
     func trash(_ url: URL) throws -> URL
     /// 彻底删除
     func remove(_ url: URL) throws
-    /// 从废纸篓恢复到原位置
-    func restore(_ item: RestorableItem) throws
+    /// 从废纸篓恢复到原目录；同名冲突时使用不覆盖的替代名称
+    /// Restores one exact Trash receipt and returns the file URL that now contains the item.
+    /// The destination may differ from `originalURL` when a collision must be preserved safely.
+    func restore(_ item: RestorableItem) throws -> URL
     /// 卷容量信息
     func volumeCapacity(for url: URL) -> VolumeCapacity?
     /// 递归枚举（用于大文件 / 空间透镜），以流式返回

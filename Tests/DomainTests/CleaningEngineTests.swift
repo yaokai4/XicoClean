@@ -3167,6 +3167,8 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(Set(result.payload.items.map(\.requestID)).count, 2)
         XCTAssertEqual(result.payload.items.first?.disposition, .succeeded)
         XCTAssertEqual(result.payload.items.first?.mutation, .changed)
+        XCTAssertEqual(result.payload.items.first?.restoredURL,
+                       restored.originalURL)
         guard case let .failed(issue)? = result.payload.items.last?.disposition else {
             return XCTFail("Expected failed undo fact")
         }
@@ -3175,8 +3177,118 @@ final class CleaningEngineTests: XCTestCase {
         XCTAssertEqual(issue.recovery, .retry)
         XCTAssertTrue(issue.retryable)
         XCTAssertEqual(result.payload.items.last?.mutation, .possiblyChanged)
+        XCTAssertNil(result.payload.items.last?.restoredURL)
         XCTAssertEqual(result.payload.restoredCount, 1)
         XCTAssertEqual(result.payload.remaining, [retained])
+    }
+
+    func testUndoSuccessCarriesActualRestoredURLAndFailureCarriesNone() async {
+        let restored = RestorableItem(
+            originalURL: URL(fileURLWithPath: "/tmp/undo-actual-original"),
+            trashedURL: URL(fileURLWithPath: "/tmp/trash/undo-actual-original"))
+        let alternateURL = URL(fileURLWithPath: "/tmp/undo-actual-original (恢复 1)")
+        let retained = RestorableItem(
+            originalURL: URL(fileURLWithPath: "/tmp/undo-actual-retained"),
+            trashedURL: URL(fileURLWithPath: "/tmp/trash/undo-actual-retained"))
+        let fs = RestoreResultFS(
+            results: [
+                restored.originalURL.standardizedFileURL.path: .success(alternateURL),
+                retained.originalURL.standardizedFileURL.path:
+                    .failure(TestFileSystemError.operationFailed)
+            ],
+            existingAfterRestore: Set([alternateURL]))
+        let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs)
+
+        let result = await engine.undo([restored, retained])
+
+        XCTAssertEqual(result.payload.items.count, 2)
+        XCTAssertEqual(result.payload.items[0].disposition, .succeeded)
+        XCTAssertEqual(result.payload.items[0].mutation, .changed)
+        XCTAssertEqual(result.payload.items[0].restoredURL, alternateURL)
+        guard case .failed = result.payload.items[1].disposition else {
+            return XCTFail("Expected the throwing receipt to remain failed")
+        }
+        XCTAssertEqual(result.payload.items[1].mutation, .possiblyChanged)
+        XCTAssertNil(result.payload.items[1].restoredURL)
+        XCTAssertEqual(result.payload.remaining, [retained])
+    }
+
+    func testUndoRejectsInvalidReturnedRestoreURLAndRetainsExactReceipt() async {
+        let invalidCases: [(name: String, returned: URL, existsAfterRestore: Bool)] = [
+            ("non-file URL", URL(string: "https://example.invalid/restored")!, true),
+            ("same as Trash receipt",
+             URL(fileURLWithPath: "/tmp/trash/undo-invalid-same"), true),
+            ("reported destination missing",
+             URL(fileURLWithPath: "/tmp/undo-invalid-missing"), false)
+        ]
+
+        for testCase in invalidCases {
+            let original = URL(fileURLWithPath:
+                "/tmp/undo-invalid-original-\(UUID().uuidString)")
+            let trashed = testCase.name == "same as Trash receipt"
+                ? testCase.returned
+                : URL(fileURLWithPath:
+                    "/tmp/trash/undo-invalid-\(UUID().uuidString)")
+            let receipt = RestorableItem(originalURL: original, trashedURL: trashed)
+            let existing = testCase.existsAfterRestore ? [testCase.returned] : []
+            let fs = RestoreResultFS(
+                results: [original.standardizedFileURL.path: .success(testCase.returned)],
+                existingAfterRestore: Set(existing))
+            let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs)
+
+            let result = await engine.undo([receipt])
+
+            XCTAssertEqual(result.outcome.status, .failure, testCase.name)
+            guard let fact = result.payload.items.single,
+                  case .failed = fact.disposition else {
+                XCTFail("Invalid restore result must be a failed fact: \(testCase.name)")
+                continue
+            }
+            XCTAssertEqual(fact.mutation, .possiblyChanged, testCase.name)
+            XCTAssertNil(fact.restoredURL, testCase.name)
+            XCTAssertEqual(result.payload.remaining, [receipt], testCase.name)
+        }
+    }
+
+    func testCancelledUndoDoesNotCarryRestoredURL() async {
+        let receipt = RestorableItem(
+            originalURL: URL(fileURLWithPath: "/tmp/undo-cancelled"),
+            trashedURL: URL(fileURLWithPath: "/tmp/trash/undo-cancelled"))
+        let fs = RecordingFS(existing: [])
+        let engine = CleaningEngine(safety: AllowAllSafety(), fs: fs)
+        let task = Task {
+            do {
+                try await Task.sleep(for: .seconds(30))
+            } catch {}
+            return await engine.undo([receipt])
+        }
+
+        task.cancel()
+        let result = await task.value
+
+        guard let fact = result.payload.items.single,
+              case .cancelled = fact.disposition else {
+            return XCTFail("A pre-cancelled undo must emit a cancelled fact")
+        }
+        XCTAssertEqual(fact.mutation, .none)
+        XCTAssertNil(fact.restoredURL)
+        XCTAssertEqual(result.payload.remaining, [receipt])
+        XCTAssertTrue(fs.mutatedPaths.isEmpty)
+    }
+
+    func testUnchangedUndoItemCannotCarryRestoredURL() {
+        let receipt = RestorableItem(
+            originalURL: URL(fileURLWithPath: "/tmp/undo-unchanged"),
+            trashedURL: URL(fileURLWithPath: "/tmp/trash/undo-unchanged"))
+        let fact = UndoItemResult(
+            requestID: UUID(),
+            item: receipt,
+            disposition: .unchanged,
+            mutation: .none,
+            restoredURL: receipt.originalURL)
+
+        XCTAssertNil(fact.restoredURL,
+                     "Only a succeeded undo fact may expose a restored destination")
     }
 
     func testUndoRejectsActiveDeletionAtEitherReceiptEndpointWithoutRestore() async {
@@ -3329,7 +3441,9 @@ final class CleaningEngineTests: XCTestCase {
             XCTAssertFalse(issue.retryable)
             XCTAssertEqual(result.payload.items[index].mutation, .none)
         }
-        XCTAssertEqual(fs.attemptedPaths, [unique.originalURL.standardizedFileURL.path])
+        let uniquePath = unique.originalURL.standardizedFileURL.path
+        XCTAssertEqual(fs.attemptedPaths, [uniquePath, uniquePath])
+        XCTAssertEqual(fs.existsPaths, [uniquePath])
         XCTAssertEqual(fs.mutatedPaths, [unique.originalURL.standardizedFileURL.path])
     }
 
@@ -4050,12 +4164,13 @@ private final class LockedFileState: @unchecked Sendable {
         }
     }
 
-    func restore(_ item: RestorableItem) {
+    func restore(_ item: RestorableItem) -> URL {
         synchronized {
             let path = Self.path(item.originalURL)
             $0.attemptedPaths.append(path)
             $0.mutationPaths.append(path)
             $0.existing.insert(path)
+            return item.originalURL
         }
     }
 
@@ -4089,7 +4204,7 @@ private final class MemoryFS: @unchecked Sendable, FileSystemService {
     func entry(for url: URL) -> FileEntry? { state.recordRead(url); return nil }
     func trash(_ url: URL) throws -> URL { state.trash(url) }
     func remove(_ url: URL) throws { state.remove(url) }
-    func restore(_ item: RestorableItem) throws { state.restore(item) }
+    func restore(_ item: RestorableItem) throws -> URL { state.restore(item) }
     func volumeCapacity(for url: URL) -> VolumeCapacity? { state.recordRead(url); return nil }
     func deepEnumerate(_ url: URL, includeFiles: Bool) -> AsyncStream<FileEntry> {
         state.recordRead(url)
@@ -4133,16 +4248,50 @@ private final class ThrowingFS: @unchecked Sendable, FileSystemService {
         state.remove(url, removeExisting: !shouldFail)
         if shouldFail { throw TestFileSystemError.operationFailed }
     }
-    func restore(_ item: RestorableItem) throws {
+    func restore(_ item: RestorableItem) throws -> URL {
         if failing.contains(item.originalURL.standardizedFileURL.path) {
             throw TestFileSystemError.operationFailed
         }
-        state.restore(item)
+        return state.restore(item)
     }
     func volumeCapacity(for url: URL) -> VolumeCapacity? { state.recordRead(url); return nil }
     func deepEnumerate(_ url: URL, includeFiles: Bool) -> AsyncStream<FileEntry> {
         state.recordRead(url)
         return AsyncStream { $0.finish() }
+    }
+}
+
+/// Reports a caller-selected restore destination without mutating the real filesystem. This fake
+/// lets undo tests distinguish the filesystem's typed receipt from the engine's validation of it.
+private final class RestoreResultFS: @unchecked Sendable, FileSystemService {
+    private let results: [String: Result<URL, TestFileSystemError>]
+    private let existingAfterRestore: Set<String>
+
+    init(results: [String: Result<URL, TestFileSystemError>],
+         existingAfterRestore: Set<URL>) {
+        self.results = results
+        self.existingAfterRestore = Set(existingAfterRestore.map(Self.key))
+    }
+
+    func exists(_ url: URL) -> Bool { existingAfterRestore.contains(Self.key(url)) }
+    func contentsOfDirectory(_ url: URL) -> [URL] { [] }
+    func allocatedSize(of url: URL) -> Int64 { 0 }
+    func entry(for url: URL) -> FileEntry? { nil }
+    func trash(_ url: URL) throws -> URL { url }
+    func remove(_ url: URL) throws {}
+    func restore(_ item: RestorableItem) throws -> URL {
+        guard let result = results[item.originalURL.standardizedFileURL.path] else {
+            throw TestFileSystemError.operationFailed
+        }
+        return try result.get()
+    }
+    func volumeCapacity(for url: URL) -> VolumeCapacity? { nil }
+    func deepEnumerate(_ url: URL, includeFiles: Bool) -> AsyncStream<FileEntry> {
+        AsyncStream { $0.finish() }
+    }
+
+    private static func key(_ url: URL) -> String {
+        url.isFileURL ? url.standardizedFileURL.path : url.absoluteString
     }
 }
 
@@ -4158,13 +4307,19 @@ private final class SingleUseRestoreFS: @unchecked Sendable, FileSystemService {
         self.receipt = receipt
     }
 
-    func exists(_ url: URL) -> Bool { false }
+    func exists(_ url: URL) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !available
+            && url.standardizedFileURL.path
+                == receipt.originalURL.standardizedFileURL.path
+    }
     func contentsOfDirectory(_ url: URL) -> [URL] { [] }
     func allocatedSize(of url: URL) -> Int64 { 0 }
     func entry(for url: URL) -> FileEntry? { nil }
     func trash(_ url: URL) throws -> URL { url }
     func remove(_ url: URL) throws {}
-    func restore(_ item: RestorableItem) throws {
+    func restore(_ item: RestorableItem) throws -> URL {
         lock.lock()
         restoreCalls += 1
         activeRestores += 1
@@ -4174,6 +4329,7 @@ private final class SingleUseRestoreFS: @unchecked Sendable, FileSystemService {
         activeRestores -= 1
         lock.unlock()
         if !succeeds { throw TestFileSystemError.operationFailed }
+        return item.originalURL
     }
     func volumeCapacity(for url: URL) -> VolumeCapacity? { nil }
     func deepEnumerate(_ url: URL, includeFiles: Bool) -> AsyncStream<FileEntry> {
@@ -4240,7 +4396,7 @@ private final class SuspendingFS: @unchecked Sendable, FileSystemService {
         state.remove(url)
         completeMutation()
     }
-    func restore(_ item: RestorableItem) throws { state.restore(item) }
+    func restore(_ item: RestorableItem) throws -> URL { state.restore(item) }
     func volumeCapacity(for url: URL) -> VolumeCapacity? { state.recordRead(url); return nil }
     func deepEnumerate(_ url: URL, includeFiles: Bool) -> AsyncStream<FileEntry> {
         state.recordRead(url)

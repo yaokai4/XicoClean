@@ -1,6 +1,52 @@
 import Foundation
 import os
 
+/// Capability-scoped vocabulary for Infrastructure's sealed uninstall payload. Normal Domain
+/// clients (including Features) cannot see this API without explicitly importing the SPI.
+@_spi(XicoUninstallExecution)
+public enum UninstallExecutionMode: Sendable {
+    case uninstallApp
+    case cleanLeftovers
+}
+
+@_spi(XicoUninstallExecution)
+public enum UninstallExecutionRole: Sendable {
+    case associatedFile
+    case requiredAppBody
+}
+
+/// Marker capability bound by object identity to one `CleaningEngine` instance. Infrastructure
+/// creates and privately retains the sole production token; a caller-created token cannot operate
+/// the environment's engine even if that caller deliberately opts into the SPI.
+@_spi(XicoUninstallExecution)
+public protocol UninstallExecutionPermit: AnyObject, Sendable {}
+
+/// One exact occurrence from Infrastructure's sealed Task 4 preparation. The evidence closure is
+/// issued by Infrastructure and reopens that occurrence's bounded ownership attestation at the
+/// last synchronous gate before the filesystem mutation.
+@_spi(XicoUninstallExecution)
+public struct UninstallExecutionRequest: Sendable {
+    public let requestID: UUID
+    public let item: CleanableItem
+    public let plannedTarget: PlannedTarget
+    public let role: UninstallExecutionRole
+    public let evidenceAdmission: @Sendable () -> Bool
+
+    public init(
+        requestID: UUID,
+        item: CleanableItem,
+        plannedTarget: PlannedTarget,
+        role: UninstallExecutionRole,
+        evidenceAdmission: @escaping @Sendable () -> Bool
+    ) {
+        self.requestID = requestID
+        self.item = item
+        self.plannedTarget = plannedTarget
+        self.role = role
+        self.evidenceAdmission = evidenceAdmission
+    }
+}
+
 /// 清理引擎：执行清理计划。
 /// 默认所有删除走废纸篓（可恢复）；每一项删除前都经过 SafetyEngine 校验。
 public actor CleaningEngine {
@@ -56,6 +102,7 @@ public actor CleaningEngine {
     private let fs: FileSystemService
     private let privileged: PrivilegedCleaningService?
     private let threatRemediation: (any ThreatRemediationExecuting)?
+    private let uninstallExecutionPermit: (any UninstallExecutionPermit)?
     private var activeNormalizedPaths: Set<String> = []
 
     public init(safety: SafetyEngine,
@@ -66,6 +113,20 @@ public actor CleaningEngine {
         self.fs = fs
         self.privileged = privileged
         self.threatRemediation = threatRemediation
+        self.uninstallExecutionPermit = nil
+    }
+
+    @_spi(XicoUninstallExecution)
+    public init(safety: SafetyEngine,
+                fs: FileSystemService,
+                privileged: PrivilegedCleaningService? = nil,
+                threatRemediation: (any ThreatRemediationExecuting)? = nil,
+                uninstallExecutionPermit: any UninstallExecutionPermit) {
+        self.safety = safety
+        self.fs = fs
+        self.privileged = privileged
+        self.threatRemediation = threatRemediation
+        self.uninstallExecutionPermit = uninstallExecutionPermit
     }
 
     public func execute(
@@ -77,6 +138,171 @@ public actor CleaningEngine {
             purpose: .standard,
             parentID: nil,
             progress: progress)
+    }
+
+    /// Dedicated uninstall mutation route. It deliberately does not accept a `CleaningPlan` and
+    /// cannot be reached through Domain's normal public import. Every target keeps its sealed
+    /// Task 4 identity/evidence binding until the closest practical pre-`trash` gate.
+    ///
+    /// The final call is still string-path based because `FileSystemService.trash` models Finder
+    /// Trash. Consequently a narrow recheck-to-call TOCTOU remains; this is not fd-equivalent to
+    /// Shredder and is recorded as Task 5's explicit residual risk.
+    @_spi(XicoUninstallExecution)
+    public func executeUninstall(
+        _ requests: [UninstallExecutionRequest],
+        mode: UninstallExecutionMode,
+        permit: any UninstallExecutionPermit,
+        identitySampler: @escaping @Sendable (String) -> LocalFileIdentity?,
+        initialAdmission: @escaping @Sendable () async -> Bool,
+        finalAdmission: @escaping @Sendable () -> Bool,
+        afterActorAdmission: @escaping @Sendable () async -> Void
+    ) async -> CleaningReport? {
+        guard let boundPermit = uninstallExecutionPermit,
+              ObjectIdentifier(boundPermit) == ObjectIdentifier(permit),
+              Self.validateUninstallRequests(requests, mode: mode) else { return nil }
+        guard await initialAdmission() else { return nil }
+        await afterActorAdmission()
+
+        let normalizedPaths = requests.map { $0.item.url.standardizedFileURL.path }
+        let inFlightPaths = Set(normalizedPaths).intersection(activeNormalizedPaths)
+        let reservedPaths = Set(normalizedPaths).subtracting(inFlightPaths)
+        activeNormalizedPaths.formUnion(reservedPaths)
+        defer { activeNormalizedPaths.subtract(reservedPaths) }
+
+        let operationID = UUID()
+        let startedAt = Date()
+        var cancellationAccepted = false
+        var results: [CleaningItemResult] = []
+        results.reserveCapacity(requests.count)
+
+        for request in requests {
+            let path = request.item.url.standardizedFileURL.path
+            let result: CleaningItemResult
+            if inFlightPaths.contains(path) {
+                result = Self.uninstallFailure(
+                    request,
+                    code: "uninstall.request.inFlight",
+                    category: .internalInvariant,
+                    recovery: .retry,
+                    retryable: true)
+            } else if cancellationAccepted || Task.isCancelled {
+                cancellationAccepted = true
+                result = Self.uninstallResult(
+                    request,
+                    disposition: .cancelled(nil),
+                    mutation: .none)
+            } else if !safety.verify(request.item.url, intent: .trash).isAllowed
+                        || !safety.verify(
+                            request.item.url.resolvingSymlinksInPath(),
+                            intent: .trash).isAllowed {
+                result = Self.uninstallFailure(
+                    request,
+                    code: "uninstall.safety.identityChanged",
+                    category: .identityChanged,
+                    recovery: .retry,
+                    retryable: true)
+            } else if !request.evidenceAdmission() {
+                result = Self.uninstallFailure(
+                    request,
+                    code: "uninstall.evidence.changed",
+                    category: .identityChanged,
+                    recovery: .retry,
+                    retryable: true)
+            } else if let expected = request.plannedTarget.identity,
+                      let actual = identitySampler(path),
+                      Self.matchesDeletionIdentity(expected, actual) {
+                guard finalAdmission() else {
+                    results.append(Self.uninstallFailure(
+                        request,
+                        code: "uninstall.execution.expired",
+                        category: .timeout,
+                        recovery: .retry,
+                        retryable: true))
+                    continue
+                }
+                if Task.isCancelled {
+                    cancellationAccepted = true
+                    result = Self.uninstallResult(
+                        request,
+                        disposition: .cancelled(nil),
+                        mutation: .none)
+                } else {
+                    do {
+                        let trashedURL = try fs.trash(request.item.url)
+                        if Self.isValidTrashReceipt(
+                            original: request.item.url,
+                            trashed: trashedURL) {
+                            result = Self.uninstallResult(
+                                request,
+                                disposition: .succeeded,
+                                mutation: .changed,
+                                reclaimedBytes: request.item.estimatedReclaimableBytes,
+                                restorable: RestorableItem(
+                                    originalURL: request.item.url,
+                                    trashedURL: trashedURL))
+                        } else {
+                            result = Self.uninstallFailure(
+                                request,
+                                code: "uninstall.trash.invalidReceipt",
+                                category: .io,
+                                recovery: .retry,
+                                retryable: true,
+                                mutation: .possiblyChanged)
+                        }
+                    } catch {
+                        Self.log.error("uninstall.filesystem.operationFailed count=1")
+                        result = Self.uninstallFailure(
+                            request,
+                            code: "uninstall.filesystem.operationFailed",
+                            category: .io,
+                            recovery: .retry,
+                            retryable: true,
+                            mutation: .possiblyChanged)
+                    }
+                }
+            } else {
+                result = Self.uninstallFailure(
+                    request,
+                    code: "uninstall.identity.changed",
+                    category: .identityChanged,
+                    recovery: .retry,
+                    retryable: true)
+            }
+            results.append(result)
+            if Task.isCancelled { cancellationAccepted = true }
+        }
+
+        let requestedSubjectIDs = results.map { $0.requestID.uuidString }
+        let itemOutcomes = results.map {
+            OperationItemOutcome(
+                subjectID: $0.requestID.uuidString,
+                disposition: $0.disposition,
+                mutation: $0.mutation,
+                affectedBytes: $0.reclaimedBytes)
+        }
+        let finishedAt = Date()
+        let outcome: OperationOutcome
+        do {
+            outcome = try OperationOutcomeReducer.reduce(
+                id: operationID,
+                kind: .uninstall,
+                requestedSubjectIDs: requestedSubjectIDs,
+                itemOutcomes: itemOutcomes,
+                cancellationAccepted: cancellationAccepted,
+                startedAt: startedAt,
+                finishedAt: finishedAt)
+        } catch {
+            outcome = OperationOutcomeReducer.internalFailure(
+                id: operationID,
+                kind: .uninstall,
+                requestedSubjectIDs: requestedSubjectIDs,
+                itemOutcomes: itemOutcomes,
+                cancellationAccepted: cancellationAccepted,
+                code: "uninstall.reducer.invariant",
+                startedAt: startedAt,
+                finishedAt: finishedAt)
+        }
+        return CleaningReport(operation: outcome, items: results)
     }
 
     func execute(
@@ -671,6 +897,143 @@ public actor CleaningEngine {
         }
     }
 
+    private static func validateUninstallRequests(
+        _ requests: [UninstallExecutionRequest],
+        mode: UninstallExecutionMode
+    ) -> Bool {
+        guard !requests.isEmpty,
+              requests.count <= CleaningOperationLimits.maximumFactCount,
+              Set(requests.map(\.requestID)).count == requests.count,
+              Set(requests.map { $0.item.id }).count == requests.count else { return false }
+
+        var paths = Set<String>()
+        var physicalObjects = Set<UninstallPhysicalObject>()
+        for request in requests {
+            let item = request.item
+            let target = request.plannedTarget
+            let path = item.url.standardizedFileURL.path
+            guard item.isSelected,
+                  !item.requiresHelper,
+                  !item.isInformational,
+                  path.hasPrefix("/"),
+                  path != "/",
+                  target.canonicalPath == path,
+                  target.recoverability == .trashRestorable,
+                  target.riskLevel == .low,
+                  target.evidenceFingerprint.bytes.count == 32,
+                  let identity = target.identity,
+                  Self.isDeletableFileType(identity.mode),
+                  paths.insert(path).inserted,
+                  physicalObjects.insert(UninstallPhysicalObject(identity)).inserted else {
+                return false
+            }
+            switch request.role {
+            case .requiredAppBody:
+                guard target.attribution == .verifiedAppBody,
+                      item.url.pathExtension.caseInsensitiveCompare("app") == .orderedSame else {
+                    return false
+                }
+            case .associatedFile:
+                switch target.attribution {
+                case .exactBundleIDPath, .signedApplicationGroup,
+                     .launchAgentProgramInsideBundle, .displayNameHeuristic:
+                    break
+                case .userSelected, .verifiedAppBody, .unverified:
+                    return false
+                }
+            }
+        }
+
+        let bodyIndices = requests.indices.filter {
+            requests[$0].role == .requiredAppBody
+        }
+        switch mode {
+        case .uninstallApp:
+            return bodyIndices.count == 1 && bodyIndices[0] == requests.index(before: requests.endIndex)
+        case .cleanLeftovers:
+            return bodyIndices.isEmpty
+        }
+    }
+
+    private struct UninstallPhysicalObject: Hashable {
+        let device: UInt64
+        let inode: UInt64
+
+        init(_ identity: LocalFileIdentity) {
+            device = identity.device
+            inode = identity.inode
+        }
+    }
+
+    private static let fileTypeMask: UInt32 = 0o170000
+    private static let regularFileType: UInt32 = 0o100000
+    private static let directoryFileType: UInt32 = 0o040000
+
+    private static func isDeletableFileType(_ mode: UInt32) -> Bool {
+        let type = mode & fileTypeMask
+        return type == regularFileType || type == directoryFileType
+    }
+
+    private static func matchesDeletionIdentity(
+        _ expected: LocalFileIdentity,
+        _ actual: LocalFileIdentity
+    ) -> Bool {
+        expected.device == actual.device
+            && expected.inode == actual.inode
+            && (expected.mode & fileTypeMask) == (actual.mode & fileTypeMask)
+            && isDeletableFileType(actual.mode)
+    }
+
+    private static func isValidTrashReceipt(original: URL, trashed: URL) -> Bool {
+        guard original.isFileURL, trashed.isFileURL else { return false }
+        let originalPath = original.standardizedFileURL.path
+        let trashedPath = trashed.standardizedFileURL.path
+        return originalPath.hasPrefix("/")
+            && trashedPath.hasPrefix("/")
+            && originalPath != "/"
+            && trashedPath != "/"
+            && originalPath != trashedPath
+    }
+
+    private static func uninstallFailure(
+        _ request: UninstallExecutionRequest,
+        code: String,
+        category: OperationIssueCategory,
+        recovery: OperationRecoveryHint,
+        retryable: Bool,
+        mutation: OperationMutationFact = .none
+    ) -> CleaningItemResult {
+        uninstallResult(
+            request,
+            disposition: .failed(OperationIssue(
+                code: code,
+                category: category,
+                subjectID: request.requestID.uuidString,
+                recovery: recovery,
+                retryable: retryable)),
+            mutation: mutation)
+    }
+
+    private static func uninstallResult(
+        _ request: UninstallExecutionRequest,
+        disposition: OperationDisposition,
+        mutation: OperationMutationFact,
+        reclaimedBytes: Int64 = 0,
+        restorable: RestorableItem? = nil
+    ) -> CleaningItemResult {
+        CleaningItemResult(
+            requestID: request.requestID,
+            itemID: request.item.id,
+            url: request.item.url,
+            intent: .trash,
+            prerequisite: .none,
+            retryAuthorization: nil,
+            disposition: disposition,
+            mutation: mutation,
+            reclaimedBytes: reclaimedBytes,
+            restorable: restorable)
+    }
+
     private func executeItem(
         _ request: CleaningRequest,
         intent: DeleteIntent
@@ -987,12 +1350,29 @@ public actor CleaningEngine {
                 continue
             }
             do {
-                try fs.restore(item)
+                let restoredURL = try fs.restore(item)
+                guard Self.isValidRestoreResult(restoredURL, for: item),
+                      fs.exists(restoredURL) else {
+                    let issue = OperationIssue(
+                        code: "cleaning.undo.restoreResultInvalid",
+                        category: .internalInvariant,
+                        subjectID: requestID.uuidString,
+                        recovery: .retry,
+                        retryable: true)
+                    results.append(UndoItemResult(
+                        requestID: requestID,
+                        item: item,
+                        disposition: .failed(issue),
+                        mutation: .possiblyChanged))
+                    if Task.isCancelled { cancellationAccepted = true }
+                    continue
+                }
                 results.append(UndoItemResult(
                     requestID: requestID,
                     item: item,
                     disposition: .succeeded,
-                    mutation: .changed))
+                    mutation: .changed,
+                    restoredURL: restoredURL))
             } catch {
                 Self.log.error("cleaning.undo.restoreFailed count=1")
                 let issue = OperationIssue(
@@ -1042,6 +1422,18 @@ public actor CleaningEngine {
                 finishedAt: finishedAt)
         }
         return OperationResult(outcome: outcome, payload: UndoReport(items: results))
+    }
+
+    private static func isValidRestoreResult(
+        _ restoredURL: URL,
+        for item: RestorableItem
+    ) -> Bool {
+        guard restoredURL.isFileURL else { return false }
+        let restoredPath = restoredURL.standardizedFileURL.path
+        let trashedPath = item.trashedURL.standardizedFileURL.path
+        return restoredPath.hasPrefix("/")
+            && restoredPath != "/"
+            && restoredPath != trashedPath
     }
 
     /// Transitional convenience for existing live consumers; it delegates to the typed receipt API.

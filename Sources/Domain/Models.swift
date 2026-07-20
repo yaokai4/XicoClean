@@ -496,6 +496,19 @@ public struct CleaningItemResult: Sendable {
     }
 }
 
+/// Fixed input for Domain's fail-closed uninstall terminal factory. It is exposed only through
+/// the uninstall execution SPI so normal Feature imports cannot mint reducer facts.
+@_spi(XicoUninstallExecution)
+public struct UninstallMalformedOccurrence: Sendable {
+    public let requestID: UUID
+    public let item: CleanableItem
+
+    public init(requestID: UUID, item: CleanableItem) {
+        self.requestID = requestID
+        self.item = item
+    }
+}
+
 /// Validated launch-agent identity retained only in memory so a later auxiliary-only retry never
 /// needs to reopen a plist that the successful deletion already moved or removed.
 public struct ThreatRemediationRetryToken: Equatable, Sendable {
@@ -668,12 +681,14 @@ enum CleaningReportRejectionMetadata: Equatable, Sendable {
     case merge(CleaningReportMergeFailure)
     case unexpectedMerge
     case inventoryLimit(projectedFactCount: Int)
+    case uninstallMalformed
 
     var issueCode: String {
         switch self {
         case let .merge(failure): failure.issueCode
         case .unexpectedMerge: "cleaning.merge.unexpected"
         case .inventoryLimit: "cleaning.request.inventoryLimitExceeded"
+        case .uninstallMalformed: "uninstall.terminal.malformed"
         }
     }
 }
@@ -763,6 +778,52 @@ public struct CleaningReport: Sendable {
     /// True only when the terminal outcome can be reproduced exactly from the stored typed facts.
     public var isReducerBacked: Bool {
         Self.isReducerConsistent(self)
+    }
+
+    /// Domain-owned fixed-kind fallback for a malformed payload observed after an uninstall body
+    /// may have run. It deliberately cannot express success, unchanged, receipts or a generic
+    /// retry authorization; each exact prepared occurrence remains `possiblyChanged`.
+    @_spi(XicoUninstallExecution)
+    public static func uninstallMalformed(
+        operationID: UUID,
+        occurrences: [UninstallMalformedOccurrence],
+        startedAt: Date,
+        finishedAt: Date
+    ) -> CleaningReport {
+        let results = occurrences.map { occurrence in
+            let issue = OperationIssue(
+                code: "uninstall.terminal.malformed",
+                category: .internalInvariant,
+                subjectID: occurrence.requestID.uuidString,
+                recovery: .retry,
+                retryable: true)
+            return CleaningItemResult(
+                requestID: occurrence.requestID,
+                itemID: occurrence.item.id,
+                url: occurrence.item.url,
+                intent: .trash,
+                disposition: .failed(issue),
+                mutation: .possiblyChanged,
+                reclaimedBytes: 0,
+                restorable: nil)
+        }
+        let outcome = OperationOutcomeReducer.internalFailure(
+            id: operationID,
+            kind: .uninstall,
+            requestedSubjectIDs: results.map { $0.requestID.uuidString },
+            itemOutcomes: results.map {
+                OperationItemOutcome(
+                    subjectID: $0.requestID.uuidString,
+                    disposition: $0.disposition,
+                    mutation: $0.mutation)
+            },
+            code: "uninstall.terminal.malformed",
+            startedAt: startedAt,
+            finishedAt: finishedAt)
+        return CleaningReport(
+            operation: outcome,
+            facts: results.map(CleaningOperationFact.deletion),
+            rejectionMetadata: .uninstallMalformed)
     }
 
     static func merging(
@@ -886,6 +947,23 @@ public struct CleaningReport: Sendable {
                     parentID: report.operation.parentID,
                     kind: report.operation.kind,
                     requestedCount: projectedFactCount,
+                    code: rejection.issueCode,
+                    startedAt: report.operation.startedAt,
+                    finishedAt: report.operation.finishedAt)
+                return outcomesMatch(reproduced, report.operation)
+            }
+            if case .uninstallMalformed = rejection {
+                guard !report.facts.isEmpty,
+                      report.operation.kind == .uninstall else { return false }
+                let reproduced = OperationOutcomeReducer.internalFailure(
+                    id: report.operation.id,
+                    parentID: report.operation.parentID,
+                    kind: .uninstall,
+                    requestedSubjectIDs: report.facts.map {
+                        $0.requestID.uuidString
+                    },
+                    itemOutcomes: report.facts.map(\.operationItemOutcome),
+                    cancellationAccepted: false,
                     code: rejection.issueCode,
                     startedAt: report.operation.startedAt,
                     finishedAt: report.operation.finishedAt)
@@ -1104,17 +1182,26 @@ public struct UndoItemResult: Sendable {
     public let item: RestorableItem
     public let disposition: OperationDisposition
     public let mutation: OperationMutationFact
+    /// Exact destination reported and validated after a successful restore. Non-success facts
+    /// cannot expose a destination because the filesystem state is not trusted in those cases.
+    public let restoredURL: URL?
 
     init(
         requestID: UUID,
         item: RestorableItem,
         disposition: OperationDisposition,
-        mutation: OperationMutationFact
+        mutation: OperationMutationFact,
+        restoredURL: URL? = nil
     ) {
+        if disposition == .succeeded {
+            precondition(restoredURL != nil,
+                         "A succeeded undo fact requires its exact restored URL")
+        }
         self.requestID = requestID
         self.item = item
         self.disposition = disposition
         self.mutation = mutation
+        self.restoredURL = disposition == .succeeded ? restoredURL : nil
     }
 }
 

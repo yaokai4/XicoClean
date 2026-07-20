@@ -1,5 +1,5 @@
 import Foundation
-import Domain
+@_spi(XicoUninstallExecution) import Domain
 import Dispatch
 #if canImport(Darwin)
 import Darwin
@@ -112,8 +112,29 @@ actor UninstallBatchClaimToken {
 
 package struct UninstallConfirmationSummary: Sendable, Equatable {
     package let appName: String
+    package let mode: UninstallMode
     package let selectedCount: Int
     package let selectedSize: Int64
+}
+
+/// Possession token paired with the production CleaningEngine at composition time. It never
+/// crosses Infrastructure's internal boundary or enters Feature state.
+final class UninstallExecutionPermitToken: UninstallExecutionPermit, @unchecked Sendable {}
+
+extension UninstallExecutionPermitToken {
+    func makeCleaningEngine(
+        safety: SafetyEngine,
+        fs: FileSystemService,
+        privileged: PrivilegedCleaningService? = nil,
+        threatRemediation: (any ThreatRemediationExecuting)? = nil
+    ) -> CleaningEngine {
+        CleaningEngine(
+            safety: safety,
+            fs: fs,
+            privileged: privileged,
+            threatRemediation: threatRemediation,
+            uninstallExecutionPermit: self)
+    }
 }
 
 /// Opaque, immutable review context. Features can display only the frozen summary and can execute
@@ -132,6 +153,7 @@ package struct UninstallConfirmation: Sendable, Identifiable, Equatable {
         self.id = UUID()
         self.summary = UninstallConfirmationSummary(
             appName: batch.app.name,
+            mode: batch.mode,
             selectedCount: batch.selectedCount,
             selectedSize: batch.selectedSize)
         self.batch = batch
@@ -148,7 +170,7 @@ package protocol UninstallCapabilityRouting: Sendable {
     func beginConfirmation(for batch: UninstallBatch) -> UninstallConfirmation
 
     func execute(confirmation: UninstallConfirmation) async throws
-        -> DestructiveExecutionResult<CleaningReport>
+        -> DestructiveExecutionResult<UninstallExecution>
 }
 
 /// Internal Task 4→Task 5 handoff. Features never receives the sealed payload and cannot replace
@@ -156,52 +178,67 @@ package protocol UninstallCapabilityRouting: Sendable {
 protocol UninstallPayloadExecuting: Sendable {
     func execute(
         _ prepared: PreparedUninstallExecution,
-        admission: @escaping @Sendable () async -> Bool
-    ) async -> CleaningReport?
+        admission: @escaping @Sendable () async -> Bool,
+        finalAdmission: @escaping @Sendable () -> Bool,
+        evidenceAdmission: @escaping @Sendable (PreparedUninstallTarget) -> Bool
+    ) async -> UninstallPayloadExecution?
 }
 
 struct CleaningEngineUninstallPayloadExecutor: UninstallPayloadExecuting, Sendable {
     let engine: CleaningEngine
+    let permit: UninstallExecutionPermitToken
+    let identitySampler: any IdentitySampler
     let beforeActorHop: @Sendable () -> Void
     let afterActorAdmission: @Sendable () async -> Void
 
     init(engine: CleaningEngine,
+         permit: UninstallExecutionPermitToken,
+         identitySampler: any IdentitySampler = LocalFileIdentitySampler(),
          beforeActorHop: @escaping @Sendable () -> Void = {},
          afterActorAdmission: @escaping @Sendable () async -> Void = {}) {
         self.engine = engine
+        self.permit = permit
+        self.identitySampler = identitySampler
         self.beforeActorHop = beforeActorHop
         self.afterActorAdmission = afterActorAdmission
     }
 
     func execute(
         _ prepared: PreparedUninstallExecution,
-        admission: @escaping @Sendable () async -> Bool
-    ) async -> CleaningReport? {
-        beforeActorHop()
-        return await engine.executeUninstallPayload(
-            prepared,
-            admission: admission,
-            afterActorAdmission: afterActorAdmission)
-    }
-}
-
-extension CleaningEngine {
-    /// Actor-entry admission for Task 4. Because this method is isolated to `CleaningEngine`, the
-    /// exact batch lifetime and prepared seal are checked only after queued work acquires the
-    /// engine actor. Task 5 will extend the same permit to each individual filesystem mutation.
-    func executeUninstallPayload(
-        _ prepared: PreparedUninstallExecution,
         admission: @escaping @Sendable () async -> Bool,
-        afterActorAdmission: @escaping @Sendable () async -> Void
-    ) async -> CleaningReport? {
-        guard await admission() else { return nil }
-        await afterActorAdmission()
-        guard let items = prepared.selectedItems,
-              prepared.batchSnapshot.claimToken
-                .executionLifetimeFailureFreshSynchronously(
-                    createdAt: prepared.batchSnapshot.createdAt,
-                    expiresAt: prepared.batchSnapshot.expiresAt) == nil else { return nil }
-        return await execute(CleaningPlan(items: items, intent: .trash))
+        finalAdmission: @escaping @Sendable () -> Bool,
+        evidenceAdmission: @escaping @Sendable (PreparedUninstallTarget) -> Bool
+    ) async -> UninstallPayloadExecution? {
+        guard prepared.validateIntegrity(),
+              prepared.orderedTargets.count == prepared.plan.targets.count else { return nil }
+        var occurrences: [UninstallPayloadOccurrenceBinding] = []
+        var requests: [UninstallExecutionRequest] = []
+        occurrences.reserveCapacity(prepared.orderedTargets.count)
+        requests.reserveCapacity(prepared.orderedTargets.count)
+        for (sealed, planned) in zip(prepared.orderedTargets, prepared.plan.targets) {
+            let requestID = UUID()
+            occurrences.append(UninstallPayloadOccurrenceBinding(
+                requestID: requestID, target: sealed))
+            requests.append(UninstallExecutionRequest(
+                requestID: requestID,
+                item: sealed.candidate.item,
+                plannedTarget: planned,
+                role: sealed.candidate.role == .appBody
+                    ? .requiredAppBody : .associatedFile,
+                evidenceAdmission: { evidenceAdmission(sealed) }))
+        }
+        let mode: UninstallExecutionMode = prepared.batchSnapshot.mode == .uninstallApp
+            ? .uninstallApp : .cleanLeftovers
+        beforeActorHop()
+        guard let report = await engine.executeUninstall(
+            requests,
+            mode: mode,
+            permit: permit,
+            identitySampler: { path in identitySampler.sample(path) },
+            initialAdmission: admission,
+            finalAdmission: finalAdmission,
+            afterActorAdmission: afterActorAdmission) else { return nil }
+        return UninstallPayloadExecution(report: report, occurrences: occurrences)
     }
 }
 
@@ -256,7 +293,7 @@ struct UninstallCapabilityController: UninstallCapabilityRouting, Sendable {
     }
 
     func execute(confirmation: UninstallConfirmation) async throws
-        -> DestructiveExecutionResult<CleaningReport> {
+        -> DestructiveExecutionResult<UninstallExecution> {
         let batch = confirmation.batch
         let prepared = try confirmation.service.prepareUninstallExecution(
             from: batch, using: issuer)
@@ -295,11 +332,11 @@ struct UninstallCapabilityController: UninstallCapabilityRouting, Sendable {
         hooks.afterAuthorization()
         try validateFreshWallLifetime(of: batch)
         try await validateFreshMonotonicLifetime(of: batch)
-        guard prepared.selectedItems != nil else {
+        guard prepared.validateIntegrity() else {
             throw UninstallPlanError.preparedTargetMismatch
         }
 
-        let result: DestructiveExecutionResult<CleaningReport?> = await issuer.execute(
+        let result: DestructiveExecutionResult<UninstallPayloadExecution?> = await issuer.execute(
             prepared.plan, authorization: authorization
         ) {
             guard await isWithinFreshMonotonicLifetime(batch),
@@ -310,12 +347,23 @@ struct UninstallCapabilityController: UninstallCapabilityRouting, Sendable {
                         createdAt: batch.createdAt, expiresAt: batch.expiresAt),
                       prepared.validateIntegrity() else { return false }
                 return true
+            } finalAdmission: {
+                prepared.validateIntegrity()
+                    && batch.claimToken.executionLifetimeFailureFreshSynchronously(
+                        createdAt: batch.createdAt,
+                        expiresAt: batch.expiresAt) == nil
+            } evidenceAdmission: { target in
+                confirmation.service.revalidateExecutionTarget(target, in: batch)
             }
         }
         switch result {
-        case .executed(let report):
-            guard let report else { throw UninstallPlanError.batchExpired }
-            return .executed(report)
+        case .executed(let payload):
+            guard let payload else { throw UninstallPlanError.batchExpired }
+            if let terminal = UninstallExecution(payload: payload, prepared: prepared) {
+                return .executed(terminal)
+            }
+            return .executed(UninstallExecution(
+                malformedPayload: payload, prepared: prepared))
         case .failedClosed(let failure):
             return .failedClosed(failure)
         }

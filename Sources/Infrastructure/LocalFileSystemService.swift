@@ -74,7 +74,7 @@ public struct LocalFileSystemService: FileSystemService {
         try fm.removeItem(at: url)
     }
 
-    public func restore(_ item: RestorableItem) throws {
+    public func restore(_ item: RestorableItem) throws -> URL {
         let parent = item.originalURL.deletingLastPathComponent()
         try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
         var dest = item.originalURL
@@ -90,6 +90,7 @@ public struct LocalFileSystemService: FileSystemService {
             } while fm.fileExists(atPath: dest.path)
         }
         try fm.moveItem(at: item.trashedURL, to: dest)
+        return dest
     }
 
     public func volumeCapacity(for url: URL) -> VolumeCapacity? {

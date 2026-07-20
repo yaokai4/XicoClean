@@ -73,7 +73,8 @@ public final class XicoEnvironment: @unchecked Sendable {
         )
         let helper = HelperProxy()
         self.helper = helper
-        let cleaningEngine = CleaningEngine(
+        let uninstallPermit = UninstallExecutionPermitToken()
+        let cleaningEngine = uninstallPermit.makeCleaningEngine(
             safety: safety,
             fs: fs,
             privileged: helper,
@@ -89,7 +90,9 @@ public final class XicoEnvironment: @unchecked Sendable {
         self.uninstallCapability = uninstallCapability
             ?? UninstallCapabilityController(
                 service: resolvedUninstaller,
-                payloadExecutor: CleaningEngineUninstallPayloadExecutor(engine: cleaningEngine))
+                payloadExecutor: CleaningEngineUninstallPayloadExecutor(
+                    engine: cleaningEngine,
+                    permit: uninstallPermit))
         self.optimization = OptimizationService()
         self.maintenanceRunner = MaintenanceRunner()
         self.liveMetrics = LiveMetricsSampler(fs: fs)

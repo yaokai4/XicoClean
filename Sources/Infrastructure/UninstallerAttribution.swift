@@ -708,6 +708,14 @@ public struct UninstallBatch: Sendable {
 
     public mutating func selectAll() { setAll(true) }
 
+    /// Applies a trusted occurrence transition produced by Infrastructure's execution terminal.
+    /// Feature code cannot choose indices because this mutator is module-internal.
+    mutating func removeCandidates(atOriginalIndices removed: Set<Int>) {
+        candidates = candidates.enumerated().compactMap { index, candidate in
+            removed.contains(index) ? nil : candidate
+        }
+    }
+
     public var allPolicySelected: Bool {
         !candidates.isEmpty && candidates.allSatisfy { candidate in
             switch candidate.selectionPolicy {
@@ -715,10 +723,6 @@ public struct UninstallBatch: Sendable {
             case .manualOnly, .blocked: return !candidate.isSelected
             }
         }
-    }
-
-    var selectedItems: [CleanableItem] {
-        candidates.filter(\.isSelected).map(\.item)
     }
 
     public var selectedCount: Int { candidates.filter(\.isSelected).count }

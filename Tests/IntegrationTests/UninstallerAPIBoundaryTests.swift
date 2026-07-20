@@ -54,6 +54,16 @@ final class UninstallerAPIBoundaryTests: XCTestCase {
                 import Infrastructure
                 let preparedType = PreparedUninstallExecution.self
                 """),
+            ("dedicated uninstall execution SPI", true, """
+                import Domain
+                let requestType = UninstallExecutionRequest.self
+                let permitType = UninstallExecutionPermit.self
+                """),
+            ("malformed uninstall fact factory SPI", true, """
+                import Domain
+                let occurrenceType = UninstallMalformedOccurrence.self
+                let factory = CleaningReport.uninstallMalformed
+                """),
             ("confirmation construction and internals", true, """
                 import Infrastructure
                 func forge(batch: UninstallBatch, service: UninstallerService) {
@@ -205,6 +215,34 @@ final class UninstallerAPIBoundaryTests: XCTestCase {
                           "Features-package code unexpectedly supplied an unrelated payload")
         XCTAssertFalse(payloadSubstitution.output.localizedCaseInsensitiveContains("no such module"),
                        payloadSubstitution.output)
+
+        let productionPermit = try compile("""
+            @_spi(XicoUninstallExecution) import Domain
+            import Infrastructure
+
+            func steal(environment: XicoEnvironment) {
+                _ = UninstallExecutionPermitToken()
+                _ = environment.uninstallExecutionPermit
+            }
+            """, packageName: "xicoapp")
+        XCTAssertNotEqual(productionPermit.status, 0,
+                          "Features-package code unexpectedly obtained the production permit")
+        XCTAssertFalse(productionPermit.output.lowercased().contains("no such module"),
+                       productionPermit.output)
+
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath,
+                       isDirectory: true)
+        let features = root.appendingPathComponent("Sources/Features", isDirectory: true)
+        let enumerator = FileManager.default.enumerator(
+            at: features,
+            includingPropertiesForKeys: nil)
+        let offenders = (enumerator?.allObjects as? [URL] ?? []).filter {
+            $0.pathExtension == "swift"
+                && ((try? String(contentsOf: $0, encoding: .utf8)) ?? "")
+                    .contains("@_spi(XicoUninstallExecution)")
+        }
+        XCTAssertTrue(offenders.isEmpty,
+                      "Features must not opt into the uninstall execution SPI: \(offenders)")
     }
 
     private func compile(_ source: String,
